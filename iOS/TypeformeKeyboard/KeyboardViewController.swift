@@ -218,7 +218,6 @@ final class KeyboardViewController: UIInputViewController, UIScrollViewDelegate 
     private let textGlobeButton = UIButton(type: .system)
     private let textLanguageButton = UIButton(type: .system)
     private let textLanguageLabel = UILabel()
-    private let compositionLabel = UILabel()
     private let pinyinBannerLabel = UILabel()
     private let candidateScrollView = UIScrollView()
     private let candidateStack = UIStackView()
@@ -339,6 +338,11 @@ final class KeyboardViewController: UIInputViewController, UIScrollViewDelegate 
         scheduleDeferredStartupProbe()
     }
 
+    override func textWillChange(_ textInput: UITextInput?) {
+        super.textWillChange(textInput)
+        refreshInputModeSwitchKeyVisibility()
+    }
+
     override func textDidChange(_ textInput: UITextInput?) {
         super.textDidChange(textInput)
         refreshInputModeSwitchKeyVisibility()
@@ -361,7 +365,7 @@ final class KeyboardViewController: UIInputViewController, UIScrollViewDelegate 
             applyRimeState(rimeInput.commitComposition())
         }
         stopDeleteRepeat()
-        clearTextShiftState()
+        resetShiftIfSticky()
         deferredStartupWorkItem?.cancel()
         deferredStartupWorkItem = nil
         bridgeProbeTask?.cancel()
@@ -599,7 +603,6 @@ final class KeyboardViewController: UIInputViewController, UIScrollViewDelegate 
             textAlternateSymbolButton,
             textGlobeButton,
             textLanguageButton,
-            compositionLabel,
             pinyinBannerLabel,
             candidateScrollView,
             candidateStack,
@@ -1162,16 +1165,6 @@ final class KeyboardViewController: UIInputViewController, UIScrollViewDelegate 
         textToolsButton.showsMenuAsPrimaryAction = true
         refreshTextToolsMenu(isRecording: false)
         attachPressAnimation(textToolsButton)
-
-        compositionLabel.font = .systemFont(ofSize: 14, weight: .semibold)
-        compositionLabel.textColor = .secondaryLabel
-        compositionLabel.numberOfLines = 1
-        compositionLabel.lineBreakMode = .byTruncatingTail
-        compositionLabel.adjustsFontSizeToFitWidth = true
-        compositionLabel.minimumScaleFactor = 0.72
-        compositionLabel.text = NSLocalizedString("中文", comment: "Default composition label")
-        compositionLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        compositionLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         candidateScrollView.showsHorizontalScrollIndicator = false
         candidateScrollView.alwaysBounceHorizontal = true
@@ -3458,7 +3451,7 @@ final class KeyboardViewController: UIInputViewController, UIScrollViewDelegate 
         if keyboardFocus == .text {
             applyRimeState(rimeInput.commitComposition())
         }
-        clearTextShiftState()
+        resetShiftIfSticky()
         keyboardFocus = focus
         defaults.set(focus.rawValue, forKey: keyboardFocusKey)
         updateKeyboardFocus(animated: animated)
@@ -3576,12 +3569,7 @@ final class KeyboardViewController: UIInputViewController, UIScrollViewDelegate 
 
     private func refreshShiftButtonImage() {
         guard let textShiftButton else { return }
-        configureTextKeyButton(
-            textShiftButton,
-            title: "",
-            image: isTextShiftEnabled ? "shift.fill" : "shift",
-            weight: .utility
-        )
+        textShiftButton.configuration?.image = UIImage(systemName: isTextShiftEnabled ? "shift.fill" : "shift")
         textShiftButton.accessibilityLabel = isTextShiftEnabled
             ? NSLocalizedString("Shift on", comment: "Accessibility label for active Shift key")
             : NSLocalizedString("Shift", comment: "Accessibility label for Shift key")
@@ -3611,13 +3599,6 @@ final class KeyboardViewController: UIInputViewController, UIScrollViewDelegate 
         refreshShiftButtonImage()
         refreshLetterCasing()
         return true
-    }
-
-    private func clearTextShiftState() {
-        guard isTextShiftEnabled else { return }
-        isTextShiftEnabled = false
-        refreshShiftButtonImage()
-        refreshLetterCasing()
     }
 
     private func configureTextLanguageButton() {
@@ -3769,7 +3750,6 @@ final class KeyboardViewController: UIInputViewController, UIScrollViewDelegate 
     }
 
     private func renderRimeState(_ state: RimeKeyboardState) {
-        compositionLabel.text = state.errorMessage ?? ""
         updatePinyinBanner(for: state)
 
         resetCandidateStackForReuse()
@@ -3816,9 +3796,6 @@ final class KeyboardViewController: UIInputViewController, UIScrollViewDelegate 
 
     private func addCandidateArrangedView(_ view: UIView) {
         view.isHidden = false
-        if view.superview == nil {
-            candidateStack.addSubview(view)
-        }
         candidateStack.addArrangedSubview(view)
     }
 
@@ -3906,9 +3883,9 @@ final class KeyboardViewController: UIInputViewController, UIScrollViewDelegate 
               rimeInput.state().isComposing
         else { return }
         let maxOffset = max(0, scrollView.contentSize.width - scrollView.bounds.width)
-        if scrollView.contentOffset.x > maxOffset + 24 {
+        if scrollView.contentOffset.x > maxOffset + 60 {
             applyRimeState(rimeInput.processKeyCode(0xFF56))
-        } else if scrollView.contentOffset.x < -24 {
+        } else if scrollView.contentOffset.x < -60 {
             applyRimeState(rimeInput.processKeyCode(0xFF55))
         }
     }
@@ -4044,7 +4021,6 @@ final class KeyboardViewController: UIInputViewController, UIScrollViewDelegate 
 
     private func showTextKeyboardNotice(_ text: String, color: UIColor = .secondaryLabel) {
         guard keyboardFocus == .text else { return }
-        compositionLabel.text = text
         pinyinBannerLabel.text = ""
         pinyinBannerLabel.isHidden = true
         resetCandidateStackForReuse()
