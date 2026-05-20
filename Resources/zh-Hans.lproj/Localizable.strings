@@ -1,0 +1,49 @@
+// 简体中文本地化 (Typeforme macOS)。键名 = 英文原文。
+
+// HUD 状态
+"Ready" = "就绪";
+"Recording" = "录音中";
+"Transcribing…" = "识别中…";
+"Polishing…" = "润色中…";
+"Preview" = "预览";
+"Inserting…" = "插入中…";
+"Done" = "完成";
+"Error" = "错误";
+"Ready · %@" = "就绪 · %@";
+
+// HUD 控件
+"Insert" = "插入";
+"Insert at current cursor (⏎)" = "在光标处插入 (⏎)";
+
+// 菜单栏
+"Accessibility Granted" = "辅助功能已授权";
+"Grant Accessibility…" = "授予辅助功能…";
+"Always show HUD" = "始终显示浮窗";
+"Settings…" = "设置…";
+"Quit Typeforme" = "退出 Typeforme";
+
+// 设置 sidebar
+"General" = "通用";
+"Modes" = "模式";
+"Recording" = "录音";
+"Connection" = "连接";
+"Advanced" = "高级";
+"Typeforme Settings" = "Typeforme 设置";
+
+// 设置:模式子项
+"Correction" = "纠错";
+"Prompts" = "提示词";
+"Vocabulary" = "词库";
+
+// 设置:高级子项
+"ASR" = "语音识别";
+"Diagnostics" = "诊断";
+
+// 按住修饰键
+"Right ⌥" = "右 ⌥";
+"Right ⌘" = "右 ⌘";
+"Right ⇧" = "右 ⇧";
+"Right ⌃" = "右 ⌃";
+"Left ⌥" = "左 ⌥";
+"Fn" = "Fn";
+"double-tap %@" = "双击 %@";

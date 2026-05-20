@@ -1,0 +1,51 @@
+// English (source-of-truth) localizations for Typeforme macOS.
+// Keys mirror the English literal in source so SwiftUI `Text("…")` and
+// NSLocalizedString share the same lookup.
+
+// HUD status
+"Ready" = "Ready";
+"Recording" = "Recording";
+"Transcribing…" = "Transcribing…";
+"Polishing…" = "Polishing…";
+"Preview" = "Preview";
+"Inserting…" = "Inserting…";
+"Done" = "Done";
+"Error" = "Error";
+"Ready · %@" = "Ready · %@";
+
+// HUD chrome
+"Insert" = "Insert";
+"Insert at current cursor (⏎)" = "Insert at current cursor (⏎)";
+
+// Menu bar
+"Accessibility Granted" = "Accessibility Granted";
+"Grant Accessibility…" = "Grant Accessibility…";
+"Always show HUD" = "Always show HUD";
+"Settings…" = "Settings…";
+"Quit Typeforme" = "Quit Typeforme";
+
+// Settings sidebar
+"General" = "General";
+"Modes" = "Modes";
+"Recording" = "Recording";
+"Connection" = "Connection";
+"Advanced" = "Advanced";
+"Typeforme Settings" = "Typeforme Settings";
+
+// Settings: Modes subsections
+"Correction" = "Correction";
+"Prompts" = "Prompts";
+"Vocabulary" = "Vocabulary";
+
+// Settings: Advanced subsections
+"ASR" = "ASR";
+"Diagnostics" = "Diagnostics";
+
+// Hold modifier names
+"Right ⌥" = "Right ⌥";
+"Right ⌘" = "Right ⌘";
+"Right ⇧" = "Right ⇧";
+"Right ⌃" = "Right ⌃";
+"Left ⌥" = "Left ⌥";
+"Fn" = "Fn";
+"double-tap %@" = "double-tap %@";
