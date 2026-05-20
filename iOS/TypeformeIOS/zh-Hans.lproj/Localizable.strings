@@ -1,0 +1,37 @@
+// 简体中文本地化 (Typeforme iOS 宿主 app)。
+
+// 工具栏 / sheet
+"Pairing" = "配对";
+"Server Settings" = "服务器设置";
+"Keyboard Guide" = "键盘使用指南";
+"Done" = "完成";
+
+// 设置状态卡片
+"Paired with Mac" = "已与 Mac 配对";
+"Typeforme dictates in any text field via its keyboard. Two iOS-only steps:" = "Typeforme 通过自带键盘在任意文本框听写。还差两步 iOS 端设置:";
+"Enable Typeforme keyboard" = "启用 Typeforme 键盘";
+"Settings → General → Keyboard → Add New Keyboard" = "设置 → 通用 → 键盘 → 添加新键盘";
+"Allow Full Access" = "允许完全访问";
+"Required so the keyboard can reach this app" = "键盘需要它来访问本 app";
+"Guide" = "指南";
+"Open Settings" = "打开设置";
+
+// 试录区域
+"Test dictation" = "试录";
+
+// VoiceInputMode (与键盘扩展共享)
+"Hold" = "按住";
+"Tap" = "点击";
+"Hold to Speak" = "按住说话";
+"Tap to Speak" = "点击说话";
+"Release to Send" = "松手发送";
+"Tap to Finish" = "再点结束";
+"Press and hold, then release to transcribe." = "按住开始,松手听写。";
+"Tap once to record, tap again to send." = "点一次开始,再点一次发送。";
+
+// 模式按钮 (与键盘扩展共享)
+"Clean" = "清洁";
+"Polish" = "润色";
+"Polish+" = "润色+";
+"Structure+" = "结构+";
+"Formal+" = "正式+";

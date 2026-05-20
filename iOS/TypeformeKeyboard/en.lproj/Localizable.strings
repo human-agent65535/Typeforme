@@ -1,0 +1,42 @@
+// English (source-of-truth) localizations for the Typeforme iOS keyboard.
+
+// Status strip
+"Setup" = "Setup";
+"Opening" = "Opening";
+"Ready" = "Ready";
+"Recording" = "Recording";
+"Sending" = "Sending";
+"Inserted" = "Inserted";
+"Issue" = "Issue";
+
+// Voice title labels
+"Opening Typeforme…" = "Opening Typeforme…";
+"Transcribing" = "Transcribing";
+"Release to cancel" = "Release to cancel";
+
+// VoiceInputMode (shared with host)
+"Hold" = "Hold";
+"Tap" = "Tap";
+"Hold to Speak" = "Hold to Speak";
+"Tap to Speak" = "Tap to Speak";
+"Release to Send" = "Release to Send";
+"Tap to Finish" = "Tap to Finish";
+"Press and hold, then release to transcribe." = "Press and hold, then release to transcribe.";
+"Tap once to record, tap again to send." = "Tap once to record, tap again to send.";
+
+// Correction mode chip labels
+"Clean" = "Clean";
+"Polish" = "Polish";
+"Polish+" = "Polish+";
+"Structure+" = "Structure+";
+"Formal+" = "Formal+";
+
+// Accessibility
+"Dictate" = "Dictate";
+"Open Typeforme" = "Open Typeforme";
+"Command selected text" = "Command selected text";
+"Cancel recording" = "Cancel recording";
+"Paste last result" = "Paste last result";
+"Voice level" = "Voice level";
+"Correction mode: %@" = "Correction mode: %@";
+"Double tap to choose another mode" = "Double tap to choose another mode";

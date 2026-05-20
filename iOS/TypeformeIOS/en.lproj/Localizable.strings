@@ -1,0 +1,37 @@
+// English (source-of-truth) localizations for the Typeforme iOS host app.
+
+// Toolbar / sheets
+"Pairing" = "Pairing";
+"Server Settings" = "Server Settings";
+"Keyboard Guide" = "Keyboard Guide";
+"Done" = "Done";
+
+// Setup status card
+"Paired with Mac" = "Paired with Mac";
+"Typeforme dictates in any text field via its keyboard. Two iOS-only steps:" = "Typeforme dictates in any text field via its keyboard. Two iOS-only steps:";
+"Enable Typeforme keyboard" = "Enable Typeforme keyboard";
+"Settings → General → Keyboard → Add New Keyboard" = "Settings → General → Keyboard → Add New Keyboard";
+"Allow Full Access" = "Allow Full Access";
+"Required so the keyboard can reach this app" = "Required so the keyboard can reach this app";
+"Guide" = "Guide";
+"Open Settings" = "Open Settings";
+
+// Test dictation section
+"Test dictation" = "Test dictation";
+
+// VoiceInputMode (shared with keyboard)
+"Hold" = "Hold";
+"Tap" = "Tap";
+"Hold to Speak" = "Hold to Speak";
+"Tap to Speak" = "Tap to Speak";
+"Release to Send" = "Release to Send";
+"Tap to Finish" = "Tap to Finish";
+"Press and hold, then release to transcribe." = "Press and hold, then release to transcribe.";
+"Tap once to record, tap again to send." = "Tap once to record, tap again to send.";
+
+// Mode chip labels (also localized inside the keyboard target)
+"Clean" = "Clean";
+"Polish" = "Polish";
+"Polish+" = "Polish+";
+"Structure+" = "Structure+";
+"Formal+" = "Formal+";

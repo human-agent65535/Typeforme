@@ -1,0 +1,42 @@
+// 简体中文本地化 (Typeforme iOS 键盘扩展)。
+
+// 状态栏
+"Setup" = "需要设置";
+"Opening" = "打开中";
+"Ready" = "就绪";
+"Recording" = "录音中";
+"Sending" = "处理中";
+"Inserted" = "已插入";
+"Issue" = "异常";
+
+// 球上方的状态标题
+"Opening Typeforme…" = "正在打开 Typeforme…";
+"Transcribing" = "识别中";
+"Release to cancel" = "松手取消";
+
+// VoiceInputMode (与宿主 app 共享)
+"Hold" = "按住";
+"Tap" = "点击";
+"Hold to Speak" = "按住说话";
+"Tap to Speak" = "点击说话";
+"Release to Send" = "松手发送";
+"Tap to Finish" = "再点结束";
+"Press and hold, then release to transcribe." = "按住开始,松手听写。";
+"Tap once to record, tap again to send." = "点一次开始,再点一次发送。";
+
+// 纠正模式按钮文字
+"Clean" = "清洁";
+"Polish" = "润色";
+"Polish+" = "润色+";
+"Structure+" = "结构+";
+"Formal+" = "正式+";
+
+// 可访问性
+"Dictate" = "听写";
+"Open Typeforme" = "打开 Typeforme";
+"Command selected text" = "对选中文本下达指令";
+"Cancel recording" = "取消录音";
+"Paste last result" = "粘贴上次结果";
+"Voice level" = "音量";
+"Correction mode: %@" = "纠正模式: %@";
+"Double tap to choose another mode" = "双击切换模式";
