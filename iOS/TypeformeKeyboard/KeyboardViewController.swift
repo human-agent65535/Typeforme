@@ -19,7 +19,7 @@ private extension CorrectionModePreset {
     }
 }
 
-final class KeyboardViewController: UIInputViewController {
+final class KeyboardViewController: UIInputViewController, UIScrollViewDelegate {
     private enum CapsuleStyle {
         case chrome
         case key
@@ -112,7 +112,6 @@ final class KeyboardViewController: UIInputViewController {
     private var recentRestyleShownAt: TimeInterval = 0
     private var isTextSpaceCursorTracking = false
     private var textSpaceCursorStartX: CGFloat = 0
-    private var textSpaceCursorLastStep = 0
     private var suppressTextSpaceTapUntil: TimeInterval = 0
     private var scheduledHostOpenTask: Task<Void, Never>?
     private var scheduledStopTask: Task<Void, Never>?
@@ -207,6 +206,7 @@ final class KeyboardViewController: UIInputViewController {
     private let textVoiceButton = UIButton(type: .system)
     private let textVoiceFocusButton = UIButton(type: .system)
     private let textSettingsButton = UIButton(type: .system)
+    private let textToolsButton = UIButton(type: .system)
     private let textModeButton = UIButton(type: .system)
     private let textAlternateSymbolButton = UIButton(type: .system)
     private let textGlobeButton = UIButton(type: .system)
@@ -214,20 +214,36 @@ final class KeyboardViewController: UIInputViewController {
     private let textLanguageLabel = UILabel()
     private let compositionLabel = UILabel()
     private let pinyinBannerLabel = UILabel()
+    private let quickCandidateRow = UIStackView()
     private let candidateScrollView = UIScrollView()
     private let candidateStack = UIStackView()
     private let keyRowsStack = UIStackView()
     private let keyPreviewBubble = UIView()
     private let keyPreviewLabel = UILabel()
+    private lazy var textTrackpadPanRecognizer = UIPanGestureRecognizer(target: self, action: #selector(handleTextTrackpadPan(_:)))
     private var textKeyboardButtons: [UIButton] = []
     private var letterButtonMap: [String: UIButton] = [:]
     private var reusableCandidateButtons: [UIButton] = []
     private var reusableCandidateButtonWidthConstraints: [NSLayoutConstraint] = []
+    private var reusableCandidateSeparators: [UIView] = []
+    private var reusableCandidateStatusLabels: [UILabel] = []
+    private var reusableRestyleButtons: [CorrectionModePreset: UIButton] = [:]
+    private let previousCandidatePageButton = UIButton(type: .system)
+    private let nextCandidatePageButton = UIButton(type: .system)
+    private var didConfigureCandidatePagerButtons = false
+    private var activeCandidateSeparatorIndex = 0
+    private var activeCandidateStatusLabelIndex = 0
     private var textRowLayoutConstraints: [NSLayoutConstraint] = []
+    private var quickCandidateButtons: [UIButton] = []
     private weak var textReturnKeyButton: UIButton?
     private weak var textShiftButton: UIButton?
     private var lastReturnKeyTitle = ""
     private var isTextShiftEnabled = false
+    private var doubleQuoteOpen = true
+    private var singleQuoteOpen = true
+    private weak var activeTrackpadSourceView: UIView?
+    private var textTrackpadLastStepX = 0
+    private var textTrackpadLastStepY = 0
 
     override init(nibName nibNameOrNil: String?, bundle nibBundleOrNil: Bundle?) {
         super.init(nibName: nibNameOrNil, bundle: nibBundleOrNil)
@@ -256,6 +272,10 @@ final class KeyboardViewController: UIInputViewController {
         configureSystemKeyboardAffordances()
         loadState()
         syncPrimaryLanguage()
+        rimeInput.onStateChange = { [weak self] state in
+            guard let self else { return }
+            self.applyRimeState(state)
+        }
         configureRoot()
         configureKeyPreview()
         configureTopRow()
@@ -265,6 +285,7 @@ final class KeyboardViewController: UIInputViewController {
         configureKeyboardDarwinBridge()
         applyKeyboardInterfaceStyle(force: true)
         updateKeyboardFocus(animated: false)
+        _ = rimeInput.startIfNeeded()
         updateUI(animated: false)
         // Keyboard extensions receive the active input scene's appearance as
         // traits. Re-apply concrete colors whenever those traits move; layer
@@ -569,12 +590,14 @@ final class KeyboardViewController: UIInputViewController {
             textVoiceButton,
             textVoiceFocusButton,
             textSettingsButton,
+            textToolsButton,
             textModeButton,
             textAlternateSymbolButton,
             textGlobeButton,
             textLanguageButton,
             compositionLabel,
             pinyinBannerLabel,
+            quickCandidateRow,
             candidateScrollView,
             candidateStack,
             keyRowsStack,
@@ -1130,6 +1153,13 @@ final class KeyboardViewController: UIInputViewController {
         textSettingsButton.addTarget(self, action: #selector(openHostFromSettingsButton), for: .touchUpInside)
         attachPressAnimation(textSettingsButton)
 
+        configureTextControlButton(textToolsButton, title: "", image: "ellipsis.circle")
+        textToolsButton.widthAnchor.constraint(equalToConstant: 40).isActive = true
+        textToolsButton.accessibilityLabel = NSLocalizedString("Keyboard tools", comment: "Accessibility label for keyboard tools menu")
+        textToolsButton.showsMenuAsPrimaryAction = true
+        refreshTextToolsMenu(isRecording: false)
+        attachPressAnimation(textToolsButton)
+
         compositionLabel.font = .systemFont(ofSize: 14, weight: .semibold)
         compositionLabel.textColor = .secondaryLabel
         compositionLabel.numberOfLines = 1
@@ -1160,11 +1190,16 @@ final class KeyboardViewController: UIInputViewController {
             candidateStack.bottomAnchor.constraint(equalTo: candidateScrollView.contentLayoutGuide.bottomAnchor),
             candidateStack.heightAnchor.constraint(equalTo: candidateScrollView.frameLayoutGuide.heightAnchor),
         ])
+        candidateScrollView.delegate = self
+        configureCandidatePagerButtonsIfNeeded()
 
         keyRowsStack.axis = .vertical
         keyRowsStack.spacing = 6
         keyRowsStack.alignment = .fill
         keyRowsStack.distribution = .fillEqually
+        textTrackpadPanRecognizer.isEnabled = false
+        textTrackpadPanRecognizer.cancelsTouchesInView = true
+        textKeyboardContainer.addGestureRecognizer(textTrackpadPanRecognizer)
 
         configureTextControlButton(textModeButton, title: "123", image: nil)
         textModeButton.widthAnchor.constraint(equalToConstant: 50).isActive = true
@@ -1208,12 +1243,43 @@ final class KeyboardViewController: UIInputViewController {
         pinyinBannerLabel.isHidden = true
         pinyinBannerLabel.heightAnchor.constraint(equalToConstant: 18).isActive = true
 
+        quickCandidateRow.axis = .horizontal
+        quickCandidateRow.spacing = 4
+        quickCandidateRow.alignment = .fill
+        quickCandidateRow.distribution = .fillEqually
+        quickCandidateRow.isHidden = true
+        quickCandidateRow.heightAnchor.constraint(equalToConstant: 28).isActive = true
+        for index in 0..<9 {
+            let button = UIButton(type: .system)
+            var configuration = UIButton.Configuration.filled()
+            configuration.title = "\(index + 1)"
+            configuration.cornerStyle = .medium
+            configuration.contentInsets = NSDirectionalEdgeInsets(top: 3, leading: 4, bottom: 3, trailing: 4)
+            configuration.baseForegroundColor = .label
+            configuration.baseBackgroundColor = UIColor { traits in
+                traits.userInterfaceStyle == .dark
+                    ? UIColor.white.withAlphaComponent(0.10)
+                    : UIColor.black.withAlphaComponent(0.06)
+            }
+            configuration.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
+                var outgoing = incoming
+                outgoing.font = .systemFont(ofSize: 13, weight: .semibold)
+                return outgoing
+            }
+            button.configuration = configuration
+            button.tag = index
+            button.accessibilityLabel = String(format: NSLocalizedString("Select candidate %d", comment: "Accessibility label for quick candidate selection"), index + 1)
+            button.addTarget(self, action: #selector(quickCandidateButtonTapped(_:)), for: .touchUpInside)
+            attachPressAnimation(button)
+            quickCandidateButtons.append(button)
+            quickCandidateRow.addArrangedSubview(button)
+        }
+
+        textKeyboardContainer.addArrangedSubview(pinyinBannerLabel)
         textKeyboardContainer.addArrangedSubview(textToolbar)
         textToolbar.addArrangedSubview(candidateScrollView)
-        textToolbar.addArrangedSubview(textVoiceButton)
-        textToolbar.addArrangedSubview(textVoiceFocusButton)
-        textToolbar.addArrangedSubview(textSettingsButton)
-        textKeyboardContainer.insertArrangedSubview(pinyinBannerLabel, at: 0)
+        textToolbar.addArrangedSubview(textToolsButton)
+        textKeyboardContainer.addArrangedSubview(quickCandidateRow)
         textKeyboardContainer.addArrangedSubview(keyRowsStack)
         rootStack.addArrangedSubview(textKeyboardContainer)
 
@@ -1337,6 +1403,9 @@ final class KeyboardViewController: UIInputViewController {
             textKeyboardButtons.append(button)
             if isAlphabeticTextKey(key) {
                 letterButtonMap[key.lowercased()] = button
+                if let hint = digitHint(for: key) {
+                    attachDigitHint(to: button, hint: hint)
+                }
             }
             keyButtons.append(button)
         }
@@ -1412,6 +1481,37 @@ final class KeyboardViewController: UIInputViewController {
             return key.uppercased()
         }
         return key
+    }
+
+    private func digitHint(for key: String) -> String? {
+        switch key.lowercased() {
+        case "q": return "1"
+        case "w": return "2"
+        case "e": return "3"
+        case "r": return "4"
+        case "t": return "5"
+        case "y": return "6"
+        case "u": return "7"
+        case "i": return "8"
+        case "o": return "9"
+        case "p": return "0"
+        default: return nil
+        }
+    }
+
+    private func attachDigitHint(to button: UIButton, hint: String) {
+        guard textInputLanguage == .chinese, !isSymbolKeyboard else { return }
+        let label = UILabel()
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.text = hint
+        label.font = .systemFont(ofSize: 8.5, weight: .semibold)
+        label.textColor = .tertiaryLabel
+        label.isUserInteractionEnabled = false
+        button.addSubview(label)
+        NSLayoutConstraint.activate([
+            label.topAnchor.constraint(equalTo: button.topAnchor, constant: 3),
+            label.trailingAnchor.constraint(equalTo: button.trailingAnchor, constant: -5),
+        ])
     }
 
     private func addTextBottomRow() {
@@ -1723,6 +1823,14 @@ final class KeyboardViewController: UIInputViewController {
             }
             self.textVoiceButton.isEnabled = !isSendingState || isRecordingState || self.isVoicePressActive
             self.textVoiceButton.alpha = self.textVoiceButton.isEnabled ? 1 : 0.45
+            self.configureTextControlButton(self.textToolsButton, title: "", image: isRecordingState ? "stop.circle.fill" : "ellipsis.circle")
+            if isRecordingState {
+                self.textToolsButton.configuration?.baseBackgroundColor = UIColor.systemRed
+                self.textToolsButton.configuration?.baseForegroundColor = UIColor.white
+            }
+            self.textToolsButton.isEnabled = !isSendingState || isRecordingState || self.isVoicePressActive
+            self.textToolsButton.alpha = self.textToolsButton.isEnabled ? 1 : 0.45
+            self.refreshTextToolsMenu(isRecording: isRecordingState)
             self.voiceButton.layer.shadowColor = self.voiceShadowColor.cgColor
 
             if showsSpinner {
@@ -3441,8 +3549,28 @@ final class KeyboardViewController: UIInputViewController {
         configureTextControlButton(textGlobeButton, title: "", image: "globe")
         textGlobeButton.accessibilityLabel = NSLocalizedString("Next keyboard", comment: "Accessibility label for switching to the next keyboard")
         refreshInputModeSwitchKeyVisibility()
+        configureTextControlButton(textToolsButton, title: "", image: "ellipsis.circle")
+        textToolsButton.accessibilityLabel = NSLocalizedString("Keyboard tools", comment: "Accessibility label for keyboard tools menu")
+        refreshTextToolsMenu(isRecording: currentBridgeStatus?.state == .recording)
         configureTextLanguageButton()
         refreshReturnKeyTitle()
+    }
+
+    private func refreshTextToolsMenu(isRecording: Bool) {
+        let dictateTitle = isRecording
+            ? NSLocalizedString("Stop dictation", comment: "Menu item for stopping keyboard dictation")
+            : NSLocalizedString("Dictate", comment: "Menu item for starting keyboard dictation")
+        textToolsButton.menu = UIMenu(children: [
+            UIAction(title: dictateTitle, image: UIImage(systemName: isRecording ? "stop.fill" : "mic.fill")) { [weak self] _ in
+                self?.textVoiceTapped()
+            },
+            UIAction(title: NSLocalizedString("Voice keyboard", comment: "Menu item for switching to voice keyboard"), image: UIImage(systemName: "waveform")) { [weak self] _ in
+                self?.showVoiceFocus()
+            },
+            UIAction(title: NSLocalizedString("Open Typeforme", comment: "Menu item for opening Typeforme"), image: UIImage(systemName: "gearshape")) { [weak self] _ in
+                self?.openHostFromSettingsButton()
+            },
+        ])
     }
 
     private func refreshInputModeSwitchKeyVisibility() {
@@ -3638,11 +3766,9 @@ final class KeyboardViewController: UIInputViewController {
     private func renderRimeState(_ state: RimeKeyboardState) {
         compositionLabel.text = state.errorMessage ?? ""
         updatePinyinBanner(for: state)
+        updateQuickCandidateRow(for: state)
 
-        candidateStack.arrangedSubviews.forEach { view in
-            candidateStack.removeArrangedSubview(view)
-            view.removeFromSuperview()
-        }
+        resetCandidateStackForReuse()
 
         if let errorMessage = state.errorMessage {
             addCandidateStatus(errorMessage, color: .systemOrange)
@@ -3668,11 +3794,28 @@ final class KeyboardViewController: UIInputViewController {
             }
             let button = reusableCandidateButton(at: index)
             configureCandidateButton(button, candidate: candidate, index: index)
-            candidateStack.addArrangedSubview(button)
+            addCandidateArrangedView(button)
         }
-        addCandidatePagerButton(title: "‹", keyCode: 0xFF55, accessibilityLabel: NSLocalizedString("Previous candidates", comment: "Candidate page up button"))
-        addCandidatePagerButton(title: "›", keyCode: 0xFF56, accessibilityLabel: NSLocalizedString("Next candidates", comment: "Candidate page down button"))
+        addCandidatePagerButton(previousCandidatePageButton)
+        addCandidatePagerButton(nextCandidatePageButton)
         candidateScrollView.setContentOffset(.zero, animated: false)
+    }
+
+    private func resetCandidateStackForReuse() {
+        activeCandidateSeparatorIndex = 0
+        activeCandidateStatusLabelIndex = 0
+        candidateStack.arrangedSubviews.forEach { view in
+            candidateStack.removeArrangedSubview(view)
+            view.isHidden = true
+        }
+    }
+
+    private func addCandidateArrangedView(_ view: UIView) {
+        view.isHidden = false
+        if view.superview == nil {
+            candidateStack.addSubview(view)
+        }
+        candidateStack.addArrangedSubview(view)
     }
 
     private func updatePinyinBanner(for state: RimeKeyboardState) {
@@ -3681,18 +3824,55 @@ final class KeyboardViewController: UIInputViewController {
         pinyinBannerLabel.isHidden = composingText.isEmpty
     }
 
-    private func addCandidateSeparator() {
-        let separator = UIView()
-        separator.backgroundColor = UIColor.separator.withAlphaComponent(isKeyboardDark ? 0.28 : 0.22)
-        separator.widthAnchor.constraint(equalToConstant: 1.0 / UIScreen.main.scale).isActive = true
-        separator.heightAnchor.constraint(equalToConstant: 22).isActive = true
-        separator.setContentHuggingPriority(.required, for: .horizontal)
-        separator.setContentCompressionResistancePriority(.required, for: .horizontal)
-        candidateStack.addArrangedSubview(separator)
+    private func updateQuickCandidateRow(for state: RimeKeyboardState) {
+        let shouldShow = keyboardFocus == .text
+            && textInputLanguage == .chinese
+            && state.isComposing
+            && !state.candidates.isEmpty
+        quickCandidateRow.isHidden = !shouldShow
+        guard shouldShow else { return }
+        for (index, button) in quickCandidateButtons.enumerated() {
+            let hasCandidate = index < state.candidates.count
+            button.isEnabled = hasCandidate
+            button.alpha = hasCandidate ? 1 : 0.28
+        }
     }
 
-    private func addCandidatePagerButton(title: String, keyCode: Int32, accessibilityLabel: String) {
-        let button = UIButton(type: .system)
+    private func addCandidateSeparator() {
+        let separator: UIView
+        if activeCandidateSeparatorIndex < reusableCandidateSeparators.count {
+            separator = reusableCandidateSeparators[activeCandidateSeparatorIndex]
+        } else {
+            separator = UIView()
+            separator.widthAnchor.constraint(equalToConstant: 1.0 / UIScreen.main.scale).isActive = true
+            separator.heightAnchor.constraint(equalToConstant: 22).isActive = true
+            separator.setContentHuggingPriority(.required, for: .horizontal)
+            separator.setContentCompressionResistancePriority(.required, for: .horizontal)
+            reusableCandidateSeparators.append(separator)
+        }
+        activeCandidateSeparatorIndex += 1
+        separator.backgroundColor = UIColor.separator.withAlphaComponent(isKeyboardDark ? 0.28 : 0.22)
+        addCandidateArrangedView(separator)
+    }
+
+    private func configureCandidatePagerButtonsIfNeeded() {
+        guard !didConfigureCandidatePagerButtons else { return }
+        didConfigureCandidatePagerButtons = true
+        configureCandidatePagerButton(
+            previousCandidatePageButton,
+            title: "‹",
+            keyCode: 0xFF55,
+            accessibilityLabel: NSLocalizedString("Previous candidates", comment: "Candidate page up button")
+        )
+        configureCandidatePagerButton(
+            nextCandidatePageButton,
+            title: "›",
+            keyCode: 0xFF56,
+            accessibilityLabel: NSLocalizedString("Next candidates", comment: "Candidate page down button")
+        )
+    }
+
+    private func configureCandidatePagerButton(_ button: UIButton, title: String, keyCode: Int32, accessibilityLabel: String) {
         var configuration = UIButton.Configuration.plain()
         configuration.title = title
         configuration.cornerStyle = .fixed
@@ -3706,14 +3886,41 @@ final class KeyboardViewController: UIInputViewController {
         }
         button.configuration = configuration
         button.accessibilityLabel = accessibilityLabel
-        button.addAction(UIAction { [weak self] _ in
-            guard let self else { return }
-            self.applyRimeState(self.rimeInput.processKeyCode(keyCode))
-        }, for: .touchUpInside)
+        button.tag = Int(keyCode)
+        button.addTarget(self, action: #selector(candidatePagerButtonTapped(_:)), for: .touchUpInside)
         button.heightAnchor.constraint(equalToConstant: 36).isActive = true
         button.widthAnchor.constraint(equalToConstant: 34).isActive = true
         attachPressAnimation(button)
-        candidateStack.addArrangedSubview(button)
+    }
+
+    private func addCandidatePagerButton(_ button: UIButton) {
+        addCandidateArrangedView(button)
+    }
+
+    @objc private func candidatePagerButtonTapped(_ sender: UIButton) {
+        applyRimeState(rimeInput.processKeyCode(Int32(sender.tag)))
+    }
+
+    func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
+        guard !decelerate else { return }
+        handleCandidateScrollPagingIfNeeded(scrollView)
+    }
+
+    func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
+        handleCandidateScrollPagingIfNeeded(scrollView)
+    }
+
+    private func handleCandidateScrollPagingIfNeeded(_ scrollView: UIScrollView) {
+        guard scrollView === candidateScrollView,
+              keyboardFocus == .text,
+              rimeInput.state().isComposing
+        else { return }
+        let maxOffset = max(0, scrollView.contentSize.width - scrollView.bounds.width)
+        if scrollView.contentOffset.x > maxOffset + 24 {
+            applyRimeState(rimeInput.processKeyCode(0xFF56))
+        } else if scrollView.contentOffset.x < -24 {
+            applyRimeState(rimeInput.processKeyCode(0xFF55))
+        }
     }
 
     private func reusableCandidateButton(at index: Int) -> UIButton {
@@ -3760,6 +3967,10 @@ final class KeyboardViewController: UIInputViewController {
         applyRimeState(rimeInput.selectCandidate(at: sender.tag))
     }
 
+    @objc private func quickCandidateButtonTapped(_ sender: UIButton) {
+        applyRimeState(rimeInput.selectCandidate(at: sender.tag))
+    }
+
     private func candidateButtonMinimumWidth(for candidate: RimeKeyboardCandidate, isFirst: Bool) -> CGFloat {
         let titleFont = UIFont.systemFont(ofSize: isFirst ? 19 : 18, weight: isFirst ? .semibold : .medium)
         let titleWidth = ceil((candidate.text as NSString).size(withAttributes: [.font: titleFont]).width)
@@ -3773,15 +3984,22 @@ final class KeyboardViewController: UIInputViewController {
     }
 
     private func addCandidateStatus(_ text: String, color: UIColor, emphasized: Bool = false) {
-        let label = UILabel()
+        let label: UILabel
+        if activeCandidateStatusLabelIndex < reusableCandidateStatusLabels.count {
+            label = reusableCandidateStatusLabels[activeCandidateStatusLabelIndex]
+        } else {
+            label = UILabel()
+            label.textAlignment = .left
+            label.numberOfLines = 1
+            label.lineBreakMode = .byTruncatingTail
+            label.widthAnchor.constraint(greaterThanOrEqualToConstant: 72).isActive = true
+            reusableCandidateStatusLabels.append(label)
+        }
+        activeCandidateStatusLabelIndex += 1
         label.text = text
         label.font = .systemFont(ofSize: emphasized ? 15 : 13, weight: emphasized ? .semibold : .medium)
         label.textColor = color
-        label.textAlignment = .left
-        label.numberOfLines = 1
-        label.lineBreakMode = .byTruncatingTail
-        label.widthAnchor.constraint(greaterThanOrEqualToConstant: emphasized ? 52 : 72).isActive = true
-        candidateStack.addArrangedSubview(label)
+        addCandidateArrangedView(label)
     }
 
     private func rememberRestyleText(_ text: String) {
@@ -3818,15 +4036,21 @@ final class KeyboardViewController: UIInputViewController {
         else { return false }
 
         for preset in CorrectionModePreset.allCases {
-            let button = UIButton(type: .system)
+            let button: UIButton
+            if let existing = reusableRestyleButtons[preset] {
+                button = existing
+            } else {
+                button = UIButton(type: .system)
+                button.heightAnchor.constraint(equalToConstant: 34).isActive = true
+                button.widthAnchor.constraint(greaterThanOrEqualToConstant: preset == .structurePlus ? 74 : 58).isActive = true
+                button.addAction(UIAction { [weak self] _ in
+                    self?.rewriteCurrentInputOrPasteboard(using: preset)
+                }, for: .touchUpInside)
+                attachPressAnimation(button)
+                reusableRestyleButtons[preset] = button
+            }
             button.configuration = correctionModeButtonConfiguration(title: preset.title, selected: preset == correctionMode)
-            button.heightAnchor.constraint(equalToConstant: 34).isActive = true
-            button.widthAnchor.constraint(greaterThanOrEqualToConstant: preset == .structurePlus ? 74 : 58).isActive = true
-            button.addAction(UIAction { [weak self] _ in
-                self?.rewriteCurrentInputOrPasteboard(using: preset)
-            }, for: .touchUpInside)
-            attachPressAnimation(button)
-            candidateStack.addArrangedSubview(button)
+            addCandidateArrangedView(button)
         }
         candidateScrollView.setContentOffset(.zero, animated: false)
         return true
@@ -3837,10 +4061,7 @@ final class KeyboardViewController: UIInputViewController {
         compositionLabel.text = text
         pinyinBannerLabel.text = ""
         pinyinBannerLabel.isHidden = true
-        candidateStack.arrangedSubviews.forEach { view in
-            candidateStack.removeArrangedSubview(view)
-            view.removeFromSuperview()
-        }
+        resetCandidateStackForReuse()
         addCandidateStatus(text, color: color, emphasized: true)
         candidateScrollView.setContentOffset(.zero, animated: false)
     }
@@ -3941,6 +4162,30 @@ final class KeyboardViewController: UIInputViewController {
         }
     }
 
+    private func chineseDirectText(for character: String) -> String {
+        guard chinesePunctuationStyle == .chinese else { return character }
+        switch character {
+        case "\"":
+            let quote = doubleQuoteOpen ? "\u{201C}" : "\u{201D}"
+            doubleQuoteOpen.toggle()
+            return quote
+        case "'":
+            let quote = singleQuoteOpen ? "\u{2018}" : "\u{2019}"
+            singleQuoteOpen.toggle()
+            return quote
+        default:
+            return chinesePunctuationDisplayTitle(for: character)
+        }
+    }
+
+    private func shouldInsertDirectChinesePunctuation(_ character: String) -> Bool {
+        guard textInputLanguage == .chinese,
+              chinesePunctuationStyle == .chinese,
+              !isAlphabeticTextKey(character)
+        else { return false }
+        return ",.?!:;()\"'/\\|`~$^_<>-".contains(character)
+    }
+
     private func insertChineseDirectTextKey(_ character: String) {
         let currentState = rimeInput.state()
         if currentState.isComposing {
@@ -3957,12 +4202,18 @@ final class KeyboardViewController: UIInputViewController {
         } else {
             replaceMarkedText("")
         }
+        if shouldInsertDirectChinesePunctuation(character) {
+            textDocumentProxy.insertText(chineseDirectText(for: character))
+            resetShiftIfSticky()
+            renderRestyleSuggestionsIfIdle()
+            return
+        }
         _ = rimeInput.setAsciiPunctuation(chinesePunctuationStyle == .english)
         _ = rimeInput.setAsciiMode(false)
         let state = rimeInput.processCharacter(character)
         applyRimeState(state)
         if state.commitText.isEmpty, !state.isComposing {
-            textDocumentProxy.insertText(character)
+            textDocumentProxy.insertText(chineseDirectText(for: character))
         }
         resetShiftIfSticky()
         renderRestyleSuggestionsIfIdle()
@@ -3990,13 +4241,18 @@ final class KeyboardViewController: UIInputViewController {
             try? await Task.sleep(nanoseconds: self.deleteRepeatInitialDelay)
             while !Task.isCancelled {
                 let elapsed = Date().timeIntervalSince(startedAt)
-                let deleteCount = elapsed >= 2.0 ? 8 : (elapsed >= 1.0 ? 3 : 1)
                 await MainActor.run {
-                    for _ in 0..<deleteCount {
+                    if self.rimeInput.state().isComposing {
+                        self.handleTextBackspace()
+                    } else if elapsed >= 1.5 {
+                        self.deleteBackwardToLineBoundary()
+                    } else if elapsed >= 0.5 {
+                        self.deleteBackwardToWordBoundary()
+                    } else {
                         self.handleTextBackspace()
                     }
                 }
-                let interval: UInt64 = elapsed >= 2.0 ? 45_000_000 : (elapsed >= 1.0 ? 55_000_000 : self.deleteRepeatInterval)
+                let interval: UInt64 = elapsed >= 1.5 ? 150_000_000 : (elapsed >= 0.5 ? 120_000_000 : self.deleteRepeatInterval)
                 try? await Task.sleep(nanoseconds: interval)
             }
         }
@@ -4009,6 +4265,52 @@ final class KeyboardViewController: UIInputViewController {
     private func stopDeleteRepeat() {
         deleteRepeatTask?.cancel()
         deleteRepeatTask = nil
+    }
+
+    private func deleteBackwardToWordBoundary() {
+        let context = textDocumentProxy.documentContextBeforeInput ?? ""
+        let count = deletionCountToWordBoundary(in: context)
+        guard count > 0 else {
+            textDocumentProxy.deleteBackward()
+            return
+        }
+        deleteBackward(characterCount: count)
+    }
+
+    private func deleteBackwardToLineBoundary() {
+        let context = textDocumentProxy.documentContextBeforeInput ?? ""
+        let count = deletionCountToLineBoundary(in: context)
+        guard count > 0 else {
+            textDocumentProxy.deleteBackward()
+            return
+        }
+        deleteBackward(characterCount: count)
+    }
+
+    private func deletionCountToWordBoundary(in context: String) -> Int {
+        guard !context.isEmpty else { return 0 }
+        var count = 0
+        var consumedNonWhitespace = false
+        for character in context.reversed() {
+            if character.isWhitespace {
+                if consumedNonWhitespace { break }
+                count += 1
+            } else {
+                consumedNonWhitespace = true
+                count += 1
+            }
+        }
+        return count
+    }
+
+    private func deletionCountToLineBoundary(in context: String) -> Int {
+        guard !context.isEmpty else { return 0 }
+        var count = 0
+        for character in context.reversed() {
+            count += 1
+            if character.isNewline { break }
+        }
+        return count
     }
 
     @objc private func insertSpace() {
@@ -4025,13 +4327,15 @@ final class KeyboardViewController: UIInputViewController {
               let keyView = recognizer.view
         else { return }
 
-        let location = recognizer.location(in: keyView)
+        let location = recognizer.location(in: textKeyboardContainer)
         switch recognizer.state {
         case .began:
             isTextSpaceCursorTracking = true
             suppressTextSpaceTapUntil = Date().timeIntervalSince1970 + 0.35
+            activeTrackpadSourceView = keyView
             textSpaceCursorStartX = location.x
-            textSpaceCursorLastStep = 0
+            textTrackpadLastStepX = 0
+            textTrackpadLastStepY = 0
             if rimeInput.state().isComposing {
                 applyRimeState(rimeInput.commitComposition())
             }
@@ -4043,11 +4347,7 @@ final class KeyboardViewController: UIInputViewController {
             }
         case .changed:
             guard isTextSpaceCursorTracking else { return }
-            let step = Int((location.x - textSpaceCursorStartX) / Self.textSpaceCursorPointsPerCharacter)
-            let delta = step - textSpaceCursorLastStep
-            guard delta != 0 else { return }
-            textDocumentProxy.adjustTextPosition(byCharacterOffset: delta)
-            textSpaceCursorLastStep = step
+            updateTrackpadCursorPosition(deltaX: location.x - textSpaceCursorStartX, deltaY: 0)
         case .ended, .cancelled, .failed:
             endTextSpaceCursorTracking(keyView)
         default:
@@ -4059,6 +4359,7 @@ final class KeyboardViewController: UIInputViewController {
         guard isTextSpaceCursorTracking else { return }
         isTextSpaceCursorTracking = false
         suppressTextSpaceTapUntil = Date().timeIntervalSince1970 + 0.20
+        activeTrackpadSourceView = nil
         UIView.animate(withDuration: 0.10, delay: 0, options: [.beginFromCurrentState, .allowUserInteraction]) {
             keyView.alpha = 1
             keyView.transform = .identity
@@ -4068,9 +4369,49 @@ final class KeyboardViewController: UIInputViewController {
     }
 
     private func setTextTrackpadMode(_ enabled: Bool) {
+        textTrackpadPanRecognizer.isEnabled = enabled
+        if !enabled {
+            textTrackpadLastStepX = 0
+            textTrackpadLastStepY = 0
+        }
+        for button in textKeyboardButtons {
+            button.isUserInteractionEnabled = !enabled || button === activeTrackpadSourceView
+        }
         UIView.animate(withDuration: 0.10, delay: 0, options: [.beginFromCurrentState, .allowUserInteraction]) {
-            self.keyRowsStack.alpha = enabled ? 0.56 : 1
-            self.candidateScrollView.alpha = enabled ? 0.48 : 1
+            self.keyRowsStack.alpha = enabled ? 0.25 : 1
+            self.candidateScrollView.alpha = enabled ? 0.38 : 1
+            self.quickCandidateRow.alpha = enabled ? 0.28 : 1
+        }
+    }
+
+    @objc private func handleTextTrackpadPan(_ recognizer: UIPanGestureRecognizer) {
+        guard isTextSpaceCursorTracking else { return }
+        let translation = recognizer.translation(in: textKeyboardContainer)
+        switch recognizer.state {
+        case .changed:
+            updateTrackpadCursorPosition(deltaX: translation.x, deltaY: translation.y)
+        case .ended, .cancelled, .failed:
+            if let source = activeTrackpadSourceView {
+                endTextSpaceCursorTracking(source)
+            } else {
+                setTextTrackpadMode(false)
+            }
+        default:
+            break
+        }
+    }
+
+    private func updateTrackpadCursorPosition(deltaX: CGFloat, deltaY: CGFloat) {
+        let stepX = Int(deltaX / 8)
+        let deltaStepX = stepX - textTrackpadLastStepX
+        if deltaStepX != 0 {
+            textDocumentProxy.adjustTextPosition(byCharacterOffset: deltaStepX)
+            textTrackpadLastStepX = stepX
+        }
+
+        let stepY = Int(deltaY / 12)
+        if stepY != textTrackpadLastStepY {
+            textTrackpadLastStepY = stepY
         }
     }
 
