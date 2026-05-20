@@ -48,6 +48,12 @@ final class KeyboardViewController: UIInputViewController, UIScrollViewDelegate 
         case english
     }
 
+    private struct LetterCasingSnapshot: Equatable {
+        let shift: Bool
+        let autoCap: Bool
+        let language: TextInputLanguage
+    }
+
     private enum TextRewriteTarget {
         case selection(text: String, contextBefore: String, contextAfter: String)
         case context(before: String, after: String)
@@ -214,7 +220,6 @@ final class KeyboardViewController: UIInputViewController, UIScrollViewDelegate 
     private let textLanguageLabel = UILabel()
     private let compositionLabel = UILabel()
     private let pinyinBannerLabel = UILabel()
-    private let quickCandidateRow = UIStackView()
     private let candidateScrollView = UIScrollView()
     private let candidateStack = UIStackView()
     private let keyRowsStack = UIStackView()
@@ -234,16 +239,15 @@ final class KeyboardViewController: UIInputViewController, UIScrollViewDelegate 
     private var activeCandidateSeparatorIndex = 0
     private var activeCandidateStatusLabelIndex = 0
     private var textRowLayoutConstraints: [NSLayoutConstraint] = []
-    private var quickCandidateButtons: [UIButton] = []
     private weak var textReturnKeyButton: UIButton?
     private weak var textShiftButton: UIButton?
     private var lastReturnKeyTitle = ""
+    private var lastLetterCasingSnapshot: LetterCasingSnapshot?
     private var isTextShiftEnabled = false
     private var doubleQuoteOpen = true
     private var singleQuoteOpen = true
     private weak var activeTrackpadSourceView: UIView?
     private var textTrackpadLastStepX = 0
-    private var textTrackpadLastStepY = 0
 
     override init(nibName nibNameOrNil: String?, bundle nibBundleOrNil: Bundle?) {
         super.init(nibName: nibNameOrNil, bundle: nibBundleOrNil)
@@ -597,7 +601,6 @@ final class KeyboardViewController: UIInputViewController, UIScrollViewDelegate 
             textLanguageButton,
             compositionLabel,
             pinyinBannerLabel,
-            quickCandidateRow,
             candidateScrollView,
             candidateStack,
             keyRowsStack,
@@ -1241,45 +1244,14 @@ final class KeyboardViewController: UIInputViewController, UIScrollViewDelegate 
         pinyinBannerLabel.adjustsFontSizeToFitWidth = true
         pinyinBannerLabel.minimumScaleFactor = 0.72
         pinyinBannerLabel.isHidden = true
-        pinyinBannerLabel.heightAnchor.constraint(equalToConstant: 18).isActive = true
+        pinyinBannerLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 92).isActive = true
+        pinyinBannerLabel.setContentHuggingPriority(.required, for: .horizontal)
+        pinyinBannerLabel.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
 
-        quickCandidateRow.axis = .horizontal
-        quickCandidateRow.spacing = 4
-        quickCandidateRow.alignment = .fill
-        quickCandidateRow.distribution = .fillEqually
-        quickCandidateRow.isHidden = true
-        quickCandidateRow.heightAnchor.constraint(equalToConstant: 28).isActive = true
-        for index in 0..<9 {
-            let button = UIButton(type: .system)
-            var configuration = UIButton.Configuration.filled()
-            configuration.title = "\(index + 1)"
-            configuration.cornerStyle = .medium
-            configuration.contentInsets = NSDirectionalEdgeInsets(top: 3, leading: 4, bottom: 3, trailing: 4)
-            configuration.baseForegroundColor = .label
-            configuration.baseBackgroundColor = UIColor { traits in
-                traits.userInterfaceStyle == .dark
-                    ? UIColor.white.withAlphaComponent(0.10)
-                    : UIColor.black.withAlphaComponent(0.06)
-            }
-            configuration.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
-                var outgoing = incoming
-                outgoing.font = .systemFont(ofSize: 13, weight: .semibold)
-                return outgoing
-            }
-            button.configuration = configuration
-            button.tag = index
-            button.accessibilityLabel = String(format: NSLocalizedString("Select candidate %d", comment: "Accessibility label for quick candidate selection"), index + 1)
-            button.addTarget(self, action: #selector(quickCandidateButtonTapped(_:)), for: .touchUpInside)
-            attachPressAnimation(button)
-            quickCandidateButtons.append(button)
-            quickCandidateRow.addArrangedSubview(button)
-        }
-
-        textKeyboardContainer.addArrangedSubview(pinyinBannerLabel)
         textKeyboardContainer.addArrangedSubview(textToolbar)
+        textToolbar.addArrangedSubview(pinyinBannerLabel)
         textToolbar.addArrangedSubview(candidateScrollView)
         textToolbar.addArrangedSubview(textToolsButton)
-        textKeyboardContainer.addArrangedSubview(quickCandidateRow)
         textKeyboardContainer.addArrangedSubview(keyRowsStack)
         rootStack.addArrangedSubview(textKeyboardContainer)
 
@@ -1304,6 +1276,7 @@ final class KeyboardViewController: UIInputViewController, UIScrollViewDelegate 
         }
         textKeyboardButtons.removeAll()
         letterButtonMap.removeAll()
+        lastLetterCasingSnapshot = nil
         textShiftButton = nil
 
         if isSymbolKeyboard {
@@ -1405,6 +1378,7 @@ final class KeyboardViewController: UIInputViewController, UIScrollViewDelegate 
                 letterButtonMap[key.lowercased()] = button
                 if let hint = digitHint(for: key) {
                     attachDigitHint(to: button, hint: hint)
+                    attachDigitHintSelection(to: button, hint: hint)
                 }
             }
             keyButtons.append(button)
@@ -1469,7 +1443,7 @@ final class KeyboardViewController: UIInputViewController, UIScrollViewDelegate 
         return button
     }
 
-    private func displayTitle(forTextKey key: String) -> String {
+    private func displayTitle(forTextKey key: String, autoCap: Bool? = nil) -> String {
         if textInputLanguage == .chinese,
            !isAlphabeticTextKey(key),
            chinesePunctuationStyle == .chinese {
@@ -1477,7 +1451,7 @@ final class KeyboardViewController: UIInputViewController, UIScrollViewDelegate 
         }
         if textInputLanguage == .english,
            isAlphabeticTextKey(key),
-           isTextShiftEnabled || shouldAutoCapitalizeNextEnglishLetter() {
+           isTextShiftEnabled || (autoCap ?? shouldAutoCapitalizeNextEnglishLetter()) {
             return key.uppercased()
         }
         return key
@@ -1512,6 +1486,29 @@ final class KeyboardViewController: UIInputViewController, UIScrollViewDelegate 
             label.topAnchor.constraint(equalTo: button.topAnchor, constant: 3),
             label.trailingAnchor.constraint(equalTo: button.trailingAnchor, constant: -5),
         ])
+    }
+
+    private func attachDigitHintSelection(to button: UIButton, hint: String) {
+        guard let value = Int(hint), value >= 1, value <= 9 else { return }
+        let recognizer = UILongPressGestureRecognizer(target: self, action: #selector(handleDigitHintLongPress(_:)))
+        recognizer.minimumPressDuration = 0.30
+        recognizer.cancelsTouchesInView = true
+        recognizer.name = "\(value - 1)"
+        button.addGestureRecognizer(recognizer)
+    }
+
+    @objc private func handleDigitHintLongPress(_ recognizer: UILongPressGestureRecognizer) {
+        guard recognizer.state == .began,
+              keyboardFocus == .text,
+              textInputLanguage == .chinese,
+              let raw = recognizer.name,
+              let index = Int(raw)
+        else { return }
+        let state = rimeInput.state()
+        guard state.isComposing, index < state.candidates.count else { return }
+        hideKeyPreview()
+        lightHaptic()
+        applyRimeState(rimeInput.selectCandidate(at: index))
     }
 
     private func addTextBottomRow() {
@@ -3592,8 +3589,16 @@ final class KeyboardViewController: UIInputViewController, UIScrollViewDelegate 
 
     private func refreshLetterCasing() {
         guard !isSymbolKeyboard else { return }
+        let autoCap = shouldAutoCapitalizeNextEnglishLetter()
+        let nextSnapshot = LetterCasingSnapshot(
+            shift: isTextShiftEnabled,
+            autoCap: autoCap,
+            language: textInputLanguage
+        )
+        guard nextSnapshot != lastLetterCasingSnapshot else { return }
+        lastLetterCasingSnapshot = nextSnapshot
         for (key, button) in letterButtonMap {
-            let title = displayTitle(forTextKey: key)
+            let title = displayTitle(forTextKey: key, autoCap: autoCap)
             configureTextKeyButton(button, title: title, image: nil, weight: .normal)
             button.accessibilityValue = title
         }
@@ -3766,7 +3771,6 @@ final class KeyboardViewController: UIInputViewController, UIScrollViewDelegate 
     private func renderRimeState(_ state: RimeKeyboardState) {
         compositionLabel.text = state.errorMessage ?? ""
         updatePinyinBanner(for: state)
-        updateQuickCandidateRow(for: state)
 
         resetCandidateStackForReuse()
 
@@ -3822,20 +3826,6 @@ final class KeyboardViewController: UIInputViewController, UIScrollViewDelegate 
         let composingText = state.isComposing ? (state.preedit.isEmpty ? state.input : state.preedit) : ""
         pinyinBannerLabel.text = composingText
         pinyinBannerLabel.isHidden = composingText.isEmpty
-    }
-
-    private func updateQuickCandidateRow(for state: RimeKeyboardState) {
-        let shouldShow = keyboardFocus == .text
-            && textInputLanguage == .chinese
-            && state.isComposing
-            && !state.candidates.isEmpty
-        quickCandidateRow.isHidden = !shouldShow
-        guard shouldShow else { return }
-        for (index, button) in quickCandidateButtons.enumerated() {
-            let hasCandidate = index < state.candidates.count
-            button.isEnabled = hasCandidate
-            button.alpha = hasCandidate ? 1 : 0.28
-        }
     }
 
     private func addCandidateSeparator() {
@@ -3964,10 +3954,6 @@ final class KeyboardViewController: UIInputViewController, UIScrollViewDelegate 
     }
 
     @objc private func candidateButtonTapped(_ sender: UIButton) {
-        applyRimeState(rimeInput.selectCandidate(at: sender.tag))
-    }
-
-    @objc private func quickCandidateButtonTapped(_ sender: UIButton) {
         applyRimeState(rimeInput.selectCandidate(at: sender.tag))
     }
 
@@ -4335,7 +4321,6 @@ final class KeyboardViewController: UIInputViewController, UIScrollViewDelegate 
             activeTrackpadSourceView = keyView
             textSpaceCursorStartX = location.x
             textTrackpadLastStepX = 0
-            textTrackpadLastStepY = 0
             if rimeInput.state().isComposing {
                 applyRimeState(rimeInput.commitComposition())
             }
@@ -4347,7 +4332,7 @@ final class KeyboardViewController: UIInputViewController, UIScrollViewDelegate 
             }
         case .changed:
             guard isTextSpaceCursorTracking else { return }
-            updateTrackpadCursorPosition(deltaX: location.x - textSpaceCursorStartX, deltaY: 0)
+            updateTrackpadCursorPosition(deltaX: location.x - textSpaceCursorStartX)
         case .ended, .cancelled, .failed:
             endTextSpaceCursorTracking(keyView)
         default:
@@ -4372,7 +4357,6 @@ final class KeyboardViewController: UIInputViewController, UIScrollViewDelegate 
         textTrackpadPanRecognizer.isEnabled = enabled
         if !enabled {
             textTrackpadLastStepX = 0
-            textTrackpadLastStepY = 0
         }
         for button in textKeyboardButtons {
             button.isUserInteractionEnabled = !enabled || button === activeTrackpadSourceView
@@ -4380,7 +4364,6 @@ final class KeyboardViewController: UIInputViewController, UIScrollViewDelegate 
         UIView.animate(withDuration: 0.10, delay: 0, options: [.beginFromCurrentState, .allowUserInteraction]) {
             self.keyRowsStack.alpha = enabled ? 0.25 : 1
             self.candidateScrollView.alpha = enabled ? 0.38 : 1
-            self.quickCandidateRow.alpha = enabled ? 0.28 : 1
         }
     }
 
@@ -4389,7 +4372,7 @@ final class KeyboardViewController: UIInputViewController, UIScrollViewDelegate 
         let translation = recognizer.translation(in: textKeyboardContainer)
         switch recognizer.state {
         case .changed:
-            updateTrackpadCursorPosition(deltaX: translation.x, deltaY: translation.y)
+            updateTrackpadCursorPosition(deltaX: translation.x)
         case .ended, .cancelled, .failed:
             if let source = activeTrackpadSourceView {
                 endTextSpaceCursorTracking(source)
@@ -4401,17 +4384,12 @@ final class KeyboardViewController: UIInputViewController, UIScrollViewDelegate 
         }
     }
 
-    private func updateTrackpadCursorPosition(deltaX: CGFloat, deltaY: CGFloat) {
+    private func updateTrackpadCursorPosition(deltaX: CGFloat) {
         let stepX = Int(deltaX / 8)
         let deltaStepX = stepX - textTrackpadLastStepX
         if deltaStepX != 0 {
             textDocumentProxy.adjustTextPosition(byCharacterOffset: deltaStepX)
             textTrackpadLastStepX = stepX
-        }
-
-        let stepY = Int(deltaY / 12)
-        if stepY != textTrackpadLastStepY {
-            textTrackpadLastStepY = stepY
         }
     }
 
