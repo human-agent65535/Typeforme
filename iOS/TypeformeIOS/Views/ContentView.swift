@@ -319,9 +319,9 @@ private struct RouteStatusBar: View {
     private var latencyDetail: String? {
         switch state.routeStatus.activeKind {
         case .local:
-            return state.routeStatus.localLatencyMs.map { "\($0)ms" }
+            return state.routeStatus.localLatencyMs.map { "RTT \($0)ms" }
         case .cloud:
-            return state.routeStatus.cloudLatencyMs.map { "\($0)ms" }
+            return state.routeStatus.cloudLatencyMs.map { "RTT \($0)ms" }
         case .unavailable:
             return nil
         }

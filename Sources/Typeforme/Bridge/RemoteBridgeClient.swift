@@ -361,9 +361,12 @@ struct RemoteBridgeClient {
         var request = URLRequest(url: url)
         request.httpMethod = method
         request.timeoutInterval = timeout
+        request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("gzip", forHTTPHeaderField: "Accept-Encoding")
+        request.setValue("no-store", forHTTPHeaderField: "Cache-Control")
+        BridgeClientIdentity.apply(to: &request)
         if let body {
             request.httpBody = body
             request.setValue(contentType ?? "application/octet-stream", forHTTPHeaderField: "Content-Type")

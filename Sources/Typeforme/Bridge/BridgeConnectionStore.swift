@@ -40,19 +40,63 @@ struct BridgeClientRequestActivity: Equatable, Sendable {
     let clientHost: String
     let clientPort: Int?
     let userAgent: String?
+    let clientIdentityID: String
+    let clientDisplayName: String?
+    let clientPlatform: String?
+    let clientBundleID: String?
+    let forwardedClientIP: String?
+    let cloudflareRayID: String?
     let statusCode: Int
     let occurredAt: Date
     let latencyMs: Int
     let appName: String?
     let bundleID: String?
 
+    init(
+        endpoint: BridgeRequestEndpoint,
+        clientHost: String,
+        clientPort: Int?,
+        userAgent: String?,
+        clientIdentityID: String,
+        statusCode: Int,
+        occurredAt: Date,
+        latencyMs: Int,
+        appName: String?,
+        bundleID: String?,
+        clientDisplayName: String? = nil,
+        clientPlatform: String? = nil,
+        clientBundleID: String? = nil,
+        forwardedClientIP: String? = nil,
+        cloudflareRayID: String? = nil
+    ) {
+        self.endpoint = endpoint
+        self.clientHost = clientHost
+        self.clientPort = clientPort
+        self.userAgent = userAgent
+        self.clientIdentityID = clientIdentityID
+        self.statusCode = statusCode
+        self.occurredAt = occurredAt
+        self.latencyMs = latencyMs
+        self.appName = appName
+        self.bundleID = bundleID
+        self.clientDisplayName = clientDisplayName
+        self.clientPlatform = clientPlatform
+        self.clientBundleID = clientBundleID
+        self.forwardedClientIP = forwardedClientIP
+        self.cloudflareRayID = cloudflareRayID
+    }
+
     var clientID: String {
-        let trimmed = clientHost.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? "unknown" : trimmed
+        Self.clean(clientIdentityID) ?? "invalid"
     }
 
     var succeeded: Bool {
         (200..<300).contains(statusCode)
+    }
+
+    private static func clean(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
     }
 }
 
@@ -61,6 +105,12 @@ struct BridgeClientActivityRecord: Identifiable, Equatable, Sendable {
     var host: String
     var lastPort: Int?
     var userAgent: String?
+    var clientIdentityID: String
+    var clientDisplayName: String?
+    var clientPlatform: String?
+    var clientBundleID: String?
+    var forwardedClientIP: String?
+    var cloudflareRayID: String?
     var appName: String?
     var bundleID: String?
     var firstSeenAt: Date
@@ -75,9 +125,15 @@ struct BridgeClientActivityRecord: Identifiable, Equatable, Sendable {
 
     init(activity: BridgeClientRequestActivity) {
         self.id = activity.clientID
-        self.host = activity.clientID
+        self.host = Self.clean(activity.clientHost) ?? "unknown"
         self.lastPort = activity.clientPort
         self.userAgent = Self.clean(activity.userAgent)
+        self.clientIdentityID = activity.clientID
+        self.clientDisplayName = Self.clean(activity.clientDisplayName)
+        self.clientPlatform = Self.clean(activity.clientPlatform)
+        self.clientBundleID = Self.clean(activity.clientBundleID)
+        self.forwardedClientIP = Self.clean(activity.forwardedClientIP)
+        self.cloudflareRayID = Self.clean(activity.cloudflareRayID)
         self.appName = Self.clean(activity.appName)
         self.bundleID = Self.clean(activity.bundleID)
         self.firstSeenAt = activity.occurredAt
@@ -92,9 +148,26 @@ struct BridgeClientActivityRecord: Identifiable, Equatable, Sendable {
     }
 
     mutating func record(_ activity: BridgeClientRequestActivity) {
+        host = Self.clean(activity.clientHost) ?? host
         lastPort = activity.clientPort ?? lastPort
         if let userAgent = Self.clean(activity.userAgent) {
             self.userAgent = userAgent
+        }
+        clientIdentityID = activity.clientID
+        if let clientDisplayName = Self.clean(activity.clientDisplayName) {
+            self.clientDisplayName = clientDisplayName
+        }
+        if let clientPlatform = Self.clean(activity.clientPlatform) {
+            self.clientPlatform = clientPlatform
+        }
+        if let clientBundleID = Self.clean(activity.clientBundleID) {
+            self.clientBundleID = clientBundleID
+        }
+        if let forwardedClientIP = Self.clean(activity.forwardedClientIP) {
+            self.forwardedClientIP = forwardedClientIP
+        }
+        if let cloudflareRayID = Self.clean(activity.cloudflareRayID) {
+            self.cloudflareRayID = cloudflareRayID
         }
         if let appName = Self.clean(activity.appName) {
             self.appName = appName
@@ -117,6 +190,10 @@ struct BridgeClientActivityRecord: Identifiable, Equatable, Sendable {
 
     func count(for endpoint: BridgeRequestEndpoint) -> Int {
         endpointCounts[endpoint, default: 0]
+    }
+
+    var usesCloudflare: Bool {
+        cloudflareRayID != nil
     }
 
     private static func clean(_ value: String?) -> String? {
@@ -188,7 +265,7 @@ struct BridgeConnectionAccumulator {
         BridgeConnectionSnapshot(
             clients: clientsByID.values.sorted {
                 if $0.lastSeenAt == $1.lastSeenAt {
-                    return $0.host < $1.host
+                    return ($0.clientDisplayName ?? $0.host) < ($1.clientDisplayName ?? $1.host)
                 }
                 return $0.lastSeenAt > $1.lastSeenAt
             },

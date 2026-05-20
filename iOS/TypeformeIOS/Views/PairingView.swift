@@ -363,7 +363,7 @@ private struct PairingRouteRow: View {
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(dotColor)
                 if let latencyMs {
-                    Text("\(latencyMs)ms")
+                    Text("RTT \(latencyMs)ms")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }

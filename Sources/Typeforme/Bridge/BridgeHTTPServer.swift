@@ -1,5 +1,6 @@
 import Foundation
 import Hummingbird
+import HTTPTypes
 import NIOCore
 
 private struct BridgeRequestContext: RequestContext, RemoteAddressRequestContext {
@@ -17,6 +18,16 @@ private struct BridgeRequestMetadata: Sendable {
     var bundleID: String?
 
     static let empty = BridgeRequestMetadata()
+}
+
+private extension HTTPField.Name {
+    static let typeformeClientID = Self(BridgeClientIdentityHeaders.id)!
+    static let typeformeClientName = Self(BridgeClientIdentityHeaders.name)!
+    static let typeformeClientPlatform = Self(BridgeClientIdentityHeaders.platform)!
+    static let typeformeClientBundleID = Self(BridgeClientIdentityHeaders.bundleID)!
+    static let cfConnectingIP = Self("CF-Connecting-IP")!
+    static let cfRay = Self("CF-Ray")!
+    static let xForwardedFor = Self("X-Forwarded-For")!
 }
 
 final class BridgeHTTPServer: @unchecked Sendable {
@@ -237,6 +248,9 @@ final class BridgeHTTPServer: @unchecked Sendable {
         guard isAuthorized(request) else {
             return emptyResponse(status: 404, reason: "Not Found")
         }
+        guard hasClientIdentity(request) else {
+            return missingClientIdentityResponse()
+        }
 
         do {
             let response = try await operation()
@@ -265,6 +279,9 @@ final class BridgeHTTPServer: @unchecked Sendable {
         let startedAt = Date()
         guard isAuthorized(request) else {
             return emptyResponse(status: 404, reason: "Not Found")
+        }
+        guard hasClientIdentity(request) else {
+            return missingClientIdentityResponse()
         }
 
         do {
@@ -314,18 +331,44 @@ final class BridgeHTTPServer: @unchecked Sendable {
     ) {
         let finishedAt = Date()
         let latencyMs = max(0, Int(finishedAt.timeIntervalSince(startedAt) * 1000))
+        guard let clientIdentityID = cleanHeader(request.headers[.typeformeClientID], maxLength: 96) else {
+            return
+        }
         let activity = BridgeClientRequestActivity(
             endpoint: endpoint,
             clientHost: context.remoteAddress?.ipAddress ?? "unknown",
             clientPort: context.remoteAddress?.port,
             userAgent: request.headers[.userAgent],
+            clientIdentityID: clientIdentityID,
             statusCode: statusCode,
             occurredAt: finishedAt,
             latencyMs: latencyMs,
             appName: metadata.appName,
-            bundleID: metadata.bundleID
+            bundleID: metadata.bundleID,
+            clientDisplayName: cleanHeader(request.headers[.typeformeClientName], maxLength: 80),
+            clientPlatform: cleanHeader(request.headers[.typeformeClientPlatform], maxLength: 32),
+            clientBundleID: cleanHeader(request.headers[.typeformeClientBundleID], maxLength: 120),
+            forwardedClientIP: forwardedClientIP(from: request),
+            cloudflareRayID: cleanHeader(request.headers[.cfRay], maxLength: 80)
         )
         BridgeConnectionStore.shared.record(activity)
+    }
+
+    private static func forwardedClientIP(from request: Request) -> String? {
+        if let ip = cleanHeader(request.headers[.cfConnectingIP], maxLength: 80) {
+            return ip
+        }
+        let firstForwardedValue = request.headers[.xForwardedFor]?
+            .split(separator: ",", maxSplits: 1)
+            .first
+            .map(String.init)
+        return cleanHeader(firstForwardedValue, maxLength: 80)
+    }
+
+    private static func cleanHeader(_ value: String?, maxLength: Int) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !trimmed.isEmpty else { return nil }
+        return String(trimmed.prefix(maxLength))
     }
 
     private static func isAuthorized(_ request: Request) -> Bool {
@@ -333,6 +376,10 @@ final class BridgeHTTPServer: @unchecked Sendable {
         let auth = request.headers[.authorization] ?? ""
         guard auth.hasPrefix("Bearer ") else { return false }
         return constantTimeEquals(String(auth.dropFirst(7)), token)
+    }
+
+    private static func hasClientIdentity(_ request: Request) -> Bool {
+        cleanHeader(request.headers[.typeformeClientID], maxLength: 96) != nil
     }
 
     private static func decodeJSON<T: Decodable>(_ type: T.Type, from request: Request) async throws -> T {
@@ -351,6 +398,7 @@ final class BridgeHTTPServer: @unchecked Sendable {
         }
         var headers = HTTPFields()
         headers[.contentType] = "application/json; charset=utf-8"
+        headers[.cacheControl] = "no-store"
         return Response(
             status: HTTPResponse.Status(code: status, reasonPhrase: reason),
             headers: headers,
@@ -380,6 +428,10 @@ final class BridgeHTTPServer: @unchecked Sendable {
 
     private static func errorResponse(_ status: Int, _ reason: String, _ message: String) -> Response {
         jsonResponse(BridgeErrorResponse(error: message), status: status, reason: reason)
+    }
+
+    private static func missingClientIdentityResponse() -> Response {
+        errorResponse(400, "Bad Request", "Missing Typeforme client identity")
     }
 
     private static func emptyResponse(status: Int, reason: String) -> Response {

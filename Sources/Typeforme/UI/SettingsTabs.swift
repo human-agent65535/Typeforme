@@ -931,7 +931,7 @@ private struct ClientRouteRow: View {
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(dotColor)
                 if let latencyMs {
-                    Text("\(latencyMs)ms")
+                    Text("RTT \(latencyMs)ms")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
@@ -2898,8 +2898,8 @@ private struct BridgeClientActivityHeader: View {
                 .frame(minWidth: 120, maxWidth: .infinity, alignment: .leading)
             Text("Last Request")
                 .frame(width: 116, alignment: .leading)
-            Text("Traffic")
-                .frame(width: 88, alignment: .trailing)
+            Text("Requests")
+                .frame(width: 104, alignment: .trailing)
             Text("State")
                 .frame(width: 58, alignment: .trailing)
         }
@@ -2942,11 +2942,11 @@ private struct BridgeClientActivityRow: View {
             VStack(alignment: .trailing, spacing: 3) {
                 Text("\(client.requestCount)")
                     .font(.caption.monospacedDigit().weight(.medium))
-                Text("\(client.lastLatencyMs) ms")
+                Text("Origin \(client.lastLatencyMs) ms")
                     .font(.caption2.monospacedDigit())
                     .foregroundStyle(.secondary)
             }
-            .frame(width: 88, alignment: .trailing)
+            .frame(width: 104, alignment: .trailing)
 
             BridgeActivityStatusBadge(label: statusLabel, color: statusColor)
                 .frame(width: 58, alignment: .trailing)
@@ -2956,15 +2956,24 @@ private struct BridgeClientActivityRow: View {
     }
 
     private var title: String {
-        if let appName = client.appName, !appName.isEmpty {
-            return "\(appName) - \(client.host)"
+        if let name = client.clientDisplayName, !name.isEmpty {
+            return name
+        }
+        if let platform = client.clientPlatform, !platform.isEmpty {
+            return "Typeforme \(platform)"
         }
         return client.host
     }
 
     private var subtitle: String {
-        if let bundleID = client.bundleID, !bundleID.isEmpty {
+        if client.usesCloudflare, let forwardedClientIP = client.forwardedClientIP {
+            return "Cloudflare - \(forwardedClientIP)"
+        }
+        if let bundleID = client.clientBundleID, !bundleID.isEmpty {
             return bundleID
+        }
+        if !client.clientIdentityID.isEmpty {
+            return client.clientIdentityID
         }
         if let userAgent = client.userAgent, !userAgent.isEmpty {
             return userAgent

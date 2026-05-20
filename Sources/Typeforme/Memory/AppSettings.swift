@@ -74,6 +74,7 @@ enum AppSettings {
         static let clientCloudBridgeURL = "processing.client.cloudBridgeURL"
         static let clientBridgeToken   = "processing.client.bridgeToken"
         static let clientLanguageIDs   = "processing.client.languages"
+        static let clientIdentityID    = "processing.client.identityID"
         static let serverSettingsSnapshot = "processing.server.settingsSnapshot"
         static let clientSettingsSnapshot = "processing.client.settingsSnapshot"
 
@@ -435,6 +436,9 @@ enum AppSettings {
     static var clientBridgeToken: String {
         ud.string(forKey: Keys.clientBridgeToken)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     }
+    static var clientIdentityID: String {
+        ensureClientIdentityID()
+    }
     static var clientLanguageIDs: [String] {
         ASRLanguageSelection.parse(
             ud.string(forKey: Keys.clientLanguageIDs) ?? ASRLanguageSelection.defaultRawValue
@@ -484,6 +488,18 @@ enum AppSettings {
 
     private static func newBridgeAuthToken() -> String {
         newLocalToken()
+    }
+
+    @discardableResult
+    static func ensureClientIdentityID() -> String {
+        if let existing = ud.string(forKey: Keys.clientIdentityID)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !existing.isEmpty {
+            return existing
+        }
+        let identity = "mac-\(UUID().uuidString.lowercased())"
+        ud.set(identity, forKey: Keys.clientIdentityID)
+        return identity
     }
 
     private static func newLocalToken() -> String {

@@ -57,6 +57,7 @@ enum AppPermissions {
         let name: String
         let url: URL
         let bearerToken: String?
+        let includeBridgeIdentity: Bool
     }
 
     static var microphoneStatus: MicrophonePermissionStatus {
@@ -118,6 +119,9 @@ enum AppPermissions {
         request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
         if let bearerToken = target.bearerToken, !bearerToken.isEmpty {
             request.setValue("Bearer \(bearerToken)", forHTTPHeaderField: "Authorization")
+        }
+        if target.includeBridgeIdentity {
+            BridgeClientIdentity.apply(to: &request)
         }
 
         do {
@@ -194,7 +198,12 @@ enum AppPermissions {
         guard let endpoint = try? LMStudioCorrectorService.modelsEndpoint(baseURL: baseURL) else {
             return nil
         }
-        return LocalNetworkProbeTarget(name: "LM Studio", url: endpoint, bearerToken: AppSettings.lmStudioAPIKey)
+        return LocalNetworkProbeTarget(
+            name: "LM Studio",
+            url: endpoint,
+            bearerToken: AppSettings.lmStudioAPIKey,
+            includeBridgeIdentity: false
+        )
     }
 
     private static func bridgeProbeTarget(baseURL: String, token: String) -> LocalNetworkProbeTarget? {
@@ -205,7 +214,12 @@ enum AppPermissions {
             normalized.removeLast()
         }
         guard let url = URL(string: normalized + "/v1/health") else { return nil }
-        return LocalNetworkProbeTarget(name: "Bridge", url: url, bearerToken: token)
+        return LocalNetworkProbeTarget(
+            name: "Bridge",
+            url: url,
+            bearerToken: token,
+            includeBridgeIdentity: true
+        )
     }
 
     private static func isLocalNetworkHost(_ host: String?) -> Bool {
