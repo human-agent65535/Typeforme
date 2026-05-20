@@ -3,9 +3,11 @@
 // 状态栏
 "Setup" = "需要设置";
 "Opening" = "打开中";
+"Preparing" = "准备中";
 "Ready" = "就绪";
 "Recording" = "录音中";
 "Sending" = "处理中";
+"Rewriting" = "改写中";
 "Inserted" = "已插入";
 "Issue" = "异常";
 
@@ -34,6 +36,7 @@
 // 可访问性
 "Dictate" = "听写";
 "Open Typeforme" = "打开 Typeforme";
+"Enable Full Access" = "允许完全访问";
 "Command selected text" = "对选中文本下达指令";
 "Cancel recording" = "取消录音";
 "Paste last result" = "粘贴上次结果";

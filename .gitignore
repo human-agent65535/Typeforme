@@ -41,6 +41,7 @@ dist/
 # Bundled helper binaries — not source, dropped in by scripts/build-app.sh
 vendor/
 Resources/llama/llama-server-arm64
+iOS/TypeformeKeyboard/RimeSharedSupport/user.yaml
 
 # Local config
 .env

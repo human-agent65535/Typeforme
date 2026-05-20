@@ -56,6 +56,7 @@ final class StandbyKeeper {
     }
 
     func stop() {
+        let wasActive = isActive
         if player.isPlaying {
             player.stop()
         }
@@ -63,18 +64,17 @@ final class StandbyKeeper {
             engine.stop()
         }
         isActive = false
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        if wasActive {
+            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        }
     }
 
     private func setupAndPlay(format: AVAudioFormat) throws {
         let session = AVAudioSession.sharedInstance()
-        // Keep-alive playback uses the mixed standby options. Actual
-        // recording switches to the non-mixing variant so background media
-        // pauses only while the mic is intentionally capturing.
         try session.setCategory(
-            IOSRecordingAudioSession.category,
-            mode: IOSRecordingAudioSession.mode,
-            options: IOSRecordingAudioSession.options
+            .playback,
+            mode: .default,
+            options: [.mixWithOthers]
         )
         try session.setActive(true)
 

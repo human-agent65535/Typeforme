@@ -140,10 +140,12 @@ final class AppState: ObservableObject {
     private static let keyboardDefaultsPasteboardName = UIPasteboard.Name("com.typeforme.keyboard.defaults")
     private static let returnTraceLogName = "typeforme-return-trace.log"
     private static let recordingTailBufferNanoseconds: UInt64 = 280_000_000
-    /// Keeps an input audio session alive while keyboard standby is on. iOS
-    /// keyboard extensions cannot open the microphone, so the host app owns a
-    /// persistent AVAudioEngine input tap and the keyboard only toggles file
-    /// capture through Darwin notifications.
+    /// Keeps the host process reachable when microphone permission has not
+    /// been granted yet. It must not replace the input standby session once
+    /// microphone access is available.
+    private let standbyKeeper = StandbyKeeper()
+    /// Owns the pre-warmed host input session used by keyboard dictation.
+    /// iOS keyboard extensions cannot open the microphone directly.
     private let keyboardAudioSession = StandbyAudioSession()
     private var hostHoldReleasePending = false
     private var hostRecordingUsesKeyboardAudioSession = false
@@ -184,6 +186,12 @@ final class AppState: ObservableObject {
     private struct RestyleSource {
         let sessionID: String?
         let rawTranscript: String?
+    }
+
+    private enum MicrophonePermissionRequestResult: Equatable {
+        case granted
+        case denied
+        case unavailable
     }
 
     var isBusy: Bool {
@@ -468,6 +476,10 @@ final class AppState: ObservableObject {
             setFailure("Pair the Mac Bridge first.")
             return
         }
+        guard await ensureMicrophonePermissionForUserAction() else {
+            isHostRecordStarting = false
+            return
+        }
         guard phase.allowsRecordingStart else { return }
 
         hostHoldReleasePending = false
@@ -518,6 +530,7 @@ final class AppState: ObservableObject {
             setFailure("Pair the Mac Bridge first.")
             return
         }
+        guard await ensureMicrophonePermissionForUserAction() else { return }
         guard routeStatus.activeURL != nil else {
             setFailure("Mac Bridge is offline. Start the Mac app or Server, then tap refresh.")
             return
@@ -539,6 +552,7 @@ final class AppState: ObservableObject {
 
     private func startHostRecordingCapture() async throws {
         keyboardCaptureStartedFromKeyboard = false
+        standbyKeeper.stop()
         if keyboardAudioSession.isActive, !keyboardAudioSession.isRecording {
             _ = try await keyboardAudioSession.beginRecording()
             hostRecordingUsesKeyboardAudioSession = true
@@ -896,17 +910,41 @@ final class AppState: ObservableObject {
         appLog.notice("handleOpenURL: action=\(action, privacy: .public), source=\(source ?? "nil", privacy: .public)")
         if action == "record" {
             if source == "keyboard" {
-                await setKeyboardStandby(true)
-                await startKeyboardRecording(commandID: nil, allowSessionStart: true)
+                let didPrepareKeyboardSession = await prepareKeyboardMicrophoneFromHostOpen()
+                if didPrepareKeyboardSession {
+                    await startKeyboardRecording(commandID: nil, allowSessionStart: true, requestMicrophoneIfNeeded: true)
+                } else {
+                    shouldReturnToKeyboard = false
+                }
             } else {
                 await toggleRecording()
             }
+        } else if action == "microphone" {
+            let didPrepareKeyboardSession = await prepareKeyboardMicrophoneFromHostOpen()
+            if !didPrepareKeyboardSession {
+                shouldReturnToKeyboard = false
+            }
         } else if action == "standby" {
-            await setKeyboardStandby(true)
+            let didPrepareKeyboardSession = await setKeyboardStandby(
+                true,
+                requestMicrophoneIfNeeded: source == "keyboard"
+            )
+            if source == "keyboard", !didPrepareKeyboardSession {
+                shouldReturnToKeyboard = false
+                showKeyboardMicrophoneDeniedFeedbackIfNeeded()
+            }
         }
         if shouldReturnToKeyboard {
             await returnToPreviousAppSoon(bundleID: resolvedReturnBundleID)
         }
+    }
+
+    private func prepareKeyboardMicrophoneFromHostOpen() async -> Bool {
+        let didPrepareKeyboardSession = await setKeyboardStandby(true, requestMicrophoneIfNeeded: true)
+        if !didPrepareKeyboardSession {
+            showKeyboardMicrophoneDeniedFeedbackIfNeeded()
+        }
+        return didPrepareKeyboardSession
     }
 
     private func waitForInitialRenderOpportunity() async {
@@ -923,34 +961,83 @@ final class AppState: ObservableObject {
         await task.value
     }
 
-    func setKeyboardStandby(_ enabled: Bool) async {
+    @discardableResult
+    func setKeyboardStandby(_ enabled: Bool, requestMicrophoneIfNeeded: Bool = false) async -> Bool {
         keyboardStandbyEnabled = enabled
         configureKeyboardServer()
 
         if enabled {
             do {
-                try await keyboardAudioSession.start()
                 try keyboardServer.start()
-                publishKeyboardStatus(.standby, message: "Ready")
+                let isInputReady = try await prepareKeyboardInputStandby(
+                    requestMicrophoneIfNeeded: requestMicrophoneIfNeeded
+                )
+                if isInputReady {
+                    publishKeyboardStatus(.standby, message: "Ready")
+                    KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.sessionStarted)
+                } else {
+                    startSilentStandbyKeeperIfNeeded()
+                    publishKeyboardStatus(.idle, message: keyboardMicrophonePreparationMessage)
+                }
                 scheduleHostAudioSessionExpiry()
+                return isInputReady
             } catch {
-                errorMessage = "Keyboard standby unavailable: \(error.localizedDescription)"
+                errorMessage = "Keyboard bridge unavailable: \(error.localizedDescription)"
                 publishKeyboardStatus(.error, message: error.localizedDescription)
+                return false
             }
         } else {
             hostAudioSessionExpiryTask?.cancel()
             hostAudioSessionExpiryTask = nil
             keyboardServer.stop()
+            standbyKeeper.stop()
             keyboardAudioSession.stop()
             publishKeyboardStatus(.idle)
+            return false
         }
+    }
+
+    private var isKeyboardHostSessionActive: Bool {
+        standbyKeeper.isActive || keyboardAudioSession.isActive
+    }
+
+    private func prepareKeyboardInputStandby(requestMicrophoneIfNeeded: Bool) async throws -> Bool {
+        if keyboardAudioSession.isActive {
+            standbyKeeper.stop()
+            return true
+        }
+
+        switch AVAudioApplication.shared.recordPermission {
+        case .granted:
+            standbyKeeper.stop()
+            try await keyboardAudioSession.start()
+            return true
+        case .undetermined:
+            guard requestMicrophoneIfNeeded else { return false }
+            guard await requestMicrophonePermission() == .granted else { return false }
+            standbyKeeper.stop()
+            try await keyboardAudioSession.start()
+            return true
+        case .denied:
+            if requestMicrophoneIfNeeded {
+                await openAppSettingsForMicrophone()
+            }
+            return false
+        @unknown default:
+            return false
+        }
+    }
+
+    private func startSilentStandbyKeeperIfNeeded() {
+        guard !keyboardAudioSession.isActive else { return }
+        standbyKeeper.start()
     }
 
     private func scheduleHostAudioSessionExpiry() {
         hostAudioSessionExpiryTask?.cancel()
         hostAudioSessionExpiryTask = nil
         guard keyboardStandbyEnabled,
-              keyboardAudioSession.isActive,
+              isKeyboardHostSessionActive,
               let seconds = hostAudioSessionLength.seconds
         else { return }
 
@@ -962,7 +1049,7 @@ final class AppState: ObservableObject {
     }
 
     private func expireHostAudioSessionIfIdle() {
-        guard keyboardStandbyEnabled, keyboardAudioSession.isActive else { return }
+        guard keyboardStandbyEnabled, isKeyboardHostSessionActive else { return }
         guard !keyboardAudioSession.isRecording,
               !recorder.isRecording,
               !isHostRecordStarting,
@@ -972,7 +1059,10 @@ final class AppState: ObservableObject {
             return
         }
         keyboardServer.stop()
-        keyboardAudioSession.stop()
+        standbyKeeper.stop()
+        if keyboardAudioSession.isActive {
+            keyboardAudioSession.stop()
+        }
         publishKeyboardStatus(.idle, message: "Host audio session expired")
     }
 
@@ -1002,12 +1092,67 @@ final class AppState: ObservableObject {
         }
     }
 
-    private func requestMicrophonePermission() async -> Bool {
-        await withCheckedContinuation { continuation in
+    private func requestMicrophonePermission() async -> MicrophonePermissionRequestResult {
+        guard await waitUntilApplicationIsActive() else { return .unavailable }
+        let granted = await withCheckedContinuation { continuation in
             AVAudioApplication.requestRecordPermission { granted in
                 continuation.resume(returning: granted)
             }
         }
+        return granted ? .granted : .denied
+    }
+
+    private func ensureMicrophonePermissionForUserAction() async -> Bool {
+        switch AVAudioApplication.shared.recordPermission {
+        case .granted:
+            return true
+        case .undetermined:
+            switch await requestMicrophonePermission() {
+            case .granted:
+                return true
+            case .denied:
+                setFailure("Microphone permission is required.")
+                return false
+            case .unavailable:
+                return false
+            }
+        case .denied:
+            setFailure("Microphone permission is required. Enable it in Settings.")
+            await openAppSettingsForMicrophone()
+            return false
+        @unknown default:
+            setFailure("Microphone permission is required.")
+            return false
+        }
+    }
+
+    private func waitUntilApplicationIsActive(timeout: TimeInterval = 2.0) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while UIApplication.shared.applicationState != .active {
+            guard Date() < deadline else { return false }
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        return true
+    }
+
+    @discardableResult
+    private func showKeyboardMicrophoneDeniedFeedbackIfNeeded() -> Bool {
+        guard AVAudioApplication.shared.recordPermission == .denied else { return false }
+        showTransient("Microphone permission is required.")
+        return true
+    }
+
+    private var keyboardMicrophonePreparationMessage: String {
+        AVAudioApplication.shared.recordPermission == .denied
+            ? "Microphone permission is required."
+            : "Open Typeforme to prepare dictation."
+    }
+
+    private func openAppSettingsForMicrophone() async {
+        guard await waitUntilApplicationIsActive() else { return }
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+        _ = await UIApplication.shared.open(url)
     }
 
     private func resolvedReturnBundleID(
@@ -1164,7 +1309,7 @@ final class AppState: ObservableObject {
                     self.activeKeyboardTextEditContext = nil
                     self.activeKeyboardDictationContext = nil
                     self.keyboardCaptureStartedFromKeyboard = true
-                    await self.startKeyboardRecording(commandID: nil, allowSessionStart: false)
+                    await self.startKeyboardRecording(commandID: nil, allowSessionStart: true)
                 }
             },
             KeyboardDarwinBridge.observe(KeyboardDarwinNotificationName.requestStopDictation) { [weak self] in
@@ -1219,7 +1364,7 @@ final class AppState: ObservableObject {
             activeKeyboardTextEditContext = command.textEditContext
             activeKeyboardDictationContext = command.dictationContext
             keyboardCaptureStartedFromKeyboard = true
-            await startKeyboardRecording(commandID: command.id, allowSessionStart: false)
+            await startKeyboardRecording(commandID: command.id, allowSessionStart: true)
         case .stop:
             await stopAndSend(keyboardCommandID: command.id)
         case .cancel:
@@ -1317,7 +1462,11 @@ final class AppState: ObservableObject {
         }
     }
 
-    private func startKeyboardRecording(commandID: String?, allowSessionStart: Bool) async {
+    private func startKeyboardRecording(
+        commandID: String?,
+        allowSessionStart: Bool,
+        requestMicrophoneIfNeeded: Bool = false
+    ) async {
         if keyboardAudioSession.isRecording {
             keyboardCaptureStartedFromKeyboard = true
             publishKeyboardStatus(.recording, commandID: commandID, message: "Recording")
@@ -1333,7 +1482,17 @@ final class AppState: ObservableObject {
                 return
             }
             do {
-                try await keyboardAudioSession.start()
+                let isInputReady = try await prepareKeyboardInputStandby(
+                    requestMicrophoneIfNeeded: requestMicrophoneIfNeeded
+                )
+                guard isInputReady else {
+                    keyboardCaptureStartedFromKeyboard = false
+                    resetCorrectionModeToDefault()
+                    startSilentStandbyKeeperIfNeeded()
+                    publishKeyboardStatus(.idle, commandID: commandID, message: keyboardMicrophonePreparationMessage)
+                    KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.dictationStopped)
+                    return
+                }
                 scheduleHostAudioSessionExpiry()
             } catch {
                 keyboardCaptureStartedFromKeyboard = false
@@ -1368,9 +1527,15 @@ final class AppState: ObservableObject {
         guard !keyboardAudioSession.isRecording else { return }
         guard !isHostRecordStarting, !phase.isBusy else { return }
         do {
-            try await keyboardAudioSession.start()
             try keyboardServer.start()
-            publishKeyboardStatus(.standby, message: "Ready")
+            let isInputReady = try await prepareKeyboardInputStandby(requestMicrophoneIfNeeded: false)
+            if isInputReady {
+                publishKeyboardStatus(.standby, message: "Ready")
+                KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.sessionStarted)
+            } else {
+                startSilentStandbyKeeperIfNeeded()
+                publishKeyboardStatus(.idle, message: keyboardMicrophonePreparationMessage)
+            }
             scheduleHostAudioSessionExpiry()
         } catch {
             // Don't touch `phase` here — this tail runs after every

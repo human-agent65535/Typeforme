@@ -3,22 +3,62 @@
 # AppIcon and bundled helper binaries when present.
 #
 # Usage:
-#   scripts/build-app.sh [debug|release]      # default: debug
-#   IDENTITY="Developer ID Application: ..." scripts/build-app.sh release
+#   scripts/build-app.sh [debug|release] [--install|--deploy]  # default: debug
+#   INSTALL_DIR=/Applications scripts/build-app.sh debug --install
+#   IDENTITY="Developer ID Application: ..." scripts/build-app.sh release --install
 #
 # Adhoc signing (default) is fine for local-only use on this machine.
 # Pass IDENTITY=... to sign for distribution / notarization.
 set -euo pipefail
 
-CONFIG="${1:-debug}"
+CONFIG="debug"
+INSTALL_APP=0
+LAUNCH_AFTER_INSTALL=0
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP_NAME="Typeforme"
 BINARY_NAME="Typeforme"
 SCHEME="Typeforme"
 APP_DIR="$ROOT/dist/${APP_NAME}.app"
+INSTALL_DIR="${INSTALL_DIR:-/Applications}"
 BIN_DIR="$APP_DIR/Contents/MacOS"
 RES_DIR="$APP_DIR/Contents/Resources"
 LLAMA_DIR="$RES_DIR/llama"
+
+usage() {
+    cat <<EOF
+Usage:
+  scripts/build-app.sh [debug|release] [--install|--deploy] [--launch]
+
+Environment:
+  IDENTITY=...     Codesigning identity. Defaults to Typeforme Local Dev or adhoc.
+  INSTALL_DIR=...  Install destination directory. Defaults to /Applications.
+EOF
+}
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        debug|release)
+            CONFIG="$1"
+            ;;
+        --install|--deploy)
+            INSTALL_APP=1
+            ;;
+        --launch)
+            INSTALL_APP=1
+            LAUNCH_AFTER_INSTALL=1
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "unknown argument: $1" >&2
+            usage >&2
+            exit 1
+            ;;
+    esac
+    shift
+done
 
 if [ -z "${DEVELOPER_DIR:-}" ] && [ -d /Applications/Xcode.app/Contents/Developer ]; then
     export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
@@ -41,6 +81,50 @@ case "$CONFIG" in
     debug|release) ;;
     *) echo "config must be debug|release, got: $CONFIG" >&2; exit 1 ;;
 esac
+
+wait_for_installed_app_to_exit() {
+    local installed_app="$1"
+    local pattern="$installed_app/Contents/"
+    if ! pgrep -f "$pattern" >/dev/null 2>&1; then
+        return 0
+    fi
+
+    echo "stopping running $APP_NAME from $installed_app"
+    osascript -e "tell application \"$APP_NAME\" to quit" >/dev/null 2>&1 || true
+
+    for _ in $(seq 1 40); do
+        if ! pgrep -f "$pattern" >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 0.25
+    done
+
+    echo "error: $APP_NAME is still running from $installed_app; quit it and rerun with --install" >&2
+    return 1
+}
+
+install_app_bundle() {
+    local install_dir="$1"
+    local installed_app="$install_dir/${APP_NAME}.app"
+    local installing_app="$install_dir/.${APP_NAME}.app.installing"
+
+    mkdir -p "$install_dir"
+    wait_for_installed_app_to_exit "$installed_app"
+
+    rm -rf "$installing_app"
+    ditto "$APP_DIR" "$installing_app"
+    codesign --verify --deep --strict --verbose=1 "$installing_app" 2>&1 | sed 's/^/install verify: /'
+
+    rm -rf "$installed_app"
+    mv "$installing_app" "$installed_app"
+    codesign --verify --deep --strict --verbose=1 "$installed_app" 2>&1 | sed 's/^/installed verify: /'
+
+    echo "installed: $installed_app"
+    if [ "$LAUNCH_AFTER_INSTALL" -eq 1 ]; then
+        open "$installed_app"
+        echo "launched: $installed_app"
+    fi
+}
 
 is_system_dep() {
     local dep="$1"
@@ -223,4 +307,8 @@ if [ -x "$LLAMA_DIR/llama-server-arm64" ]; then
     echo "       (with llama-server-arm64)"
 else
     echo "       (no llama-server-arm64 — drop one in vendor/ and rebuild for embedded LLM)"
+fi
+
+if [ "$INSTALL_APP" -eq 1 ]; then
+    install_app_bundle "$INSTALL_DIR"
 fi

@@ -44,6 +44,7 @@ scripts/vendor-llama.sh <path-to-llama.cpp/build/bin>
 
 ```sh
 scripts/build-app.sh debug
+scripts/build-app.sh debug --install
 scripts/build-app.sh release
 IDENTITY="Developer ID Application: ..." scripts/build-app.sh release
 ```
@@ -57,6 +58,7 @@ scripts/run-tests.sh
 构建并安装 iOS app 和键盘扩展到已配对 iPhone：
 
 ```sh
+scripts/build-rime-ios-data.sh
 scripts/deploy-ios.sh
 ```
 
@@ -203,6 +205,14 @@ swift scripts/benchmark-correctors.swift
 - 正常日志记录 provider、延迟、长度、hash 和错误，不包含正文。
 - Debug mode 会保存原始音频、转写结果和整理结果，用于问题复现。
 - Bridge token、prompt、词典和模型都在本机用户目录下。
+
+## 授权
+
+Typeforme 自有代码以 Apache License 2.0 授权，详见 `LICENSE`。
+
+第三方依赖、可选本地运行时、模型文件和用户提供的资产适用各自的上游授权。当前第三方授权摘要见 `THIRD_PARTY_NOTICES.md`。
+
+Rime 集成将基于 `librime`（BSD-3-Clause）和 Typeforme 自有 wrapper 代码。当前 Apache-2.0 授权模型下，Typeforme 不包含 Squirrel、ibus-rime 等 GPL-3.0 Rime 前端代码。若分发具有独立授权的 Rime schema 或数据包，应作为第三方资产随包提供上游授权文本和归属声明。
 
 ## 已知限制
 
