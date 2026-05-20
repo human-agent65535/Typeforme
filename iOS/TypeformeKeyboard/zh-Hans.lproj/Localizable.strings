@@ -45,11 +45,15 @@
 "Double tap to choose another mode" = "双击切换模式";
 "Show keyboard" = "显示键盘";
 "Show voice input" = "显示语音输入";
+"Keyboard tools" = "键盘工具";
+"Stop dictation" = "停止听写";
+"Voice keyboard" = "语音键盘";
 "Shift" = "Shift";
 "Shift on" = "Shift 已开启";
 "Chinese active, switch to English" = "中文已激活,切换到英文";
 "English active, switch to Chinese" = "英文已激活,切换到中文";
 "Next keyboard" = "切换到下一个键盘";
 "Chinese preparing…" = "中文准备中…";
+"Select candidate %d" = "选择第 %d 个候选";
 "Previous candidates" = "上一页候选";
 "Next candidates" = "下一页候选";

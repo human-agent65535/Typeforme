@@ -45,11 +45,15 @@
 "Double tap to choose another mode" = "Double tap to choose another mode";
 "Show keyboard" = "Show keyboard";
 "Show voice input" = "Show voice input";
+"Keyboard tools" = "Keyboard tools";
+"Stop dictation" = "Stop dictation";
+"Voice keyboard" = "Voice keyboard";
 "Shift" = "Shift";
 "Shift on" = "Shift on";
 "Chinese active, switch to English" = "Chinese active, switch to English";
 "English active, switch to Chinese" = "English active, switch to Chinese";
 "Next keyboard" = "Next keyboard";
 "Chinese preparing…" = "Chinese preparing…";
+"Select candidate %d" = "Select candidate %d";
 "Previous candidates" = "Previous candidates";
 "Next candidates" = "Next candidates";
