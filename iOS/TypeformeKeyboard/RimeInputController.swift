@@ -58,6 +58,9 @@ final class RimeInputController {
         }
 
         do {
+            // The keyboard extension must only open prebuilt Rime data. Do not
+            // run librime maintenance or deployment synchronously here: first
+            // launch has to stay inside the extension watchdog budget.
             let userDataURL = try ensureUserDataDirectory()
             let traits = IRimeTraits()
             traits.sharedDataDir = sharedSupportURL.path
@@ -104,6 +107,12 @@ final class RimeInputController {
     func setAsciiMode(_ enabled: Bool) -> RimeKeyboardState {
         guard startIfNeeded() else { return state() }
         _ = api.setOption(session, andOption: "ascii_mode", andValue: enabled)
+        return state()
+    }
+
+    func setAsciiPunctuation(_ enabled: Bool) -> RimeKeyboardState {
+        guard startIfNeeded() else { return state() }
+        _ = api.setOption(session, andOption: "ascii_punct", andValue: enabled)
         return state()
     }
 
@@ -198,6 +207,10 @@ final class RimeInputController {
     }
 
     private func ensureUserDataDirectory() throws -> URL {
+        // This target currently has no App Group entitlement. A guessed group
+        // identifier will silently fail on real provisioning profiles, so keep
+        // Rime user data in the extension sandbox until host+keyboard entitlements
+        // define an explicit shared container.
         let baseURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
         let userDataURL = baseURL

@@ -43,3 +43,13 @@
 "Voice level" = "Voice level";
 "Correction mode: %@" = "Correction mode: %@";
 "Double tap to choose another mode" = "Double tap to choose another mode";
+"Show keyboard" = "Show keyboard";
+"Show voice input" = "Show voice input";
+"Shift" = "Shift";
+"Shift on" = "Shift on";
+"Chinese active, switch to English" = "Chinese active, switch to English";
+"English active, switch to Chinese" = "English active, switch to Chinese";
+"Next keyboard" = "Next keyboard";
+"Chinese preparing…" = "Chinese preparing…";
+"Previous candidates" = "Previous candidates";
+"Next candidates" = "Next candidates";

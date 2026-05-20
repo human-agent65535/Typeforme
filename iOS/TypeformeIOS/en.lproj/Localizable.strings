@@ -19,6 +19,20 @@
 // Test dictation section
 "Test dictation" = "Test dictation";
 
+// Keyboard input settings
+"Keyboard Input" = "Keyboard Input";
+"Keyboard Settings" = "Keyboard Settings";
+"Typing" = "Typing";
+"Audio" = "Audio";
+"Host audio session" = "Host audio session";
+"Auto-Capitalization" = "Auto-Capitalization";
+"Character Preview" = "Character Preview";
+"Chinese punctuation" = "Chinese punctuation";
+"Chinese" = "Chinese";
+"English" = "English";
+"These settings apply to the Typeforme keyboard after Full Access is enabled." = "These settings apply to the Typeforme keyboard after Full Access is enabled.";
+"Controls how long Typeforme keeps keyboard dictation ready after the host app is opened." = "Controls how long Typeforme keeps keyboard dictation ready after the host app is opened.";
+
 // VoiceInputMode (shared with keyboard)
 "Hold" = "Hold";
 "Tap" = "Tap";

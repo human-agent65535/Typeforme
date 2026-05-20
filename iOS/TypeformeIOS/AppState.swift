@@ -85,6 +85,22 @@ enum HostAudioSessionLength: String, CaseIterable, Identifiable {
     }
 }
 
+enum KeyboardChinesePunctuationStyle: String, CaseIterable, Identifiable {
+    case chinese
+    case english
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .chinese:
+            return NSLocalizedString("Chinese", comment: "Chinese keyboard punctuation style")
+        case .english:
+            return NSLocalizedString("English", comment: "Chinese keyboard punctuation style")
+        }
+    }
+}
+
 struct ServerTimingSummary: Equatable {
     var transcriptionLatencyMs: Int?
     var correctionLatencyMs: Int?
@@ -119,6 +135,9 @@ final class AppState: ObservableObject {
     @Published var routeStatus = BridgeRouteStatus()
     @Published var keyboardStandbyEnabled = true
     @Published var hostAudioSessionLength: HostAudioSessionLength
+    @Published var keyboardAutoCapitalizationEnabled: Bool
+    @Published var keyboardCharacterPreviewEnabled: Bool
+    @Published var keyboardChinesePunctuationStyle: KeyboardChinesePunctuationStyle
     @Published var keyboardBridgeStatus = KeyboardBridgeStatus.idle
     @Published var lastRecordingSummary = ""
     @Published var latestServerTiming: ServerTimingSummary?
@@ -137,6 +156,9 @@ final class AppState: ObservableObject {
     private let networkPathQueue = DispatchQueue(label: "com.typeforme.ios.network-path")
     private static let inputModeKey = "keyboard.inputMode"
     private static let hostAudioSessionLengthKey = "keyboard.hostAudioSessionLength"
+    private static let keyboardAutoCapitalizationKey = "keyboard.autoCapitalizationEnabled"
+    private static let keyboardCharacterPreviewKey = "keyboard.characterPreviewEnabled"
+    private static let keyboardChinesePunctuationStyleKey = "keyboard.chinesePunctuationStyle"
     private static let keyboardDefaultsPasteboardName = UIPasteboard.Name("com.typeforme.keyboard.defaults")
     private static let returnTraceLogName = "typeforme-return-trace.log"
     private static let recordingTailBufferNanoseconds: UInt64 = 280_000_000
@@ -245,6 +267,12 @@ final class AppState: ObservableObject {
             .flatMap(VoiceInputMode.init(rawValue:)) ?? .hold
         self.hostAudioSessionLength = UserDefaults.standard.string(forKey: Self.hostAudioSessionLengthKey)
             .flatMap(HostAudioSessionLength.init(rawValue:)) ?? .thirtyMinutes
+        self.keyboardAutoCapitalizationEnabled = UserDefaults.standard.object(forKey: Self.keyboardAutoCapitalizationKey)
+            .map { _ in UserDefaults.standard.bool(forKey: Self.keyboardAutoCapitalizationKey) } ?? true
+        self.keyboardCharacterPreviewEnabled = UserDefaults.standard.object(forKey: Self.keyboardCharacterPreviewKey)
+            .map { _ in UserDefaults.standard.bool(forKey: Self.keyboardCharacterPreviewKey) } ?? true
+        self.keyboardChinesePunctuationStyle = UserDefaults.standard.string(forKey: Self.keyboardChinesePunctuationStyleKey)
+            .flatMap(KeyboardChinesePunctuationStyle.init(rawValue:)) ?? .chinese
         self.selectedLanguageIDs = Set(saved.validatedLanguageIDs)
         self.keyboardStandbyEnabled = true
         configureKeyboardServer()
@@ -315,6 +343,27 @@ final class AppState: ObservableObject {
         hostAudioSessionLength = length
         UserDefaults.standard.set(length.rawValue, forKey: Self.hostAudioSessionLengthKey)
         scheduleHostAudioSessionExpiry()
+    }
+
+    func setKeyboardAutoCapitalizationEnabled(_ enabled: Bool) {
+        guard enabled != keyboardAutoCapitalizationEnabled else { return }
+        keyboardAutoCapitalizationEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: Self.keyboardAutoCapitalizationKey)
+        publishKeyboardDefaults()
+    }
+
+    func setKeyboardCharacterPreviewEnabled(_ enabled: Bool) {
+        guard enabled != keyboardCharacterPreviewEnabled else { return }
+        keyboardCharacterPreviewEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: Self.keyboardCharacterPreviewKey)
+        publishKeyboardDefaults()
+    }
+
+    func setKeyboardChinesePunctuationStyle(_ style: KeyboardChinesePunctuationStyle) {
+        guard style != keyboardChinesePunctuationStyle else { return }
+        keyboardChinesePunctuationStyle = style
+        UserDefaults.standard.set(style.rawValue, forKey: Self.keyboardChinesePunctuationStyleKey)
+        publishKeyboardDefaults()
     }
 
     func refreshRoute(force: Bool = false, probeAllEndpoints: Bool = true) async {
@@ -391,6 +440,9 @@ final class AppState: ObservableObject {
         let payload: [String: Any] = [
             "version": 1,
             "correction_mode": config.correctionMode.rawValue,
+            "auto_capitalization_enabled": keyboardAutoCapitalizationEnabled,
+            "character_preview_enabled": keyboardCharacterPreviewEnabled,
+            "chinese_punctuation_style": keyboardChinesePunctuationStyle.rawValue,
             "updated_at": Date().timeIntervalSince1970,
         ]
         guard JSONSerialization.isValidJSONObject(payload),
@@ -476,16 +528,19 @@ final class AppState: ObservableObject {
             setFailure("Pair the Mac Bridge first.")
             return
         }
-        guard await ensureMicrophonePermissionForUserAction() else {
-            isHostRecordStarting = false
-            return
-        }
         guard phase.allowsRecordingStart else { return }
 
         hostHoldReleasePending = false
         isHostRecordStarting = true
         setPhase(.preparing)
         errorMessage = nil
+        guard await ensureMicrophonePermissionForUserAction() else {
+            isHostRecordStarting = false
+            if phase == .preparing {
+                setPhase(.idle)
+            }
+            return
+        }
 
         guard routeStatus.activeURL != nil else {
             hostHoldReleasePending = false
@@ -530,7 +585,17 @@ final class AppState: ObservableObject {
             setFailure("Pair the Mac Bridge first.")
             return
         }
-        guard await ensureMicrophonePermissionForUserAction() else { return }
+        guard phase.allowsRecordingStart else { return }
+        isHostRecordStarting = true
+        setPhase(.preparing)
+        defer { isHostRecordStarting = false }
+
+        guard await ensureMicrophonePermissionForUserAction() else {
+            if phase == .preparing {
+                setPhase(.idle)
+            }
+            return
+        }
         guard routeStatus.activeURL != nil else {
             setFailure("Mac Bridge is offline. Start the Mac app or Server, then tap refresh.")
             return
@@ -538,7 +603,6 @@ final class AppState: ObservableObject {
 
         await refreshServerSettingsIfStale()
         resetCorrectionModeToDefault()
-        setPhase(.preparing)
         do {
             try await startHostRecordingCapture()
             acquireIdleTimer()
@@ -910,10 +974,12 @@ final class AppState: ObservableObject {
         appLog.notice("handleOpenURL: action=\(action, privacy: .public), source=\(source ?? "nil", privacy: .public)")
         if action == "record" {
             if source == "keyboard" {
+                // Older keyboard builds used `record` for the microphone handoff,
+                // which could start host recording before the extension returned.
+                // The extension must own start/stop after it is visible again, so
+                // keyboard-origin `record` now behaves like `microphone`.
                 let didPrepareKeyboardSession = await prepareKeyboardMicrophoneFromHostOpen()
-                if didPrepareKeyboardSession {
-                    await startKeyboardRecording(commandID: nil, allowSessionStart: true, requestMicrophoneIfNeeded: true)
-                } else {
+                if !didPrepareKeyboardSession {
                     shouldReturnToKeyboard = false
                 }
             } else {
@@ -1243,6 +1309,11 @@ final class AppState: ObservableObject {
     }
 
     private func openApplication(bundleID: String) -> Bool {
+        // Counterpart to the keyboard host-wake workaround. The keyboard cannot
+        // record audio, and iOS does not provide a public custom-keyboard API to
+        // open the containing app and then return to the previous host. This
+        // private return path is intentionally isolated here; App Store-targeted
+        // builds should replace it with the visible toolbar return affordance.
         let trimmed = bundleID.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, trimmed != Bundle.main.bundleIdentifier else {
             appendReturnTrace("openApplication invalid bundle=\(trimmed)")

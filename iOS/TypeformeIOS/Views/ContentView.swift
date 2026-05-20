@@ -4,6 +4,7 @@ struct ContentView: View {
     @EnvironmentObject private var state: AppState
     @State private var showingPairing = false
     @State private var showingMacSettings = false
+    @State private var showingKeyboardSettings = false
     @State private var showingKeyboardGuide = false
     @State private var rawTranscriptExpanded = false
     /// First-launch setup guidance — once dismissed, the user can still reach
@@ -46,6 +47,11 @@ struct ContentView: View {
                             }
                             .disabled(!state.isConfigured)
                             Button {
+                                showingKeyboardSettings = true
+                            } label: {
+                                Label("Keyboard Settings", systemImage: "keyboard")
+                            }
+                            Button {
                                 showingKeyboardGuide = true
                             } label: {
                                 Label("Keyboard Guide", systemImage: "questionmark.circle")
@@ -67,6 +73,17 @@ struct ContentView: View {
                             .toolbar {
                                 ToolbarItem(placement: .confirmationAction) {
                                     Button("Done") { showingMacSettings = false }
+                                }
+                        }
+                    }
+                }
+                .sheet(isPresented: $showingKeyboardSettings) {
+                    NavigationStack {
+                        KeyboardSettingsView()
+                            .environmentObject(state)
+                            .toolbar {
+                                ToolbarItem(placement: .confirmationAction) {
+                                    Button("Done") { showingKeyboardSettings = false }
                                 }
                             }
                     }
@@ -105,17 +122,12 @@ struct ContentView: View {
                         HeroRecordCard()
                         ModeChipsRow()
                         LanguagesRow()
-                        HostAudioSessionRow()
+                        ResultCard()
+                        RawTranscriptCard(expanded: $rawTranscriptExpanded)
                         if let error = state.errorMessage, !error.isEmpty {
                             ErrorBanner(message: error) {
                                 state.errorMessage = nil
                             }
-                        }
-                        if !state.resultText.isEmpty {
-                            ResultCard()
-                        }
-                        if !state.rawTranscript.isEmpty {
-                            RawTranscriptCard(expanded: $rawTranscriptExpanded)
                         }
                         if !setupGuidanceDismissed {
                             SetupStatusCard(
@@ -732,39 +744,64 @@ private struct LanguagesRow: View {
     }
 }
 
-// MARK: - Host audio session
+// MARK: - Keyboard settings
 
-private struct HostAudioSessionRow: View {
+private struct KeyboardSettingsView: View {
     @EnvironmentObject private var state: AppState
 
     var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "waveform.badge.mic")
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.tint)
-            VStack(alignment: .leading, spacing: 3) {
-                Text("Host audio session")
-                    .font(.subheadline.weight(.medium))
-                Text("How long the host app keeps keyboard audio ready after wake.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            Spacer(minLength: 8)
-            Picker("Host audio session", selection: hostAudioSessionLengthBinding) {
-                ForEach(HostAudioSessionLength.allCases) { length in
-                    Text(length.title).tag(length)
+        List {
+            Section {
+                Toggle("Auto-Capitalization", isOn: autoCapitalizationBinding)
+                Toggle("Character Preview", isOn: characterPreviewBinding)
+                Picker("Chinese punctuation", selection: chinesePunctuationBinding) {
+                    ForEach(KeyboardChinesePunctuationStyle.allCases) { style in
+                        Text(style.title).tag(style)
+                    }
                 }
+            } header: {
+                Text("Typing")
+            } footer: {
+                Text("These settings apply to the Typeforme keyboard after Full Access is enabled.")
             }
-            .labelsHidden()
-            .pickerStyle(.menu)
-            .disabled(state.isBusy)
+            Section {
+                Picker("Host audio session", selection: hostAudioSessionLengthBinding) {
+                    ForEach(HostAudioSessionLength.allCases) { length in
+                        Text(length.title).tag(length)
+                    }
+                }
+                .disabled(state.isBusy)
+            } header: {
+                Text("Audio")
+            } footer: {
+                Text("Controls how long Typeforme keeps keyboard dictation ready after the host app is opened.")
+            }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
-        .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(Color(.secondarySystemBackground))
-        )
+        .navigationTitle("Keyboard Settings")
+    }
+
+    private var autoCapitalizationBinding: Binding<Bool> {
+        Binding {
+            state.keyboardAutoCapitalizationEnabled
+        } set: { enabled in
+            state.setKeyboardAutoCapitalizationEnabled(enabled)
+        }
+    }
+
+    private var characterPreviewBinding: Binding<Bool> {
+        Binding {
+            state.keyboardCharacterPreviewEnabled
+        } set: { enabled in
+            state.setKeyboardCharacterPreviewEnabled(enabled)
+        }
+    }
+
+    private var chinesePunctuationBinding: Binding<KeyboardChinesePunctuationStyle> {
+        Binding {
+            state.keyboardChinesePunctuationStyle
+        } set: { style in
+            state.setKeyboardChinesePunctuationStyle(style)
+        }
     }
 
     private var hostAudioSessionLengthBinding: Binding<HostAudioSessionLength> {
@@ -854,12 +891,17 @@ private struct RawTranscriptCard: View {
             }
             .buttonStyle(.plain)
 
-            if expanded {
+            if expanded || state.rawTranscript.isEmpty {
                 Text(state.rawTranscript)
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(maxWidth: .infinity, minHeight: 72, alignment: .topLeading)
+                    .padding(8)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(Color(.systemBackground))
+                    )
             }
         }
         .padding(14)

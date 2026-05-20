@@ -19,6 +19,20 @@
 // 试录区域
 "Test dictation" = "试录";
 
+// 键盘输入设置
+"Keyboard Input" = "键盘输入";
+"Keyboard Settings" = "键盘设置";
+"Typing" = "输入";
+"Audio" = "音频";
+"Host audio session" = "宿主音频会话";
+"Auto-Capitalization" = "句首自动大写";
+"Character Preview" = "按键预览";
+"Chinese punctuation" = "中文标点";
+"Chinese" = "中文";
+"English" = "英文";
+"These settings apply to the Typeforme keyboard after Full Access is enabled." = "开启完全访问后,这些设置会同步到 Typeforme 键盘。";
+"Controls how long Typeforme keeps keyboard dictation ready after the host app is opened." = "控制从键盘打开宿主 app 后,Typeforme 保持听写就绪的时长。";
+
 // VoiceInputMode (与键盘扩展共享)
 "Hold" = "按住";
 "Tap" = "点击";

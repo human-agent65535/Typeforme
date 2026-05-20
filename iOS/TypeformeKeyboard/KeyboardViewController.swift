@@ -43,6 +43,11 @@ final class KeyboardViewController: UIInputViewController {
         }
     }
 
+    private enum ChinesePunctuationStyle: String {
+        case chinese
+        case english
+    }
+
     private enum TextRewriteTarget {
         case selection(text: String, contextBefore: String, contextAfter: String)
         case context(before: String, after: String)
@@ -72,6 +77,9 @@ final class KeyboardViewController: UIInputViewController {
     private var textInputLanguage: TextInputLanguage = .chinese
     private var isSymbolKeyboard = false
     private var isAlternateSymbolKeyboard = false
+    private var isAutoCapitalizationEnabled = true
+    private var isCharacterPreviewEnabled = true
+    private var chinesePunctuationStyle: ChinesePunctuationStyle = .chinese
     private let rimeInput = RimeInputController()
     private var activeMarkedText = ""
     private var heightConstraint: NSLayoutConstraint?
@@ -109,6 +117,8 @@ final class KeyboardViewController: UIInputViewController {
     private var scheduledHostOpenTask: Task<Void, Never>?
     private var scheduledStopTask: Task<Void, Never>?
     private var deleteRepeatTask: Task<Void, Never>?
+    private var bridgeProbeTask: Task<Void, Never>?
+    private var statusRefreshTask: Task<Void, Never>?
     private var deferredStartupWorkItem: DispatchWorkItem?
     private var keyboardDarwinObservers: [KeyboardDarwinNotificationObserver] = []
     private let minimumHoldRecordingDuration: TimeInterval = 0.55
@@ -118,7 +128,7 @@ final class KeyboardViewController: UIInputViewController {
     private static let dictationContextLimit = 600
     private static let textRewriteContextExpansionLimit = 2_000
     private static let textRewriteContextExpansionMaxSteps = 40
-    private static let textSpaceCursorPointsPerCharacter: CGFloat = 12
+    private static let textSpaceCursorPointsPerCharacter: CGFloat = 9
     private let deleteRepeatInitialDelay: UInt64 = 450_000_000
     private let deleteRepeatInterval: UInt64 = 70_000_000
 
@@ -177,6 +187,10 @@ final class KeyboardViewController: UIInputViewController {
         rootVerticalInset * 2 + stackSpacing * 2 + topRowHeight + orbContainerHeight + utilityRowHeight
     }
     private static var textContentHeight: CGFloat {
+        // Voice and text modes intentionally share the same extension height.
+        // Changing only one side causes a visible host-app layout jump during
+        // focus switches; update both modes together if the keyboard height
+        // changes.
         voiceContentHeight
     }
     private static let topChromeCoverHeight: CGFloat = 0
@@ -195,13 +209,25 @@ final class KeyboardViewController: UIInputViewController {
     private let textSettingsButton = UIButton(type: .system)
     private let textModeButton = UIButton(type: .system)
     private let textAlternateSymbolButton = UIButton(type: .system)
+    private let textGlobeButton = UIButton(type: .system)
     private let textLanguageButton = UIButton(type: .system)
     private let textLanguageLabel = UILabel()
     private let compositionLabel = UILabel()
+    private let pinyinBannerLabel = UILabel()
     private let candidateScrollView = UIScrollView()
     private let candidateStack = UIStackView()
     private let keyRowsStack = UIStackView()
+    private let keyPreviewBubble = UIView()
+    private let keyPreviewLabel = UILabel()
     private var textKeyboardButtons: [UIButton] = []
+    private var letterButtonMap: [String: UIButton] = [:]
+    private var reusableCandidateButtons: [UIButton] = []
+    private var reusableCandidateButtonWidthConstraints: [NSLayoutConstraint] = []
+    private var textRowLayoutConstraints: [NSLayoutConstraint] = []
+    private weak var textReturnKeyButton: UIButton?
+    private weak var textShiftButton: UIButton?
+    private var lastReturnKeyTitle = ""
+    private var isTextShiftEnabled = false
 
     override init(nibName nibNameOrNil: String?, bundle nibBundleOrNil: Bundle?) {
         super.init(nibName: nibNameOrNil, bundle: nibBundleOrNil)
@@ -229,7 +255,9 @@ final class KeyboardViewController: UIInputViewController {
         super.viewDidLoad()
         configureSystemKeyboardAffordances()
         loadState()
+        syncPrimaryLanguage()
         configureRoot()
+        configureKeyPreview()
         configureTopRow()
         configureVoiceButton()
         configureUtilityRow()
@@ -271,6 +299,8 @@ final class KeyboardViewController: UIInputViewController {
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         configureSystemKeyboardAffordances()
+        refreshKeyboardPreferencesFromHost(rebuildIfNeeded: true)
+        refreshInputModeSwitchKeyVisibility()
         heightConstraint?.constant = currentContentHeight + Self.topChromeCoverHeight
         resetCorrectionModeToDefault()
         prepareInitialLayoutForDisplay()
@@ -284,10 +314,20 @@ final class KeyboardViewController: UIInputViewController {
         scheduleDeferredStartupProbe()
     }
 
+    override func textDidChange(_ textInput: UITextInput?) {
+        super.textDidChange(textInput)
+        refreshInputModeSwitchKeyVisibility()
+        refreshReturnKeyTitle()
+        refreshEnglishLetterCasingIfNeeded()
+    }
+
     deinit {
         deferredStartupWorkItem?.cancel()
         scheduledHostOpenTask?.cancel()
+        scheduledStopTask?.cancel()
         keyboardDarwinObservers.forEach { $0.stopObserving() }
+        bridgeProbeTask?.cancel()
+        statusRefreshTask?.cancel()
     }
 
     override func viewWillDisappear(_ animated: Bool) {
@@ -296,8 +336,13 @@ final class KeyboardViewController: UIInputViewController {
             applyRimeState(rimeInput.commitComposition())
         }
         stopDeleteRepeat()
+        clearTextShiftState()
         deferredStartupWorkItem?.cancel()
         deferredStartupWorkItem = nil
+        bridgeProbeTask?.cancel()
+        bridgeProbeTask = nil
+        statusRefreshTask?.cancel()
+        statusRefreshTask = nil
         cancelScheduledHostOpen()
         stopStatusPolling()
         voicePrint.isActive = false
@@ -330,7 +375,17 @@ final class KeyboardViewController: UIInputViewController {
            let saved = TextInputLanguage(rawValue: raw) {
             textInputLanguage = saved
         }
+        refreshKeyboardPreferencesFromHost(rebuildIfNeeded: false)
         defaults.removeObject(forKey: "keyboard.pendingAutoStartUntil")
+    }
+
+    private func syncPrimaryLanguage() {
+        primaryLanguage = textInputLanguage == .chinese ? "zh-Hans" : "en-US"
+    }
+
+    private func applyTextInputOptionsToRime() {
+        _ = rimeInput.setAsciiPunctuation(chinesePunctuationStyle == .english)
+        applyRimeState(rimeInput.setAsciiMode(textInputLanguage == .english))
     }
 
     private func resetCorrectionModeToDefault() {
@@ -352,14 +407,51 @@ final class KeyboardViewController: UIInputViewController {
     }
 
     private func defaultCorrectionModeFromHost() -> CorrectionModePreset? {
+        guard let raw = hostKeyboardDefaultsPayload()?["correction_mode"] as? String else {
+            return nil
+        }
+        return CorrectionModePreset(rawValue: raw)
+    }
+
+    private func refreshKeyboardPreferencesFromHost(rebuildIfNeeded: Bool) {
+        guard let payload = hostKeyboardDefaultsPayload() else { return }
+        let previousAutoCapitalization = isAutoCapitalizationEnabled
+        let previousCharacterPreview = isCharacterPreviewEnabled
+        let previousPunctuationStyle = chinesePunctuationStyle
+
+        if let enabled = payload["auto_capitalization_enabled"] as? Bool {
+            isAutoCapitalizationEnabled = enabled
+        }
+        if let enabled = payload["character_preview_enabled"] as? Bool {
+            isCharacterPreviewEnabled = enabled
+        }
+        if let raw = payload["chinese_punctuation_style"] as? String,
+           let style = ChinesePunctuationStyle(rawValue: raw) {
+            chinesePunctuationStyle = style
+        }
+
+        guard rebuildIfNeeded else { return }
+        let changed = previousAutoCapitalization != isAutoCapitalizationEnabled
+            || previousCharacterPreview != isCharacterPreviewEnabled
+            || previousPunctuationStyle != chinesePunctuationStyle
+        guard changed else { return }
+
+        if previousPunctuationStyle != chinesePunctuationStyle {
+            applyTextInputOptionsToRime()
+        }
+        if keyboardFocus == .text {
+            rebuildTextKeyboardRows()
+        }
+    }
+
+    private func hostKeyboardDefaultsPayload() -> [String: Any]? {
         guard hasFullAccess,
               let pasteboard = UIPasteboard(name: keyboardDefaultsPasteboardName, create: false),
               let text = pasteboard.string,
               let data = text.data(using: .utf8),
-              let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let raw = payload["correction_mode"] as? String
+              let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return nil }
-        return CorrectionModePreset(rawValue: raw)
+        return payload
     }
 
     private func configureRoot() {
@@ -389,6 +481,33 @@ final class KeyboardViewController: UIInputViewController {
         view.isOpaque = false
         view.backgroundColor = .clear
         view.layer.backgroundColor = UIColor.clear.cgColor
+    }
+
+    private func configureKeyPreview() {
+        keyPreviewBubble.isHidden = true
+        keyPreviewBubble.alpha = 0
+        keyPreviewBubble.isUserInteractionEnabled = false
+        keyPreviewBubble.layer.cornerRadius = 10
+        keyPreviewBubble.layer.borderWidth = 0.5
+        keyPreviewBubble.layer.shadowColor = UIColor.black.cgColor
+        keyPreviewBubble.layer.shadowOpacity = 0.18
+        keyPreviewBubble.layer.shadowRadius = 9
+        keyPreviewBubble.layer.shadowOffset = CGSize(width: 0, height: 4)
+
+        keyPreviewLabel.translatesAutoresizingMaskIntoConstraints = false
+        keyPreviewLabel.textAlignment = .center
+        keyPreviewLabel.font = .systemFont(ofSize: 30, weight: .semibold)
+        keyPreviewLabel.textColor = .label
+        keyPreviewLabel.adjustsFontSizeToFitWidth = true
+        keyPreviewLabel.minimumScaleFactor = 0.6
+        keyPreviewBubble.addSubview(keyPreviewLabel)
+        view.addSubview(keyPreviewBubble)
+        NSLayoutConstraint.activate([
+            keyPreviewLabel.leadingAnchor.constraint(equalTo: keyPreviewBubble.leadingAnchor, constant: 6),
+            keyPreviewLabel.trailingAnchor.constraint(equalTo: keyPreviewBubble.trailingAnchor, constant: -6),
+            keyPreviewLabel.topAnchor.constraint(equalTo: keyPreviewBubble.topAnchor, constant: 4),
+            keyPreviewLabel.bottomAnchor.constraint(equalTo: keyPreviewBubble.bottomAnchor, constant: -4),
+        ])
     }
 
     private func prepareInitialLayoutForDisplay() {
@@ -452,13 +571,20 @@ final class KeyboardViewController: UIInputViewController {
             textSettingsButton,
             textModeButton,
             textAlternateSymbolButton,
+            textGlobeButton,
             textLanguageButton,
             compositionLabel,
+            pinyinBannerLabel,
             candidateScrollView,
             candidateStack,
             keyRowsStack,
+            keyPreviewBubble,
+            keyPreviewLabel,
         ]
         views.forEach { $0.overrideUserInterfaceStyle = style }
+        keyPreviewBubble.backgroundColor = UIColor.secondarySystemBackground
+        keyPreviewBubble.layer.borderColor = UIColor.separator
+            .resolvedColor(with: keyboardTraitCollection).cgColor
         textKeyboardButtons.forEach {
             $0.overrideUserInterfaceStyle = style
             $0.setNeedsUpdateConfiguration()
@@ -981,25 +1107,25 @@ final class KeyboardViewController: UIInputViewController {
         textKeyboardContainer.heightAnchor.constraint(equalToConstant: Self.textKeyboardBodyHeight).isActive = true
 
         textToolbar.axis = .horizontal
-        textToolbar.spacing = 5
+        textToolbar.spacing = 4
         textToolbar.alignment = .center
         textToolbar.distribution = .fill
         textToolbar.heightAnchor.constraint(equalToConstant: 40).isActive = true
 
         configureTextControlButton(textVoiceButton, title: "", image: "mic.fill")
-        textVoiceButton.widthAnchor.constraint(equalToConstant: 38).isActive = true
+        textVoiceButton.widthAnchor.constraint(equalToConstant: 36).isActive = true
         textVoiceButton.accessibilityLabel = NSLocalizedString("Dictate", comment: "Accessibility label for dictation in the screen keyboard")
         textVoiceButton.addTarget(self, action: #selector(textVoiceTapped), for: .touchUpInside)
         attachPressAnimation(textVoiceButton)
 
         configureTextControlButton(textVoiceFocusButton, title: "", image: "waveform")
-        textVoiceFocusButton.widthAnchor.constraint(equalToConstant: 36).isActive = true
+        textVoiceFocusButton.widthAnchor.constraint(equalToConstant: 34).isActive = true
         textVoiceFocusButton.accessibilityLabel = NSLocalizedString("Show voice input", comment: "Accessibility label for switching to voice input")
         textVoiceFocusButton.addTarget(self, action: #selector(showVoiceFocus), for: .touchUpInside)
         attachPressAnimation(textVoiceFocusButton)
 
         configureTextControlButton(textSettingsButton, title: "", image: "gearshape")
-        textSettingsButton.widthAnchor.constraint(equalToConstant: 36).isActive = true
+        textSettingsButton.widthAnchor.constraint(equalToConstant: 34).isActive = true
         textSettingsButton.accessibilityLabel = NSLocalizedString("Open Typeforme", comment: "Accessibility label for opening host settings")
         textSettingsButton.addTarget(self, action: #selector(openHostFromSettingsButton), for: .touchUpInside)
         attachPressAnimation(textSettingsButton)
@@ -1049,6 +1175,12 @@ final class KeyboardViewController: UIInputViewController {
         textAlternateSymbolButton.addTarget(self, action: #selector(toggleAlternateSymbolKeyboard), for: .touchUpInside)
         attachPressAnimation(textAlternateSymbolButton)
 
+        configureTextControlButton(textGlobeButton, title: "", image: "globe")
+        textGlobeButton.widthAnchor.constraint(equalToConstant: 38).isActive = true
+        textGlobeButton.accessibilityLabel = NSLocalizedString("Next keyboard", comment: "Accessibility label for switching to the next keyboard")
+        textGlobeButton.addTarget(self, action: #selector(handleInputModeList(from:with:)), for: .allTouchEvents)
+        attachPressAnimation(textGlobeButton)
+
         configureTextLanguageButton()
         textLanguageButton.widthAnchor.constraint(equalToConstant: 52).isActive = true
         textLanguageButton.addTarget(self, action: #selector(toggleTextInputLanguage), for: .touchUpInside)
@@ -1067,11 +1199,21 @@ final class KeyboardViewController: UIInputViewController {
             textLanguageLabel.trailingAnchor.constraint(lessThanOrEqualTo: textLanguageButton.trailingAnchor, constant: -4),
         ])
 
+        pinyinBannerLabel.font = .systemFont(ofSize: 13, weight: .semibold)
+        pinyinBannerLabel.textColor = .secondaryLabel
+        pinyinBannerLabel.numberOfLines = 1
+        pinyinBannerLabel.lineBreakMode = .byTruncatingTail
+        pinyinBannerLabel.adjustsFontSizeToFitWidth = true
+        pinyinBannerLabel.minimumScaleFactor = 0.72
+        pinyinBannerLabel.isHidden = true
+        pinyinBannerLabel.heightAnchor.constraint(equalToConstant: 18).isActive = true
+
         textKeyboardContainer.addArrangedSubview(textToolbar)
-        textToolbar.addArrangedSubview(textVoiceButton)
         textToolbar.addArrangedSubview(candidateScrollView)
+        textToolbar.addArrangedSubview(textVoiceButton)
         textToolbar.addArrangedSubview(textVoiceFocusButton)
         textToolbar.addArrangedSubview(textSettingsButton)
+        textKeyboardContainer.insertArrangedSubview(pinyinBannerLabel, at: 0)
         textKeyboardContainer.addArrangedSubview(keyRowsStack)
         rootStack.addArrangedSubview(textKeyboardContainer)
 
@@ -1088,44 +1230,115 @@ final class KeyboardViewController: UIInputViewController {
     }
 
     private func rebuildTextKeyboardRows() {
+        NSLayoutConstraint.deactivate(textRowLayoutConstraints)
+        textRowLayoutConstraints.removeAll()
         keyRowsStack.arrangedSubviews.forEach { row in
             keyRowsStack.removeArrangedSubview(row)
             row.removeFromSuperview()
         }
         textKeyboardButtons.removeAll()
+        letterButtonMap.removeAll()
+        textShiftButton = nil
 
         if isSymbolKeyboard {
-            if isAlternateSymbolKeyboard {
-                addTextKeyRow(["[", "]", "{", "}", "#", "%", "^", "*", "+", "="])
-                addTextKeyRow(["_", "\\", "|", "~", "<", ">", "€", "£", "¥", "•"])
-                addTextKeyRow([".", ",", "?", "!", "'", "`"], includeAlternateSymbols: true, includeDelete: true)
-            } else {
-                addTextKeyRow(["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"])
-                addTextKeyRow(["-", "/", ":", ";", "(", ")", "$", "&", "@", "\""])
-                addTextKeyRow([".", ",", "?", "!", "'", "，", "。"], includeAlternateSymbols: true, includeDelete: true)
-            }
+            let rows = symbolRowsForCurrentLanguage()
+            addTextKeyRow(rows[0])
+            addTextKeyRow(rows[1])
+            addTextKeyRow(rows[2], includeAlternateSymbols: true, includeDelete: true)
         } else {
             addTextKeyRow(["q", "w", "e", "r", "t", "y", "u", "i", "o", "p"])
-            addTextKeyRow(["a", "s", "d", "f", "g", "h", "j", "k", "l"])
-            addTextKeyRow(["z", "x", "c", "v", "b", "n", "m"], includeDelete: true)
+            addTextKeyRow(["a", "s", "d", "f", "g", "h", "j", "k", "l"], leadingInset: 18, trailingInset: 18)
+            addTextKeyRow(
+                ["z", "x", "c", "v", "b", "n", "m"],
+                leadingTextKey: textInputLanguage == .chinese ? "," : nil,
+                includeShift: textInputLanguage == .english,
+                includeDelete: true
+            )
         }
         addTextBottomRow()
         refreshTextControlTitles()
     }
 
-    private func addTextKeyRow(_ keys: [String], includeAlternateSymbols: Bool = false, includeDelete: Bool = false) {
+    private func symbolRowsForCurrentLanguage() -> [[String]] {
+        if textInputLanguage == .chinese {
+            if isAlternateSymbolKeyboard {
+                return [
+                    ["[", "]", "{", "}", "#", "%", "^", "*", "+", "="],
+                    ["<", ">", "/", "\\", "$", "|", "`", "~", "@", "&"],
+                    ["_", "-", "+", "'", "\""],
+                ]
+            }
+            return [
+                ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"],
+                [",", ".", "?", "!", ":", ";", "(", ")", "\"", "'"],
+                ["/", "`", "<", ">", "$", "_", "^"],
+            ]
+        }
+
+        if isAlternateSymbolKeyboard {
+            return [
+                ["[", "]", "{", "}", "#", "%", "^", "*", "+", "="],
+                ["_", "\\", "|", "~", "<", ">", "€", "£", "¥", "•"],
+                [".", ",", "?", "!", "'", "`"],
+            ]
+        }
+        return [
+            ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"],
+            ["-", "/", ":", ";", "(", ")", "$", "&", "@", "\""],
+            [".", ",", "?", "!", "'"],
+        ]
+    }
+
+    private func addTextKeyRow(
+        _ keys: [String],
+        leadingInset: CGFloat = 0,
+        trailingInset: CGFloat = 0,
+        leadingTextKey: String? = nil,
+        includeAlternateSymbols: Bool = false,
+        includeShift: Bool = false,
+        includeDelete: Bool = false
+    ) {
         let row = makeTextKeyRow()
+        var keyButtons: [UIButton] = []
+        var leadingUtilityButton: UIButton?
+        var trailingUtilityButton: UIButton?
+
+        if leadingInset > 0 {
+            addFixedTextRowSpacer(to: row, width: leadingInset)
+        }
         if includeAlternateSymbols {
             row.addArrangedSubview(textAlternateSymbolButton)
             textKeyboardButtons.append(textAlternateSymbolButton)
+            leadingUtilityButton = textAlternateSymbolButton
+        } else if let leadingTextKey {
+            let title = displayTitle(forTextKey: leadingTextKey)
+            let button = makeTextKeyButton(title: title, weight: .utility)
+            attachKeyPreview(to: button, title: title)
+            button.addAction(UIAction { [weak self] _ in
+                self?.handleTextCharacter(leadingTextKey)
+            }, for: .touchUpInside)
+            row.addArrangedSubview(button)
+            textKeyboardButtons.append(button)
+            leadingUtilityButton = button
+        } else if includeShift {
+            let shiftKey = makeTextShiftButton()
+            row.addArrangedSubview(shiftKey)
+            textKeyboardButtons.append(shiftKey)
+            leadingUtilityButton = shiftKey
         }
         keys.forEach { key in
-            let button = makeTextKeyButton(title: key)
+            let title = displayTitle(forTextKey: key)
+            let button = makeTextKeyButton(title: title)
+            attachKeyPreview(to: button, title: title)
             button.addAction(UIAction { [weak self] _ in
                 self?.handleTextCharacter(key)
             }, for: .touchUpInside)
             row.addArrangedSubview(button)
             textKeyboardButtons.append(button)
+            if isAlphabeticTextKey(key) {
+                letterButtonMap[key.lowercased()] = button
+            }
+            keyButtons.append(button)
         }
         if includeDelete {
             let deleteKey = makeTextKeyButton(title: "", image: "delete.left", weight: .utility)
@@ -1133,8 +1346,72 @@ final class KeyboardViewController: UIInputViewController {
             deleteKey.addTarget(self, action: #selector(deletePressUp), for: [.touchUpInside, .touchUpOutside, .touchCancel, .touchDragExit])
             row.addArrangedSubview(deleteKey)
             textKeyboardButtons.append(deleteKey)
+            trailingUtilityButton = deleteKey
         }
+        if trailingInset > 0 {
+            addFixedTextRowSpacer(to: row, width: trailingInset)
+        }
+        constrainTextKeyRow(
+            keyButtons: keyButtons,
+            leadingUtilityButton: leadingUtilityButton,
+            trailingUtilityButton: trailingUtilityButton
+        )
         keyRowsStack.addArrangedSubview(row)
+    }
+
+    private func addFixedTextRowSpacer(to row: UIStackView, width: CGFloat) {
+        let spacer = UIView()
+        spacer.isUserInteractionEnabled = false
+        let constraint = spacer.widthAnchor.constraint(equalToConstant: width)
+        constraint.isActive = true
+        textRowLayoutConstraints.append(constraint)
+        row.addArrangedSubview(spacer)
+    }
+
+    private func constrainTextKeyRow(
+        keyButtons: [UIButton],
+        leadingUtilityButton: UIButton?,
+        trailingUtilityButton: UIButton?
+    ) {
+        guard let referenceButton = keyButtons.first else { return }
+        var constraints: [NSLayoutConstraint] = [
+            referenceButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 24),
+        ]
+        constraints.append(contentsOf: keyButtons.dropFirst().map {
+            $0.widthAnchor.constraint(equalTo: referenceButton.widthAnchor)
+        })
+        if let leadingUtilityButton {
+            constraints.append(leadingUtilityButton.widthAnchor.constraint(equalTo: referenceButton.widthAnchor, multiplier: 1.5))
+        }
+        if let trailingUtilityButton {
+            constraints.append(trailingUtilityButton.widthAnchor.constraint(equalTo: referenceButton.widthAnchor, multiplier: 1.5))
+        }
+        NSLayoutConstraint.activate(constraints)
+        textRowLayoutConstraints.append(contentsOf: constraints)
+    }
+
+    private func makeTextShiftButton() -> UIButton {
+        let button = makeTextKeyButton(title: "", image: isTextShiftEnabled ? "shift.fill" : "shift", weight: .utility)
+        button.accessibilityLabel = isTextShiftEnabled
+            ? NSLocalizedString("Shift on", comment: "Accessibility label for active Shift key")
+            : NSLocalizedString("Shift", comment: "Accessibility label for Shift key")
+        button.addTarget(self, action: #selector(toggleTextShift), for: .touchUpInside)
+        textShiftButton = button
+        return button
+    }
+
+    private func displayTitle(forTextKey key: String) -> String {
+        if textInputLanguage == .chinese,
+           !isAlphabeticTextKey(key),
+           chinesePunctuationStyle == .chinese {
+            return chinesePunctuationDisplayTitle(for: key)
+        }
+        if textInputLanguage == .english,
+           isAlphabeticTextKey(key),
+           isTextShiftEnabled || shouldAutoCapitalizeNextEnglishLetter() {
+            return key.uppercased()
+        }
+        return key
     }
 
     private func addTextBottomRow() {
@@ -1144,38 +1421,96 @@ final class KeyboardViewController: UIInputViewController {
         row.addArrangedSubview(textModeButton)
         textKeyboardButtons.append(textModeButton)
 
+        textGlobeButton.isHidden = !needsInputModeSwitchKey
+        row.addArrangedSubview(textGlobeButton)
+        textKeyboardButtons.append(textGlobeButton)
+
         row.addArrangedSubview(textLanguageButton)
         textKeyboardButtons.append(textLanguageButton)
 
-        let commaButton = makeTextKeyButton(title: ",")
-        commaButton.widthAnchor.constraint(equalToConstant: 38).isActive = true
-        commaButton.addAction(UIAction { [weak self] _ in
-            self?.handleTextCharacter(",")
-        }, for: .touchUpInside)
-        row.addArrangedSubview(commaButton)
-        textKeyboardButtons.append(commaButton)
-
-        let spaceKey = makeTextKeyButton(title: textInputLanguage == .chinese ? "空格" : "space", weight: .primary)
+        let spaceKey = makeTextKeyButton(title: spaceKeyTitle, weight: .primary)
         spaceKey.addTarget(self, action: #selector(textSpaceTapped), for: .touchUpInside)
         attachSpaceCursorGesture(to: spaceKey)
         row.addArrangedSubview(spaceKey)
         textKeyboardButtons.append(spaceKey)
 
-        let periodButton = makeTextKeyButton(title: ".")
-        periodButton.widthAnchor.constraint(equalToConstant: 38).isActive = true
-        periodButton.addAction(UIAction { [weak self] _ in
-            self?.handleTextCharacter(".")
-        }, for: .touchUpInside)
-        row.addArrangedSubview(periodButton)
-        textKeyboardButtons.append(periodButton)
-
-        let returnKey = makeTextKeyButton(title: textInputLanguage == .chinese ? "换行" : "return", weight: .utility)
+        let returnKey = makeTextKeyButton(title: returnKeyTitle, weight: .utility)
         returnKey.widthAnchor.constraint(equalToConstant: 72).isActive = true
         returnKey.addTarget(self, action: #selector(insertReturn), for: .touchUpInside)
         row.addArrangedSubview(returnKey)
         textKeyboardButtons.append(returnKey)
+        textReturnKeyButton = returnKey
+        lastReturnKeyTitle = returnKeyTitle
 
         keyRowsStack.addArrangedSubview(row)
+    }
+
+    private func refreshReturnKeyTitle() {
+        guard let textReturnKeyButton else { return }
+        let next = returnKeyTitle
+        guard next != lastReturnKeyTitle else { return }
+        lastReturnKeyTitle = next
+        configureTextKeyButton(textReturnKeyButton, title: next, image: nil, weight: .utility)
+    }
+
+    private var spaceKeyTitle: String {
+        textInputLanguage == .chinese
+            ? NSLocalizedString("空格", comment: "Space key title in Chinese input mode")
+            : NSLocalizedString("space", comment: "Space key title in English input mode")
+    }
+
+    private var returnKeyTitle: String {
+        let isChinese = textInputLanguage == .chinese
+        switch textDocumentProxy.returnKeyType {
+        case .go:
+            return isChinese
+                ? NSLocalizedString("前往", comment: "Go return key title in Chinese input mode")
+                : NSLocalizedString("go", comment: "Go return key title in English input mode")
+        case .google:
+            return isChinese
+                ? NSLocalizedString("搜索", comment: "Google return key title in Chinese input mode")
+                : NSLocalizedString("google", comment: "Google return key title in English input mode")
+        case .join:
+            return isChinese
+                ? NSLocalizedString("加入", comment: "Join return key title in Chinese input mode")
+                : NSLocalizedString("join", comment: "Join return key title in English input mode")
+        case .next:
+            return isChinese
+                ? NSLocalizedString("下一项", comment: "Next return key title in Chinese input mode")
+                : NSLocalizedString("next", comment: "Next return key title in English input mode")
+        case .route:
+            return isChinese
+                ? NSLocalizedString("路线", comment: "Route return key title in Chinese input mode")
+                : NSLocalizedString("route", comment: "Route return key title in English input mode")
+        case .search:
+            return isChinese
+                ? NSLocalizedString("搜索", comment: "Search return key title in Chinese input mode")
+                : NSLocalizedString("search", comment: "Search return key title in English input mode")
+        case .send:
+            return isChinese
+                ? NSLocalizedString("发送", comment: "Send return key title in Chinese input mode")
+                : NSLocalizedString("send", comment: "Send return key title in English input mode")
+        case .yahoo:
+            return isChinese
+                ? NSLocalizedString("搜索", comment: "Yahoo return key title in Chinese input mode")
+                : NSLocalizedString("yahoo", comment: "Yahoo return key title in English input mode")
+        case .done:
+            return isChinese
+                ? NSLocalizedString("完成", comment: "Done return key title in Chinese input mode")
+                : NSLocalizedString("done", comment: "Done return key title in English input mode")
+        case .emergencyCall:
+            return isChinese
+                ? NSLocalizedString("紧急呼叫", comment: "Emergency call return key title in Chinese input mode")
+                : NSLocalizedString("emergency", comment: "Emergency call return key title in English input mode")
+        case .continue:
+            return isChinese
+                ? NSLocalizedString("继续", comment: "Continue return key title in Chinese input mode")
+                : NSLocalizedString("continue", comment: "Continue return key title in English input mode")
+        default:
+            return isChinese
+                ? NSLocalizedString("换行", comment: "Default return key title in Chinese input mode")
+                : NSLocalizedString("return", comment: "Default return key title in English input mode")
+        }
     }
 
     private func makeTextKeyRow() -> UIStackView {
@@ -1183,7 +1518,7 @@ final class KeyboardViewController: UIInputViewController {
         row.axis = .horizontal
         row.spacing = 5
         row.alignment = .fill
-        row.distribution = .fillEqually
+        row.distribution = .fill
         return row
     }
 
@@ -1217,6 +1552,12 @@ final class KeyboardViewController: UIInputViewController {
         configuration.cornerStyle = .medium
         configuration.contentInsets = NSDirectionalEdgeInsets(top: 5, leading: 5, bottom: 5, trailing: 5)
         configuration.baseForegroundColor = .label
+        configuration.background.strokeColor = UIColor { traits in
+            traits.userInterfaceStyle == .dark
+                ? UIColor.white.withAlphaComponent(0.08)
+                : UIColor.black.withAlphaComponent(0.08)
+        }
+        configuration.background.strokeWidth = weight == .primary ? 0.8 : 0.35
         switch weight {
         case .normal:
             configuration.baseBackgroundColor = UIColor { traits in
@@ -1224,7 +1565,7 @@ final class KeyboardViewController: UIInputViewController {
             }
         case .primary:
             configuration.baseBackgroundColor = UIColor { traits in
-                traits.userInterfaceStyle == .dark ? UIColor(white: 0.19, alpha: 1) : UIColor.systemGray5
+                traits.userInterfaceStyle == .dark ? UIColor(white: 0.20, alpha: 1) : UIColor.white.withAlphaComponent(0.82)
             }
         case .utility:
             configuration.baseBackgroundColor = UIColor { traits in
@@ -1371,6 +1712,10 @@ final class KeyboardViewController: UIInputViewController {
             self.commandButton.isEnabled = !isSendingState || self.isCommandPressActive
             self.commandButton.alpha = self.commandButton.isEnabled ? 1 : 0.45
             self.inputModeSwitch.setEnabled(!isRecordingState && !isSendingState && !self.isStartRequestInFlight)
+            let locksTextRows = self.keyboardFocus == .text && (isRecordingState || isSendingState)
+            self.keyRowsStack.isUserInteractionEnabled = !locksTextRows
+            self.keyRowsStack.alpha = locksTextRows ? 0.48 : 1
+            self.candidateScrollView.alpha = locksTextRows ? 0.62 : 1
             self.configureTextControlButton(self.textVoiceButton, title: "", image: isRecordingState ? "stop.fill" : "mic.fill")
             if isRecordingState {
                 self.textVoiceButton.configuration?.baseBackgroundColor = UIColor.systemRed
@@ -1480,6 +1825,12 @@ final class KeyboardViewController: UIInputViewController {
         control.addTarget(self, action: #selector(controlPressUp(_:)), for: [.touchUpInside, .touchUpOutside, .touchCancel, .touchDragExit])
     }
 
+    private func attachKeyPreview(to button: UIButton, title: String) {
+        button.accessibilityValue = title
+        button.addTarget(self, action: #selector(keyPreviewPressDown(_:)), for: [.touchDown, .touchDragEnter])
+        button.addTarget(self, action: #selector(keyPreviewPressUp(_:)), for: [.touchUpInside, .touchUpOutside, .touchCancel, .touchDragExit])
+    }
+
     private func attachSpaceCursorGesture(to control: UIControl) {
         let recognizer = UILongPressGestureRecognizer(target: self, action: #selector(handleTextSpaceCursorGesture(_:)))
         recognizer.minimumPressDuration = 0.32
@@ -1488,17 +1839,71 @@ final class KeyboardViewController: UIInputViewController {
         control.addGestureRecognizer(recognizer)
     }
 
+    @objc private func keyPreviewPressDown(_ sender: UIButton) {
+        let title = sender.accessibilityValue ?? sender.currentTitle ?? ""
+        showKeyPreview(for: sender, title: title)
+    }
+
+    @objc private func keyPreviewPressUp(_ sender: UIButton) {
+        hideKeyPreview()
+    }
+
+    private func showKeyPreview(for control: UIControl, title: String) {
+        guard isCharacterPreviewEnabled,
+              keyboardFocus == .text,
+              !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else { return }
+
+        keyPreviewLabel.text = title
+        let keyFrame = control.convert(control.bounds, to: view)
+        let bubbleWidth = min(max(keyFrame.width + 18, 48), 76)
+        let bubbleHeight: CGFloat = 58
+        let x = min(
+            max(keyFrame.midX - bubbleWidth / 2, 4),
+            max(4, view.bounds.width - bubbleWidth - 4)
+        )
+        let y = max(2, keyFrame.minY - bubbleHeight - 8)
+        keyPreviewBubble.frame = CGRect(x: x, y: y, width: bubbleWidth, height: bubbleHeight)
+        view.bringSubviewToFront(keyPreviewBubble)
+        keyPreviewBubble.isHidden = false
+        keyPreviewBubble.transform = CGAffineTransform(scaleX: 0.92, y: 0.92)
+        UIView.animate(withDuration: 0.08, delay: 0, options: [.beginFromCurrentState, .allowUserInteraction]) {
+            self.keyPreviewBubble.alpha = 1
+            self.keyPreviewBubble.transform = .identity
+        }
+    }
+
+    private func hideKeyPreview() {
+        guard !keyPreviewBubble.isHidden else { return }
+        UIView.animate(withDuration: 0.08, delay: 0, options: [.beginFromCurrentState, .allowUserInteraction]) {
+            self.keyPreviewBubble.alpha = 0
+            self.keyPreviewBubble.transform = CGAffineTransform(scaleX: 0.92, y: 0.92)
+        } completion: { _ in
+            self.keyPreviewBubble.isHidden = true
+            self.keyPreviewBubble.transform = .identity
+        }
+    }
+
     @objc private func controlPressDown(_ sender: UIControl) {
+        sender.layer.cornerRadius = min(sender.bounds.height / 2, 10)
+        sender.layer.backgroundColor = UIColor.label.withAlphaComponent(isKeyboardDark ? 0.10 : 0.07).cgColor
+        sender.layer.borderWidth = 1
+        sender.layer.borderColor = UIColor.label.withAlphaComponent(isKeyboardDark ? 0.26 : 0.18).cgColor
+        sender.layer.shadowColor = UIColor.black.cgColor
+        sender.layer.shadowOpacity = isKeyboardDark ? 0.22 : 0.10
+        sender.layer.shadowRadius = 3
+        sender.layer.shadowOffset = CGSize(width: 0, height: 1)
         UIView.animate(withDuration: 0.10, delay: 0, options: [.allowUserInteraction, .beginFromCurrentState]) {
-            sender.transform = CGAffineTransform(scaleX: 0.97, y: 0.97)
-            sender.alpha = 0.88
+            sender.transform = CGAffineTransform(scaleX: 0.985, y: 0.985)
         }
     }
 
     @objc private func controlPressUp(_ sender: UIControl) {
+        sender.layer.backgroundColor = UIColor.clear.cgColor
+        sender.layer.borderWidth = 0
+        sender.layer.shadowOpacity = 0
         UIView.animate(withDuration: 0.10, delay: 0, usingSpringWithDamping: 0.78, initialSpringVelocity: 0.5, options: [.allowUserInteraction, .beginFromCurrentState]) {
             sender.transform = .identity
-            sender.alpha = 1
         }
     }
 
@@ -1936,11 +2341,14 @@ final class KeyboardViewController: UIInputViewController {
         lastBridgeContactAt = Date().timeIntervalSince1970
         updateUI()
 
-        Task { [weak self] in
+        bridgeProbeTask?.cancel()
+        bridgeProbeTask = Task { [weak self] in
             guard let self else { return }
             do {
                 let status = try await localClient.status(timeout: 0.9)
+                guard !Task.isCancelled else { return }
                 await MainActor.run {
+                    guard !Task.isCancelled else { return }
                     self.isStartRequestInFlight = false
                     self.bridgeStatus = status
                     self.lastBridgeContactAt = Date().timeIntervalSince1970
@@ -1981,7 +2389,9 @@ final class KeyboardViewController: UIInputViewController {
                     self.startDictationCommand(textEditContext: textEditContext, target: target)
                 }
             } catch {
+                guard !Task.isCancelled else { return }
                 await MainActor.run {
+                    guard !Task.isCancelled else { return }
                     self.isStartRequestInFlight = false
                     guard self.shouldContinueAfterBridgeProbe(continuesAfterRelease: continuesAfterRelease) else {
                         self.updateUI()
@@ -2016,6 +2426,11 @@ final class KeyboardViewController: UIInputViewController {
         isCommandPressActive = false
         activeRecordingTextTarget = nil
         cancelScheduledHostOpen()
+        // Intentional product workaround: third-party keyboard extensions
+        // cannot capture microphone audio. When the local bridge is not already
+        // awake, the only usable flow is to wake the containing app, let it
+        // request/own microphone permission, then best-effort return the user
+        // to the previous typing app.
         openHostAppForKeyboardAction(
             "microphone",
             returnToKeyboard: true,
@@ -2075,8 +2490,11 @@ final class KeyboardViewController: UIInputViewController {
     }
 
     private func openHostApp(_ url: URL, completion: @escaping (Bool) -> Void) {
-        // iOS keyboard extensions cannot record audio. This private workspace
-        // boundary is the intentional host-wake path; keep risk localized here.
+        // Non-public but deliberate: custom keyboards do not get a supported
+        // "open containing app" API for this microphone handoff. Keep all
+        // host-wake reflection in this method so an App Store build can replace
+        // it with a manual "open Typeforme" fallback without touching the
+        // dictation state machine.
         kbLog.notice("openHostApp: opening via LSApplicationWorkspace")
         completion(openHostAppViaApplicationWorkspace(url))
     }
@@ -2108,6 +2526,10 @@ final class KeyboardViewController: UIInputViewController {
     }
 
     private var currentHostBundleID: String? {
+        // Non-public return-target discovery. This exists only to make the
+        // microphone handoff feel like a keyboard action on device. Removing it
+        // makes host return manual; keeping it is not appropriate for an App
+        // Store-safe build.
         if let id = privateStringValue(named: "_hostApplicationBundleIdentifier", from: self),
            isUsableReturnBundleID(id) {
             return id
@@ -2869,11 +3291,8 @@ final class KeyboardViewController: UIInputViewController {
         }
 
         textDocumentProxy.adjustTextPosition(byCharacterOffset: after.count)
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            self.deleteBackward(characterCount: before.count + after.count)
-            self.textDocumentProxy.insertText(text)
-        }
+        deleteBackward(characterCount: before.count + after.count)
+        textDocumentProxy.insertText(text)
     }
 
     private func deleteBackward(characterCount: Int) {
@@ -2934,6 +3353,7 @@ final class KeyboardViewController: UIInputViewController {
         if keyboardFocus == .text {
             applyRimeState(rimeInput.commitComposition())
         }
+        clearTextShiftState()
         keyboardFocus = focus
         defaults.set(focus.rawValue, forKey: keyboardFocusKey)
         updateKeyboardFocus(animated: animated)
@@ -2942,6 +3362,11 @@ final class KeyboardViewController: UIInputViewController {
 
     private func updateKeyboardFocus(animated: Bool = true) {
         let isTextFocus = keyboardFocus == .text
+        if isTextFocus {
+            applyTextInputOptionsToRime()
+        } else {
+            replaceMarkedText("")
+        }
         let changes = {
             self.topRow.isHidden = isTextFocus
             self.orbContainer.isHidden = isTextFocus
@@ -2954,19 +3379,16 @@ final class KeyboardViewController: UIInputViewController {
             self.voiceTitleLabel.text = isTextFocus
                 ? NSLocalizedString("中文键盘", comment: "Title for Chinese keyboard focus")
                 : self.voiceTitle
-            self.heightConstraint?.constant = self.currentContentHeight + Self.topChromeCoverHeight
-            self.view.setNeedsLayout()
-            self.view.layoutIfNeeded()
         }
         if animated {
-            UIView.animate(withDuration: 0.08, delay: 0, options: [.curveEaseOut, .beginFromCurrentState], animations: changes)
+            UIView.transition(
+                with: rootStack,
+                duration: 0.22,
+                options: [.transitionCrossDissolve, .beginFromCurrentState, .allowUserInteraction],
+                animations: changes
+            )
         } else {
             UIView.performWithoutAnimation(changes)
-        }
-        if isTextFocus {
-            applyRimeState(rimeInput.setAsciiMode(textInputLanguage == .english))
-        } else {
-            replaceMarkedText("")
         }
     }
 
@@ -2989,6 +3411,14 @@ final class KeyboardViewController: UIInputViewController {
         lightHaptic()
     }
 
+    @objc private func toggleTextShift() {
+        guard !isSymbolKeyboard else { return }
+        isTextShiftEnabled.toggle()
+        refreshShiftButtonImage()
+        refreshLetterCasing()
+        lightHaptic()
+    }
+
     @objc private func toggleTextInputLanguage() {
         if textInputLanguage == .chinese {
             applyRimeState(rimeInput.commitComposition())
@@ -2996,17 +3426,65 @@ final class KeyboardViewController: UIInputViewController {
         } else {
             textInputLanguage = .chinese
         }
+        isTextShiftEnabled = false
+        syncPrimaryLanguage()
         defaults.set(textInputLanguage.rawValue, forKey: textInputLanguageKey)
         refreshTextControlTitles()
         rebuildTextKeyboardRows()
-        applyRimeState(rimeInput.setAsciiMode(textInputLanguage == .english))
+        applyTextInputOptionsToRime()
         lightHaptic()
     }
 
     private func refreshTextControlTitles() {
         configureTextControlButton(textModeButton, title: isSymbolKeyboard ? "ABC" : "123", image: nil)
         configureTextControlButton(textAlternateSymbolButton, title: isAlternateSymbolKeyboard ? "123" : "#+=", image: nil)
+        configureTextControlButton(textGlobeButton, title: "", image: "globe")
+        textGlobeButton.accessibilityLabel = NSLocalizedString("Next keyboard", comment: "Accessibility label for switching to the next keyboard")
+        refreshInputModeSwitchKeyVisibility()
         configureTextLanguageButton()
+        refreshReturnKeyTitle()
+    }
+
+    private func refreshInputModeSwitchKeyVisibility() {
+        textGlobeButton.isHidden = !needsInputModeSwitchKey
+    }
+
+    private func refreshShiftButtonImage() {
+        guard let textShiftButton else { return }
+        configureTextKeyButton(
+            textShiftButton,
+            title: "",
+            image: isTextShiftEnabled ? "shift.fill" : "shift",
+            weight: .utility
+        )
+        textShiftButton.accessibilityLabel = isTextShiftEnabled
+            ? NSLocalizedString("Shift on", comment: "Accessibility label for active Shift key")
+            : NSLocalizedString("Shift", comment: "Accessibility label for Shift key")
+    }
+
+    private func refreshLetterCasing() {
+        guard !isSymbolKeyboard else { return }
+        for (key, button) in letterButtonMap {
+            let title = displayTitle(forTextKey: key)
+            configureTextKeyButton(button, title: title, image: nil, weight: .normal)
+            button.accessibilityValue = title
+        }
+    }
+
+    @discardableResult
+    private func resetShiftIfSticky() -> Bool {
+        guard isTextShiftEnabled else { return false }
+        isTextShiftEnabled = false
+        refreshShiftButtonImage()
+        refreshLetterCasing()
+        return true
+    }
+
+    private func clearTextShiftState() {
+        guard isTextShiftEnabled else { return }
+        isTextShiftEnabled = false
+        refreshShiftButtonImage()
+        refreshLetterCasing()
     }
 
     private func configureTextLanguageButton() {
@@ -3058,7 +3536,15 @@ final class KeyboardViewController: UIInputViewController {
 
         if textInputLanguage == .english {
             applyRimeState(rimeInput.commitComposition())
-            textDocumentProxy.insertText(character)
+            let shouldCapitalize = isAlphabeticTextKey(character)
+                && (isTextShiftEnabled || shouldAutoCapitalizeNextEnglishLetter())
+            let output = shouldCapitalize
+                ? character.uppercased()
+                : character
+            textDocumentProxy.insertText(output)
+            if !resetShiftIfSticky() {
+                refreshEnglishLetterCasingIfNeeded()
+            }
             return
         }
 
@@ -3067,20 +3553,10 @@ final class KeyboardViewController: UIInputViewController {
             return
         }
 
+        _ = rimeInput.setAsciiPunctuation(chinesePunctuationStyle == .english)
         _ = rimeInput.setAsciiMode(false)
-        let wasComposing = rimeInput.state().isComposing
         let state = rimeInput.processCharacter(character)
         applyRimeState(state)
-
-        if !state.isReady {
-            return
-        }
-        if state.commitText.isEmpty,
-           !state.isComposing,
-           !wasComposing,
-           !isAlphabeticTextKey(character) {
-            textDocumentProxy.insertText(character)
-        }
     }
 
     private func handleTextBackspace() {
@@ -3093,9 +3569,13 @@ final class KeyboardViewController: UIInputViewController {
         let currentState = rimeInput.state()
         if currentState.isComposing {
             applyRimeState(rimeInput.processKeyCode(0xFF08))
+            resetShiftIfSticky()
         } else {
             replaceMarkedText("")
             textDocumentProxy.deleteBackward()
+            if !resetShiftIfSticky() {
+                refreshEnglishLetterCasingIfNeeded()
+            }
             renderRestyleSuggestionsIfIdle()
         }
     }
@@ -3110,9 +3590,13 @@ final class KeyboardViewController: UIInputViewController {
         if textInputLanguage == .english {
             applyRimeState(rimeInput.commitComposition())
             textDocumentProxy.insertText(" ")
+            if !resetShiftIfSticky() {
+                refreshEnglishLetterCasingIfNeeded()
+            }
             return
         }
 
+        _ = rimeInput.setAsciiPunctuation(chinesePunctuationStyle == .english)
         _ = rimeInput.setAsciiMode(false)
         let wasComposing = rimeInput.state().isComposing
         let state = rimeInput.processKeyCode(32)
@@ -3120,6 +3604,7 @@ final class KeyboardViewController: UIInputViewController {
         if !wasComposing, state.commitText.isEmpty, !state.isComposing {
             textDocumentProxy.insertText(" ")
         }
+        resetShiftIfSticky()
     }
 
     private func handleTextReturn() {
@@ -3134,6 +3619,9 @@ final class KeyboardViewController: UIInputViewController {
         if state.commitText.isEmpty {
             textDocumentProxy.insertText("\n")
         }
+        if !resetShiftIfSticky() {
+            refreshEnglishLetterCasingIfNeeded()
+        }
     }
 
     private func applyRimeState(_ state: RimeKeyboardState) {
@@ -3142,24 +3630,14 @@ final class KeyboardViewController: UIInputViewController {
             textDocumentProxy.insertText(state.commitText)
         }
 
-        if state.isComposing {
-            let markedText = state.preedit.isEmpty ? state.input : state.preedit
-            replaceMarkedText(markedText)
-        } else {
-            replaceMarkedText("")
-        }
+        replaceMarkedText("")
 
         renderRimeState(state)
     }
 
     private func renderRimeState(_ state: RimeKeyboardState) {
-        if let errorMessage = state.errorMessage {
-            compositionLabel.text = errorMessage
-        } else if state.isComposing {
-            compositionLabel.text = state.preedit.isEmpty ? state.input : state.preedit
-        } else {
-            compositionLabel.text = ""
-        }
+        compositionLabel.text = state.errorMessage ?? ""
+        updatePinyinBanner(for: state)
 
         candidateStack.arrangedSubviews.forEach { view in
             candidateStack.removeArrangedSubview(view)
@@ -3171,11 +3649,9 @@ final class KeyboardViewController: UIInputViewController {
             return
         }
 
-        if state.isComposing, state.candidates.isEmpty {
-            let composingText = state.preedit.isEmpty ? state.input : state.preedit
-            if !composingText.isEmpty {
-                addCandidateStatus(composingText, color: .secondaryLabel, emphasized: true)
-            }
+        if !state.isReady {
+            addCandidateStatus(NSLocalizedString("Chinese preparing…", comment: "Rime preparing status"), color: .secondaryLabel, emphasized: true)
+            return
         }
 
         if !state.isComposing, renderRecentRestyleActions() {
@@ -3187,37 +3663,113 @@ final class KeyboardViewController: UIInputViewController {
         }
 
         for (index, candidate) in state.candidates.enumerated() {
-            let button = UIButton(type: .system)
-            var configuration = UIButton.Configuration.plain()
-            configuration.title = candidate.text
-            configuration.subtitle = candidate.comment.isEmpty ? nil : candidate.comment
-            configuration.cornerStyle = .fixed
-            configuration.contentInsets = NSDirectionalEdgeInsets(top: 4, leading: 9, bottom: 4, trailing: 9)
-            configuration.baseForegroundColor = .label
-            configuration.background.cornerRadius = 7
-            configuration.background.backgroundColor = index == 0 ? UIColor.tertiarySystemFill : .clear
-            configuration.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
-                var outgoing = incoming
-                outgoing.font = .systemFont(ofSize: 16, weight: .semibold)
-                return outgoing
+            if index > 0 {
+                addCandidateSeparator()
             }
-            configuration.subtitleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
-                var outgoing = incoming
-                outgoing.font = .systemFont(ofSize: 10, weight: .regular)
-                outgoing.foregroundColor = .secondaryLabel
-                return outgoing
-            }
-            button.configuration = configuration
-            button.addAction(UIAction { [weak self] _ in
-                guard let self else { return }
-                self.applyRimeState(self.rimeInput.selectCandidate(at: index))
-            }, for: .touchUpInside)
-            button.heightAnchor.constraint(equalToConstant: 36).isActive = true
-            button.widthAnchor.constraint(greaterThanOrEqualToConstant: max(42, CGFloat(candidate.text.count * 17 + 22))).isActive = true
-            attachPressAnimation(button)
+            let button = reusableCandidateButton(at: index)
+            configureCandidateButton(button, candidate: candidate, index: index)
             candidateStack.addArrangedSubview(button)
         }
+        addCandidatePagerButton(title: "‹", keyCode: 0xFF55, accessibilityLabel: NSLocalizedString("Previous candidates", comment: "Candidate page up button"))
+        addCandidatePagerButton(title: "›", keyCode: 0xFF56, accessibilityLabel: NSLocalizedString("Next candidates", comment: "Candidate page down button"))
         candidateScrollView.setContentOffset(.zero, animated: false)
+    }
+
+    private func updatePinyinBanner(for state: RimeKeyboardState) {
+        let composingText = state.isComposing ? (state.preedit.isEmpty ? state.input : state.preedit) : ""
+        pinyinBannerLabel.text = composingText
+        pinyinBannerLabel.isHidden = composingText.isEmpty
+    }
+
+    private func addCandidateSeparator() {
+        let separator = UIView()
+        separator.backgroundColor = UIColor.separator.withAlphaComponent(isKeyboardDark ? 0.28 : 0.22)
+        separator.widthAnchor.constraint(equalToConstant: 1.0 / UIScreen.main.scale).isActive = true
+        separator.heightAnchor.constraint(equalToConstant: 22).isActive = true
+        separator.setContentHuggingPriority(.required, for: .horizontal)
+        separator.setContentCompressionResistancePriority(.required, for: .horizontal)
+        candidateStack.addArrangedSubview(separator)
+    }
+
+    private func addCandidatePagerButton(title: String, keyCode: Int32, accessibilityLabel: String) {
+        let button = UIButton(type: .system)
+        var configuration = UIButton.Configuration.plain()
+        configuration.title = title
+        configuration.cornerStyle = .fixed
+        configuration.contentInsets = NSDirectionalEdgeInsets(top: 4, leading: 8, bottom: 4, trailing: 8)
+        configuration.baseForegroundColor = .secondaryLabel
+        configuration.background.cornerRadius = 7
+        configuration.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
+            var outgoing = incoming
+            outgoing.font = .systemFont(ofSize: 21, weight: .semibold)
+            return outgoing
+        }
+        button.configuration = configuration
+        button.accessibilityLabel = accessibilityLabel
+        button.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            self.applyRimeState(self.rimeInput.processKeyCode(keyCode))
+        }, for: .touchUpInside)
+        button.heightAnchor.constraint(equalToConstant: 36).isActive = true
+        button.widthAnchor.constraint(equalToConstant: 34).isActive = true
+        attachPressAnimation(button)
+        candidateStack.addArrangedSubview(button)
+    }
+
+    private func reusableCandidateButton(at index: Int) -> UIButton {
+        if index < reusableCandidateButtons.count {
+            return reusableCandidateButtons[index]
+        }
+        let button = UIButton(type: .system)
+        button.addTarget(self, action: #selector(candidateButtonTapped(_:)), for: .touchUpInside)
+        button.heightAnchor.constraint(equalToConstant: 36).isActive = true
+        let widthConstraint = button.widthAnchor.constraint(greaterThanOrEqualToConstant: 46)
+        widthConstraint.isActive = true
+        attachPressAnimation(button)
+        reusableCandidateButtons.append(button)
+        reusableCandidateButtonWidthConstraints.append(widthConstraint)
+        return button
+    }
+
+    private func configureCandidateButton(_ button: UIButton, candidate: RimeKeyboardCandidate, index: Int) {
+        button.tag = index
+        var configuration = UIButton.Configuration.plain()
+        configuration.title = candidate.text
+        configuration.subtitle = candidate.comment.isEmpty ? nil : candidate.comment
+        configuration.cornerStyle = .fixed
+        configuration.contentInsets = NSDirectionalEdgeInsets(top: 4, leading: 9, bottom: 4, trailing: 9)
+        configuration.baseForegroundColor = .label
+        configuration.background.cornerRadius = 7
+        configuration.background.backgroundColor = index == 0 ? UIColor.systemFill : .clear
+        configuration.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
+            var outgoing = incoming
+            outgoing.font = .systemFont(ofSize: index == 0 ? 19 : 18, weight: index == 0 ? .semibold : .medium)
+            return outgoing
+        }
+        configuration.subtitleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
+            var outgoing = incoming
+            outgoing.font = .systemFont(ofSize: 10, weight: .regular)
+            outgoing.foregroundColor = .secondaryLabel
+            return outgoing
+        }
+        button.configuration = configuration
+        reusableCandidateButtonWidthConstraints[index].constant = candidateButtonMinimumWidth(for: candidate, isFirst: index == 0)
+    }
+
+    @objc private func candidateButtonTapped(_ sender: UIButton) {
+        applyRimeState(rimeInput.selectCandidate(at: sender.tag))
+    }
+
+    private func candidateButtonMinimumWidth(for candidate: RimeKeyboardCandidate, isFirst: Bool) -> CGFloat {
+        let titleFont = UIFont.systemFont(ofSize: isFirst ? 19 : 18, weight: isFirst ? .semibold : .medium)
+        let titleWidth = ceil((candidate.text as NSString).size(withAttributes: [.font: titleFont]).width)
+        var minimumWidth = titleWidth + 26
+        if !candidate.comment.isEmpty {
+            let commentFont = UIFont.systemFont(ofSize: 10, weight: .regular)
+            let commentWidth = ceil((candidate.comment as NSString).size(withAttributes: [.font: commentFont]).width)
+            minimumWidth = max(minimumWidth, commentWidth + 26)
+        }
+        return max(46, minimumWidth)
     }
 
     private func addCandidateStatus(_ text: String, color: UIColor, emphasized: Bool = false) {
@@ -3283,6 +3835,8 @@ final class KeyboardViewController: UIInputViewController {
     private func showTextKeyboardNotice(_ text: String, color: UIColor = .secondaryLabel) {
         guard keyboardFocus == .text else { return }
         compositionLabel.text = text
+        pinyinBannerLabel.text = ""
+        pinyinBannerLabel.isHidden = true
         candidateStack.arrangedSubviews.forEach { view in
             candidateStack.removeArrangedSubview(view)
             view.removeFromSuperview()
@@ -3295,11 +3849,8 @@ final class KeyboardViewController: UIInputViewController {
         guard activeMarkedText != text else { return }
         if text.isEmpty {
             if !activeMarkedText.isEmpty {
-                textDocumentProxy.setMarkedText("", selectedRange: NSRange(location: 0, length: 0))
                 textDocumentProxy.unmarkText()
             }
-        } else {
-            textDocumentProxy.setMarkedText(text, selectedRange: NSRange(location: text.count, length: 0))
         }
         activeMarkedText = text
     }
@@ -3311,18 +3862,60 @@ final class KeyboardViewController: UIInputViewController {
         return CharacterSet.lowercaseLetters.contains(scalar) || CharacterSet.uppercaseLetters.contains(scalar)
     }
 
-    private func insertChineseDirectTextKey(_ character: String) {
-        let currentState = rimeInput.state()
-        if currentState.isComposing {
-            applyRimeState(rimeInput.commitComposition())
-        } else {
-            replaceMarkedText("")
+    private func shouldAutoCapitalizeNextEnglishLetter() -> Bool {
+        guard isAutoCapitalizationEnabled,
+              textInputLanguage == .english
+        else { return false }
+
+        switch textDocumentProxy.keyboardType {
+        case .URL, .emailAddress, .numberPad, .phonePad, .decimalPad, .numbersAndPunctuation, .twitter, .webSearch, .asciiCapableNumberPad:
+            return false
+        default:
+            break
         }
-        textDocumentProxy.insertText(chineseDirectText(for: character))
-        renderRestyleSuggestionsIfIdle()
+
+        let capitalizationPolicy = textDocumentProxy.autocapitalizationType ?? .sentences
+        switch capitalizationPolicy {
+        case .none:
+            return false
+        case .allCharacters:
+            return true
+        case .words:
+            let context = textDocumentProxy.documentContextBeforeInput ?? ""
+            return context.isEmpty || context.last?.isWhitespace == true
+        case .sentences:
+            break
+        @unknown default:
+            break
+        }
+
+        let context = textDocumentProxy.documentContextBeforeInput ?? ""
+        guard !context.isEmpty else { return true }
+
+        var crossedLineBreak = false
+        for character in context.reversed() {
+            let text = String(character)
+            if text.rangeOfCharacter(from: .whitespacesAndNewlines) != nil {
+                if text.rangeOfCharacter(from: .newlines) != nil {
+                    crossedLineBreak = true
+                }
+                continue
+            }
+            if crossedLineBreak { return true }
+            return ".!?".contains(character)
+        }
+        return true
     }
 
-    private func chineseDirectText(for character: String) -> String {
+    private func refreshEnglishLetterCasingIfNeeded() {
+        guard textInputLanguage == .english,
+              !isSymbolKeyboard,
+              keyboardFocus == .text
+        else { return }
+        refreshLetterCasing()
+    }
+
+    private func chinesePunctuationDisplayTitle(for character: String) -> String {
         switch character {
         case ",": return "，"
         case ".": return "。"
@@ -3335,30 +3928,76 @@ final class KeyboardViewController: UIInputViewController {
         case "\"": return "”"
         case "'": return "’"
         case "/": return "、"
-        case "$": return "￥"
-        case "^": return "……"
-        case "_": return "——"
         case "\\": return "、"
         case "|": return "·"
         case "`": return "｀"
         case "~": return "～"
+        case "$": return "￥"
+        case "^": return "……"
+        case "_": return "——"
         case "<": return "《"
         case ">": return "》"
         default: return character
         }
     }
 
+    private func insertChineseDirectTextKey(_ character: String) {
+        let currentState = rimeInput.state()
+        if currentState.isComposing {
+            if let quickSelectIndex = quickCandidateIndex(for: character),
+               quickSelectIndex < currentState.candidates.count {
+                applyRimeState(rimeInput.selectCandidate(at: quickSelectIndex))
+                return
+            }
+            if isRimeCompositionControlKey(character) {
+                applyRimeState(rimeInput.processCharacter(character))
+                return
+            }
+            applyRimeState(rimeInput.commitComposition())
+        } else {
+            replaceMarkedText("")
+        }
+        _ = rimeInput.setAsciiPunctuation(chinesePunctuationStyle == .english)
+        _ = rimeInput.setAsciiMode(false)
+        let state = rimeInput.processCharacter(character)
+        applyRimeState(state)
+        if state.commitText.isEmpty, !state.isComposing {
+            textDocumentProxy.insertText(character)
+        }
+        resetShiftIfSticky()
+        renderRestyleSuggestionsIfIdle()
+    }
+
+    private func quickCandidateIndex(for character: String) -> Int? {
+        guard character.count == 1,
+              let value = Int(character),
+              value >= 1,
+              value <= 9
+        else { return nil }
+        return value - 1
+    }
+
+    private func isRimeCompositionControlKey(_ character: String) -> Bool {
+        character == "," || character == "." || character == "-" || character == "="
+    }
+
     @objc private func deletePressDown() {
         guard deleteRepeatTask == nil else { return }
         handleTextBackspace()
+        let startedAt = Date()
         deleteRepeatTask = Task { [weak self] in
             guard let self else { return }
             try? await Task.sleep(nanoseconds: self.deleteRepeatInitialDelay)
             while !Task.isCancelled {
+                let elapsed = Date().timeIntervalSince(startedAt)
+                let deleteCount = elapsed >= 2.0 ? 8 : (elapsed >= 1.0 ? 3 : 1)
                 await MainActor.run {
-                    self.handleTextBackspace()
+                    for _ in 0..<deleteCount {
+                        self.handleTextBackspace()
+                    }
                 }
-                try? await Task.sleep(nanoseconds: self.deleteRepeatInterval)
+                let interval: UInt64 = elapsed >= 2.0 ? 45_000_000 : (elapsed >= 1.0 ? 55_000_000 : self.deleteRepeatInterval)
+                try? await Task.sleep(nanoseconds: interval)
             }
         }
     }
@@ -3397,6 +4036,7 @@ final class KeyboardViewController: UIInputViewController {
                 applyRimeState(rimeInput.commitComposition())
             }
             lightHaptic()
+            setTextTrackpadMode(true)
             UIView.animate(withDuration: 0.08, delay: 0, options: [.beginFromCurrentState, .allowUserInteraction]) {
                 keyView.alpha = 0.72
                 keyView.transform = CGAffineTransform(scaleX: 0.98, y: 0.98)
@@ -3423,7 +4063,15 @@ final class KeyboardViewController: UIInputViewController {
             keyView.alpha = 1
             keyView.transform = .identity
         }
+        setTextTrackpadMode(false)
         renderRestyleSuggestionsIfIdle()
+    }
+
+    private func setTextTrackpadMode(_ enabled: Bool) {
+        UIView.animate(withDuration: 0.10, delay: 0, options: [.beginFromCurrentState, .allowUserInteraction]) {
+            self.keyRowsStack.alpha = enabled ? 0.56 : 1
+            self.candidateScrollView.alpha = enabled ? 0.48 : 1
+        }
     }
 
     @objc private func insertReturn() {
@@ -3742,15 +4390,20 @@ final class KeyboardViewController: UIInputViewController {
             refreshSelectionSnapshot()
         }
         guard hasFullAccess else { return }
-        Task { [weak self] in
+        statusRefreshTask?.cancel()
+        statusRefreshTask = Task { [weak self] in
             guard let self else { return }
             do {
                 let status = try await localClient.status()
+                guard !Task.isCancelled else { return }
                 await MainActor.run {
+                    guard !Task.isCancelled else { return }
                     self.applyBridgeStatus(status)
                 }
             } catch {
+                guard !Task.isCancelled else { return }
                 await MainActor.run {
+                    guard !Task.isCancelled else { return }
                     self.lastBridgeContactAt = 0
                     self.updateUI()
                 }
