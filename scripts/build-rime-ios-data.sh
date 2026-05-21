@@ -15,6 +15,7 @@ EOF
     exit 1
 fi
 
+rm -rf "$BUILD_DIR"
 mkdir -p "$BUILD_DIR"
 rime_deployer --build "$RIME_DIR" "$RIME_DIR" "$BUILD_DIR"
 

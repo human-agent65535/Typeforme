@@ -3950,6 +3950,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let width = view.bounds.width
         let enteringFrom: CGFloat = isTextFocus ? width : -width
         let leavingTo: CGFloat = isTextFocus ? -width : width
+        let focusName = isTextFocus ? "text" : "voice"
+        let animationStartedAt = Date()
 
         rootStack.transform = CGAffineTransform(translationX: enteringFrom, y: 0)
 
@@ -3963,6 +3965,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             },
             completion: { _ in
                 snapshot?.removeFromSuperview()
+                let elapsedMS = Date().timeIntervalSince(animationStartedAt) * 1000
+                kbLog.notice("Keyboard focus \(focusName, privacy: .public) animation completed in \(elapsedMS, privacy: .public) ms")
             }
         )
     }
@@ -4365,7 +4369,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         // 5 style chips for a recent dictation result. Style chips and wand
         // intentionally coexist there: chips run a preset rewrite, wand
         // records a free-form voice command on the same selection.
-        let showIdleIcons = !isComposing
+        let showIdleIcons = !isComposing && !hasCandidates
         textWandButton.isHidden = !showIdleIcons
         textStylePickerButton.isHidden = !showIdleIcons
         textPasteButton.isHidden = !showIdleIcons

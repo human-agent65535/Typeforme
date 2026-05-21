@@ -34,7 +34,7 @@ final class RimeInputController {
     private static let appName = "rime.typeforme"
     private static let distributionName = "Typeforme"
     private static let distributionCodeName = "typeforme"
-    private static let dataVersion = "pinyin-simp-v1"
+    private static let dataVersion = "typeforme-pinyin-v2"
     // 60 candidates × 5-column grid = up to 12 rows of 42pt = 504pt of
     // content versus ~226pt of grid scroll-view height. That's ~280pt of
     // meaningful vertical scroll when the user taps the expand chevron.
@@ -85,9 +85,16 @@ final class RimeInputController {
         lastStartupAttemptAt = now
         stateLock.unlock()
 
+        let startedAt = Date()
         rimeQueue.async { [weak self] in
             guard let self else { return }
-            _ = self.startOnQueue(bundle: bundle)
+            let didStart = self.startOnQueue(bundle: bundle)
+            let elapsedMS = Date().timeIntervalSince(startedAt) * 1000
+            if didStart {
+                rimeLog.notice("Rime startup ready in \(elapsedMS, privacy: .public) ms")
+            } else {
+                rimeLog.error("Rime startup failed in \(elapsedMS, privacy: .public) ms")
+            }
             let nextState = self.stateOnQueue()
             DispatchQueue.main.async { [weak self] in
                 self?.onStateChange?(nextState)
