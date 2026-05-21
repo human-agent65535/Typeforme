@@ -4,12 +4,12 @@
 schema:
   schema_id: typeforme_pinyin
   name: Typeforme 拼音
-  version: '0.2'
+  version: '0.3'
   author:
     - Typeforme
   description: |
     Typeforme screen keyboard schema backed by librime and the bundled
-    pinyin_simp dictionary.
+    Typeforme pinyin dictionary.
 
 switches:
   - name: ascii_mode
@@ -68,7 +68,7 @@ speller:
     - derive/([iu])a(o|ng?)$/a$1$2/
 
 translator:
-  dictionary: pinyin_simp
+  dictionary: typeforme_pinyin
   enable_completion: true
   enable_encoder: true
   enable_sentence: true
