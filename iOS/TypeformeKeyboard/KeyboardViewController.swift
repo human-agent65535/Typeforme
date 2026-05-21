@@ -82,7 +82,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private let textInputLanguageKey = "keyboard.textInputLanguage"
     private let lastInsertedTextKey = "keyboard.lastInsertedText"
     private let lastInsertedCommandIDKey = "keyboard.lastInsertedCommandID"
-    private let keyboardDefaultsPasteboardName = UIPasteboard.Name("com.typeforme.keyboard.defaults")
     private let keyPressOverlayTag = 0x74797065
 
     private var correctionMode: CorrectionModePreset = .polish
@@ -608,8 +607,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     private func hostKeyboardDefaultsPayload() -> [String: Any]? {
         guard hasFullAccess,
-              let pasteboard = UIPasteboard(name: keyboardDefaultsPasteboardName, create: false),
-              let text = pasteboard.string,
+              let defaults = KeyboardSharedDefaults.suite(),
+              let text = defaults.string(forKey: KeyboardSharedDefaults.keyboardDefaultsKey),
               let data = text.data(using: .utf8),
               let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return nil }
@@ -4441,46 +4440,99 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
         guard isCandidateGridExpanded, state.isComposing, !state.candidates.isEmpty else { return }
 
-        let columns = 5
-        var row: UIStackView?
-        for (index, candidate) in state.candidates.enumerated() {
-            if index % columns == 0 {
-                let nextRow = makeTextKeyRow()
-                nextRow.spacing = 0
-                nextRow.distribution = .fillEqually
-                candidateGridStack.addArrangedSubview(nextRow)
-                row = nextRow
-            }
-            let button = makeCandidateGridButton(candidate: candidate, displayIndex: index, selectionIndex: state.candidateOffset + index)
-            row?.addArrangedSubview(button)
+        // Skip candidates already visible in the top scroll — the user
+        // explicitly wants no duplication between the two surfaces. Width
+        // heuristic mirrors the top scroll's button sizing.
+        let topCount = candidatesVisibleInTopScroll(state)
+        guard topCount < state.candidates.count else {
+            candidateGridScrollView.setContentOffset(.zero, animated: false)
+            return
         }
 
-        if let row {
-            let remainder = state.candidates.count % columns
-            if remainder != 0 {
-                for _ in remainder..<columns {
-                    let spacer = UIView()
-                    row.addArrangedSubview(spacer)
-                }
+        // Dynamic-width flow layout: each cell is sized to its content (text
+        // width + padding) rather than splitting the row into equal columns.
+        // Cells wrap to a new row when the current row would overflow.
+        let availableWidth = max(candidateGridScrollView.bounds.width, view.bounds.width - Self.rootHorizontalInset * 2)
+        var currentRow: UIStackView?
+        var currentRowWidth: CGFloat = 0
+
+        for index in topCount..<state.candidates.count {
+            let candidate = state.candidates[index]
+            let cellWidth = gridCellWidth(for: candidate)
+            let needsNewRow = currentRow == nil || currentRowWidth + cellWidth > availableWidth
+            if needsNewRow {
+                let nextRow = makeTextKeyRow()
+                nextRow.spacing = 0
+                nextRow.distribution = .fill
+                nextRow.alignment = .fill
+                candidateGridStack.addArrangedSubview(nextRow)
+                currentRow = nextRow
+                currentRowWidth = 0
             }
+            let button = makeCandidateGridButton(
+                candidate: candidate,
+                selectionIndex: state.candidateOffset + index,
+                width: cellWidth
+            )
+            currentRow?.addArrangedSubview(button)
+            currentRowWidth += cellWidth
+        }
+
+        // Trailing spacer so the last row aligns left instead of stretching.
+        if let row = currentRow, currentRowWidth < availableWidth {
+            let spacer = UIView()
+            spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+            row.addArrangedSubview(spacer)
         }
         candidateGridScrollView.setContentOffset(.zero, animated: false)
     }
 
-    private func makeCandidateGridButton(candidate: RimeKeyboardCandidate, displayIndex: Int, selectionIndex: Int) -> UIButton {
-        let button = UIButton(type: .system)
+    private func candidatesVisibleInTopScroll(_ state: RimeKeyboardState) -> Int {
+        let scrollWidth = candidateScrollView.bounds.width > 0
+            ? candidateScrollView.bounds.width
+            : view.bounds.width - Self.rootHorizontalInset * 2 - 28 // chevron fallback
+        guard scrollWidth > 0 else { return 0 }
+        var totalWidth: CGFloat = 0
+        let separatorWidth: CGFloat = 1.0 / UIScreen.main.scale
+        for (i, candidate) in state.candidates.enumerated() {
+            let cellWidth = candidateButtonMinimumWidth(for: candidate, isFirst: i == 0)
+            let prefix = i > 0 ? separatorWidth : 0
+            if totalWidth + prefix + cellWidth > scrollWidth {
+                return i
+            }
+            totalWidth += prefix + cellWidth
+        }
+        return state.candidates.count
+    }
+
+    private func gridCellWidth(for candidate: RimeKeyboardCandidate) -> CGFloat {
+        let font = UIFont.systemFont(ofSize: 17, weight: .medium)
+        let textWidth = ceil((candidate.text as NSString).size(withAttributes: [.font: font]).width)
+        // Min 44pt clears iOS HIG; +18pt padding mirrors the top scroll's
+        // single-char floor so 1-char cells still feel tappable.
+        return max(44, textWidth + 18)
+    }
+
+    private func makeCandidateGridButton(candidate: RimeKeyboardCandidate, selectionIndex: Int, width: CGFloat) -> UIButton {
+        // HitInsetButton so the cell's tap area extends past its visible
+        // bounds. Cells are flush against each other (spacing=0, 1pt border);
+        // overlap eats the borderline dead zone and matches the keyboard's
+        // letter-key mistouch tolerance pattern.
+        let button = HitInsetButton(frame: .zero)
         button.tag = selectionIndex
-        button.heightAnchor.constraint(equalToConstant: 42).isActive = true
+        button.hitInsets = UIEdgeInsets(top: -3, left: -3, bottom: -3, right: -3)
+        button.heightAnchor.constraint(equalToConstant: 48).isActive = true
+        button.widthAnchor.constraint(equalToConstant: width).isActive = true
         var configuration = UIButton.Configuration.plain()
         configuration.title = candidate.text
         configuration.cornerStyle = .fixed
         configuration.background.cornerRadius = 0
         configuration.baseForegroundColor = .label
         configuration.background.backgroundColor = .clear
-        configuration.contentInsets = NSDirectionalEdgeInsets(top: 3, leading: 4, bottom: 3, trailing: 4)
+        configuration.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: 4, bottom: 6, trailing: 4)
         configuration.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
             var outgoing = incoming
-            outgoing.font = .systemFont(ofSize: displayIndex == 0 ? 18 : 17, weight: displayIndex == 0 ? .semibold : .medium)
+            outgoing.font = .systemFont(ofSize: 17, weight: .medium)
             return outgoing
         }
         button.configuration = configuration
@@ -4502,10 +4554,14 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         if index < reusableCandidateButtons.count {
             return reusableCandidateButtons[index]
         }
-        let button = UIButton(type: .system)
+        // HitInsetButton: the 1pt separator between candidates leaves a
+        // visible dead zone; -3pt horizontal hit insets let adjacent cells
+        // overlap there so taps on the line still hit a candidate.
+        let button = HitInsetButton(frame: .zero)
+        button.hitInsets = UIEdgeInsets(top: -2, left: -3, bottom: -2, right: -3)
         button.addTarget(self, action: #selector(candidateButtonTapped(_:)), for: .touchUpInside)
-        button.heightAnchor.constraint(equalToConstant: 40).isActive = true
-        let widthConstraint = button.widthAnchor.constraint(greaterThanOrEqualToConstant: 34)
+        button.heightAnchor.constraint(equalToConstant: 44).isActive = true
+        let widthConstraint = button.widthAnchor.constraint(greaterThanOrEqualToConstant: 40)
         widthConstraint.isActive = true
         attachPressAnimation(button)
         reusableCandidateButtons.append(button)
@@ -4544,7 +4600,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private func candidateButtonMinimumWidth(for candidate: RimeKeyboardCandidate, isFirst: Bool) -> CGFloat {
         let titleFont = UIFont.systemFont(ofSize: isFirst ? 19 : 18, weight: isFirst ? .semibold : .medium)
         let titleWidth = ceil((candidate.text as NSString).size(withAttributes: [.font: titleFont]).width)
-        return max(isFirst ? 38 : 34, titleWidth + (isFirst ? 18 : 14))
+        return max(isFirst ? 44 : 40, titleWidth + (isFirst ? 18 : 14))
     }
 
     private func addCandidateStatus(_ text: String, color: UIColor, emphasized: Bool = false) {

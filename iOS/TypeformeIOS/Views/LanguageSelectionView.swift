@@ -3,7 +3,7 @@ import SwiftUI
 enum LanguageDisplay {
     static func summary(for ids: Set<String>, options: [ASRLanguageOption] = ASRLanguageSelection.all) -> String {
         let names = ASRLanguageSelection.displayNames(for: Array(ids), supportedOptions: options)
-        if names.isEmpty { return "None" }
+        if names.isEmpty { return NSLocalizedString("None", comment: "No languages selected") }
         if names.count <= 2 { return names.joined(separator: ", ") }
         return names.prefix(2).joined(separator: ", ") + " +\(names.count - 2)"
     }

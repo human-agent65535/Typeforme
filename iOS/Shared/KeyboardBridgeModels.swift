@@ -1,5 +1,14 @@
 import Foundation
 
+enum KeyboardSharedDefaults {
+    static let appGroupIdentifier = "group.com.example.typeforme"
+    static let keyboardDefaultsKey = "keyboard.defaults.v1"
+
+    static func suite() -> UserDefaults? {
+        UserDefaults(suiteName: appGroupIdentifier)
+    }
+}
+
 enum KeyboardDarwinNotificationName {
     static let transcriptionReady = "com.typeforme.keyboard.transcriptionReady"
     static let dictationStarted = "com.typeforme.keyboard.dictationStarted"

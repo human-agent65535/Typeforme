@@ -114,7 +114,7 @@ struct ContentView: View {
                     // The setup guidance card is a once-per-install thing,
                     // so it sits at the bottom and can be dismissed.
                     VStack(spacing: 16) {
-                        HeroRecordCard()
+                        HeroRecordCard(audio: state.audioCoordinator)
                         ModeChipsRow()
                         LanguagesRow()
                         ResultCard()
@@ -356,6 +356,7 @@ private struct RouteStatusBar: View {
 /// recording. The mic icon swaps out for a voiceprint when recording.
 private struct HeroRecordCard: View {
     @EnvironmentObject private var state: AppState
+    @ObservedObject var audio: AudioCoordinator
     @State private var isPressed = false
 
     /// Demoted from the original 200pt hero — this view is now a small
@@ -435,7 +436,7 @@ private struct HeroRecordCard: View {
                 if isRecording {
                     VoicePrintBars(level: state.hostRecordingLevel, isActive: true, tint: .white)
                         .frame(width: orbDiameter * 0.62, height: orbDiameter * 0.34)
-                } else if state.isHostRecordStarting || state.phase == .sending || state.phase == .restyling {
+                } else if state.phase == .preparing || state.phase == .sending || state.phase == .restyling {
                     ProgressView()
                         .controlSize(.large)
                         .tint(.white)
@@ -489,7 +490,7 @@ private struct HeroRecordCard: View {
     }
 
     private var isRecording: Bool {
-        (state.recorder.isRecording || state.phase == .recording) && !state.isStopAndSendInFlight
+        (audio.recorder.isRecording || state.phase == .recording) && !state.isStopAndSendInFlight
     }
 
     /// The orb is a single-purpose action: hold to speak, release to send.
@@ -497,11 +498,15 @@ private struct HeroRecordCard: View {
     /// user-initiated action — never a retry CTA, never a success/error
     /// status. Status goes to `detail`, errors go to `ErrorBanner`.
     private var title: String {
-        if state.isHostRecordStarting { return "Preparing…" }
+        if state.phase == .preparing {
+            return NSLocalizedString("Preparing…", comment: "Host recording preparing title")
+        }
         if isRecording { return state.inputMode.recordingTitle }
         switch state.phase {
-        case .sending: return "Sending…"
-        case .restyling: return "Restyling…"
+        case .sending:
+            return NSLocalizedString("Sending…", comment: "Host dictation sending title")
+        case .restyling:
+            return NSLocalizedString("Restyling…", comment: "Host dictation restyling title")
         default: return state.inputMode.idleTitle
         }
     }
@@ -907,18 +912,22 @@ private struct RawTranscriptCard: View {
             .buttonStyle(.plain)
 
             if expanded {
-                Text(state.rawTranscript.isEmpty
-                    ? "No raw transcript yet — start dictation to see the unedited recognition output here."
-                    : state.rawTranscript)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, minHeight: 72, alignment: .topLeading)
-                    .padding(8)
-                    .background(
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .fill(Color(.systemBackground))
-                    )
+                Group {
+                    if state.rawTranscript.isEmpty {
+                        Text("No raw transcript yet — start dictation to see the unedited recognition output here.")
+                    } else {
+                        Text(state.rawTranscript)
+                    }
+                }
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, minHeight: 72, alignment: .topLeading)
+                .padding(8)
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(Color(.systemBackground))
+                )
             }
         }
         .padding(14)
@@ -1209,7 +1218,9 @@ private struct MacSettingsView: View {
                             ProgressView()
                                 .scaleEffect(0.72)
                         }
-                        Text(isSaving ? "Saving…" : "Save")
+                        Text(isSaving
+                            ? NSLocalizedString("Saving…", comment: "Server settings save in progress")
+                            : NSLocalizedString("Save", comment: "Save server settings button"))
                     }
                 }
                 .disabled(draft == nil || isSaving || !hasUnsavedChanges)

@@ -49,3 +49,102 @@
 "Polish+" = "Polish+";
 "Structure+" = "Structure+";
 "Formal+" = "Formal+";
+
+// General host app
+"Typeforme" = "Typeforme";
+"Return" = "Return";
+"Save" = "Save";
+"Saving…" = "Saving…";
+"Cancel" = "Cancel";
+"Copy" = "Copy";
+"Clear" = "Clear";
+"Result" = "Result";
+"Raw transcript" = "Raw transcript";
+"No raw transcript yet — start dictation to see the unedited recognition output here." = "No raw transcript yet — start dictation to see the unedited recognition output here.";
+"Preparing…" = "Preparing…";
+"Sending…" = "Sending…";
+"Restyling…" = "Restyling…";
+
+// Pairing and routing
+"Pair your Mac" = "Pair your Mac";
+"Typeforme uses your Mac's local ASR + LLM to clean up dictation. Pair the Mac Bridge URL and token to get started." = "Typeforme uses your Mac's local ASR + LLM to clean up dictation. Pair the Mac Bridge URL and token to get started.";
+"Pair Mac Bridge" = "Pair Mac Bridge";
+"Or copy the pairing JSON from the Mac app." = "Or copy the pairing JSON from the Mac app.";
+"Open the Mac app, copy the pairing JSON, then paste it here. Pairing only stores connection details. Languages are an iOS override on the main screen, and the default mode follows Server Settings." = "Open the Mac app, copy the pairing JSON, then paste it here. Pairing only stores connection details. Languages are an iOS override on the main screen, and the default mode follows Server Settings.";
+"Paste Pairing JSON" = "Paste Pairing JSON";
+"Paste from Clipboard" = "Paste from Clipboard";
+"Scan QR from Mac" = "Scan QR from Mac";
+"Pairing JSON parsed. Tap Save to apply." = "Pairing JSON parsed. Tap Save to apply.";
+"%d local candidates from the Mac" = "%d local candidates from the Mac";
+"Bridge" = "Bridge";
+"Local URL" = "Local URL";
+"Cloud URL" = "Cloud URL";
+"Token" = "Token";
+"Hide token" = "Hide token";
+"Show token" = "Show token";
+"Refresh Server Settings" = "Refresh Server Settings";
+"Pulling…" = "Pulling…";
+"Routing" = "Routing";
+"Local" = "Local";
+"Cloud" = "Cloud";
+"Check Routes" = "Check Routes";
+"Checking…" = "Checking…";
+"When Wi-Fi is active, Typeforme tries Local first. If Local is unavailable, it falls back to Cloud." = "When Wi-Fi is active, Typeforme tries Local first. If Local is unavailable, it falls back to Cloud.";
+"Not configured" = "Not configured";
+"Available" = "Available";
+"Unavailable" = "Unavailable";
+"Not checked" = "Not checked";
+"Active" = "Active";
+"Clipboard is empty." = "Clipboard is empty.";
+"Pasted text isn't valid UTF-8." = "Pasted text isn't valid UTF-8.";
+"Couldn't parse as pairing JSON: %@" = "Couldn't parse as pairing JSON: %@";
+"Scan pairing QR" = "Scan pairing QR";
+"Camera access denied" = "Camera access denied";
+"Enable camera in iOS Settings to scan a pairing QR, or paste the pairing JSON manually instead." = "Enable camera in iOS Settings to scan a pairing QR, or paste the pairing JSON manually instead.";
+
+// Keyboard guide
+"Setup" = "Setup";
+"In Any App" = "In Any App";
+"Style Buttons" = "Style Buttons";
+"Pair the Mac Server" = "Pair the Mac Server";
+"Paste the pairing JSON from the Mac app, then refresh Server Settings so iOS has the current languages and default mode." = "Paste the pairing JSON from the Mac app, then refresh Server Settings so iOS has the current languages and default mode.";
+"Enable the keyboard" = "Enable the keyboard";
+"In iOS Settings, add Typeforme and allow Full Access. The keyboard needs that to talk to the host app." = "In iOS Settings, add Typeforme and allow Full Access. The keyboard needs that to talk to the host app.";
+"Dictate" = "Dictate";
+"Use Hold to Speak or Tap to Speak. Without a text selection, Typeforme inserts the new result at the cursor." = "Use Hold to Speak or Tap to Speak. Without a text selection, Typeforme inserts the new result at the cursor.";
+"Fix selected text" = "Fix selected text";
+"Select the wrong span first, then press the mic and say the intended replacement. Only that selected span is replaced." = "Select the wrong span first, then press the mic and say the intended replacement. Only that selected span is replaced.";
+"Command edit" = "Command edit";
+"Press the wand and speak an instruction like make this shorter, translate this, or turn it into bullets. With no selection, it targets the current input text." = "Press the wand and speak an instruction like make this shorter, translate this, or turn it into bullets. With no selection, it targets the current input text.";
+"Restyle existing text" = "Restyle existing text";
+"Clean, Polish, Polish+, Structure+, and Formal+ use the selected text first, then the current visible input text." = "Clean, Polish, Polish+, Structure+, and Formal+ use the selected text first, then the current visible input text.";
+"Selection changed" = "Selection changed";
+"If iOS no longer reports the same selection when the result returns, Typeforme copies the result instead of guessing where to paste it." = "If iOS no longer reports the same selection when the result returns, Typeforme copies the result instead of guessing where to paste it.";
+
+// Server settings
+"Speech" = "Speech";
+"ASR Engine" = "ASR Engine";
+"ASR Timeout" = "ASR Timeout";
+"Correction" = "Correction";
+"Engine" = "Engine";
+"Correction Timeout" = "Correction Timeout";
+"Model Startup Timeout" = "Model Startup Timeout";
+"Mode" = "Mode";
+"Numbers" = "Numbers";
+"Punctuation" = "Punctuation";
+"Auto Commit" = "Auto Commit";
+"Loading server settings" = "Loading server settings";
+"Discard server settings changes?" = "Discard server settings changes?";
+"Discard Changes" = "Discard Changes";
+"Keep Editing" = "Keep Editing";
+"You have unsaved changes that won't be pushed to the server." = "You have unsaved changes that won't be pushed to the server.";
+
+// Language selection
+"Languages" = "Languages";
+"Common" = "Common";
+"Supported Languages" = "Supported Languages";
+"Matches" = "Matches";
+"None" = "None";
+"Input mode" = "Input mode";
+"Changes apply immediately after Full Access is enabled." = "Changes apply immediately after Full Access is enabled.";
+"Changes apply immediately. Controls how long Typeforme keeps keyboard dictation ready after the host app is opened." = "Changes apply immediately. Controls how long Typeforme keeps keyboard dictation ready after the host app is opened.";

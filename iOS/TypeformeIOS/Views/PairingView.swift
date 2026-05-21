@@ -74,7 +74,10 @@ struct PairingView: View {
                     }
                     if config.localBridgeURLCandidates.count > 1 {
                         VStack(alignment: .leading, spacing: 4) {
-                            Text("\(config.localBridgeURLCandidates.count) local candidates from the Mac")
+                            Text(String(
+                                format: NSLocalizedString("%d local candidates from the Mac", comment: "Local bridge URL candidate count"),
+                                config.localBridgeURLCandidates.count
+                            ))
                                 .font(.footnote.weight(.medium))
                             ForEach(config.localBridgeURLCandidates, id: \.self) { url in
                                 Text(url)
@@ -122,7 +125,12 @@ struct PairingView: View {
                     Button {
                         refreshFromMac(saveAfterRefresh: true)
                     } label: {
-                        Label(isPulling ? "Pulling…" : "Refresh Server Settings", systemImage: "arrow.down.doc")
+                        Label(
+                            isPulling
+                                ? NSLocalizedString("Pulling…", comment: "Pairing settings pull in progress")
+                                : NSLocalizedString("Refresh Server Settings", comment: "Pull server settings button"),
+                            systemImage: "arrow.down.doc"
+                        )
                     }
                     .disabled(isPulling || !config.hasAnyBridgeURL || config.token.isEmpty)
                 }
@@ -155,7 +163,12 @@ struct PairingView: View {
                     Button {
                         refreshRouteStatus()
                     } label: {
-                        Label(isPulling ? "Checking…" : "Check Routes", systemImage: "arrow.clockwise")
+                        Label(
+                            isPulling
+                                ? NSLocalizedString("Checking…", comment: "Route check in progress")
+                                : NSLocalizedString("Check Routes", comment: "Check routes button"),
+                            systemImage: "arrow.clockwise"
+                        )
                     }
                     .disabled(isPulling || !config.hasAnyBridgeURL || config.token.isEmpty)
                     Text("When Wi-Fi is active, Typeforme tries Local first. If Local is unavailable, it falls back to Cloud.")
@@ -193,12 +206,12 @@ struct PairingView: View {
         if routeStatus.activeKind == .local, let activeURL = routeStatus.activeURL?.absoluteString {
             return activeURL
         }
-        return config.localBridgeURLCandidates.first ?? "Not configured"
+        return config.localBridgeURLCandidates.first ?? NSLocalizedString("Not configured", comment: "Pairing route missing endpoint")
     }
 
     private var serverEndpoint: String {
         let trimmed = config.publicBridgeURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? "Not configured" : trimmed
+        return trimmed.isEmpty ? NSLocalizedString("Not configured", comment: "Pairing route missing endpoint") : trimmed
     }
 
     private func endpointState(isConfigured: Bool, isChecked: Bool, isOK: Bool) -> String {
@@ -235,7 +248,7 @@ struct PairingView: View {
     private func pastePairingJSON() {
         let pasted = UIPasteboard.general.string ?? ""
         guard !pasted.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            parseError = "Clipboard is empty."
+            parseError = NSLocalizedString("Clipboard is empty.", comment: "Pairing paste error")
             parsedSuccessfully = false
             return
         }
@@ -267,7 +280,7 @@ struct PairingView: View {
         parseError = nil
         parsedSuccessfully = false
         guard let data = trimmed.data(using: .utf8) else {
-            parseError = "Pasted text isn't valid UTF-8."
+            parseError = NSLocalizedString("Pasted text isn't valid UTF-8.", comment: "Pairing paste error")
             return
         }
         do {
@@ -283,7 +296,10 @@ struct PairingView: View {
                 refreshFromMac(saveAfterRefresh: false)
             }
         } catch {
-            parseError = "Couldn't parse as pairing JSON: \(error.localizedDescription)"
+            parseError = String(
+                format: NSLocalizedString("Couldn't parse as pairing JSON: %@", comment: "Pairing JSON parse error"),
+                error.localizedDescription
+            )
         }
     }
 
@@ -354,7 +370,7 @@ private struct PairingRouteRow: View {
                 .frame(width: 9, height: 9)
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
-                    Text(title)
+                    Text(NSLocalizedString(title, comment: "Pairing route title"))
                     if isActive {
                         Text("Active")
                             .font(.caption2.weight(.semibold))
@@ -373,7 +389,7 @@ private struct PairingRouteRow: View {
             }
             Spacer(minLength: 8)
             VStack(alignment: .trailing, spacing: 3) {
-                Text(state)
+                Text(NSLocalizedString(state, comment: "Pairing route state"))
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(dotColor)
                 if let latencyMs {

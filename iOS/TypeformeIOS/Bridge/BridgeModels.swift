@@ -22,14 +22,141 @@ extension PunctuationOutputPreference {
     }
 }
 
-struct PairingConfig: Codable, Equatable {
+struct BridgeEndpoints: Codable, Equatable {
     var lanBridgeURL: String
     var lanBridgeURLs: [String]
     var publicBridgeURL: String
     var token: String
+
+    enum CodingKeys: String, CodingKey {
+        case lanBridgeURL = "lan_bridge_url"
+        case lanBridgeURLs = "lan_bridge_urls"
+        case publicBridgeURL = "public_bridge_url"
+        case token
+    }
+
+    init(
+        lanBridgeURL: String,
+        lanBridgeURLs: [String] = [],
+        publicBridgeURL: String,
+        token: String
+    ) {
+        let localCandidates = PairingConfig.uniqueBridgeURLs([lanBridgeURL] + lanBridgeURLs)
+        self.lanBridgeURL = lanBridgeURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.lanBridgeURLs = localCandidates
+        self.publicBridgeURL = publicBridgeURL
+        self.token = token
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let decodedLANBridgeURL = try container.decodeIfPresent(String.self, forKey: .lanBridgeURL) ?? ""
+        let decodedLANBridgeURLs = try container.decodeIfPresent([String].self, forKey: .lanBridgeURLs) ?? []
+        let localCandidates = PairingConfig.uniqueBridgeURLs([decodedLANBridgeURL] + decodedLANBridgeURLs)
+        self.lanBridgeURL = decodedLANBridgeURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? (localCandidates.first ?? "")
+            : decodedLANBridgeURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.lanBridgeURLs = localCandidates
+        self.publicBridgeURL = (try container.decodeIfPresent(String.self, forKey: .publicBridgeURL) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        self.token = (try container.decodeIfPresent(String.self, forKey: .token) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var hasAnyBridgeURL: Bool {
+        !localBridgeURLCandidates.isEmpty ||
+            !publicBridgeURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var localBridgeURLCandidates: [String] {
+        PairingConfig.uniqueBridgeURLs([lanBridgeURL] + lanBridgeURLs)
+    }
+
+    mutating func promoteLocalBridgeURL(_ rawValue: String) {
+        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        let existing = localBridgeURLCandidates
+        lanBridgeURL = trimmed
+        lanBridgeURLs = PairingConfig.uniqueBridgeURLs([trimmed] + existing)
+    }
+}
+
+struct UserPreferences: Codable, Equatable {
     var languageIDs: [String]
     var supportedLanguages: [PairingLanguageOption]
     var correctionMode: CorrectionModeID
+
+    enum CodingKeys: String, CodingKey {
+        case languageIDs = "language_ids"
+        case supportedLanguages = "supported_languages"
+        case correctionMode = "correction_mode"
+    }
+
+    init(
+        languageIDs: [String] = ["zh-CN", "en-US"],
+        supportedLanguages: [PairingLanguageOption] = PairingLanguageOption.allWhisperLanguages,
+        correctionMode: CorrectionModeID = .polish
+    ) {
+        self.supportedLanguages = supportedLanguages
+        self.languageIDs = ASRLanguageSelection.validatedIDs(
+            languageIDs,
+            supportedOptions: PairingLanguageOption.asASROptions(supportedLanguages)
+        )
+        self.correctionMode = correctionMode
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let supportedLanguages = try container.decodeIfPresent([PairingLanguageOption].self, forKey: .supportedLanguages)
+            ?? PairingLanguageOption.allWhisperLanguages
+        let languageIDs = try container.decodeIfPresent([String].self, forKey: .languageIDs)
+            ?? ["zh-CN", "en-US"]
+        self.init(
+            languageIDs: languageIDs,
+            supportedLanguages: supportedLanguages,
+            correctionMode: try container.decodeIfPresent(CorrectionModeID.self, forKey: .correctionMode) ?? .polish
+        )
+    }
+}
+
+struct PairingConfig: Codable, Equatable {
+    var bridgeEndpoints: BridgeEndpoints
+    var userPreferences: UserPreferences
+
+    var lanBridgeURL: String {
+        get { bridgeEndpoints.lanBridgeURL }
+        set { bridgeEndpoints.lanBridgeURL = newValue }
+    }
+
+    var lanBridgeURLs: [String] {
+        get { bridgeEndpoints.lanBridgeURLs }
+        set { bridgeEndpoints.lanBridgeURLs = newValue }
+    }
+
+    var publicBridgeURL: String {
+        get { bridgeEndpoints.publicBridgeURL }
+        set { bridgeEndpoints.publicBridgeURL = newValue }
+    }
+
+    var token: String {
+        get { bridgeEndpoints.token }
+        set { bridgeEndpoints.token = newValue }
+    }
+
+    var languageIDs: [String] {
+        get { userPreferences.languageIDs }
+        set { userPreferences.languageIDs = newValue }
+    }
+
+    var supportedLanguages: [PairingLanguageOption] {
+        get { userPreferences.supportedLanguages }
+        set { userPreferences.supportedLanguages = newValue }
+    }
+
+    var correctionMode: CorrectionModeID {
+        get { userPreferences.correctionMode }
+        set { userPreferences.correctionMode = newValue }
+    }
 
     static let empty = PairingConfig(
         lanBridgeURL: "",
@@ -42,6 +169,8 @@ struct PairingConfig: Codable, Equatable {
     )
 
     enum CodingKeys: String, CodingKey {
+        case bridgeEndpoints = "bridge_endpoints"
+        case userPreferences = "user_preferences"
         case lanBridgeURL = "lan_bridge_url"
         case lanBridgeURLs = "lan_bridge_urls"
         case publicBridgeURL = "public_bridge_url"
@@ -60,57 +189,75 @@ struct PairingConfig: Codable, Equatable {
         supportedLanguages: [PairingLanguageOption] = PairingLanguageOption.allWhisperLanguages,
         correctionMode: CorrectionModeID
     ) {
-        let localCandidates = Self.uniqueBridgeURLs([lanBridgeURL] + lanBridgeURLs)
-        self.lanBridgeURL = lanBridgeURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        self.lanBridgeURLs = localCandidates
-        self.publicBridgeURL = publicBridgeURL
-        self.token = token
-        self.languageIDs = languageIDs
-        self.supportedLanguages = supportedLanguages
-        self.correctionMode = correctionMode
+        self.bridgeEndpoints = BridgeEndpoints(
+            lanBridgeURL: lanBridgeURL,
+            lanBridgeURLs: lanBridgeURLs,
+            publicBridgeURL: publicBridgeURL,
+            token: token
+        )
+        self.userPreferences = UserPreferences(
+            languageIDs: languageIDs,
+            supportedLanguages: supportedLanguages,
+            correctionMode: correctionMode
+        )
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        if let endpoints = try container.decodeIfPresent(BridgeEndpoints.self, forKey: .bridgeEndpoints),
+           let preferences = try container.decodeIfPresent(UserPreferences.self, forKey: .userPreferences) {
+            self.bridgeEndpoints = endpoints
+            self.userPreferences = preferences
+            normalizeLanguageIDs()
+            return
+        }
+
+        // One-time migration for pairing.config.v1 and pasted pairing JSON.
+        // Input shape through 2026-05-21:
+        // { lan_bridge_url, lan_bridge_urls, public_bridge_url, token,
+        //   language_ids, supported_languages, correction_mode }
+        // Output shape after first save:
+        // { bridge_endpoints: { lan_bridge_url, lan_bridge_urls,
+        //   public_bridge_url, token },
+        //   user_preferences: { language_ids, supported_languages,
+        //   correction_mode } }
+        // Code location: PairingConfig.init(from:) and encode(to:) here.
+        // Removal date: 2026-08-31, after active testers have moved past
+        // builds that wrote the combined shape.
         let decodedLANBridgeURL = try container.decodeIfPresent(String.self, forKey: .lanBridgeURL) ?? ""
         let decodedLANBridgeURLs = try container.decodeIfPresent([String].self, forKey: .lanBridgeURLs) ?? []
-        let localCandidates = Self.uniqueBridgeURLs([decodedLANBridgeURL] + decodedLANBridgeURLs)
-        self.lanBridgeURL = decodedLANBridgeURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let localCandidates = PairingConfig.uniqueBridgeURLs([decodedLANBridgeURL] + decodedLANBridgeURLs)
+        let normalizedLANBridgeURL = decodedLANBridgeURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? (localCandidates.first ?? "")
             : decodedLANBridgeURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        self.lanBridgeURLs = localCandidates
-        self.publicBridgeURL = try container.decodeIfPresent(String.self, forKey: .publicBridgeURL) ?? ""
-        self.token = try container.decodeIfPresent(String.self, forKey: .token) ?? ""
-        self.supportedLanguages = try container.decodeIfPresent([PairingLanguageOption].self, forKey: .supportedLanguages)
+        let decodedSupportedLanguages = try container.decodeIfPresent([PairingLanguageOption].self, forKey: .supportedLanguages)
             ?? PairingLanguageOption.allWhisperLanguages
         let decodedLanguageIDs = try container.decodeIfPresent([String].self, forKey: .languageIDs) ?? ["zh-CN", "en-US"]
-        self.languageIDs = ASRLanguageSelection.validatedIDs(
-            decodedLanguageIDs,
-            supportedOptions: PairingLanguageOption.asASROptions(supportedLanguages)
+        self.bridgeEndpoints = BridgeEndpoints(
+            lanBridgeURL: normalizedLANBridgeURL,
+            lanBridgeURLs: localCandidates,
+            publicBridgeURL: try container.decodeIfPresent(String.self, forKey: .publicBridgeURL) ?? "",
+            token: try container.decodeIfPresent(String.self, forKey: .token) ?? ""
         )
-        self.correctionMode = try container.decodeIfPresent(CorrectionModeID.self, forKey: .correctionMode) ?? .polish
+        self.userPreferences = UserPreferences(
+            languageIDs: decodedLanguageIDs,
+            supportedLanguages: decodedSupportedLanguages,
+            correctionMode: try container.decodeIfPresent(CorrectionModeID.self, forKey: .correctionMode) ?? .polish
+        )
     }
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(lanBridgeURL, forKey: .lanBridgeURL)
-        if !lanBridgeURLs.isEmpty {
-            try container.encode(lanBridgeURLs, forKey: .lanBridgeURLs)
-        }
-        try container.encode(publicBridgeURL, forKey: .publicBridgeURL)
-        try container.encode(token, forKey: .token)
-        try container.encode(languageIDs, forKey: .languageIDs)
-        try container.encode(supportedLanguages, forKey: .supportedLanguages)
-        try container.encode(correctionMode, forKey: .correctionMode)
+        try container.encode(bridgeEndpoints, forKey: .bridgeEndpoints)
+        try container.encode(userPreferences, forKey: .userPreferences)
     }
 
     var hasAnyBridgeURL: Bool {
-        !localBridgeURLCandidates.isEmpty ||
-            !publicBridgeURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        bridgeEndpoints.hasAnyBridgeURL
     }
 
     var localBridgeURLCandidates: [String] {
-        Self.uniqueBridgeURLs([lanBridgeURL] + lanBridgeURLs)
+        bridgeEndpoints.localBridgeURLCandidates
     }
 
     var supportedLanguageOptions: [ASRLanguageOption] {
@@ -126,11 +273,7 @@ struct PairingConfig: Codable, Equatable {
     }
 
     mutating func promoteLocalBridgeURL(_ rawValue: String) {
-        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        let existing = localBridgeURLCandidates
-        lanBridgeURL = trimmed
-        lanBridgeURLs = Self.uniqueBridgeURLs([trimmed] + existing)
+        bridgeEndpoints.promoteLocalBridgeURL(rawValue)
     }
 
     static func uniqueBridgeURLs(_ values: [String]) -> [String] {

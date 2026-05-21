@@ -3,7 +3,7 @@ import Security
 
 struct PairingStore {
     private let key = "pairing.config.v1"
-    private let tokenStore = PairingTokenStore()
+    private let tokenStore = PairingTokenStore.bridgePairing
 
     func load() -> PairingConfig {
         if let data = UserDefaults.standard.data(forKey: key),
@@ -14,9 +14,7 @@ struct PairingStore {
             } else {
                 config.token = ""
             }
-            if !persistedToken.isEmpty {
-                persistConfigPayloadWithoutToken(config)
-            }
+            persistConfigPayloadWithoutToken(config)
             return config
         }
         return .empty
@@ -40,9 +38,18 @@ struct PairingStore {
     }
 }
 
-private struct PairingTokenStore {
-    private let service = "com.typeforme.ios.bridge"
-    private let account = "pairing-token"
+struct PairingTokenStore {
+    static let bridgePairing = PairingTokenStore(
+        service: "com.typeforme.ios.bridge",
+        account: "pairing-token"
+    )
+    static let keyboardBridge = PairingTokenStore(
+        service: "com.typeforme.ios.keyboard",
+        account: "keyboard-bridge-token"
+    )
+
+    private let service: String
+    private let account: String
 
     func load() -> String? {
         load(service: service)
