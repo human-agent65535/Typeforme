@@ -28,6 +28,7 @@ enum TextEditTargetCapture {
         AXUIElementSetMessagingTimeout(app, 0.25)
         guard let focused = focusedElement(in: app) else { return nil }
         AXUIElementSetMessagingTimeout(focused, 0.25)
+        guard !isSecureTextElement(focused) else { return nil }
 
         if let selected = stringAttribute(kAXSelectedTextAttribute, from: focused),
            !selected.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -62,6 +63,7 @@ enum TextEditTargetCapture {
         AXUIElementSetMessagingTimeout(app, 0.25)
         guard let focused = focusedElement(in: app) else { return nil }
         AXUIElementSetMessagingTimeout(focused, 0.25)
+        guard !isSecureTextElement(focused) else { return nil }
         return stringAttribute(kAXSelectedTextAttribute, from: focused)
     }
 
@@ -73,6 +75,7 @@ enum TextEditTargetCapture {
         AXUIElementSetMessagingTimeout(app, 0.25)
         guard let focused = focusedElement(in: app) else { return ("", "") }
         AXUIElementSetMessagingTimeout(focused, 0.25)
+        guard !isSecureTextElement(focused) else { return ("", "") }
         return contextAroundSelection(in: focused)
     }
 
@@ -102,6 +105,20 @@ enum TextEditTargetCapture {
             return nil
         }
         return value as? String
+    }
+
+    private static func isSecureTextElement(_ element: AXUIElement) -> Bool {
+        let values = [
+            stringAttribute(kAXRoleAttribute, from: element),
+            stringAttribute(kAXSubroleAttribute, from: element),
+            stringAttribute(kAXDescriptionAttribute, from: element),
+            stringAttribute(kAXTitleAttribute, from: element)
+        ]
+        return values.contains { value in
+            guard let value else { return false }
+            let lower = value.lowercased()
+            return lower.contains("secure") || lower.contains("password")
+        }
     }
 
     private static func contextAroundSelection(in element: AXUIElement) -> (before: String, after: String) {

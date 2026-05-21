@@ -123,8 +123,7 @@ enum ProtectedSpanPostProcessor {
         let lowerRaw = rawTranscript.lowercased()
         if lowerRaw.range(of: #"\bpath\b"#, options: .regularExpression) != nil,
            out.range(of: #"\bpath\b"#, options: [.caseInsensitive, .regularExpression]) == nil {
-            out = out.replacingOccurrences(of: "路径", with: "path")
-            out = out.replacingOccurrences(of: "路徑", with: "path")
+            out = regexReplace(out, pattern: #"(路径|路徑)(?=\s*[:：/])"#, with: "path")
         }
         return out
     }
@@ -161,6 +160,12 @@ enum ProtectedSpanPostProcessor {
         return (0x41...0x5A).contains(value) ||
             (0x61...0x7A).contains(value) ||
             (0x00C0...0x024F).contains(value)
+    }
+
+    private static func regexReplace(_ text: String, pattern: String, with template: String) -> String {
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return text }
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        return regex.stringByReplacingMatches(in: text, range: range, withTemplate: template)
     }
 
     private static let leadingClauseTerminators: Set<Character> = [

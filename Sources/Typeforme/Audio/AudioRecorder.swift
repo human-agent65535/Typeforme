@@ -22,8 +22,8 @@ enum AudioRecorderError: LocalizedError {
 /// (we stop on device-change and surface an error to the coordinator).
 /// Marked `@unchecked Sendable` — `isRunning` / `currentURL` / observer are
 /// only mutated from the main-actor coordinator's call sites. The tap closure
-/// only reads its own captured locals (no shared `self.file`), so no lock is
-/// needed.
+/// writes through a captured writer and only weakly checks `self.isRunning`
+/// before delivering UI level updates after stop.
 final class AudioRecorder: @unchecked Sendable {
     private let engine = AVAudioEngine()
     private let fileWriter = MonoM4ABufferWriter()
@@ -48,14 +48,18 @@ final class AudioRecorder: @unchecked Sendable {
             .appendingPathComponent("typeforme-\(UUID().uuidString).m4a")
         fileWriter.begin(url: m4aURL, sampleRate: format.sampleRate)
 
+        let writer = fileWriter
         let levelHandler = onLevel
         input.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
             // Tap closure runs on the audio thread; it only touches its own
             // buffer writer and a snapshotted level handler.
-            self.fileWriter.write(buffer)
+            writer.write(buffer)
             let rms = Self.rms(buffer)
             if let levelHandler {
-                Task { @MainActor in levelHandler(rms) }
+                Task { @MainActor [weak self] in
+                    guard self?.isRunning == true else { return }
+                    levelHandler(rms)
+                }
             }
         }
 
@@ -81,6 +85,7 @@ final class AudioRecorder: @unchecked Sendable {
             // tap stays installed, the observer stays registered, and the
             // temp file leaks into NSTemporaryDirectory().
             engine.inputNode.removeTap(onBus: 0)
+            engine.stop()
             removeObserver()
             try? FileManager.default.removeItem(at: m4aURL)
             fileWriter.cancel()

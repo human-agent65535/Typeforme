@@ -41,6 +41,9 @@ actor LlamaCppServerManager {
     /// at call time, but the default tracks AppSettings.correctionColdTimeoutMs.
     private let coldTimeoutSec: TimeInterval
     private var process: Process?
+    private var logFileHandle: FileHandle?
+
+    private static let maxLogBytes: UInt64 = 2 * 1024 * 1024
 
     init(modelPath: String,
          contextSize: Int,
@@ -68,6 +71,7 @@ actor LlamaCppServerManager {
         if case .running = status, let p = process, !p.isRunning {
             Log.llm.notice("llama-server died externally; will restart on next request")
             process = nil
+            closeLogFile()
             status = .stopped
             try? FileManager.default.removeItem(at: pidFile)
         }
@@ -97,10 +101,13 @@ actor LlamaCppServerManager {
                 }
             }
             DispatchQueue.global().asyncAfter(deadline: .now() + 2.0, execute: killer)
-            p.waitUntilExit()                  // synchronous — blocks until exit
+            await Task.detached(priority: .utility) {
+                p.waitUntilExit()
+            }.value
             killer.cancel()
         }
         process = nil
+        closeLogFile()
         status = .stopped
         try? FileManager.default.removeItem(at: pidFile)
         Log.llm.info("llama-server stopped")
@@ -164,11 +171,13 @@ actor LlamaCppServerManager {
         let proc = Process()
         proc.executableURL = binaryURL
         proc.arguments = args
-        proc.standardOutput = FileHandle.nullDevice
-        proc.standardError = FileHandle.nullDevice
+        logFileHandle = Self.openLogFile()
+        proc.standardOutput = logFileHandle ?? FileHandle.nullDevice
+        proc.standardError = logFileHandle ?? FileHandle.nullDevice
         do {
             try proc.run()
         } catch {
+            closeLogFile()
             throw LlamaServerError.launchFailed(error.localizedDescription)
         }
         self.process = proc
@@ -178,8 +187,41 @@ actor LlamaCppServerManager {
         } catch {
             proc.terminate()
             self.process = nil
+            closeLogFile()
             throw error
         }
+    }
+
+    private func closeLogFile() {
+        try? logFileHandle?.close()
+        logFileHandle = nil
+    }
+
+    private static func openLogFile() -> FileHandle? {
+        do {
+            try AppPaths.ensureDirectories()
+            let url = AppPaths.logsDir.appendingPathComponent("llama-server.log")
+            rotateLogIfNeeded(at: url)
+            if !FileManager.default.fileExists(atPath: url.path) {
+                FileManager.default.createFile(atPath: url.path, contents: nil)
+            }
+            let handle = try FileHandle(forWritingTo: url)
+            try handle.seekToEnd()
+            return handle
+        } catch {
+            Log.llm.notice("llama-server log file unavailable: \(error.localizedDescription, privacy: .public)")
+            return nil
+        }
+    }
+
+    private static func rotateLogIfNeeded(at url: URL) {
+        guard let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size]) as? NSNumber,
+              size.uint64Value > maxLogBytes
+        else { return }
+        let rotated = url.deletingLastPathComponent()
+            .appendingPathComponent("llama-server.previous.log")
+        try? FileManager.default.removeItem(at: rotated)
+        try? FileManager.default.moveItem(at: url, to: rotated)
     }
 
     private func waitForReady(port: Int, timeout: TimeInterval) async throws {

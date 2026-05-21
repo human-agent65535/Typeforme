@@ -58,7 +58,8 @@ final class DoubleTapModifierMonitor {
     /// Avoid firing on a quick second tap; the second press must be held briefly.
     private static let holdStartDelay: UInt64 = 90_000_000
 
-    private var monitor: Any?
+    private var globalMonitor: Any?
+    private var localMonitor: Any?
     private var modifier: HoldModifier = .none
     private var lastReleaseAt: Date?
     private var wasPressed = false
@@ -73,17 +74,25 @@ final class DoubleTapModifierMonitor {
         self.modifier = modifier
         guard modifier != .none else { return }
 
-        monitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
+        globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
             // Global monitor callbacks aren't main-actor-isolated; bounce back.
             Task { @MainActor in self?.handle(event) }
+        }
+        localMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
+            Task { @MainActor in self?.handle(event) }
+            return event
         }
         Log.hotkey.info("double-tap monitor installed for \(modifier.rawValue, privacy: .public)")
     }
 
     func uninstall() {
-        if let m = monitor {
+        if let m = globalMonitor {
             NSEvent.removeMonitor(m)
-            monitor = nil
+            globalMonitor = nil
+        }
+        if let m = localMonitor {
+            NSEvent.removeMonitor(m)
+            localMonitor = nil
         }
         pendingHoldTask?.cancel()
         pendingHoldTask = nil

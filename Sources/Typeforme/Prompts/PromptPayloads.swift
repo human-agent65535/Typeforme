@@ -107,6 +107,7 @@ enum PromptPayloadEncoder {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         guard let data = try? encoder.encode(payload) else { return nil }
-        return String(data: data, encoding: .utf8)
+        return String(data: data, encoding: .utf8)?
+            .replacingOccurrences(of: "</", with: "<\\/")
     }
 }

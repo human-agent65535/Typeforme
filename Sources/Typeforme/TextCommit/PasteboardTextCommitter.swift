@@ -11,11 +11,13 @@ import Carbon
 @MainActor
 final class PasteboardTextCommitter: TextCommitter {
     private static let vKeyCode: CGKeyCode = 9  // kVK_ANSI_V
+    private static let transientPasteboardType = NSPasteboard.PasteboardType("org.nspasteboard.TransientType")
 
     static func copyForManualPaste(_ text: String) {
         let pb = NSPasteboard.general
         pb.clearContents()
         pb.setString(text, forType: .string)
+        pb.setData(Data(), forType: transientPasteboardType)
     }
 
     func commit(

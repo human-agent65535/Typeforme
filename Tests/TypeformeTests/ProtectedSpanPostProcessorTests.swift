@@ -43,6 +43,14 @@ struct ProtectedSpanPostProcessorTests {
         #expect(output.contains("检查path"))
     }
 
+    @Test func doesNotBlindlyReplaceChinesePathWord() {
+        let output = ProtectedSpanPostProcessor.apply(
+            "先做路径规划，再看 /users。",
+            rawTranscript: "先做 path 规划，再看 /users。"
+        )
+        #expect(output.contains("路径规划"))
+    }
+
     @Test func rejectsOutputThatTranslatedProtectedTechnicalTokens() {
         let output = ProtectedSpanPostProcessor.apply(
             "今日已将该功能发布至生产环境，但尚未编写发布说明，暂勿合并。",

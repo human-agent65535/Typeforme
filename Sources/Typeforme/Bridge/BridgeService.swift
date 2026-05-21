@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 enum BridgeServiceError: LocalizedError {
@@ -46,6 +47,7 @@ final class BridgeService {
     private var sessions: [String: BridgeSession] = [:]
 
     private static let sessionTTL: TimeInterval = 15 * 60
+    private static let maxSessions = 128
 
     init(dictionary: UserDictionaryStore) {
         self.dictionary = dictionary
@@ -152,7 +154,7 @@ final class BridgeService {
         let start = Date()
         let languageIDs = resolveLanguageIDs(ids: request.languageIDs, mode: request.languageMode)
         let correctionMode = try resolveCorrectionMode(request.correctionMode)
-        let audioURL = try writeAudio(request)
+        let audioURL = try await writeAudio(request)
         defer { try? FileManager.default.removeItem(at: audioURL) }
 
         let appCategory = resolveAppCategory(rawValue: request.appCategory, bundleID: request.bundleID)
@@ -257,7 +259,7 @@ final class BridgeService {
         )
 
         let sessionID = UUID().uuidString
-        sessions[sessionID] = BridgeSession(
+        storeSession(BridgeSession(
             id: sessionID,
             rawTranscript: trimmed,
             languageIDs: languageIDs,
@@ -268,7 +270,7 @@ final class BridgeService {
             contextBefore: contextBefore,
             contextAfter: contextAfter,
             createdAt: Date()
-        )
+        ))
 
         return BridgeDictateResponse(
             sessionID: sessionID,
@@ -340,7 +342,7 @@ final class BridgeService {
             correctionLatencyMs = latencyMs
         }
         let sessionID = session?.id ?? UUID().uuidString
-        sessions[sessionID] = BridgeSession(
+        storeSession(BridgeSession(
             id: sessionID,
             rawTranscript: rawTranscript,
             languageIDs: languageIDs,
@@ -351,7 +353,7 @@ final class BridgeService {
             contextBefore: contextBefore,
             contextAfter: contextAfter,
             createdAt: Date()
-        )
+        ))
 
         return BridgeRestyleResponse(
             sessionID: sessionID,
@@ -486,24 +488,28 @@ final class BridgeService {
         return normalized
     }
 
-    private func writeAudio(_ request: BridgeDictateRequest) throws -> URL {
+    private func writeAudio(_ request: BridgeDictateRequest) async throws -> URL {
         guard let data = request.audioData, !data.isEmpty else {
             throw BridgeServiceError.invalidAudio
         }
-        try AppPaths.ensureDirectories()
-        let ext = try validatedClientAudioExtension(request.audioExtension)
-        let url = AppPaths.bridgeDir.appendingPathComponent("\(UUID().uuidString).\(ext)")
-        try data.write(to: url, options: .atomic)
-        return url
+        let ext = try Self.validatedClientAudioExtension(request.audioExtension)
+        return try await Task.detached(priority: .utility) {
+            try AppPaths.ensureDirectories()
+            let url = AppPaths.bridgeDir.appendingPathComponent("\(UUID().uuidString).\(ext)")
+            try data.write(to: url, options: .atomic)
+            return url
+        }.value
     }
 
-    private func validatedClientAudioExtension(_ extensionHint: String?) throws -> String {
+    private static func validatedClientAudioExtension(_ extensionHint: String?) throws -> String {
         let defaultExtension = "m4a"
         guard let extensionHint else { return defaultExtension }
         let allowed = extensionHint
             .lowercased()
             .filter { $0.isLetter || $0.isNumber }
-        guard !allowed.isEmpty, allowed.count <= 8 else { return defaultExtension }
+        guard !allowed.isEmpty, allowed.count <= 8 else {
+            throw BridgeServiceError.invalidRequest("Unsupported audio extension")
+        }
         guard ["m4a", "aac"].contains(allowed) else {
             throw BridgeServiceError.invalidRequest("Unsupported audio extension: \(allowed)")
         }
@@ -575,11 +581,37 @@ final class BridgeService {
         guard let url = URL(string: value),
               let scheme = url.scheme?.lowercased(),
               ["http", "https"].contains(scheme),
-              url.host != nil
+              let host = url.host,
+              Self.isLoopbackOrPrivateHost(host)
         else {
             throw BridgeServiceError.invalidRequest("Invalid LM Studio base URL: \(raw)")
         }
         return value
+    }
+
+    private static func isLoopbackOrPrivateHost(_ host: String) -> Bool {
+        let lower = host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if lower == "localhost" || lower == "::1" {
+            return true
+        }
+        if lower.contains(":") {
+            return lower.hasPrefix("fe80:") || lower.hasPrefix("fc") || lower.hasPrefix("fd")
+        }
+        var addr = in_addr()
+        guard inet_pton(AF_INET, lower, &addr) == 1 else { return false }
+        let value = UInt32(bigEndian: addr.s_addr)
+        let first = (value >> 24) & 0xff
+        let second = (value >> 16) & 0xff
+        if first == 10 || first == 127 || (first == 192 && second == 168) {
+            return true
+        }
+        if first == 172 && (16...31).contains(second) {
+            return true
+        }
+        if first == 169 && second == 254 {
+            return true
+        }
+        return false
     }
 
     private func resolveAppCategory(
@@ -597,6 +629,20 @@ final class BridgeService {
     private func pruneExpiredSessions() {
         let cutoff = Date().addingTimeInterval(-Self.sessionTTL)
         sessions = sessions.filter { $0.value.createdAt >= cutoff }
+    }
+
+    private func storeSession(_ session: BridgeSession) {
+        sessions[session.id] = session
+        pruneExpiredSessions()
+        guard sessions.count > Self.maxSessions else { return }
+        let overflow = sessions.count - Self.maxSessions
+        let expiredIDs = sessions.values
+            .sorted { $0.createdAt < $1.createdAt }
+            .prefix(overflow)
+            .map(\.id)
+        for id in expiredIDs {
+            sessions.removeValue(forKey: id)
+        }
     }
 
     private func elapsedMs(since date: Date) -> Int {
