@@ -328,7 +328,7 @@ final class AppState: ObservableObject {
 
     func bootstrap() async {
         await waitForInitialRenderOpportunity()
-        await setKeyboardStandby(true)
+        await setKeyboardStandby(true, surfaceAudioSessionErrors: false)
         await refreshRoute(force: true)
         _ = try? await refreshMacSettings()
         scheduleHostRecorderPreWarm()
@@ -1116,7 +1116,11 @@ final class AppState: ObservableObject {
     }
 
     @discardableResult
-    func setKeyboardStandby(_ enabled: Bool, requestMicrophoneIfNeeded: Bool = false) async -> Bool {
+    func setKeyboardStandby(
+        _ enabled: Bool,
+        requestMicrophoneIfNeeded: Bool = false,
+        surfaceAudioSessionErrors: Bool = true
+    ) async -> Bool {
         keyboardStandbyEnabled = enabled
         configureKeyboardServer()
 
@@ -1137,9 +1141,20 @@ final class AppState: ObservableObject {
                 return isInputReady
             } catch {
                 let message = "Keyboard audio session unavailable: \(error.localizedDescription)"
-                errorMessage = message
-                appLog.error("setKeyboardStandby: \(message, privacy: .public)")
-                publishKeyboardStatus(.error, message: message)
+                if surfaceAudioSessionErrors {
+                    errorMessage = message
+                    appLog.error("setKeyboardStandby: \(message, privacy: .public)")
+                    publishKeyboardStatus(.error, message: message)
+                } else {
+                    // App bootstrap uses keyboard standby as a best-effort
+                    // prewarm. Audio-session activation can legitimately fail
+                    // while iOS is settling routes after launch; keep the local
+                    // bridge/silent standby available and let the keyboard mic
+                    // handoff surface any real user-action failure.
+                    appLog.notice("setKeyboardStandby bootstrap deferred: \(error.localizedDescription, privacy: .public)")
+                    startSilentStandbyKeeperIfNeeded()
+                    publishKeyboardStatus(.idle, message: keyboardMicrophonePreparationMessage)
+                }
                 return false
             }
         } else {
