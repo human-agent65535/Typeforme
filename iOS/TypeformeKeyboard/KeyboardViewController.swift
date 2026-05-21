@@ -98,6 +98,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private let rimeInput = RimeInputController()
     private var activeMarkedText = ""
     private var heightConstraint: NSLayoutConstraint?
+    private var orbContainerHeightConstraint: NSLayoutConstraint?
+    private var textKeyboardContainerHeightConstraint: NSLayoutConstraint?
     private var statusTimer: Timer?
     private var statusTimerInterval: TimeInterval = 0
     private var lastStatusSignature = ""
@@ -130,6 +132,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private var suppressTextSpaceTapUntil: TimeInterval = 0
     private var scheduledHostOpenTask: Task<Void, Never>?
     private var scheduledStopTask: Task<Void, Never>?
+    private var hostWakeResetTask: Task<Void, Never>?
     private var deleteRepeatTask: Task<Void, Never>?
     private var bridgeProbeTask: Task<Void, Never>?
     private var statusRefreshTask: Task<Void, Never>?
@@ -196,29 +199,22 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private let voiceTitleLabel = UILabel()
     private let inputModeSwitch = VoiceInputModeSwitch()
     private static let orbDiameter: CGFloat = 132
-    private static let keyboardContentHeight: CGFloat = 260
+    private static let portraitKeyboardContentHeight: CGFloat = 260
+    private static let compactKeyboardContentHeight: CGFloat = 248
     private static let rootHorizontalInset: CGFloat = 4
     private static let rootVerticalInset: CGFloat = 6
     private static let stackSpacing: CGFloat = 4
     private static let topRowHeight: CGFloat = 44
     private static let utilityRowHeight: CGFloat = 48
-    private static let orbContainerHeight: CGFloat = keyboardContentHeight
-        - rootVerticalInset * 2
-        - stackSpacing * 2
-        - topRowHeight
-        - utilityRowHeight
-    private static var textKeyboardBodyHeight: CGFloat {
-        keyboardContentHeight - rootVerticalInset * 2
+    private static func orbContainerHeight(for contentHeight: CGFloat) -> CGFloat {
+        contentHeight
+            - rootVerticalInset * 2
+            - stackSpacing * 2
+            - topRowHeight
+            - utilityRowHeight
     }
-    private static var voiceContentHeight: CGFloat {
-        keyboardContentHeight
-    }
-    private static var textContentHeight: CGFloat {
-        // Voice and text modes intentionally share the same extension height.
-        // Changing only one side causes a visible host-app layout jump during
-        // focus switches; update both modes together if the keyboard height
-        // changes.
-        voiceContentHeight
+    private static func textKeyboardBodyHeight(for contentHeight: CGFloat) -> CGFloat {
+        contentHeight - rootVerticalInset * 2
     }
     private static let topChromeCoverHeight: CGFloat = 0
 
@@ -231,6 +227,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     private let textKeyboardContainer = UIStackView()
     private let textToolbar = UIStackView()
+    private let textWandButton = UIButton(type: .system)
+    private let textPasteButton = UIButton(type: .system)
     private let textToolsButton = UIButton(type: .system)
     private let textKeyboardSwitchButton = UIButton(type: .system)
     private let textHostSettingsButton = UIButton(type: .system)
@@ -333,10 +331,18 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let buttons = textKeyboardButtons
         guard !buttons.isEmpty else { return defaultHit }
 
+        let keyboardRegion = keyRowsStack.convert(
+            keyRowsStack.bounds.insetBy(dx: -24, dy: -24),
+            to: view
+        )
+        guard keyboardRegion.contains(point) else { return defaultHit }
+
         var nearest: UIButton?
         var nearestDistSq: CGFloat = .greatestFiniteMagnitude
+        var largestKeyDimension: CGFloat = 0
         for button in buttons {
             guard !button.isHidden, button.isEnabled, button.alpha > 0.01 else { continue }
+            largestKeyDimension = max(largestKeyDimension, button.bounds.width, button.bounds.height)
             let center = button.convert(CGPoint(x: button.bounds.midX, y: button.bounds.midY), to: view)
             let dx = point.x - center.x
             let dy = point.y - center.y
@@ -348,7 +354,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
         // Cap snap distance so touches in unrelated regions (above keyboard,
         // far into safe-area) don't get hijacked to a far key.
-        let maxSnapDistSq: CGFloat = 64 * 64
+        let snapRadius = min(max(largestKeyDimension * 1.2, 48), 64)
+        let maxSnapDistSq = snapRadius * snapRadius
         guard nearestDistSq <= maxSnapDistSq else { return defaultHit }
         return nearest
     }
@@ -365,10 +372,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     override func viewDidLoad() {
         super.viewDidLoad()
         configureSystemKeyboardAffordances()
-        rimeInput.onStateChange = { [weak self] state in
-            guard let self else { return }
-            self.applyRimeState(state)
-        }
+        configureRimeStateCallback()
         loadState()
         syncPrimaryLanguage()
         configureRoot()
@@ -415,9 +419,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         configureSystemKeyboardAffordances()
+        configureRimeStateCallback()
         refreshKeyboardPreferencesFromHost(rebuildIfNeeded: true)
         refreshInputModeSwitchKeyVisibility()
-        heightConstraint?.constant = currentContentHeight + Self.topChromeCoverHeight
+        applyKeyboardHeightForCurrentTraits()
         resetCorrectionModeToDefault()
         prepareInitialLayoutForDisplay()
         // The current input scene's style isn't always settled by
@@ -447,7 +452,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         deferredStartupWorkItem?.cancel()
         scheduledHostOpenTask?.cancel()
         scheduledStopTask?.cancel()
+        hostWakeResetTask?.cancel()
         stopStatusPolling()
+        rimeInput.onStateChange = nil
         keyboardDarwinObservers.forEach { $0.stopObserving() }
         bridgeProbeTask?.cancel()
         statusRefreshTask?.cancel()
@@ -461,6 +468,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
         stopDeleteRepeat()
         clearTextShiftState()
+        cancelHostWakeResetTask()
+        rimeInput.onStateChange = nil
         deferredStartupWorkItem?.cancel()
         deferredStartupWorkItem = nil
         bridgeProbeTask?.cancel()
@@ -483,6 +492,15 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             correctionPopover.isHidden = true
             correctionPopover.alpha = 0
             correctionPopover.transform = .identity
+        }
+    }
+
+    override func viewWillTransition(to size: CGSize, with coordinator: UIViewControllerTransitionCoordinator) {
+        super.viewWillTransition(to: size, with: coordinator)
+        coordinator.animate { [weak self] _ in
+            guard let self else { return }
+            self.applyKeyboardHeightForCurrentTraits()
+            self.view.layoutIfNeeded()
         }
     }
 
@@ -666,9 +684,30 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private var currentContentHeight: CGFloat {
-        switch keyboardFocus {
-        case .voice: return Self.voiceContentHeight
-        case .text: return Self.textContentHeight
+        // Voice and text modes intentionally share the same extension height.
+        // Changing only one side causes a visible host-app layout jump during
+        // focus switches; update both modes together if the keyboard height
+        // changes.
+        currentKeyboardContentHeight
+    }
+
+    private var currentKeyboardContentHeight: CGFloat {
+        traitCollection.verticalSizeClass == .compact
+            ? Self.compactKeyboardContentHeight
+            : Self.portraitKeyboardContentHeight
+    }
+
+    private func applyKeyboardHeightForCurrentTraits() {
+        let contentHeight = currentKeyboardContentHeight
+        heightConstraint?.constant = contentHeight + Self.topChromeCoverHeight
+        textKeyboardContainerHeightConstraint?.constant = Self.textKeyboardBodyHeight(for: contentHeight)
+        orbContainerHeightConstraint?.constant = Self.orbContainerHeight(for: contentHeight)
+    }
+
+    private func configureRimeStateCallback() {
+        rimeInput.onStateChange = { [weak self] state in
+            guard let self else { return }
+            self.applyRimeState(state)
         }
     }
 
@@ -702,6 +741,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             returnButton,
             textKeyboardContainer,
             textToolbar,
+            textWandButton,
+            textPasteButton,
             textToolsButton,
             textKeyboardSwitchButton,
             textHostSettingsButton,
@@ -766,6 +807,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             KeyboardDarwinBridge.observe(KeyboardDarwinNotificationName.sessionStarted) { [weak self] in
                 DispatchQueue.main.async {
                     guard let self else { return }
+                    self.cancelHostWakeResetTask()
                     if self.currentBridgeStatus?.state != .recording,
                        self.currentBridgeStatus?.state != .sending {
                         self.applyBridgeStatus(KeyboardBridgeStatus(state: .standby, message: "Ready"))
@@ -780,6 +822,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 DispatchQueue.main.async {
                     guard let self else { return }
                     self.cancelScheduledHostOpen()
+                    self.cancelHostWakeResetTask()
                     self.openingHostUntil = 0
                     self.isStartRequestInFlight = false
                     self.tapRecordingActive = false
@@ -793,6 +836,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                     guard let self else { return }
                     let status = KeyboardBridgeStatus(state: .recording, message: "Recording")
                     self.cancelScheduledHostOpen()
+                    self.cancelHostWakeResetTask()
                     self.applyBridgeStatus(status)
                     self.finishStartRequestIfNeeded(status: status)
                 }
@@ -928,20 +972,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         ])
     }
 
-    private func configureIconButton(_ button: UIButton, image: String, accessibilityLabel: String) {
-        var configuration = UIButton.Configuration.plain()
-        configuration.image = UIImage(systemName: image)
-        configuration.cornerStyle = .capsule
-        configuration.baseForegroundColor = .secondaryLabel
-        configuration.contentInsets = NSDirectionalEdgeInsets(top: 4, leading: 7, bottom: 4, trailing: 7)
-        button.configuration = configuration
-        button.translatesAutoresizingMaskIntoConstraints = false
-        button.accessibilityLabel = accessibilityLabel
-        button.accessibilityTraits = .button
-        button.widthAnchor.constraint(equalToConstant: 30).isActive = true
-        button.heightAnchor.constraint(equalToConstant: Self.topRowHeight).isActive = true
-    }
-
     private func configureVoiceButton() {
         orbContainer.translatesAutoresizingMaskIntoConstraints = false
         orbContainer.isUserInteractionEnabled = true
@@ -1050,8 +1080,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             correctionPopover.heightAnchor.constraint(equalToConstant: 60),
         ])
 
+        orbContainerHeightConstraint = orbContainer.heightAnchor.constraint(
+            equalToConstant: Self.orbContainerHeight(for: currentKeyboardContentHeight)
+        )
         NSLayoutConstraint.activate([
-            orbContainer.heightAnchor.constraint(equalToConstant: Self.orbContainerHeight),
+            orbContainerHeightConstraint!,
 
             voiceButton.widthAnchor.constraint(equalToConstant: diameter),
             voiceButton.heightAnchor.constraint(equalToConstant: diameter),
@@ -1263,13 +1296,34 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         textKeyboardContainer.spacing = 8
         textKeyboardContainer.alignment = .fill
         textKeyboardContainer.distribution = .fill
-        textKeyboardContainer.heightAnchor.constraint(equalToConstant: Self.textKeyboardBodyHeight).isActive = true
+        textKeyboardContainerHeightConstraint = textKeyboardContainer.heightAnchor.constraint(
+            equalToConstant: Self.textKeyboardBodyHeight(for: currentKeyboardContentHeight)
+        )
+        textKeyboardContainerHeightConstraint?.isActive = true
 
         textToolbar.axis = .horizontal
         textToolbar.spacing = 4
         textToolbar.alignment = .fill
         textToolbar.distribution = .fill
         textToolbar.heightAnchor.constraint(equalToConstant: 44).isActive = true
+
+        // Wand (voice-command edit selected/recent text) — text-mode users
+        // already have fingers on keys, so press-and-hold is awkward. Use
+        // tap-toggle instead: first tap starts the command recording, second
+        // tap ends it. The voice-mode commandButton keeps its hold contract.
+        configureToolbarIconButton(textWandButton, image: "wand.and.stars")
+        textWandButton.widthAnchor.constraint(equalToConstant: 32).isActive = true
+        textWandButton.accessibilityLabel = NSLocalizedString("Command selected text", comment: "Accessibility label for command/edit-selection button")
+        textWandButton.addTarget(self, action: #selector(textWandTapped), for: .touchUpInside)
+        attachPressAnimation(textWandButton)
+
+        // Paste (insert lastInsertedText or clipboard) — same tap contract as
+        // the voice-mode pasteButton.
+        configureToolbarIconButton(textPasteButton, image: "doc.on.clipboard")
+        textPasteButton.widthAnchor.constraint(equalToConstant: 32).isActive = true
+        textPasteButton.accessibilityLabel = NSLocalizedString("Paste last result", comment: "Paste button accessibility label")
+        textPasteButton.addTarget(self, action: #selector(pasteResult), for: .touchUpInside)
+        attachPressAnimation(textPasteButton)
 
         configureToolbarIconButton(textToolsButton, image: "mic.fill")
         textToolsButton.widthAnchor.constraint(equalToConstant: 32).isActive = true
@@ -1380,6 +1434,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         textKeyboardContainer.addArrangedSubview(textToolbar)
         textToolbar.addArrangedSubview(candidateScrollView)
         textToolbar.addArrangedSubview(textCandidateGridButton)
+        textToolbar.addArrangedSubview(textWandButton)
+        textToolbar.addArrangedSubview(textPasteButton)
         textToolbar.addArrangedSubview(textToolsButton)
         textToolbar.addArrangedSubview(textKeyboardSwitchButton)
         textToolbar.addArrangedSubview(textHostSettingsButton)
@@ -2398,6 +2454,21 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         )
     }
 
+    /// Text-mode wand button: tap once to start recording a voice command,
+    /// tap again to end and apply. Reuses the same underlying flow as the
+    /// voice-mode commandButton (handleCommandTapModePress / endCommandPress)
+    /// but bypasses the user's hold-vs-tap inputMode preference because a
+    /// hold gesture on a small toolbar icon while typing is too awkward.
+    @objc private func textWandTapped() {
+        if isCommandPressActive {
+            endCommandPress()
+            return
+        }
+        isCommandPressActive = true
+        voicePressBeganAt = Date().timeIntervalSince1970
+        handleCommandTapModePress()
+    }
+
     @objc private func commandPressDown() {
         guard !isCommandPressActive else { return }
         isCommandPressActive = true
@@ -2784,6 +2855,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         openHostApp(url) { [weak self] success in
             kbLog.notice("openHostAppForKeyboardAction: open success=\(success, privacy: .public)")
             guard let self, !success else { return }
+            self.cancelHostWakeResetTask()
             self.openingHostUntil = 0
             self.tapRecordingActive = false
             self.bridgeStatus = KeyboardBridgeStatus(state: .error, message: "Open Typeforme to prepare dictation.")
@@ -2801,10 +2873,14 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         // because UI only re-renders on touch, timer, or notification. After
         // the 8s window expires, force a one-shot redraw and reset bridge
         // state so the user can try again.
-        Task { [weak self] in
+        cancelHostWakeResetTask()
+        hostWakeResetTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 8_500_000_000)
+            guard !Task.isCancelled else { return }
             await MainActor.run {
                 guard let self else { return }
+                guard !Task.isCancelled else { return }
+                self.hostWakeResetTask = nil
                 guard !self.isOpeningHostApp else { return }
                 guard self.bridgeStatus?.state == .standby else { return }
                 self.bridgeStatus = KeyboardBridgeStatus(state: .idle, message: self.inputMode.idleTitle)
@@ -2815,6 +2891,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 }
             }
         }
+    }
+
+    private func cancelHostWakeResetTask() {
+        hostWakeResetTask?.cancel()
+        hostWakeResetTask = nil
     }
 
     private func openHostApp(_ url: URL, completion: @escaping (Bool) -> Void) {
@@ -3731,7 +3812,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
-        isKeyboardFocusPanRecognizer(gestureRecognizer) || isKeyboardFocusPanRecognizer(otherGestureRecognizer)
+        isKeyboardFocusPanRecognizer(gestureRecognizer) && isKeyboardFocusPanRecognizer(otherGestureRecognizer)
     }
 
     @objc private func handleKeyboardFocusPan(_ recognizer: UIPanGestureRecognizer) {
@@ -4217,10 +4298,16 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             ? NSLocalizedString("Hide candidates", comment: "Accessibility label for collapsing candidate list")
             : NSLocalizedString("Show more candidates", comment: "Accessibility label for expanding candidate list")
 
-        // Right-side idle icons (mic / voice-keyboard switch / host settings)
-        // hide as soon as the user starts composing so the candidate list
-        // gets the full toolbar width. They come back when composition ends.
+        // Right-side idle icons (wand / paste / mic / voice-keyboard switch /
+        // host settings) hide as soon as the user starts composing so the
+        // candidate list gets the full toolbar width. They come back when
+        // composition ends — including when the candidate area shows the
+        // 5 style chips for a recent dictation result. Style chips and wand
+        // intentionally coexist there: chips run a preset rewrite, wand
+        // records a free-form voice command on the same selection.
         let showIdleIcons = !isComposing
+        textWandButton.isHidden = !showIdleIcons
+        textPasteButton.isHidden = !showIdleIcons
         textToolsButton.isHidden = !showIdleIcons
         textKeyboardSwitchButton.isHidden = !showIdleIcons
         // Hide the "Open Typeforme" gear when the keyboard is already running
@@ -5119,7 +5206,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func startStatusPolling(interval: TimeInterval = 0.35) {
-        guard statusTimer == nil else { return }
+        stopStatusPolling()
         statusTimerInterval = interval
         statusTimer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
             self?.refreshBridgeStatus()
@@ -5186,6 +5273,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             return
         }
         if status.state != .idle {
+            cancelHostWakeResetTask()
             openingHostUntil = 0
         }
         if status.state == .recording, inputMode == .tap {

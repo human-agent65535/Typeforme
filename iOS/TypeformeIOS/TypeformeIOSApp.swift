@@ -45,6 +45,7 @@ struct TypeformeIOSApp: App {
                 }
                 .onChange(of: scenePhase) { _, phase in
                     guard phase == .active else { return }
+                    guard !state.isEditingMacSettings else { return }
                     // Refresh server settings whenever the app comes to the
                     // foreground. Mac-side changes to ASR / correction /
                     // languages stay invisible otherwise — users would never

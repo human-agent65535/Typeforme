@@ -149,6 +149,7 @@ final class AppState: ObservableObject {
     @Published var lastRecordingSummary = ""
     @Published var latestServerTiming: ServerTimingSummary?
     @Published var macSettings: BridgeMacSettingsPayload?
+    @Published var isEditingMacSettings = false
     @Published private(set) var showsReturnButton = false
     @Published private(set) var isHostRecordStarting = false
     @Published private(set) var isStopAndSendInFlight = false

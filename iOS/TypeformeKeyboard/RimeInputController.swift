@@ -313,6 +313,13 @@ final class RimeInputController {
     }
 
     private func finishStartupOnQueue(_ nextState: StartupState, errorMessage: String?) {
+        if nextState == .failed {
+            if session != 0 {
+                api.cleanAllSession()
+                session = 0
+            }
+            didSelectSchema = false
+        }
         stateLock.lock()
         startupState = nextState
         lastErrorMessage = errorMessage

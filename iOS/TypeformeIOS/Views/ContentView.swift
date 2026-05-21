@@ -1208,6 +1208,12 @@ private struct MacSettingsView: View {
         .task {
             await load(force: false)
         }
+        .onAppear {
+            state.isEditingMacSettings = true
+        }
+        .onDisappear {
+            state.isEditingMacSettings = false
+        }
     }
 
     private func attemptDismiss() {
