@@ -43,6 +43,38 @@ struct BridgeMultipartTests {
         #expect(!bodyText.contains("audio_base64"))
     }
 
+    @Test func dictateUploadCanStreamMultipartFromTempFile() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("typeforme-test-\(UUID().uuidString).m4a")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try Data("AUDIOBYTES".utf8).write(to: url)
+
+        let multipart = try RemoteBridgeClient.multipartDictateBodyFile(
+            audioURL: url,
+            languageIDs: ["zh-CN", "en-US"],
+            correctionMode: CorrectionMode.polish.rawValue,
+            appName: "Notes",
+            bundleID: "com.apple.Notes",
+            appCategory: "chat",
+            contextBefore: "前一句。",
+            contextAfter: "后一句。",
+            includeRawTranscript: true
+        )
+        defer { try? FileManager.default.removeItem(at: multipart.fileURL) }
+
+        #expect(multipart.contentType.hasPrefix("multipart/form-data; boundary="))
+        #expect(multipart.contentLength > 0)
+        let body = try Data(contentsOf: multipart.fileURL)
+        #expect(Int64(body.count) == multipart.contentLength)
+        let bodyText = String(data: body, encoding: .utf8) ?? ""
+        #expect(bodyText.contains(#"name="audio"; filename="audio.m4a""#))
+        #expect(bodyText.contains("Content-Type: audio/mp4"))
+        #expect(bodyText.contains("AUDIOBYTES"))
+        #expect(bodyText.contains(#"name="language_ids""#))
+        #expect(bodyText.contains(#"["zh-CN","en-US"]"#))
+        #expect(!bodyText.contains("audio_base64"))
+    }
+
     @Test func dictateUploadRejectsUnsupportedAudioExtension() throws {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("typeforme-test-\(UUID().uuidString).wav")

@@ -221,7 +221,7 @@ struct RemoteBridgeClient {
         includeRawTranscript: Bool = true
     ) async throws -> BridgeDictateResponse {
         let uploadURL = try ASRAudioSupport.bridgeUploadAudioURL(for: audioURL)
-        let multipart = try Self.multipartDictateBody(
+        let multipart = try Self.multipartDictateBodyFile(
             audioURL: uploadURL,
             languageIDs: languageIDs,
             correctionMode: correctionMode.rawValue,
@@ -232,10 +232,12 @@ struct RemoteBridgeClient {
             contextAfter: contextAfter,
             includeRawTranscript: includeRawTranscript
         )
+        defer { try? FileManager.default.removeItem(at: multipart.fileURL) }
         let response: BridgeDictateResponse = try await request(
             path: "/v1/dictate",
             method: "POST",
-            body: multipart.body,
+            bodyFileURL: multipart.fileURL,
+            contentLength: multipart.contentLength,
             contentType: multipart.contentType,
             timeout: 90
         )
@@ -367,6 +369,38 @@ struct RemoteBridgeClient {
         }
 
         let (data, response) = try await URLSession.shared.data(for: request)
+        return try decodeResponse(data: data, response: response)
+    }
+
+    private func request<T: Decodable>(
+        path: String,
+        method: String,
+        bodyFileURL: URL,
+        contentLength: Int64,
+        contentType: String,
+        timeout: TimeInterval
+    ) async throws -> T {
+        guard let url = URL(string: path, relativeTo: baseURL)?.absoluteURL else {
+            throw RemoteBridgeClientError.invalidURL
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        request.timeoutInterval = timeout
+        request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("gzip", forHTTPHeaderField: "Accept-Encoding")
+        request.setValue("no-store", forHTTPHeaderField: "Cache-Control")
+        request.setValue(contentType, forHTTPHeaderField: "Content-Type")
+        request.setValue(String(contentLength), forHTTPHeaderField: "Content-Length")
+        request.httpBodyStream = InputStream(url: bodyFileURL)
+        BridgeClientIdentity.apply(to: &request)
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        return try decodeResponse(data: data, response: response)
+    }
+
+    private func decodeResponse<T: Decodable>(data: Data, response: URLResponse) throws -> T {
         guard let http = response as? HTTPURLResponse else {
             throw RemoteBridgeClientError.invalidResponse
         }
@@ -416,5 +450,30 @@ struct RemoteBridgeClient {
             includeRawTranscript: includeRawTranscript
         )
         return (multipart.body, multipart.contentType)
+    }
+
+    static func multipartDictateBodyFile(
+        audioURL: URL,
+        languageIDs: [String],
+        correctionMode: String,
+        appName: String?,
+        bundleID: String?,
+        appCategory: String,
+        contextBefore: String = "",
+        contextAfter: String = "",
+        includeRawTranscript: Bool
+    ) throws -> (fileURL: URL, contentType: String, contentLength: Int64) {
+        let multipart = try BridgeMultipart.dictateBodyFile(
+            audioURL: audioURL,
+            languageIDs: languageIDs,
+            correctionMode: correctionMode,
+            appName: appName,
+            bundleID: bundleID,
+            appCategory: appCategory,
+            contextBefore: contextBefore,
+            contextAfter: contextAfter,
+            includeRawTranscript: includeRawTranscript
+        )
+        return (multipart.fileURL, multipart.contentType, multipart.contentLength)
     }
 }

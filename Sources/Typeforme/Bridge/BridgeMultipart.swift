@@ -24,6 +24,12 @@ enum BridgeMultipart {
         let contentType: String
     }
 
+    struct FileBody {
+        let fileURL: URL
+        let contentType: String
+        let contentLength: Int64
+    }
+
     static func dictateBody(
         audioURL: URL,
         languageIDs: [String],
@@ -103,14 +109,7 @@ enum BridgeMultipart {
         }
 
         let explicitExtension = audioExtension?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let ext = (
-            explicitExtension?.isEmpty == false
-                ? explicitExtension!
-                : (audioURL.pathExtension.isEmpty ? "m4a" : audioURL.pathExtension)
-        ).lowercased()
-        guard ["m4a", "aac"].contains(ext) else {
-            throw BridgeMultipartError.invalidRequest("Unsupported audio extension: \(ext)")
-        }
+        let ext = try resolvedAudioExtension(for: audioURL, explicitExtension: explicitExtension)
         appendField("audio_extension", ext, to: &body, boundary: boundary)
         try appendFile(
             name: "audio",
@@ -122,6 +121,93 @@ enum BridgeMultipart {
         )
         body.append("--\(boundary)--\r\n")
         return Body(body: body, contentType: "multipart/form-data; boundary=\(boundary)")
+    }
+
+    static func dictateBodyFile(
+        audioURL: URL,
+        languageIDs: [String],
+        correctionMode: String,
+        appName: String?,
+        bundleID: String?,
+        appCategory: String,
+        contextBefore: String = "",
+        contextAfter: String = "",
+        includeRawTranscript: Bool
+    ) throws -> FileBody {
+        try dictateBodyFile(
+            audioURL: audioURL,
+            audioExtension: nil,
+            languageIDs: languageIDs,
+            correctionMode: correctionMode,
+            appName: appName,
+            bundleID: bundleID,
+            appCategory: appCategory,
+            contextBefore: contextBefore,
+            contextAfter: contextAfter,
+            includeRawTranscript: includeRawTranscript
+        )
+    }
+
+    private static func dictateBodyFile(
+        audioURL: URL,
+        audioExtension: String?,
+        languageIDs: [String],
+        correctionMode: String,
+        appName: String?,
+        bundleID: String?,
+        appCategory: String,
+        contextBefore: String,
+        contextAfter: String,
+        includeRawTranscript: Bool
+    ) throws -> FileBody {
+        let boundary = "Typeforme-\(UUID().uuidString)"
+        try AppPaths.ensureDirectories()
+        let bodyURL = AppPaths.bridgeDir.appendingPathComponent("\(UUID().uuidString).multipart")
+        FileManager.default.createFile(atPath: bodyURL.path, contents: nil)
+        let handle = try FileHandle(forWritingTo: bodyURL)
+
+        do {
+            try writeField("language_ids", jsonString(languageIDs), to: handle, boundary: boundary)
+            try writeField("correction_mode", correctionMode, to: handle, boundary: boundary)
+            try writeField("app_category", appCategory, to: handle, boundary: boundary)
+            try writeField("context_before", contextBefore, to: handle, boundary: boundary)
+            try writeField("context_after", contextAfter, to: handle, boundary: boundary)
+            try writeField("include_raw_transcript", includeRawTranscript ? "true" : "false", to: handle, boundary: boundary)
+            if let appName, !appName.isEmpty {
+                try writeField("app_name", appName, to: handle, boundary: boundary)
+            }
+            if let bundleID, !bundleID.isEmpty {
+                try writeField("bundle_id", bundleID, to: handle, boundary: boundary)
+            }
+
+            let explicitExtension = audioExtension?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let ext = try resolvedAudioExtension(for: audioURL, explicitExtension: explicitExtension)
+            try writeField("audio_extension", ext, to: handle, boundary: boundary)
+            try writeFile(
+                name: "audio",
+                filename: "audio.\(ext)",
+                contentType: mimeType(forExtension: ext),
+                fileURL: audioURL,
+                to: handle,
+                boundary: boundary
+            )
+            try handle.write(contentsOf: Data("--\(boundary)--\r\n".utf8))
+            try handle.close()
+
+            let size = (try FileManager.default.attributesOfItem(atPath: bodyURL.path)[.size] as? NSNumber)?.int64Value ?? 0
+            guard size > 0 else {
+                throw BridgeMultipartError.invalidRequest("Multipart body is empty")
+            }
+            return FileBody(
+                fileURL: bodyURL,
+                contentType: "multipart/form-data; boundary=\(boundary)",
+                contentLength: size
+            )
+        } catch {
+            try? handle.close()
+            try? FileManager.default.removeItem(at: bodyURL)
+            throw error
+        }
     }
 
     static func parseFormData(
@@ -269,6 +355,46 @@ enum BridgeMultipart {
         body.append("Content-Type: \(contentType)\r\n\r\n")
         body.append(try Data(contentsOf: fileURL))
         body.append("\r\n")
+    }
+
+    private static func writeField(_ name: String, _ value: String, to handle: FileHandle, boundary: String) throws {
+        try handle.write(contentsOf: Data("--\(boundary)\r\n".utf8))
+        try handle.write(contentsOf: Data("Content-Disposition: form-data; name=\"\(name)\"\r\n\r\n".utf8))
+        try handle.write(contentsOf: Data(value.utf8))
+        try handle.write(contentsOf: Data("\r\n".utf8))
+    }
+
+    private static func writeFile(
+        name: String,
+        filename: String,
+        contentType: String,
+        fileURL: URL,
+        to handle: FileHandle,
+        boundary: String
+    ) throws {
+        try handle.write(contentsOf: Data("--\(boundary)\r\n".utf8))
+        try handle.write(contentsOf: Data("Content-Disposition: form-data; name=\"\(name)\"; filename=\"\(filename)\"\r\n".utf8))
+        try handle.write(contentsOf: Data("Content-Type: \(contentType)\r\n\r\n".utf8))
+        let input = try FileHandle(forReadingFrom: fileURL)
+        defer { try? input.close() }
+        while true {
+            let chunk = try input.read(upToCount: 512 * 1024) ?? Data()
+            guard !chunk.isEmpty else { break }
+            try handle.write(contentsOf: chunk)
+        }
+        try handle.write(contentsOf: Data("\r\n".utf8))
+    }
+
+    private static func resolvedAudioExtension(for audioURL: URL, explicitExtension: String?) throws -> String {
+        let ext = (
+            explicitExtension?.isEmpty == false
+                ? explicitExtension!
+                : (audioURL.pathExtension.isEmpty ? "m4a" : audioURL.pathExtension)
+        ).lowercased()
+        guard ["m4a", "aac"].contains(ext) else {
+            throw BridgeMultipartError.invalidRequest("Unsupported audio extension: \(ext)")
+        }
+        return ext
     }
 
     private static func jsonString<T: Encodable>(_ value: T) -> String {
