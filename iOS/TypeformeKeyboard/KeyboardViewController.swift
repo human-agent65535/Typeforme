@@ -202,10 +202,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private let voiceTitleLabel = UILabel()
     private let inputModeSwitch = VoiceInputModeSwitch()
     private static let orbDiameter: CGFloat = 132
-    private static let portraitKeyboardContentHeight: CGFloat = 260
-    private static let compactKeyboardContentHeight: CGFloat = 248
+    private static let portraitKeyboardContentHeight: CGFloat = 270
+    private static let compactKeyboardContentHeight: CGFloat = 256
     private static let rootHorizontalInset: CGFloat = 4
-    private static let rootVerticalInset: CGFloat = 6
+    private static let rootVerticalInset: CGFloat = 8
     private static let stackSpacing: CGFloat = 4
     private static let topRowHeight: CGFloat = 44
     private static let utilityRowHeight: CGFloat = 48

@@ -4,7 +4,7 @@
 schema:
   schema_id: typeforme_pinyin
   name: Typeforme 拼音
-  version: '0.1'
+  version: '0.2'
   author:
     - Typeforme
   description: |
@@ -70,9 +70,9 @@ speller:
 translator:
   dictionary: pinyin_simp
   enable_completion: true
-  enable_encoder: false
+  enable_encoder: true
   enable_sentence: true
-  enable_user_dict: false
+  enable_user_dict: true
   spelling_hints: 5
   preedit_format:
     - xform/([nl])v/$1ü/

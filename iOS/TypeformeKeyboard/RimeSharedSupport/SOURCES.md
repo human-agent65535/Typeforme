@@ -19,5 +19,12 @@ That creates `build/` from the files above with `rime_deployer`, so the
 keyboard extension can load candidates without compiling dictionaries on first
 use.
 
+To inspect the candidate quality from the same prebuilt data used by the iOS
+keyboard, run:
+
+```sh
+scripts/benchmark-rime-ios-data.sh
+```
+
 The keyboard code does not contain a local pinyin table. Key events are routed
 to librime, and candidates/commit text are read back from the Rime session.
