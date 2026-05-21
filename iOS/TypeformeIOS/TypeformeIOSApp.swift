@@ -26,6 +26,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 struct TypeformeIOSApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var state = AppState()
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
         WindowGroup {
@@ -38,6 +39,19 @@ struct TypeformeIOSApp: App {
                     guard let url = notification.object as? URL else { return }
                     let sourceApplication = notification.userInfo?["sourceApplication"] as? String
                     Task { await state.handleOpenURL(url, sourceApplication: sourceApplication) }
+                }
+                .onOpenURL { url in
+                    Task { await state.handleOpenURL(url) }
+                }
+                .onChange(of: scenePhase) { _, phase in
+                    guard phase == .active else { return }
+                    // Refresh server settings whenever the app comes to the
+                    // foreground. Mac-side changes to ASR / correction /
+                    // languages stay invisible otherwise — users would never
+                    // know to open the Server Settings sheet to pull a fresh
+                    // copy. Silent: failures populate the existing
+                    // errorMessage banner without disrupting current input.
+                    Task { try? await state.refreshMacSettings() }
                 }
         }
     }

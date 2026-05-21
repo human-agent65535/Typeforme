@@ -9,7 +9,6 @@ struct ContentView: View {
     @State private var rawTranscriptExpanded = false
     /// First-launch setup guidance — once dismissed, the user can still reach
     /// it via the toolbar's "Keyboard Guide" menu item.
-    @AppStorage("ui.setupGuidanceDismissed") private var setupGuidanceDismissed = false
 
     var body: some View {
         NavigationStack {
@@ -70,11 +69,6 @@ struct ContentView: View {
                     NavigationStack {
                         MacSettingsView()
                             .environmentObject(state)
-                            .toolbar {
-                                ToolbarItem(placement: .confirmationAction) {
-                                    Button("Done") { showingMacSettings = false }
-                                }
-                        }
                     }
                 }
                 .sheet(isPresented: $showingKeyboardSettings) {
@@ -129,12 +123,9 @@ struct ContentView: View {
                                 state.errorMessage = nil
                             }
                         }
-                        if !setupGuidanceDismissed {
-                            SetupStatusCard(
-                                onShowGuide: { showingKeyboardGuide = true },
-                                onDismiss: { setupGuidanceDismissed = true }
-                            )
-                        }
+                        SetupStatusCard(
+                            onShowGuide: { showingKeyboardGuide = true }
+                        )
                     }
                     .padding(.horizontal, 16)
                     .padding(.bottom, 32)
@@ -147,72 +138,78 @@ struct ContentView: View {
 
 // MARK: - Setup guidance
 
-/// First-launch setup guidance. Sits at the BOTTOM of the scroll because it
-/// is a one-shot onboarding aid — once the user enables the keyboard +
-/// Full Access, they don't need to see it again. The ✕ button writes a
-/// dismissal flag to AppStorage; the toolbar's Keyboard Guide menu item
-/// remains as a discoverability fallback.
+/// Persistent onboarding card. Always present at the bottom of the scroll;
+/// the chevron toggles between a one-line header and the full setup
+/// guidance. We default to expanded until the keyboard extension has been
+/// observed reaching the host (which implies both "keyboard enabled" and
+/// "Full Access granted" — see AppState.keyboardEverContacted) and to
+/// collapsed afterwards, while still letting the user re-expand any time.
 private struct SetupStatusCard: View {
+    @EnvironmentObject private var state: AppState
     let onShowGuide: () -> Void
-    let onDismiss: () -> Void
+
+    @State private var isExpanded: Bool = true
+    @State private var didApplyInitialExpansion = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 8) {
-                Image(systemName: "checkmark.seal.fill")
-                    .foregroundStyle(Color.green)
-                Text("Paired with Mac")
-                    .font(.subheadline.weight(.semibold))
-                Spacer()
-                Button {
-                    onDismiss()
-                } label: {
-                    Image(systemName: "xmark")
+            Button {
+                withAnimation(.snappy(duration: 0.2)) { isExpanded.toggle() }
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "checkmark.seal.fill")
+                        .foregroundStyle(Color.green)
+                    Text("Paired with Mac")
+                        .font(.subheadline.weight(.semibold))
+                    Spacer()
+                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.tertiary)
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Hide setup steps")
             }
+            .buttonStyle(.plain)
+            .accessibilityLabel(isExpanded ? "Hide setup steps" : "Show setup steps")
 
-            Divider()
+            if isExpanded {
+                Divider()
 
-            Text("Typeforme dictates in any text field via its keyboard. Two iOS-only steps:")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+                Text("Typeforme dictates in any text field via its keyboard. Two iOS-only steps:")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
 
-            VStack(alignment: .leading, spacing: 10) {
-                SetupStepRow(
-                    icon: "keyboard",
-                    title: "Enable Typeforme keyboard",
-                    subtitle: "Settings → General → Keyboard → Add New Keyboard"
-                )
-                SetupStepRow(
-                    icon: "lock.shield",
-                    title: "Allow Full Access",
-                    subtitle: "Required so the keyboard can reach this app"
-                )
-            }
-
-            HStack(spacing: 10) {
-                Button {
-                    onShowGuide()
-                } label: {
-                    Label("Guide", systemImage: "questionmark.circle")
+                VStack(alignment: .leading, spacing: 10) {
+                    SetupStepRow(
+                        icon: "keyboard",
+                        title: "Enable Typeforme keyboard",
+                        subtitle: "Settings → General → Keyboard → Add New Keyboard"
+                    )
+                    SetupStepRow(
+                        icon: "lock.shield",
+                        title: "Allow Full Access",
+                        subtitle: "Required so the keyboard can reach this app"
+                    )
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
 
-                Button {
-                    if let url = URL(string: UIApplication.openSettingsURLString) {
-                        UIApplication.shared.open(url)
+                HStack(spacing: 10) {
+                    Button {
+                        onShowGuide()
+                    } label: {
+                        Label("Guide", systemImage: "questionmark.circle")
                     }
-                } label: {
-                    Label("Open Settings", systemImage: "arrow.up.right.square")
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+
+                    Button {
+                        if let url = URL(string: UIApplication.openSettingsURLString) {
+                            UIApplication.shared.open(url)
+                        }
+                    } label: {
+                        Label("Open Settings", systemImage: "arrow.up.right.square")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
             }
         }
         .padding(16)
@@ -221,6 +218,11 @@ private struct SetupStatusCard: View {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .fill(Color(uiColor: .secondarySystemGroupedBackground))
         )
+        .onAppear {
+            guard !didApplyInitialExpansion else { return }
+            didApplyInitialExpansion = true
+            isExpanded = !state.keyboardEverContacted
+        }
     }
 }
 
@@ -474,7 +476,7 @@ private struct HeroRecordCard: View {
     }
 
     private var isRecording: Bool {
-        state.recorder.isRecording || state.phase == .recording
+        (state.recorder.isRecording || state.phase == .recording) && !state.isStopAndSendInFlight
     }
 
     /// The orb is a single-purpose action: hold to speak, release to send.
@@ -891,8 +893,10 @@ private struct RawTranscriptCard: View {
             }
             .buttonStyle(.plain)
 
-            if expanded || state.rawTranscript.isEmpty {
-                Text(state.rawTranscript)
+            if expanded {
+                Text(state.rawTranscript.isEmpty
+                    ? "No raw transcript yet — start dictation to see the unedited recognition output here."
+                    : state.rawTranscript)
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
@@ -988,7 +992,7 @@ private struct KeyboardGuideView: View {
                 GuideStepRow(
                     icon: "sparkles",
                     title: "Restyle existing text",
-                    detail: "In the keyboard, Clean, Polish, Polish+, Structure+, and Formal+ use the selected text first, then the current input. In the host app, mode changes reuse the original recording transcript when available."
+                    detail: "Clean, Polish, Polish+, Structure+, and Formal+ use the selected text first, then the current visible input text."
                 )
                 GuideStepRow(
                     icon: "exclamationmark.triangle",
@@ -1058,11 +1062,18 @@ private struct ToastView: View {
 
 private struct MacSettingsView: View {
     @EnvironmentObject private var state: AppState
+    @Environment(\.dismiss) private var dismiss
+    @State private var initialDraft: BridgeMacSettingsPayload?
     @State private var draft: BridgeMacSettingsPayload?
     @State private var isLoading = false
     @State private var isSaving = false
     @State private var errorMessage: String?
-    @State private var savedMessage: String?
+    @State private var showingDiscardConfirmation = false
+
+    private var hasUnsavedChanges: Bool {
+        guard let draft, let initialDraft else { return false }
+        return draft != initialDraft
+    }
 
     var body: some View {
         List {
@@ -1153,34 +1164,12 @@ private struct MacSettingsView: View {
                     Toggle("Auto Commit", isOn: autoCommitBinding)
                 }
 
-                Section {
-                    Button {
-                        Task { await save() }
-                    } label: {
-                        Label(isSaving ? "Saving…" : "Save to Server", systemImage: "arrow.up.circle")
-                    }
-                    .disabled(isSaving)
-
-                    Button {
-                        Task { await load(force: true) }
-                    } label: {
-                        Label("Reload from Server", systemImage: "arrow.clockwise")
-                    }
-                    .disabled(isLoading || isSaving)
-                }
             } else {
                 Section {
                     HStack {
                         ProgressView()
                         Text("Loading server settings")
                     }
-                }
-            }
-
-            if let savedMessage {
-                Section {
-                    Text(savedMessage)
-                        .foregroundStyle(.secondary)
                 }
             }
 
@@ -1192,8 +1181,47 @@ private struct MacSettingsView: View {
             }
         }
         .navigationTitle("Server Settings")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) {
+                Button("Cancel") { attemptDismiss() }
+                    .disabled(isSaving)
+            }
+            ToolbarItem(placement: .confirmationAction) {
+                Button(isSaving ? "Saving…" : "Save") {
+                    Task { await saveAndDismiss() }
+                }
+                .disabled(draft == nil || isSaving || !hasUnsavedChanges)
+            }
+        }
+        .interactiveDismissDisabled(hasUnsavedChanges)
+        .confirmationDialog(
+            "Discard server settings changes?",
+            isPresented: $showingDiscardConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Discard Changes", role: .destructive) { dismiss() }
+            Button("Keep Editing", role: .cancel) { }
+        } message: {
+            Text("You have unsaved changes that won't be pushed to the server.")
+        }
         .task {
             await load(force: false)
+        }
+    }
+
+    private func attemptDismiss() {
+        if hasUnsavedChanges {
+            showingDiscardConfirmation = true
+        } else {
+            dismiss()
+        }
+    }
+
+    private func saveAndDismiss() async {
+        await save()
+        if errorMessage == nil {
+            dismiss()
         }
     }
 
@@ -1293,9 +1321,10 @@ private struct MacSettingsView: View {
         guard force || draft == nil else { return }
         isLoading = true
         errorMessage = nil
-        savedMessage = nil
         do {
-            draft = try await state.refreshMacSettings()
+            let loaded = try await state.refreshMacSettings()
+            draft = loaded
+            initialDraft = loaded
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -1306,10 +1335,10 @@ private struct MacSettingsView: View {
         guard let draft else { return }
         isSaving = true
         errorMessage = nil
-        savedMessage = nil
         do {
-            self.draft = try await state.updateMacSettings(draft)
-            savedMessage = "Saved to server."
+            let updated = try await state.updateMacSettings(draft)
+            self.draft = updated
+            initialDraft = updated
         } catch {
             errorMessage = error.localizedDescription
         }

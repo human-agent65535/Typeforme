@@ -199,6 +199,8 @@ enum AppSettings {
     // MARK: - Service-side accessors
 
     private static var ud: UserDefaults { .standard }
+    private static let clientIdentityLock = NSLock()
+    private static var cachedClientIdentityID: String?
 
     static let serverScopedSettingKeys: [String] = [
         Keys.asrProvider,
@@ -492,14 +494,25 @@ enum AppSettings {
 
     @discardableResult
     static func ensureClientIdentityID() -> String {
-        if let existing = ud.string(forKey: Keys.clientIdentityID)?
-            .trimmingCharacters(in: .whitespacesAndNewlines),
-           !existing.isEmpty {
+        clientIdentityLock.lock()
+        defer { clientIdentityLock.unlock() }
+
+        if let cached = cleanClientIdentityID(cachedClientIdentityID) {
+            return cached
+        }
+        if let existing = cleanClientIdentityID(ud.string(forKey: Keys.clientIdentityID)) {
+            cachedClientIdentityID = existing
             return existing
         }
         let identity = "mac-\(UUID().uuidString.lowercased())"
         ud.set(identity, forKey: Keys.clientIdentityID)
+        cachedClientIdentityID = identity
         return identity
+    }
+
+    private static func cleanClientIdentityID(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     private static func newLocalToken() -> String {

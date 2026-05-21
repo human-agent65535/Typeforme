@@ -66,7 +66,7 @@ extension KeyboardBridgeCommandAction {
     var requestTimeout: TimeInterval {
         switch self {
         case .start:
-            return 6.0
+            return 1.0
         case .configure, .cancel:
             return 1.2
         case .stop:

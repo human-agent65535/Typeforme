@@ -20,6 +20,9 @@ switches:
   - name: ascii_punct
     states: [ 。，, ．， ]
 
+menu:
+  page_size: 9
+
 engine:
   processors:
     - ascii_composer
@@ -38,7 +41,7 @@ engine:
     - fallback_segmentor
   translators:
     - punct_translator
-    - table_translator
+    - script_translator
   filters:
     - uniquifier
 
@@ -47,6 +50,10 @@ speller:
   delimiter: " '"
   algebra:
     - erase/^xx$/
+    - erase/^hm$/
+    - erase/^m$/
+    - erase/^n$/
+    - erase/^ng$/
     - abbrev/^([a-z]).+$/$1/
     - abbrev/^([zcs]h).+$/$1/
     - derive/^([nl])ve$/$1ue/

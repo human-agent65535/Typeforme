@@ -36,13 +36,13 @@ final class StandbyKeeper {
     private static let playbackFormat: AVAudioFormat? =
         AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 2)
 
-    func start() {
+    func start(configureSession: Bool = true) {
         guard let format = Self.playbackFormat else {
             isActive = false
             return
         }
         do {
-            try setupAndPlay(format: format)
+            try setupAndPlay(format: format, configureSession: configureSession)
             isActive = true
         } catch {
             // Audio session conflicts, hardware unavailable, etc. — log
@@ -55,7 +55,7 @@ final class StandbyKeeper {
         }
     }
 
-    func stop() {
+    func stop(deactivateSession: Bool = true) {
         let wasActive = isActive
         if player.isPlaying {
             player.stop()
@@ -64,19 +64,21 @@ final class StandbyKeeper {
             engine.stop()
         }
         isActive = false
-        if wasActive {
+        if wasActive, deactivateSession {
             try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         }
     }
 
-    private func setupAndPlay(format: AVAudioFormat) throws {
+    private func setupAndPlay(format: AVAudioFormat, configureSession: Bool) throws {
         let session = AVAudioSession.sharedInstance()
-        try session.setCategory(
-            .playback,
-            mode: .default,
-            options: [.mixWithOthers]
-        )
-        try session.setActive(true)
+        if configureSession {
+            try session.setCategory(
+                .playback,
+                mode: .default,
+                options: [.mixWithOthers]
+            )
+            try session.setActive(true)
+        }
 
         if !hasAttached {
             engine.attach(player)

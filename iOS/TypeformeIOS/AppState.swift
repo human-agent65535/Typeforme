@@ -139,11 +139,19 @@ final class AppState: ObservableObject {
     @Published var keyboardCharacterPreviewEnabled: Bool
     @Published var keyboardChinesePunctuationStyle: KeyboardChinesePunctuationStyle
     @Published var keyboardBridgeStatus = KeyboardBridgeStatus.idle
+    /// True once the keyboard extension has successfully contacted the host
+    /// (via the local bridge server or a Darwin notification). A successful
+    /// contact implies the keyboard is enabled AND has Full Access — without
+    /// Full Access the extension can't open a local network connection. Used
+    /// by SetupStatusCard to decide whether to default-expand the onboarding
+    /// hints. Persisted in UserDefaults so it survives app restarts.
+    @Published var keyboardEverContacted: Bool
     @Published var lastRecordingSummary = ""
     @Published var latestServerTiming: ServerTimingSummary?
     @Published var macSettings: BridgeMacSettingsPayload?
     @Published private(set) var showsReturnButton = false
     @Published private(set) var isHostRecordStarting = false
+    @Published private(set) var isStopAndSendInFlight = false
     /// Transient feedback ("Copied!", "Saved!") rendered as a toast.
     @Published var transientMessage: String?
 
@@ -159,9 +167,11 @@ final class AppState: ObservableObject {
     private static let keyboardAutoCapitalizationKey = "keyboard.autoCapitalizationEnabled"
     private static let keyboardCharacterPreviewKey = "keyboard.characterPreviewEnabled"
     private static let keyboardChinesePunctuationStyleKey = "keyboard.chinesePunctuationStyle"
+    private static let keyboardEverContactedKey = "keyboard.everContacted"
     private static let keyboardDefaultsPasteboardName = UIPasteboard.Name("com.typeforme.keyboard.defaults")
     private static let returnTraceLogName = "typeforme-return-trace.log"
-    private static let recordingTailBufferNanoseconds: UInt64 = 280_000_000
+    private static let returnTraceEnabledKey = "debug.returnTraceEnabled"
+    private static let recordingTailBufferNanoseconds: UInt64 = 200_000_000
     /// Keeps the host process reachable when microphone permission has not
     /// been granted yet. It must not replace the input standby session once
     /// microphone access is available.
@@ -172,8 +182,8 @@ final class AppState: ObservableObject {
     private var hostHoldReleasePending = false
     private var hostRecordingUsesKeyboardAudioSession = false
     private var keyboardCaptureStartedFromKeyboard = false
-    private var isStopAndSendInFlight = false
     private var hostAudioSessionExpiryTask: Task<Void, Never>?
+    private var keyboardStandbyRefreshTask: Task<Void, Never>?
     private var routeFetchedAt: Date?
     private var networkPathSignature: String?
     private var lastNetworkPathRefreshAt: Date?
@@ -183,6 +193,7 @@ final class AppState: ObservableObject {
     private var transientMessageTask: Task<Void, Never>?
     private var initialRenderDelayTask: Task<Void, Never>?
     private var modelStatusPollingTask: Task<Void, Never>?
+    private var recorderPreWarmTask: Task<Void, Never>?
     private var lifecycleObservers: [NSObjectProtocol] = []
     private var keyboardDarwinObservers: [KeyboardDarwinNotificationObserver] = []
     private var idleTimerHolders = 0
@@ -273,6 +284,7 @@ final class AppState: ObservableObject {
             .map { _ in UserDefaults.standard.bool(forKey: Self.keyboardCharacterPreviewKey) } ?? true
         self.keyboardChinesePunctuationStyle = UserDefaults.standard.string(forKey: Self.keyboardChinesePunctuationStyleKey)
             .flatMap(KeyboardChinesePunctuationStyle.init(rawValue:)) ?? .chinese
+        self.keyboardEverContacted = UserDefaults.standard.bool(forKey: Self.keyboardEverContactedKey)
         self.selectedLanguageIDs = Set(saved.validatedLanguageIDs)
         self.keyboardStandbyEnabled = true
         configureKeyboardServer()
@@ -286,11 +298,14 @@ final class AppState: ObservableObject {
             self?.objectWillChange.send()
         }
         publishKeyboardDefaults()
+        scheduleHostRecorderPreWarm()
     }
 
     deinit {
         hostAudioSessionExpiryTask?.cancel()
+        keyboardStandbyRefreshTask?.cancel()
         modelStatusPollingTask?.cancel()
+        recorderPreWarmTask?.cancel()
         networkPathMonitor.cancel()
         for token in lifecycleObservers {
             NotificationCenter.default.removeObserver(token)
@@ -305,6 +320,7 @@ final class AppState: ObservableObject {
         await setKeyboardStandby(true)
         await refreshRoute(force: true)
         _ = try? await refreshMacSettings()
+        scheduleHostRecorderPreWarm()
     }
 
     func saveConfig(_ newConfig: PairingConfig) {
@@ -431,9 +447,42 @@ final class AppState: ObservableObject {
         _ = try? await refreshMacSettings(timeout: 2)
     }
 
+    private func scheduleHostRecorderPreWarm() {
+        guard AVAudioApplication.shared.recordPermission == .granted else { return }
+        guard !recorder.isRecording,
+              !keyboardAudioSession.isRecording,
+              !keyboardAudioSession.isActive,
+              !isHostRecordStarting
+        else { return }
+        recorderPreWarmTask?.cancel()
+        recorderPreWarmTask = Task { @MainActor [weak self] in
+            await Task.yield()
+            guard let self,
+                  !Task.isCancelled,
+                  !self.recorder.isRecording,
+                  !self.keyboardAudioSession.isActive,
+                  !self.isHostRecordStarting,
+                  !self.phase.isBusy
+            else { return }
+            await self.recorder.preWarm()
+        }
+    }
+
     private func resetCorrectionModeToDefault() {
         guard correctionMode != config.correctionMode else { return }
         correctionMode = config.correctionMode
+    }
+
+    private func applyKeyboardDefaultCorrectionMode(_ mode: CorrectionModeID) {
+        let configChanged = config.correctionMode != mode
+        let visibleChanged = correctionMode != mode
+        guard configChanged || visibleChanged else { return }
+        config.correctionMode = mode
+        correctionMode = mode
+        if configChanged {
+            store.save(config)
+            publishKeyboardDefaults()
+        }
     }
 
     private func publishKeyboardDefaults() {
@@ -451,6 +500,7 @@ final class AppState: ObservableObject {
               let pasteboard = UIPasteboard(name: Self.keyboardDefaultsPasteboardName, create: true)
         else { return }
         pasteboard.string = text
+        KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.keyboardDefaultsChanged)
     }
 
     private func persistActiveLocalRouteIfNeeded(_ status: BridgeRouteStatus) {
@@ -549,7 +599,8 @@ final class AppState: ObservableObject {
             return
         }
 
-        await refreshServerSettingsIfStale()
+        // Keep the press-to-record path local-only. Mac settings refresh can
+        // take seconds on a stale route; foreground/bootstrap keep it warm.
         resetCorrectionModeToDefault()
         do {
             try await startHostRecordingCapture()
@@ -601,7 +652,8 @@ final class AppState: ObservableObject {
             return
         }
 
-        await refreshServerSettingsIfStale()
+        // Keep the press-to-record path local-only. Mac settings refresh can
+        // take seconds on a stale route; foreground/bootstrap keep it warm.
         resetCorrectionModeToDefault()
         do {
             try await startHostRecordingCapture()
@@ -616,15 +668,54 @@ final class AppState: ObservableObject {
 
     private func startHostRecordingCapture() async throws {
         keyboardCaptureStartedFromKeyboard = false
-        standbyKeeper.stop()
+        let startedAt = CFAbsoluteTimeGetCurrent()
+        let hadSilentStandby = standbyKeeper.isActive
+        let hadKeyboardSession = keyboardAudioSession.isActive
+        let hadPreWarmedRecorder = recorder.isPreWarmed
+        var path = "recorder-cold"
+        // Host press-to-record may run while the silent standby engine is
+        // keeping the process warm. Stop that engine, but keep the audio
+        // session active so recording does not pay a deactivate/reactivate
+        // round trip before the UI can leave Preparing.
+        standbyKeeper.stop(deactivateSession: false)
         if keyboardAudioSession.isActive, !keyboardAudioSession.isRecording {
+            path = "keyboard-session"
             _ = try await keyboardAudioSession.beginRecording()
             hostRecordingUsesKeyboardAudioSession = true
+            logSlowHostRecordingStart(
+                startedAt: startedAt,
+                path: path,
+                hadSilentStandby: hadSilentStandby,
+                hadKeyboardSession: hadKeyboardSession,
+                hadPreWarmedRecorder: hadPreWarmedRecorder
+            )
             return
         }
 
+        path = recorder.isPreWarmed ? "recorder-prewarmed" : "recorder-cold"
         try await recorder.start(reuseActiveSession: keyboardAudioSession.isActive)
         hostRecordingUsesKeyboardAudioSession = false
+        logSlowHostRecordingStart(
+            startedAt: startedAt,
+            path: path,
+            hadSilentStandby: hadSilentStandby,
+            hadKeyboardSession: hadKeyboardSession,
+            hadPreWarmedRecorder: hadPreWarmedRecorder
+        )
+    }
+
+    private func logSlowHostRecordingStart(
+        startedAt: CFAbsoluteTime,
+        path: String,
+        hadSilentStandby: Bool,
+        hadKeyboardSession: Bool,
+        hadPreWarmedRecorder: Bool
+    ) {
+        let elapsedMs = Int((CFAbsoluteTimeGetCurrent() - startedAt) * 1_000)
+        guard elapsedMs >= 250 else { return }
+        appLog.notice(
+            "host recording start slow elapsedMs=\(elapsedMs, privacy: .public) path=\(path, privacy: .public) silentStandby=\(hadSilentStandby, privacy: .public) keyboardSession=\(hadKeyboardSession, privacy: .public) prewarmed=\(hadPreWarmedRecorder, privacy: .public)"
+        )
     }
 
     func stopAndSend(keyboardCommandID: String? = nil) async {
@@ -644,6 +735,15 @@ final class AppState: ObservableObject {
             releaseIdleTimer()
             return
         }
+        // Stop is a user-visible state transition, so publish it before the
+        // short tail capture below. The recorder keeps running for 200ms only
+        // to avoid clipping the final syllable; the UI and keyboard should
+        // already behave as stopped/sending.
+        setPhase(.sending)
+        if keyboardCommandID != nil || keyboardCaptureWasStartedFromKeyboard || isKeyboardCapture {
+            publishKeyboardStatus(.sending, commandID: keyboardCommandID, message: "Sending")
+        }
+        KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.dictationStopped)
         try? await Task.sleep(nanoseconds: Self.recordingTailBufferNanoseconds)
         let fileURL = isKeyboardCapture
             ? keyboardAudioSession.finishRecording()
@@ -686,7 +786,6 @@ final class AppState: ObservableObject {
         acquireIdleTimer()
         defer { releaseIdleTimer() }
 
-        setPhase(.sending)
         if let keyboardCommandID {
             publishKeyboardStatus(.sending, commandID: keyboardCommandID, message: "Resolving Bridge")
         }
@@ -927,7 +1026,10 @@ final class AppState: ObservableObject {
     private func currentRestyleSource() -> RestyleSource? {
         let visibleText = resultText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !visibleText.isEmpty else { return nil }
-        return RestyleSource(sessionID: nil, rawTranscript: visibleText)
+        return RestyleSource(
+            sessionID: nil,
+            rawTranscript: visibleText
+        )
     }
 
     func handleOpenURL(_ url: URL, sourceApplication: String? = nil) async {
@@ -1048,13 +1150,17 @@ final class AppState: ObservableObject {
                 scheduleHostAudioSessionExpiry()
                 return isInputReady
             } catch {
-                errorMessage = "Keyboard bridge unavailable: \(error.localizedDescription)"
-                publishKeyboardStatus(.error, message: error.localizedDescription)
+                let message = "Keyboard audio session unavailable: \(error.localizedDescription)"
+                errorMessage = message
+                appLog.error("setKeyboardStandby: \(message, privacy: .public)")
+                publishKeyboardStatus(.error, message: message)
                 return false
             }
         } else {
             hostAudioSessionExpiryTask?.cancel()
             hostAudioSessionExpiryTask = nil
+            keyboardStandbyRefreshTask?.cancel()
+            keyboardStandbyRefreshTask = nil
             keyboardServer.stop()
             standbyKeeper.stop()
             keyboardAudioSession.stop()
@@ -1069,20 +1175,28 @@ final class AppState: ObservableObject {
 
     private func prepareKeyboardInputStandby(requestMicrophoneIfNeeded: Bool) async throws -> Bool {
         if keyboardAudioSession.isActive {
-            standbyKeeper.stop()
+            startKeyboardSessionKeepAlive()
             return true
+        }
+
+        if !(await waitUntilApplicationIsActive(timeout: requestMicrophoneIfNeeded ? 3.0 : 1.0)) {
+            appLog.notice("prepareKeyboardInputStandby: app did not become active before audio start; continuing with activation retry")
         }
 
         switch AVAudioApplication.shared.recordPermission {
         case .granted:
-            standbyKeeper.stop()
-            try await keyboardAudioSession.start()
+            let reuseActiveSession = standbyKeeper.isActive
+            standbyKeeper.stop(deactivateSession: false)
+            try await keyboardAudioSession.start(reuseActiveSession: reuseActiveSession)
+            startKeyboardSessionKeepAlive()
             return true
         case .undetermined:
             guard requestMicrophoneIfNeeded else { return false }
             guard await requestMicrophonePermission() == .granted else { return false }
-            standbyKeeper.stop()
-            try await keyboardAudioSession.start()
+            let reuseActiveSession = standbyKeeper.isActive
+            standbyKeeper.stop(deactivateSession: false)
+            try await keyboardAudioSession.start(reuseActiveSession: reuseActiveSession)
+            startKeyboardSessionKeepAlive()
             return true
         case .denied:
             if requestMicrophoneIfNeeded {
@@ -1092,6 +1206,15 @@ final class AppState: ObservableObject {
         @unknown default:
             return false
         }
+    }
+
+    private func startKeyboardSessionKeepAlive() {
+        guard keyboardAudioSession.isActive, !standbyKeeper.isActive else { return }
+        // The prepared input engine alone is not enough to keep the containing
+        // app schedulable after returning to the typing app on all iOS builds.
+        // Keep a silent output engine running under the existing playAndRecord
+        // session so Darwin start/stop notifications still reach the host.
+        standbyKeeper.start(configureSession: false)
     }
 
     private func startSilentStandbyKeeperIfNeeded() {
@@ -1253,7 +1376,7 @@ final class AppState: ObservableObject {
 
     private func returnToPreviousAppSoon(bundleID: String?) async {
         appendReturnTrace("returnToPreviousAppSoon start bundle=\(bundleID ?? "nil")")
-        appLog.notice("returnToPreviousAppSoon: start bundle=\(bundleID ?? "nil", privacy: .public)")
+        appLog.notice("returnToPreviousAppSoon: start bundle=\(bundleID ?? "nil", privacy: .private)")
         guard let bundleID else {
             appLog.notice("returnToPreviousAppSoon: no return bundle available")
             appendReturnTrace("return skipped missingBundle")
@@ -1271,12 +1394,12 @@ final class AppState: ObservableObject {
         for (index, delay) in retryDelays.enumerated() {
             try? await Task.sleep(nanoseconds: delay)
             appendReturnTrace("return attempt=\(index + 1) bundle=\(bundleID)")
-            appLog.notice("returnToPreviousAppSoon: attempt \(index + 1, privacy: .public), bundle=\(bundleID, privacy: .public)")
-            NSLog("Typeforme return-to-keyboard: attempt \(index + 1), bundleID=\(bundleID)")
+            appLog.notice("returnToPreviousAppSoon: attempt \(index + 1, privacy: .public), bundle=\(bundleID, privacy: .private)")
+            logReturnTrace("attempt \(index + 1), bundleID=\(bundleID)")
             if openApplication(bundleID: bundleID) {
                 appLog.notice("returnToPreviousAppSoon: returned via LSApplicationWorkspace bundle")
                 appendReturnTrace("return success LSApplicationWorkspace attempt=\(index + 1) bundle=\(bundleID)")
-                NSLog("Typeforme return-to-keyboard: returned via LSApplicationWorkspace bundle")
+                logReturnTrace("returned via LSApplicationWorkspace bundle")
                 return
             }
         }
@@ -1317,18 +1440,18 @@ final class AppState: ObservableObject {
         let trimmed = bundleID.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, trimmed != Bundle.main.bundleIdentifier else {
             appendReturnTrace("openApplication invalid bundle=\(trimmed)")
-            NSLog("Typeforme return-to-keyboard: invalid return bundle \(trimmed)")
+            logReturnTrace("invalid return bundle \(trimmed)")
             return false
         }
         guard let workspaceClass = objc_getClass("LSApplicationWorkspace") as? AnyObject else {
             appendReturnTrace("openApplication LSApplicationWorkspace unavailable bundle=\(trimmed)")
-            NSLog("Typeforme return-to-keyboard: LSApplicationWorkspace unavailable")
+            logReturnTrace("LSApplicationWorkspace unavailable")
             return false
         }
         let defaultSelector = NSSelectorFromString("defaultWorkspace")
         guard let workspace = workspaceClass.perform(defaultSelector)?.takeUnretainedValue() as? NSObject else {
             appendReturnTrace("openApplication defaultWorkspace unavailable bundle=\(trimmed)")
-            NSLog("Typeforme return-to-keyboard: defaultWorkspace unavailable")
+            logReturnTrace("defaultWorkspace unavailable")
             return false
         }
         let openSelector = NSSelectorFromString("openApplicationWithBundleID:")
@@ -1336,21 +1459,22 @@ final class AppState: ObservableObject {
               let imp = workspace.method(for: openSelector)
         else {
             appendReturnTrace("openApplication openApplicationWithBundleID unavailable bundle=\(trimmed)")
-            NSLog("Typeforme return-to-keyboard: openApplicationWithBundleID unavailable")
+            logReturnTrace("openApplicationWithBundleID unavailable")
             return false
         }
         typealias OpenApplication = @convention(c) (AnyObject, Selector, NSString) -> Bool
         let openApplication = unsafeBitCast(imp, to: OpenApplication.self)
         let didOpen = openApplication(workspace, openSelector, trimmed as NSString)
-        appLog.notice("openApplication: bundle=\(trimmed, privacy: .public), result=\(didOpen, privacy: .public)")
+        appLog.notice("openApplication: bundle=\(trimmed, privacy: .private), result=\(didOpen, privacy: .public)")
         appendReturnTrace("openApplication bundle=\(trimmed) result=\(didOpen)")
-        NSLog("Typeforme return-to-keyboard: openApplicationWithBundleID \(trimmed) result=\(didOpen)")
+        logReturnTrace("openApplicationWithBundleID \(trimmed) result=\(didOpen)")
         return didOpen
     }
 
     private func configureKeyboardServer() {
         keyboardServer.statusProvider = { [weak self] in
             guard let self else { return .idle }
+            await self.markKeyboardEverContacted()
             return await MainActor.run {
                 let base = self.keyboardBridgeStatus
                 guard base.state == .recording else {
@@ -1366,8 +1490,20 @@ final class AppState: ObservableObject {
             guard let self else {
                 return KeyboardBridgeStatus(commandID: command.id, state: .error, message: "Typeforme is unavailable")
             }
+            await self.markKeyboardEverContacted()
             return await self.handleKeyboardCommand(command)
         }
+    }
+
+    /// Called when ANY keyboard → host signal arrives (local bridge connect,
+    /// status poll, command). Setting this flag is the only way the host
+    /// learns the keyboard is enabled + has Full Access, since iOS does not
+    /// expose Full Access state to the containing app.
+    @MainActor
+    private func markKeyboardEverContacted() {
+        guard !keyboardEverContacted else { return }
+        keyboardEverContacted = true
+        UserDefaults.standard.set(true, forKey: Self.keyboardEverContactedKey)
     }
 
     private func configureKeyboardDarwinBridge() {
@@ -1376,6 +1512,7 @@ final class AppState: ObservableObject {
             KeyboardDarwinBridge.observe(KeyboardDarwinNotificationName.requestStartDictation) { [weak self] in
                 Task { @MainActor [weak self] in
                     guard let self else { return }
+                    self.markKeyboardEverContacted()
                     guard self.keyboardStandbyEnabled || self.keyboardAudioSession.isRecording else { return }
                     self.activeKeyboardTextEditContext = nil
                     self.activeKeyboardDictationContext = nil
@@ -1432,6 +1569,9 @@ final class AppState: ObservableObject {
         }
         switch command.action {
         case .start:
+            if let requestedMode = CorrectionModeID(rawValue: command.correctionMode) {
+                applyKeyboardDefaultCorrectionMode(requestedMode)
+            }
             activeKeyboardTextEditContext = command.textEditContext
             activeKeyboardDictationContext = command.dictationContext
             keyboardCaptureStartedFromKeyboard = true
@@ -1453,8 +1593,11 @@ final class AppState: ObservableObject {
             KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.dictationStopped)
             resetCorrectionModeToDefault()
         case .configure:
-            await refreshServerSettingsIfStale(maxAge: 0)
-            resetCorrectionModeToDefault()
+            if let requestedMode = CorrectionModeID(rawValue: command.correctionMode) {
+                applyKeyboardDefaultCorrectionMode(requestedMode)
+            } else {
+                resetCorrectionModeToDefault()
+            }
             activeKeyboardTextEditContext = nil
             activeKeyboardDictationContext = nil
             keyboardCaptureStartedFromKeyboard = false
@@ -1575,7 +1718,7 @@ final class AppState: ObservableObject {
                 return
             }
         }
-        await refreshServerSettingsIfStale()
+        // Keep the keyboard press-to-record path local-only for the same reason.
         resetCorrectionModeToDefault()
         do {
             _ = try await keyboardAudioSession.beginRecording()
@@ -1593,7 +1736,7 @@ final class AppState: ObservableObject {
         }
     }
 
-    private func resumeKeyboardStandbyAfterCommand() async {
+    private func resumeKeyboardStandbyAfterCommand(retryCount: Int = 0) async {
         guard keyboardStandbyEnabled else { return }
         guard !keyboardAudioSession.isRecording else { return }
         guard !isHostRecordStarting, !phase.isBusy else { return }
@@ -1609,19 +1752,26 @@ final class AppState: ObservableObject {
             }
             scheduleHostAudioSessionExpiry()
         } catch {
-            // Don't touch `phase` here — this tail runs after every
-            // dictation; a transient server error would otherwise clobber
-            // the `.success(.copied)` phase the user just earned. Banner +
-            // status carry the signal instead.
-            errorMessage = "Keyboard standby refresh failed: \(error.localizedDescription)"
-            publishKeyboardStatus(.error, message: error.localizedDescription)
+            // This tail runs after recording/transcription has already
+            // succeeded. iOS can reject immediate audio-session reactivation
+            // while the recorder/route is still settling, so do not surface it
+            // as a user-visible failure. Keep the bridge process warm if
+            // possible and retry in the background; the next keyboard press can
+            // still open the host if input standby is not ready yet.
+            appLog.notice("keyboard standby refresh deferred: \(error.localizedDescription, privacy: .public)")
+            startSilentStandbyKeeperIfNeeded()
+            publishKeyboardStatus(.idle, message: keyboardMicrophonePreparationMessage)
+            guard retryCount < 2 else { return }
+            scheduleKeyboardStandbyRefresh(delay: 2.0 * Double(retryCount + 1), retryCount: retryCount + 1)
         }
     }
 
-    private func scheduleKeyboardStandbyRefresh() {
-        Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 1_500_000_000)
-            await self?.resumeKeyboardStandbyAfterCommand()
+    private func scheduleKeyboardStandbyRefresh(delay: TimeInterval = 1.5, retryCount: Int = 0) {
+        keyboardStandbyRefreshTask?.cancel()
+        keyboardStandbyRefreshTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            await self?.resumeKeyboardStandbyAfterCommand(retryCount: retryCount)
         }
     }
 
@@ -1690,14 +1840,17 @@ final class AppState: ObservableObject {
                 await MainActor.run {
                     guard let self else { return }
                     if case .success = self.phase {
-                        self.phase = .idle
+                        self.setPhase(.idle)
                     } else if case .failure = self.phase {
-                        self.phase = .idle
+                        self.setPhase(.idle)
                     }
                 }
             }
         default:
             break
+        }
+        if !next.isBusy {
+            scheduleHostRecorderPreWarm()
         }
     }
 
@@ -1723,7 +1876,12 @@ final class AppState: ObservableObject {
             .appendingPathComponent(Self.returnTraceLogName)
     }
 
+    private var isReturnTraceEnabled: Bool {
+        UserDefaults.standard.bool(forKey: Self.returnTraceEnabledKey)
+    }
+
     private func resetReturnTrace(_ message: String) {
+        guard isReturnTraceEnabled else { return }
         guard let url = returnTraceURL else { return }
         do {
             try FileManager.default.createDirectory(
@@ -1737,6 +1895,7 @@ final class AppState: ObservableObject {
     }
 
     private func appendReturnTrace(_ message: String) {
+        guard isReturnTraceEnabled else { return }
         guard let url = returnTraceURL,
               let data = returnTraceLine(message).data(using: .utf8)
         else { return }
@@ -1756,6 +1915,11 @@ final class AppState: ObservableObject {
 
     private func returnTraceLine(_ message: String) -> String {
         "\(ISO8601DateFormatter().string(from: Date())) \(message)\n"
+    }
+
+    private func logReturnTrace(_ message: String) {
+        guard isReturnTraceEnabled else { return }
+        NSLog("Typeforme return-to-keyboard: \(message)")
     }
 
     // MARK: - Idle timer
@@ -1866,12 +2030,14 @@ final class AppState: ObservableObject {
     }
 
     private func handleWillEnterForeground() {
+        scheduleHostRecorderPreWarm()
         // Warm route status for the UI. Hot recording/rewrite paths request a
         // fast route separately so Cloud diagnostics never block input.
         routeFetchedAt = nil
         Task {
             await refreshRoute(force: true)
             _ = try? await refreshMacSettings()
+            scheduleHostRecorderPreWarm()
         }
     }
 }

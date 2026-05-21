@@ -8,6 +8,7 @@
 "Recording" = "Recording";
 "Sending" = "Sending";
 "Rewriting" = "Rewriting";
+"Style saved" = "Style saved";
 "Inserted" = "Inserted";
 "Issue" = "Issue";
 
@@ -15,6 +16,20 @@
 "Opening Typeforme…" = "Opening Typeforme…";
 "Transcribing" = "Transcribing";
 "Release to cancel" = "Release to cancel";
+"中文键盘" = "Chinese keyboard";
+
+// Chinese keyboard key titles
+"空格" = "space";
+"前往" = "Go";
+"搜索" = "Search";
+"加入" = "Join";
+"下一项" = "Next";
+"路线" = "Route";
+"发送" = "Send";
+"完成" = "Done";
+"紧急呼叫" = "Emergency";
+"继续" = "Continue";
+"换行" = "Return";
 
 // VoiceInputMode (shared with host)
 "Hold" = "Hold";
@@ -48,11 +63,16 @@
 "Keyboard tools" = "Keyboard tools";
 "Stop dictation" = "Stop dictation";
 "Voice keyboard" = "Voice keyboard";
+"Show more candidates" = "Show more candidates";
+"Hide candidates" = "Hide candidates";
 "Shift" = "Shift";
 "Shift on" = "Shift on";
 "Chinese active, switch to English" = "Chinese active, switch to English";
 "English active, switch to Chinese" = "English active, switch to Chinese";
 "Next keyboard" = "Next keyboard";
 "Chinese preparing…" = "Chinese preparing…";
+"Listening…" = "Listening…";
+"Processing…" = "Processing…";
 "Previous candidates" = "Previous candidates";
 "Next candidates" = "Next candidates";
+"Caps Lock on" = "Caps Lock on";

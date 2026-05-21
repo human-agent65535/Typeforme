@@ -249,17 +249,32 @@ final class AudioRecorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
     private var preparedRecorder: AVAudioRecorder?
     private var preparedURL: URL?
 
+    var isPreWarmed: Bool {
+        preparedRecorder != nil
+    }
+
     /// Standby/pre-warm uses the same mixed session as `StandbyKeeper`.
-    /// Actual recording switches to the non-mixing variant so background
-    /// music/video pauses only while the mic is intentionally capturing.
+    /// Fast-path recording intentionally reuses that hot session; changing
+    /// category here costs seconds on some devices. Cold starts still switch
+    /// to the dedicated recording session before capture.
 
     /// Prime the AVAudioRecorder so the next `start()` is instant. Safe to
     /// call multiple times; only does the work once until the prepared
     /// recorder is consumed.
-    func preWarm() async {
+    func preWarm(requestPermissionIfNeeded: Bool = false) async {
         guard preparedRecorder == nil else { return }
-        let granted = await requestPermission()
-        guard granted else { return }
+        switch AVAudioApplication.shared.recordPermission {
+        case .granted:
+            break
+        case .undetermined:
+            guard requestPermissionIfNeeded,
+                  await requestPermission()
+            else { return }
+        case .denied:
+            return
+        @unknown default:
+            return
+        }
 
         do {
             try IOSRecordingAudioSession.activate(purpose: .standby)
@@ -294,12 +309,6 @@ final class AudioRecorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
         if let recorder = preparedRecorder, let url = preparedURL {
             preparedRecorder = nil
             preparedURL = nil
-            do {
-                try await IOSRecordingAudioSession.activateRecording(reuseActiveSession: true)
-            } catch {
-                try? FileManager.default.removeItem(at: url)
-                throw error
-            }
             guard recorder.record() else {
                 try? FileManager.default.removeItem(at: url)
                 // Fall through to cold path — pre-warm may have gone stale.
@@ -406,7 +415,17 @@ final class AudioRecorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
     }
 
     private func requestPermission() async -> Bool {
-        await withCheckedContinuation { continuation in
+        switch AVAudioApplication.shared.recordPermission {
+        case .granted:
+            return true
+        case .denied:
+            return false
+        case .undetermined:
+            break
+        @unknown default:
+            return false
+        }
+        return await withCheckedContinuation { continuation in
             AVAudioApplication.requestRecordPermission { granted in
                 continuation.resume(returning: granted)
             }
@@ -448,7 +467,11 @@ final class StandbyAudioSession: ObservableObject {
         }
         if isActive {
             if needsEngineRestart || !engine.isRunning || !hasInstalledTap {
-                try restartEngine(purpose: .standby, reuseActiveSession: reuseActiveSession)
+                removeInputTap()
+                engine.stop()
+                currentFormat = nil
+                isActive = false
+                try await startEngineWithRetry(purpose: .standby, reuseActiveSession: reuseActiveSession)
             }
             KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.sessionStarted)
             return
@@ -459,7 +482,7 @@ final class StandbyAudioSession: ObservableObject {
             throw NSError(domain: "Typeforme", code: 1, userInfo: [NSLocalizedDescriptionKey: "Microphone permission is required"])
         }
 
-        try startEngine(purpose: .standby, reuseActiveSession: reuseActiveSession)
+        try await startEngineWithRetry(purpose: .standby, reuseActiveSession: reuseActiveSession)
         KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.sessionStarted)
     }
 
@@ -475,11 +498,48 @@ final class StandbyAudioSession: ObservableObject {
                 forName: name,
                 object: AVAudioSession.sharedInstance(),
                 queue: nil
-            ) { [weak self] _ in
+            ) { [weak self] notification in
                 Task { @MainActor [weak self] in
-                    self?.markEngineRestartNeeded()
+                    self?.handleAudioSessionNotification(notification)
                 }
             }
+        }
+    }
+
+    private func handleAudioSessionNotification(_ notification: Notification) {
+        switch notification.name {
+        case AVAudioSession.routeChangeNotification:
+            handleRouteChange(notification)
+        default:
+            markEngineRestartNeeded()
+        }
+    }
+
+    private func handleRouteChange(_ notification: Notification) {
+        guard let rawReason = notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
+              let reason = AVAudioSession.RouteChangeReason(rawValue: rawReason)
+        else {
+            markEngineRestartNeeded()
+            return
+        }
+
+        switch reason {
+        case .categoryChange, .override, .routeConfigurationChange, .wakeFromSleep:
+            // Starting the silent keepalive or switching between standby and
+            // capture can emit route-change notifications while the input
+            // engine is still running with a valid tap. Treat those as hot
+            // session churn; forcing a voice-processing engine restart here
+            // adds multi-second "Preparing" latency on device.
+            guard engine.isRunning, hasInstalledTap else {
+                markEngineRestartNeeded()
+                return
+            }
+            currentFormat = engine.inputNode.outputFormat(forBus: 0)
+            needsEngineRestart = false
+        case .newDeviceAvailable, .oldDeviceUnavailable, .noSuitableRouteForCategory, .unknown:
+            markEngineRestartNeeded()
+        @unknown default:
+            markEngineRestartNeeded()
         }
     }
 
@@ -502,6 +562,34 @@ final class StandbyAudioSession: ObservableObject {
         }
         isActive = true
         needsEngineRestart = false
+    }
+
+    private func startEngineWithRetry(
+        purpose: IOSRecordingAudioSession.Purpose,
+        reuseActiveSession: Bool
+    ) async throws {
+        var lastError: Error?
+        for delay in [UInt64(0), 180_000_000, 360_000_000] {
+            if delay > 0 {
+                try? await Task.sleep(nanoseconds: delay)
+            }
+            do {
+                try startEngine(purpose: purpose, reuseActiveSession: reuseActiveSession)
+                return
+            } catch {
+                lastError = error
+                removeInputTap()
+                engine.stop()
+                isActive = false
+                currentFormat = nil
+                needsEngineRestart = true
+            }
+        }
+        throw lastError ?? NSError(
+            domain: "Typeforme",
+            code: 6,
+            userInfo: [NSLocalizedDescriptionKey: "Session activation failed"]
+        )
     }
 
     private func restartEngine(
@@ -576,8 +664,8 @@ final class StandbyAudioSession: ObservableObject {
     }
 
     private func beginRecordingNow() async throws -> URL {
-        try await IOSRecordingAudioSession.activateRecording(reuseActiveSession: true)
         if needsEngineRestart || !engine.isRunning || !hasInstalledTap {
+            try await IOSRecordingAudioSession.activateRecording(reuseActiveSession: true)
             try restartEngine(purpose: .recording)
         } else {
             currentFormat = currentFormat ?? engine.inputNode.outputFormat(forBus: 0)
@@ -624,7 +712,17 @@ final class StandbyAudioSession: ObservableObject {
     }
 
     private func requestPermission() async -> Bool {
-        await withCheckedContinuation { continuation in
+        switch AVAudioApplication.shared.recordPermission {
+        case .granted:
+            return true
+        case .denied:
+            return false
+        case .undetermined:
+            break
+        @unknown default:
+            return false
+        }
+        return await withCheckedContinuation { continuation in
             AVAudioApplication.requestRecordPermission { granted in
                 continuation.resume(returning: granted)
             }

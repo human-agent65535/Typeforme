@@ -15,6 +15,9 @@ struct RimeKeyboardState {
     let input: String
     let preedit: String
     let candidates: [RimeKeyboardCandidate]
+    let candidateOffset: Int
+    let hasPreviousPage: Bool
+    let hasNextPage: Bool
     let commitText: String
     let errorMessage: String?
 }
@@ -32,7 +35,13 @@ final class RimeInputController {
     private static let distributionName = "Typeforme"
     private static let distributionCodeName = "typeforme"
     private static let dataVersion = "pinyin-simp-v1"
-    private static let candidateLimit: Int32 = 16
+    // 60 candidates × 5-column grid = up to 12 rows of 42pt = 504pt of
+    // content versus ~226pt of grid scroll-view height. That's ~280pt of
+    // meaningful vertical scroll when the user taps the expand chevron.
+    // The same pool feeds the horizontal candidate bar, which is fine — the
+    // bar already scrolls horizontally and shows as many as the user pans
+    // through.
+    private static let candidateLimit: Int32 = 60
     private static var didSetup = false
     private static var didInitialize = false
 
@@ -189,13 +198,8 @@ final class RimeInputController {
     func selectCandidate(at index: Int) -> RimeKeyboardState {
         guard startIfNeeded() else { return notReadyState() }
         return rimeQueue.sync {
-            let didSelect = api.selectCandidate(session, andIndex: Int32(index))
-            var commitText = drainCommit()
-            if didSelect, commitText.isEmpty {
-                _ = api.commitComposition(session)
-                commitText = drainCommit()
-            }
-            return stateOnQueue(commitText: commitText)
+            _ = api.selectCandidate(session, andIndex: Int32(index))
+            return stateOnQueue(commitText: drainCommit())
         }
     }
 
@@ -204,6 +208,15 @@ final class RimeInputController {
         return rimeQueue.sync {
             _ = api.commitComposition(session)
             return stateOnQueue(commitText: drainCommit())
+        }
+    }
+
+    func commitRawInput() -> RimeKeyboardState {
+        guard startIfNeeded() else { return notReadyState() }
+        return rimeQueue.sync {
+            let rawInput = api.getInput(session) ?? ""
+            api.cleanComposition(session)
+            return stateOnQueue(commitText: rawInput)
         }
     }
 
@@ -236,23 +249,35 @@ final class RimeInputController {
 
         let input = api.getInput(session) ?? ""
         let preedit = context.composition?.preedit ?? input
+        let pageSize = max(Int(context.menu?.pageSize ?? 0), 1)
+        let pageNo = max(Int(context.menu?.pageNo ?? 0), 0)
+        let candidateOffset = pageSize * pageNo
+        let fetchedCandidates = api.getCandidateWith(
+            Int32(candidateOffset),
+            andCount: Self.candidateLimit,
+            andSession: session
+        )
         let menuCandidates = context.menu?.candidates ?? []
-        let fullCandidateList = api.getCandidateList(session) ?? []
-        let rawCandidates = !menuCandidates.isEmpty
-            ? menuCandidates
-            : (fullCandidateList.isEmpty
-                ? (api.getCandidateWith(0, andCount: Self.candidateLimit, andSession: session) ?? [])
-                : fullCandidateList)
-        var candidates = rawCandidates.prefix(Int(Self.candidateLimit))
+        let rawCandidates: [IRimeCandidate]
+        let effectiveCandidateOffset: Int
+        if let fetchedCandidates, !fetchedCandidates.isEmpty {
+            rawCandidates = fetchedCandidates
+            effectiveCandidateOffset = candidateOffset
+        } else {
+            rawCandidates = candidateOffset == 0 ? menuCandidates : []
+            effectiveCandidateOffset = 0
+        }
+        let candidates = rawCandidates.prefix(Int(Self.candidateLimit))
             .compactMap { candidate -> RimeKeyboardCandidate? in
                 guard let text = candidate.text, !text.isEmpty else { return nil }
                 return RimeKeyboardCandidate(text: text, comment: candidate.comment ?? "")
             }
-        if candidates.isEmpty,
+        var displayCandidates = candidates
+        if displayCandidates.isEmpty,
            let preview = context.commitTextPreview,
            !preview.isEmpty,
            preview != input {
-            candidates = [RimeKeyboardCandidate(text: preview, comment: "")]
+            displayCandidates = [RimeKeyboardCandidate(text: preview, comment: "")]
         }
 
         return RimeKeyboardState(
@@ -260,7 +285,10 @@ final class RimeInputController {
             isComposing: status.isComposing || !input.isEmpty,
             input: input,
             preedit: preedit,
-            candidates: candidates,
+            candidates: displayCandidates,
+            candidateOffset: effectiveCandidateOffset,
+            hasPreviousPage: pageNo > 0,
+            hasNextPage: !(context.menu?.isLastPage ?? true),
             commitText: commitText,
             errorMessage: nil
         )
@@ -276,6 +304,9 @@ final class RimeInputController {
             input: "",
             preedit: "",
             candidates: [],
+            candidateOffset: 0,
+            hasPreviousPage: false,
+            hasNextPage: false,
             commitText: commitText,
             errorMessage: errorMessage
         )

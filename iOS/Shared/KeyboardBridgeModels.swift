@@ -10,6 +10,7 @@ enum KeyboardDarwinNotificationName {
     static let requestStartDictation = "com.typeforme.keyboard.requestStartDictation"
     static let requestStopDictation = "com.typeforme.keyboard.requestStopDictation"
     static let requestCancelDictation = "com.typeforme.keyboard.requestCancelDictation"
+    static let keyboardDefaultsChanged = "com.typeforme.keyboard.defaultsChanged"
 }
 
 enum KeyboardDarwinBridge {
@@ -33,7 +34,7 @@ final class KeyboardDarwinNotificationObserver {
         self.callback = callback
 
         let center = CFNotificationCenterGetDarwinNotifyCenter()
-        let observer = Unmanaged.passRetained(self).toOpaque()
+        let observer = Unmanaged.passUnretained(self).toOpaque()
         CFNotificationCenterAddObserver(
             center,
             observer,
@@ -61,7 +62,6 @@ final class KeyboardDarwinNotificationObserver {
         let center = CFNotificationCenterGetDarwinNotifyCenter()
         let observer = Unmanaged.passUnretained(self).toOpaque()
         CFNotificationCenterRemoveObserver(center, observer, CFNotificationName(name as CFString), nil)
-        Unmanaged.passUnretained(self).release()
     }
 }
 

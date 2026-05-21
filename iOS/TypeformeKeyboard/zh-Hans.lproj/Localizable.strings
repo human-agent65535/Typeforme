@@ -8,6 +8,7 @@
 "Recording" = "录音中";
 "Sending" = "处理中";
 "Rewriting" = "改写中";
+"Style saved" = "样式已保存";
 "Inserted" = "已插入";
 "Issue" = "异常";
 
@@ -15,6 +16,20 @@
 "Opening Typeforme…" = "正在打开 Typeforme…";
 "Transcribing" = "识别中";
 "Release to cancel" = "松手取消";
+"中文键盘" = "中文键盘";
+
+// 中文键盘按键标题
+"空格" = "空格";
+"前往" = "前往";
+"搜索" = "搜索";
+"加入" = "加入";
+"下一项" = "下一项";
+"路线" = "路线";
+"发送" = "发送";
+"完成" = "完成";
+"紧急呼叫" = "紧急呼叫";
+"继续" = "继续";
+"换行" = "换行";
 
 // VoiceInputMode (与宿主 app 共享)
 "Hold" = "按住";
@@ -48,11 +63,16 @@
 "Keyboard tools" = "键盘工具";
 "Stop dictation" = "停止听写";
 "Voice keyboard" = "语音键盘";
+"Show more candidates" = "展开候选";
+"Hide candidates" = "收起候选";
 "Shift" = "Shift";
 "Shift on" = "Shift 已开启";
 "Chinese active, switch to English" = "中文已激活,切换到英文";
 "English active, switch to Chinese" = "英文已激活,切换到中文";
 "Next keyboard" = "切换到下一个键盘";
 "Chinese preparing…" = "中文准备中…";
+"Listening…" = "听写中…";
+"Processing…" = "处理中…";
 "Previous candidates" = "上一页候选";
 "Next candidates" = "下一页候选";
+"Caps Lock on" = "大写锁定已开启";
