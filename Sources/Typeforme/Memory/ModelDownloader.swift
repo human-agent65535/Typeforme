@@ -16,6 +16,7 @@ final class ModelDownloader: NSObject, ObservableObject {
 
     private var task: URLSessionDownloadTask?
     private var destination: URL?
+    private var expectedSHA256: String?
     private var resumeData: Data?
     private var resumeDestination: URL?
     /// Delegate callbacks fire on the main queue so we can safely touch
@@ -27,11 +28,12 @@ final class ModelDownloader: NSObject, ObservableObject {
         return URLSession(configuration: config, delegate: self, delegateQueue: .main)
     }()
 
-    func start(from url: URL, to destination: URL) {
+    func start(from url: URL, to destination: URL, expectedSHA256: String? = nil) {
         if task != nil {
             cancel()
         }
         self.destination = destination
+        self.expectedSHA256 = expectedSHA256
         state = .downloading(received: 0, total: 0)
         let t: URLSessionDownloadTask
         let matchingResumeData = resumeDestination == destination ? resumeData : nil
@@ -79,6 +81,7 @@ final class ModelDownloader: NSObject, ObservableObject {
         cancel()
         resumeData = nil
         resumeDestination = nil
+        expectedSHA256 = nil
         removeResumeData(for: destination)
         state = .idle
     }
@@ -118,6 +121,13 @@ extension ModelDownloader: URLSessionDownloadDelegate {
             let fm = FileManager.default
             try fm.createDirectory(at: dest.deletingLastPathComponent(),
                                    withIntermediateDirectories: true)
+            if let expectedSHA256 {
+                try ModelDownloadIntegrity.validateFile(
+                    at: location,
+                    expectedSHA256: expectedSHA256,
+                    label: dest.lastPathComponent
+                )
+            }
             try? fm.removeItem(at: dest)
             try fm.moveItem(at: location, to: dest)
             removeResumeData(for: dest)

@@ -20,6 +20,7 @@ enum ModelAutoInstallError: LocalizedError {
 private final class ModelAutoInstallDownloadRunner: NSObject, URLSessionDownloadDelegate {
     private let destination: URL
     private let label: String
+    private let expectedSHA256: String?
     private let lock = NSLock()
     private var continuation: CheckedContinuation<Void, Error>?
     private var task: URLSessionDownloadTask?
@@ -32,9 +33,10 @@ private final class ModelAutoInstallDownloadRunner: NSObject, URLSessionDownload
         return URLSession(configuration: config, delegate: self, delegateQueue: queue)
     }()
 
-    init(destination: URL, label: String) {
+    init(destination: URL, label: String, expectedSHA256: String?) {
         self.destination = destination
         self.label = label
+        self.expectedSHA256 = expectedSHA256
     }
 
     func download(from url: URL) async throws {
@@ -87,6 +89,13 @@ private final class ModelAutoInstallDownloadRunner: NSObject, URLSessionDownload
                 at: destination.deletingLastPathComponent(),
                 withIntermediateDirectories: true
             )
+            if let expectedSHA256 {
+                try ModelDownloadIntegrity.validateFile(
+                    at: location,
+                    expectedSHA256: expectedSHA256,
+                    label: label
+                )
+            }
             try? fileManager.removeItem(at: destination)
             try fileManager.moveItem(at: location, to: destination)
             Self.removeResumeData(for: destination)
@@ -213,7 +222,11 @@ actor ModelAutoInstaller {
         ModelInstallRegistry.markInstalling(path: destination.path, label: label)
         defer { ModelInstallRegistry.markFinished(path: destination.path) }
 
-        let runner = ModelAutoInstallDownloadRunner(destination: destination, label: label)
+        let runner = ModelAutoInstallDownloadRunner(
+            destination: destination,
+            label: label,
+            expectedSHA256: ModelDownloadIntegrity.expectedSHA256(for: url)
+        )
         try await runner.download(from: url)
         Log.store.info("model auto-installed: \(destination.lastPathComponent, privacy: .public)")
     }

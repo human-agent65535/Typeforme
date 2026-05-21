@@ -1618,8 +1618,16 @@ private struct QwenASRModelRow: View {
         Task { @MainActor in
             try? AppPaths.ensureDirectories()
             await ASRFactory.shared.stopQwenLlama()
-            modelDownloader.start(from: modelDownloadURL, to: URL(fileURLWithPath: effectiveModelPath))
-            mmprojDownloader.start(from: mmprojDownloadURL, to: URL(fileURLWithPath: effectiveMMProjPath))
+            modelDownloader.start(
+                from: modelDownloadURL,
+                to: URL(fileURLWithPath: effectiveModelPath),
+                expectedSHA256: ModelDownloadIntegrity.expectedSHA256(for: modelDownloadURL)
+            )
+            mmprojDownloader.start(
+                from: mmprojDownloadURL,
+                to: URL(fileURLWithPath: effectiveMMProjPath),
+                expectedSHA256: ModelDownloadIntegrity.expectedSHA256(for: mmprojDownloadURL)
+            )
         }
     }
 
@@ -2150,7 +2158,11 @@ private struct ModelDownloadRow: View {
         Task { @MainActor in
             try? AppPaths.ensureDirectories()
             await CorrectorFactory.shared.shutdownAll()
-            downloader.start(from: u, to: dest)
+            downloader.start(
+                from: u,
+                to: dest,
+                expectedSHA256: ModelDownloadIntegrity.expectedSHA256(for: u)
+            )
         }
     }
 
