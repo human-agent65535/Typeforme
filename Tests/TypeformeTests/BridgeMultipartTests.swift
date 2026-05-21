@@ -75,6 +75,61 @@ struct BridgeMultipartTests {
         #expect(!bodyText.contains("audio_base64"))
     }
 
+    @Test func serverParserStreamsMultipartAudioToTempFile() async throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("typeforme-test-\(UUID().uuidString).m4a")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let audioBytes = Data((0..<8192).map { UInt8($0 % 251) })
+        try audioBytes.write(to: url)
+
+        let multipart = try RemoteBridgeClient.multipartDictateBodyFile(
+            audioURL: url,
+            languageIDs: ["zh-CN", "en-US"],
+            correctionMode: CorrectionMode.polishPlus.rawValue,
+            appName: "Notes",
+            bundleID: "com.apple.Notes",
+            appCategory: "chat",
+            contextBefore: "前一句。",
+            contextAfter: "后一句。",
+            includeRawTranscript: true
+        )
+        defer { try? FileManager.default.removeItem(at: multipart.fileURL) }
+
+        let audioDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("typeforme-stream-test-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: audioDirectory) }
+
+        let parser = try BridgeMultipart.StreamingFormDataParser(
+            contentType: multipart.contentType,
+            maxBodyBytes: Int(multipart.contentLength) + 1024,
+            maxHeaderBytes: 16 * 1024,
+            maxFieldBytes: 1 * 1024 * 1024,
+            audioDirectory: audioDirectory
+        )
+        let body = try Data(contentsOf: multipart.fileURL)
+        let chunkSizes = [1, 2, 7, 64, 3, 128, 5]
+        var offset = body.startIndex
+        var index = 0
+        while offset < body.endIndex {
+            let size = chunkSizes[index % chunkSizes.count]
+            let end = min(body.index(offset, offsetBy: size, limitedBy: body.endIndex) ?? body.endIndex, body.endIndex)
+            try parser.append(body[offset..<end])
+            offset = end
+            index += 1
+        }
+        let form = try parser.finish()
+        let streamedAudioURL = try #require(form.audioFileURL)
+        defer { try? FileManager.default.removeItem(at: streamedAudioURL) }
+
+        #expect(form.audioFilename == "audio.m4a")
+        #expect(form.fields["correction_mode"] == CorrectionMode.polishPlus.rawValue)
+        #expect(form.fields["app_name"] == "Notes")
+        #expect(form.fields["context_before"] == "前一句。")
+        #expect(form.fields["context_after"] == "后一句。")
+        #expect(form.fields["include_raw_transcript"] == "true")
+        #expect(try Data(contentsOf: streamedAudioURL) == audioBytes)
+    }
+
     @Test func dictateUploadRejectsUnsupportedAudioExtension() throws {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("typeforme-test-\(UUID().uuidString).wav")
