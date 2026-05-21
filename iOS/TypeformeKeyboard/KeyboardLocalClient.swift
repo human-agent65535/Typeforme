@@ -2,26 +2,31 @@ import Foundation
 
 struct KeyboardLocalClient {
     private let url = URL(string: "ws://127.0.0.1:18082/keyboard")!
+    private let session: URLSession
 
-    func status(timeout: TimeInterval = 0.45) async throws -> KeyboardBridgeStatus {
-        try await send(.status(), timeout: timeout)
+    init() {
+        self.session = URLSession(configuration: .ephemeral)
     }
 
-    func send(_ command: KeyboardBridgeCommand, timeout: TimeInterval) async throws -> KeyboardBridgeStatus {
-        try await send(.command(command), timeout: timeout)
+    func status(bridgeToken: String?, timeout: TimeInterval = 0.45) async throws -> KeyboardBridgeStatus {
+        try await send(.status(bridgeToken: bridgeToken), timeout: timeout)
+    }
+
+    func send(_ command: KeyboardBridgeCommand, bridgeToken: String?, timeout: TimeInterval) async throws -> KeyboardBridgeStatus {
+        try await send(.command(command, bridgeToken: bridgeToken), timeout: timeout)
     }
 
     private func send(
         _ request: KeyboardLocalBridgeRequest,
         timeout: TimeInterval
     ) async throws -> KeyboardBridgeStatus {
-        let session = URLSession(configuration: configuration(timeout: timeout))
-        let task = session.webSocketTask(with: url)
+        var urlRequest = URLRequest(url: url)
+        urlRequest.timeoutInterval = timeout
+        let task = session.webSocketTask(with: urlRequest)
         task.maximumMessageSize = 1 * 1024 * 1024
         task.resume()
         defer {
             task.cancel(with: .normalClosure, reason: nil)
-            session.invalidateAndCancel()
         }
 
         return try await withThrowingTaskGroup(of: KeyboardBridgeStatus.self) { group in
@@ -52,13 +57,6 @@ struct KeyboardLocalClient {
             group.cancelAll()
             return result
         }
-    }
-
-    private func configuration(timeout: TimeInterval) -> URLSessionConfiguration {
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = timeout
-        configuration.timeoutIntervalForResource = timeout
-        return configuration
     }
 }
 

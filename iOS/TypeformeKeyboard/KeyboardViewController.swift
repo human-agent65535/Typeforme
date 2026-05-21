@@ -136,6 +136,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private var deleteRepeatTask: Task<Void, Never>?
     private var bridgeProbeTask: Task<Void, Never>?
     private var statusRefreshTask: Task<Void, Never>?
+    private var bridgeCommandTasks: [String: Task<Void, Never>] = [:]
+    private var styleRewriteTask: Task<Void, Never>?
+    private var styleConfigureTask: Task<Void, Never>?
     private var deferredStartupWorkItem: DispatchWorkItem?
     private var keyboardDarwinObservers: [KeyboardDarwinNotificationObserver] = []
     private let minimumHoldRecordingDuration: TimeInterval = 0.55
@@ -228,6 +231,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private let textKeyboardContainer = UIStackView()
     private let textToolbar = UIStackView()
     private let textWandButton = UIButton(type: .system)
+    private let textStylePickerButton = UIButton(type: .system)
     private let textPasteButton = UIButton(type: .system)
     private let textToolsButton = UIButton(type: .system)
     private let textKeyboardSwitchButton = UIButton(type: .system)
@@ -458,6 +462,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         keyboardDarwinObservers.forEach { $0.stopObserving() }
         bridgeProbeTask?.cancel()
         statusRefreshTask?.cancel()
+        cancelBridgeCommandTasks()
+        styleRewriteTask?.cancel()
+        styleConfigureTask?.cancel()
     }
 
     override func viewWillDisappear(_ animated: Bool) {
@@ -476,6 +483,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         bridgeProbeTask = nil
         statusRefreshTask?.cancel()
         statusRefreshTask = nil
+        cancelBridgeCommandTasks()
+        styleRewriteTask?.cancel()
+        styleRewriteTask = nil
+        styleConfigureTask?.cancel()
+        styleConfigureTask = nil
         cancelScheduledHostOpen()
         stopStatusPolling()
         keyboardDarwinObservers.forEach { $0.stopObserving() }
@@ -602,6 +614,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
               let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return nil }
         return payload
+    }
+
+    private var hostKeyboardBridgeToken: String? {
+        guard let token = hostKeyboardDefaultsPayload()?["bridge_token"] as? String,
+              !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else { return nil }
+        return token
     }
 
     private func configureRoot() {
@@ -742,6 +761,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             textKeyboardContainer,
             textToolbar,
             textWandButton,
+            textStylePickerButton,
             textPasteButton,
             textToolsButton,
             textKeyboardSwitchButton,
@@ -1076,7 +1096,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
             correctionPopover.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 8),
             correctionPopover.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -8),
-            correctionPopover.centerYAnchor.constraint(equalTo: voiceButton.centerYAnchor),
+            // Centered on the keyboard view so the popover lands roughly over
+            // the orb in voice mode AND over the keys area in text mode,
+            // without needing per-mode constraint reshuffling.
+            correctionPopover.centerYAnchor.constraint(equalTo: view.centerYAnchor),
             correctionPopover.heightAnchor.constraint(equalToConstant: 60),
         ])
 
@@ -1317,6 +1340,17 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         textWandButton.addTarget(self, action: #selector(textWandTapped), for: .touchUpInside)
         attachPressAnimation(textWandButton)
 
+        // Preset picker — opens the same correctionPopover as the voice-mode
+        // correctionModeTrigger, so text-mode users have on-demand access to
+        // the 5 style chips (Clean / Polish / Polish+ / Structure+ / Formal+)
+        // without having to dictate first. Paint-brush icon distinguishes it
+        // from the wand (wand = free-form voice command, picker = preset).
+        configureToolbarIconButton(textStylePickerButton, image: "paintbrush")
+        textStylePickerButton.widthAnchor.constraint(equalToConstant: 32).isActive = true
+        textStylePickerButton.accessibilityLabel = NSLocalizedString("Pick rewrite style", comment: "Accessibility label for text-mode style preset picker")
+        textStylePickerButton.addTarget(self, action: #selector(toggleCorrectionPopover), for: .touchUpInside)
+        attachPressAnimation(textStylePickerButton)
+
         // Paste (insert lastInsertedText or clipboard) — same tap contract as
         // the voice-mode pasteButton.
         configureToolbarIconButton(textPasteButton, image: "doc.on.clipboard")
@@ -1435,6 +1469,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         textToolbar.addArrangedSubview(candidateScrollView)
         textToolbar.addArrangedSubview(textCandidateGridButton)
         textToolbar.addArrangedSubview(textWandButton)
+        textToolbar.addArrangedSubview(textStylePickerButton)
         textToolbar.addArrangedSubview(textPasteButton)
         textToolbar.addArrangedSubview(textToolsButton)
         textToolbar.addArrangedSubview(textKeyboardSwitchButton)
@@ -2719,10 +2754,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         updateUI()
 
         bridgeProbeTask?.cancel()
+        let bridgeToken = hostKeyboardBridgeToken
         bridgeProbeTask = Task { [weak self] in
             guard let self else { return }
             do {
-                let status = try await localClient.status(timeout: 0.9)
+                let status = try await localClient.status(bridgeToken: bridgeToken, timeout: 0.9)
                 guard !Task.isCancelled else { return }
                 await MainActor.run {
                     guard !Task.isCancelled else { return }
@@ -3403,15 +3439,27 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         updateUI()
         showTextKeyboardNotice(NSLocalizedString("Rewriting", comment: "Inline status while rewriting recent text"))
 
-        Task { [weak self] in
+        styleRewriteTask?.cancel()
+        let bridgeToken = hostKeyboardBridgeToken
+        styleRewriteTask = Task { [weak self] in
             guard let self else { return }
             do {
-                let status = try await localClient.send(command, timeout: KeyboardBridgeCommandAction.restyleText.requestTimeout)
+                let status = try await localClient.send(
+                    command,
+                    bridgeToken: bridgeToken,
+                    timeout: KeyboardBridgeCommandAction.restyleText.requestTimeout
+                )
+                guard !Task.isCancelled else { return }
                 await MainActor.run {
+                    guard !Task.isCancelled else { return }
+                    self.styleRewriteTask = nil
                     self.finishStyleRewrite(status: status, target: target, commandID: command.id)
                 }
             } catch {
+                guard !Task.isCancelled else { return }
                 await MainActor.run {
+                    guard !Task.isCancelled else { return }
+                    self.styleRewriteTask = nil
                     guard self.styleRewriteCommandID == command.id else { return }
                     self.styleRewriteCommandID = nil
                     self.bridgeStatus = KeyboardBridgeStatus(commandID: command.id, state: .error, message: "Open Typeforme once to prepare rewriting.")
@@ -3426,16 +3474,28 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let command = KeyboardBridgeCommand(action: .configure, correctionMode: preset.rawValue)
         showTextKeyboardNotice(NSLocalizedString("Style saved", comment: "Inline status after choosing a style without rewrite text"))
 
-        Task { [weak self] in
+        styleConfigureTask?.cancel()
+        let bridgeToken = hostKeyboardBridgeToken
+        styleConfigureTask = Task { [weak self] in
             guard let self else { return }
             do {
-                let status = try await localClient.send(command, timeout: KeyboardBridgeCommandAction.configure.requestTimeout)
+                let status = try await localClient.send(
+                    command,
+                    bridgeToken: bridgeToken,
+                    timeout: KeyboardBridgeCommandAction.configure.requestTimeout
+                )
+                guard !Task.isCancelled else { return }
                 await MainActor.run {
+                    guard !Task.isCancelled else { return }
+                    self.styleConfigureTask = nil
                     self.applyBridgeStatus(status)
                     self.showTextKeyboardNotice(NSLocalizedString("Style saved", comment: "Inline status after choosing a style without rewrite text"))
                 }
             } catch {
+                guard !Task.isCancelled else { return }
                 await MainActor.run {
+                    guard !Task.isCancelled else { return }
+                    self.styleConfigureTask = nil
                     guard self.pendingDefaultCorrectionMode == preset else { return }
                     kbLog.notice("style configure deferred: \(error.localizedDescription, privacy: .public)")
                     self.updateUI()
@@ -4307,6 +4367,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         // records a free-form voice command on the same selection.
         let showIdleIcons = !isComposing
         textWandButton.isHidden = !showIdleIcons
+        textStylePickerButton.isHidden = !showIdleIcons
         textPasteButton.isHidden = !showIdleIcons
         textToolsButton.isHidden = !showIdleIcons
         textKeyboardSwitchButton.isHidden = !showIdleIcons
@@ -5099,18 +5160,29 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             updateUI()
         }
 
-        Task { [weak self] in
+        let bridgeToken = hostKeyboardBridgeToken
+        let task = Task { [weak self] in
             guard let self else { return }
             do {
-                let status = try await localClient.send(command, timeout: command.action.requestTimeout)
+                let status = try await localClient.send(
+                    command,
+                    bridgeToken: bridgeToken,
+                    timeout: command.action.requestTimeout
+                )
+                guard !Task.isCancelled else { return }
                 await MainActor.run {
+                    guard !Task.isCancelled else { return }
+                    self.bridgeCommandTasks[command.id] = nil
                     self.applyBridgeStatus(status)
                     if command.action == .start {
                         self.finishStartRequestIfNeeded(status: status)
                     }
                 }
             } catch {
+                guard !Task.isCancelled else { return }
                 await MainActor.run {
+                    guard !Task.isCancelled else { return }
+                    self.bridgeCommandTasks[command.id] = nil
                     if command.action == .stop {
                         self.sendDarwinBridgeCommand(.stop, commandID: command.id)
                         return
@@ -5135,6 +5207,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 }
             }
         }
+        bridgeCommandTasks[command.id] = task
     }
 
     private func sendDarwinBridgeCommand(_ action: KeyboardBridgeCommandAction, commandID: String) {
@@ -5156,18 +5229,36 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
         switch action {
         case .start:
-            KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.requestStartDictation)
-            scheduleHostOpenIfStartStalls()
+            if postAuthenticatedKeyboardRequest(KeyboardDarwinNotificationName.requestStartDictation) {
+                scheduleHostOpenIfStartStalls()
+            } else {
+                isStartRequestInFlight = false
+                openHostForDictation()
+            }
         case .stop:
-            KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.requestStopDictation)
+            if !postAuthenticatedKeyboardRequest(KeyboardDarwinNotificationName.requestStopDictation) {
+                bridgeStatus = KeyboardBridgeStatus(commandID: commandID, state: .error, message: "Open Typeforme once to prepare dictation.")
+                lastBridgeContactAt = 0
+                updateUI()
+            }
         case .cancel:
             tapRecordingActive = false
             activeRecordingTextTarget = nil
             cancelScheduledHostOpen()
-            KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.requestCancelDictation)
+            _ = postAuthenticatedKeyboardRequest(KeyboardDarwinNotificationName.requestCancelDictation)
         case .configure, .restyleText:
             break
         }
+    }
+
+    @discardableResult
+    private func postAuthenticatedKeyboardRequest(_ name: String) -> Bool {
+        guard let requestName = KeyboardDarwinNotificationName.authenticatedRequest(
+            name,
+            token: hostKeyboardBridgeToken
+        ) else { return false }
+        KeyboardDarwinBridge.post(requestName)
+        return true
     }
 
     private func finishStoppedNotification() {
@@ -5205,6 +5296,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         scheduledHostOpenTask = nil
     }
 
+    private func cancelBridgeCommandTasks() {
+        bridgeCommandTasks.values.forEach { $0.cancel() }
+        bridgeCommandTasks.removeAll()
+    }
+
     private func startStatusPolling(interval: TimeInterval = 0.35) {
         stopStatusPolling()
         statusTimerInterval = interval
@@ -5229,7 +5325,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             guard let self, self.view.window != nil else { return }
             self.startStatusPolling()
             self.refreshBridgeStatus(captureSelection: false)
-            KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.requestSessionStatus)
+            self.postAuthenticatedKeyboardRequest(KeyboardDarwinNotificationName.requestSessionStatus)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.20) { [weak self] in
                 guard let self, self.view.window != nil else { return }
                 self.hasPresentedInitialFrame = true
@@ -5248,10 +5344,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
         guard hasFullAccess else { return }
         statusRefreshTask?.cancel()
+        let bridgeToken = hostKeyboardBridgeToken
         statusRefreshTask = Task { [weak self] in
             guard let self else { return }
             do {
-                let status = try await localClient.status()
+                let status = try await localClient.status(bridgeToken: bridgeToken)
                 guard !Task.isCancelled else { return }
                 await MainActor.run {
                     guard !Task.isCancelled else { return }

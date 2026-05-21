@@ -42,6 +42,7 @@ final class RimeInputController {
     // bar already scrolls horizontally and shows as many as the user pans
     // through.
     private static let candidateLimit: Int32 = 60
+    private static let startupRetryInterval: TimeInterval = 2.0
     private static var didSetup = false
     private static var didInitialize = false
 
@@ -52,6 +53,7 @@ final class RimeInputController {
     private var didSelectSchema = false
     private var session: RimeSessionId = 0
     private var lastErrorMessage: String?
+    private var lastStartupAttemptAt: TimeInterval = 0
     private var desiredAsciiMode = false
     private var desiredAsciiPunctuation = false
 
@@ -66,16 +68,21 @@ final class RimeInputController {
     @discardableResult
     func startIfNeeded(bundle: Bundle = .main) -> Bool {
         if isReady { return true }
+        let now = Date().timeIntervalSince1970
         stateLock.lock()
         if startupState == .starting {
             stateLock.unlock()
             return false
         }
         if startupState == .failed {
-            stateLock.unlock()
-            return false
+            guard now - lastStartupAttemptAt >= Self.startupRetryInterval else {
+                stateLock.unlock()
+                return false
+            }
+            lastErrorMessage = nil
         }
         startupState = .starting
+        lastStartupAttemptAt = now
         stateLock.unlock()
 
         rimeQueue.async { [weak self] in

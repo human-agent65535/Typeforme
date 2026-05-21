@@ -169,6 +169,7 @@ final class AppState: ObservableObject {
     private static let keyboardCharacterPreviewKey = "keyboard.characterPreviewEnabled"
     private static let keyboardChinesePunctuationStyleKey = "keyboard.chinesePunctuationStyle"
     private static let keyboardEverContactedKey = "keyboard.everContacted"
+    private static let keyboardBridgeTokenKey = "keyboard.bridgeToken"
     private static let keyboardDefaultsPasteboardName = UIPasteboard.Name("com.typeforme.keyboard.defaults")
     private static let returnTraceLogName = "typeforme-return-trace.log"
     private static let returnTraceEnabledKey = "debug.returnTraceEnabled"
@@ -180,6 +181,7 @@ final class AppState: ObservableObject {
     /// Owns the pre-warmed host input session used by keyboard dictation.
     /// iOS keyboard extensions cannot open the microphone directly.
     private let keyboardAudioSession = StandbyAudioSession()
+    private let keyboardBridgeToken: String
     private var hostHoldReleasePending = false
     private var hostRecordingUsesKeyboardAudioSession = false
     private var keyboardCaptureStartedFromKeyboard = false
@@ -274,6 +276,7 @@ final class AppState: ObservableObject {
     init() {
         let saved = store.load()
         self.config = saved
+        self.keyboardBridgeToken = Self.loadKeyboardBridgeToken()
         self.correctionMode = saved.correctionMode
         self.inputMode = UserDefaults.standard.string(forKey: Self.inputModeKey)
             .flatMap(VoiceInputMode.init(rawValue:)) ?? .hold
@@ -314,6 +317,10 @@ final class AppState: ObservableObject {
         for observer in keyboardDarwinObservers {
             observer.stopObserving()
         }
+        keyboardServer.stop()
+        keyboardServer.expectedTokenProvider = nil
+        keyboardServer.statusProvider = nil
+        keyboardServer.onCommand = nil
     }
 
     func bootstrap() async {
@@ -486,9 +493,21 @@ final class AppState: ObservableObject {
         }
     }
 
+    private static func loadKeyboardBridgeToken() -> String {
+        let defaults = UserDefaults.standard
+        if let token = defaults.string(forKey: keyboardBridgeTokenKey),
+           !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return token
+        }
+        let token = "\(UUID().uuidString).\(UUID().uuidString)"
+        defaults.set(token, forKey: keyboardBridgeTokenKey)
+        return token
+    }
+
     private func publishKeyboardDefaults() {
         let payload: [String: Any] = [
             "version": 1,
+            "bridge_token": keyboardBridgeToken,
             "correction_mode": config.correctionMode.rawValue,
             "auto_capitalization_enabled": keyboardAutoCapitalizationEnabled,
             "character_preview_enabled": keyboardCharacterPreviewEnabled,
@@ -668,7 +687,7 @@ final class AppState: ObservableObject {
     }
 
     private func startHostRecordingCapture() async throws {
-        keyboardCaptureStartedFromKeyboard = false
+        clearKeyboardCaptureContext()
         let startedAt = CFAbsoluteTimeGetCurrent()
         let hadSilentStandby = standbyKeeper.isActive
         let hadKeyboardSession = keyboardAudioSession.isActive
@@ -731,6 +750,9 @@ final class AppState: ObservableObject {
             && hostRecordingUsesKeyboardAudioSession
             && !keyboardCaptureWasStartedFromKeyboard
         let isKeyboardCapture = keyboardAudioSession.isRecording
+        let shouldPublishKeyboardProgress = keyboardCommandID != nil
+            || keyboardCaptureWasStartedFromKeyboard
+            || (isKeyboardCapture && !isHostStandbyCapture)
         guard isKeyboardCapture || recorder.isRecording else {
             hostRecordingUsesKeyboardAudioSession = false
             releaseIdleTimer()
@@ -741,7 +763,7 @@ final class AppState: ObservableObject {
         // to avoid clipping the final syllable; the UI and keyboard should
         // already behave as stopped/sending.
         setPhase(.sending)
-        if keyboardCommandID != nil || keyboardCaptureWasStartedFromKeyboard || isKeyboardCapture {
+        if shouldPublishKeyboardProgress {
             publishKeyboardStatus(.sending, commandID: keyboardCommandID, message: "Sending")
         }
         KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.dictationStopped)
@@ -750,8 +772,8 @@ final class AppState: ObservableObject {
             ? keyboardAudioSession.finishRecording()
             : recorder.stop(deactivateSession: true)
         hostRecordingUsesKeyboardAudioSession = false
-        let keyboardTextEditContext = activeKeyboardTextEditContext
-        let keyboardDictationContext = activeKeyboardDictationContext
+        let keyboardTextEditContext = shouldPublishKeyboardProgress ? activeKeyboardTextEditContext : nil
+        let keyboardDictationContext = shouldPublishKeyboardProgress ? activeKeyboardDictationContext : nil
         activeKeyboardTextEditContext = nil
         activeKeyboardDictationContext = nil
         releaseIdleTimer()
@@ -955,7 +977,8 @@ final class AppState: ObservableObject {
             rawTranscript = ""
             sessionID = nil
             lastGeneratedResultText = nil
-            resetCorrectionModeToDefault()
+            applyKeyboardDefaultCorrectionMode(newMode)
+            setPhase(.idle)
             return
         }
         correctionMode = newMode
@@ -1473,6 +1496,9 @@ final class AppState: ObservableObject {
     }
 
     private func configureKeyboardServer() {
+        keyboardServer.expectedTokenProvider = { [weak self] in
+            await MainActor.run { self?.keyboardBridgeToken }
+        }
         keyboardServer.statusProvider = { [weak self] in
             guard let self else { return .idle }
             await self.markKeyboardEverContacted()
@@ -1507,33 +1533,56 @@ final class AppState: ObservableObject {
         UserDefaults.standard.set(true, forKey: Self.keyboardEverContactedKey)
     }
 
+    private func clearKeyboardCaptureContext() {
+        activeKeyboardTextEditContext = nil
+        activeKeyboardDictationContext = nil
+        keyboardCaptureStartedFromKeyboard = false
+    }
+
     private func configureKeyboardDarwinBridge() {
         keyboardDarwinObservers.forEach { $0.stopObserving() }
+        guard let requestStartName = KeyboardDarwinNotificationName.authenticatedRequest(
+            KeyboardDarwinNotificationName.requestStartDictation,
+            token: keyboardBridgeToken
+        ),
+            let requestStopName = KeyboardDarwinNotificationName.authenticatedRequest(
+                KeyboardDarwinNotificationName.requestStopDictation,
+                token: keyboardBridgeToken
+            ),
+            let requestCancelName = KeyboardDarwinNotificationName.authenticatedRequest(
+                KeyboardDarwinNotificationName.requestCancelDictation,
+                token: keyboardBridgeToken
+            ),
+            let requestSessionStatusName = KeyboardDarwinNotificationName.authenticatedRequest(
+                KeyboardDarwinNotificationName.requestSessionStatus,
+                token: keyboardBridgeToken
+            )
+        else {
+            keyboardDarwinObservers = []
+            return
+        }
         keyboardDarwinObservers = [
-            KeyboardDarwinBridge.observe(KeyboardDarwinNotificationName.requestStartDictation) { [weak self] in
+            KeyboardDarwinBridge.observe(requestStartName) { [weak self] in
                 Task { @MainActor [weak self] in
                     guard let self else { return }
                     self.markKeyboardEverContacted()
                     guard self.keyboardStandbyEnabled || self.keyboardAudioSession.isRecording else { return }
-                    self.activeKeyboardTextEditContext = nil
-                    self.activeKeyboardDictationContext = nil
+                    self.clearKeyboardCaptureContext()
                     self.keyboardCaptureStartedFromKeyboard = true
                     await self.startKeyboardRecording(commandID: nil, allowSessionStart: true)
                 }
             },
-            KeyboardDarwinBridge.observe(KeyboardDarwinNotificationName.requestStopDictation) { [weak self] in
+            KeyboardDarwinBridge.observe(requestStopName) { [weak self] in
                 Task { @MainActor [weak self] in
                     guard let self else { return }
                     guard self.keyboardStandbyEnabled || self.keyboardAudioSession.isRecording else { return }
                     await self.stopAndSend(keyboardCommandID: nil)
                 }
             },
-            KeyboardDarwinBridge.observe(KeyboardDarwinNotificationName.requestCancelDictation) { [weak self] in
+            KeyboardDarwinBridge.observe(requestCancelName) { [weak self] in
                 Task { @MainActor [weak self] in
                     guard let self else { return }
-                    self.activeKeyboardTextEditContext = nil
-                    self.activeKeyboardDictationContext = nil
-                    self.keyboardCaptureStartedFromKeyboard = false
+                    self.clearKeyboardCaptureContext()
                     if self.keyboardAudioSession.isRecording {
                         self.keyboardAudioSession.cancelRecording()
                     } else {
@@ -1545,7 +1594,7 @@ final class AppState: ObservableObject {
                     KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.dictationStopped)
                 }
             },
-            KeyboardDarwinBridge.observe(KeyboardDarwinNotificationName.requestSessionStatus) { [weak self] in
+            KeyboardDarwinBridge.observe(requestSessionStatusName) { [weak self] in
                 Task { @MainActor [weak self] in
                     guard let self else { return }
                     if self.keyboardAudioSession.isActive {
@@ -1580,9 +1629,7 @@ final class AppState: ObservableObject {
         case .stop:
             await stopAndSend(keyboardCommandID: command.id)
         case .cancel:
-            activeKeyboardTextEditContext = nil
-            activeKeyboardDictationContext = nil
-            keyboardCaptureStartedFromKeyboard = false
+            clearKeyboardCaptureContext()
             if keyboardAudioSession.isRecording {
                 keyboardAudioSession.cancelRecording()
             } else {
@@ -1599,9 +1646,7 @@ final class AppState: ObservableObject {
             } else {
                 resetCorrectionModeToDefault()
             }
-            activeKeyboardTextEditContext = nil
-            activeKeyboardDictationContext = nil
-            keyboardCaptureStartedFromKeyboard = false
+            clearKeyboardCaptureContext()
             publishKeyboardStatus(.standby, commandID: command.id, message: "Ready")
         case .restyleText:
             await restyleKeyboardText(command)
@@ -1690,7 +1735,7 @@ final class AppState: ObservableObject {
         }
         if !keyboardAudioSession.isActive {
             guard allowSessionStart else {
-                keyboardCaptureStartedFromKeyboard = false
+                clearKeyboardCaptureContext()
                 resetCorrectionModeToDefault()
                 publishKeyboardStatus(.idle, commandID: commandID, message: "Keyboard audio session is not active")
                 KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.dictationStopped)
@@ -1701,7 +1746,7 @@ final class AppState: ObservableObject {
                     requestMicrophoneIfNeeded: requestMicrophoneIfNeeded
                 )
                 guard isInputReady else {
-                    keyboardCaptureStartedFromKeyboard = false
+                    clearKeyboardCaptureContext()
                     resetCorrectionModeToDefault()
                     startSilentStandbyKeeperIfNeeded()
                     publishKeyboardStatus(.idle, commandID: commandID, message: keyboardMicrophonePreparationMessage)
@@ -1710,7 +1755,7 @@ final class AppState: ObservableObject {
                 }
                 scheduleHostAudioSessionExpiry()
             } catch {
-                keyboardCaptureStartedFromKeyboard = false
+                clearKeyboardCaptureContext()
                 resetCorrectionModeToDefault()
                 setFailure(error.localizedDescription)
                 publishKeyboardStatus(.error, commandID: commandID, message: error.localizedDescription)
@@ -1729,7 +1774,7 @@ final class AppState: ObservableObject {
             publishKeyboardStatus(.recording, commandID: commandID, message: "Recording")
             KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.dictationStarted)
         } catch {
-            keyboardCaptureStartedFromKeyboard = false
+            clearKeyboardCaptureContext()
             setFailure(error.localizedDescription)
             publishKeyboardStatus(.error, commandID: commandID, message: error.localizedDescription)
             KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.dictationStopped)
@@ -2019,7 +2064,7 @@ final class AppState: ObservableObject {
             if hostRecordingUsesKeyboardAudioSession {
                 keyboardAudioSession.cancelRecording()
                 hostRecordingUsesKeyboardAudioSession = false
-                keyboardCaptureStartedFromKeyboard = false
+                clearKeyboardCaptureContext()
             } else {
                 _ = recorder.stop(deactivateSession: true)
             }

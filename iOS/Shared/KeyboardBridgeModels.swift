@@ -11,6 +11,13 @@ enum KeyboardDarwinNotificationName {
     static let requestStopDictation = "com.typeforme.keyboard.requestStopDictation"
     static let requestCancelDictation = "com.typeforme.keyboard.requestCancelDictation"
     static let keyboardDefaultsChanged = "com.typeforme.keyboard.defaultsChanged"
+
+    static func authenticatedRequest(_ name: String, token: String?) -> String? {
+        guard let token,
+              !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else { return nil }
+        return "\(name).\(token)"
+    }
 }
 
 enum KeyboardDarwinBridge {
@@ -182,14 +189,21 @@ struct KeyboardLocalBridgeRequest: Codable, Equatable {
     }
 
     let action: Action
+    let bridgeToken: String?
     let command: KeyboardBridgeCommand?
 
-    static func status() -> KeyboardLocalBridgeRequest {
-        KeyboardLocalBridgeRequest(action: .status, command: nil)
+    static func status(bridgeToken: String?) -> KeyboardLocalBridgeRequest {
+        KeyboardLocalBridgeRequest(action: .status, bridgeToken: bridgeToken, command: nil)
     }
 
-    static func command(_ command: KeyboardBridgeCommand) -> KeyboardLocalBridgeRequest {
-        KeyboardLocalBridgeRequest(action: .command, command: command)
+    static func command(_ command: KeyboardBridgeCommand, bridgeToken: String?) -> KeyboardLocalBridgeRequest {
+        KeyboardLocalBridgeRequest(action: .command, bridgeToken: bridgeToken, command: command)
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case action
+        case bridgeToken = "bridge_token"
+        case command
     }
 }
 

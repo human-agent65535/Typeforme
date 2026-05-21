@@ -7,49 +7,87 @@ final class KeyboardLocalServer {
 
     var onCommand: ((KeyboardBridgeCommand) async -> KeyboardBridgeStatus)?
     var statusProvider: (() async -> KeyboardBridgeStatus)?
+    var expectedTokenProvider: (() async -> String?)?
 
     private let queue = DispatchQueue(label: "com.typeforme.keyboard-server")
+    private let stateLock = NSLock()
     private var listener: NWListener?
+    private var activeConnections: [ObjectIdentifier: NWConnection] = [:]
+    private var activeTasks: [UUID: Task<Void, Never>] = [:]
+    private var generation: UInt = 0
 
     var isRunning: Bool {
-        listener != nil
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return listener != nil
     }
 
     func start() throws {
-        guard listener == nil else { return }
+        stateLock.lock()
+        let alreadyRunning = listener != nil
+        stateLock.unlock()
+        guard !alreadyRunning else { return }
+
         let parameters = NWParameters.tcp
         let webSocketOptions = NWProtocolWebSocket.Options()
         webSocketOptions.autoReplyPing = true
         parameters.defaultProtocolStack.applicationProtocols.insert(webSocketOptions, at: 0)
         let listener = try NWListener(using: parameters, on: NWEndpoint.Port(rawValue: Self.port)!)
+        stateLock.lock()
+        generation += 1
+        let currentGeneration = generation
+        self.listener = listener
+        stateLock.unlock()
         listener.newConnectionHandler = { [weak self] connection in
-            self?.handle(connection)
+            self?.handle(connection, generation: currentGeneration)
         }
         listener.stateUpdateHandler = { [weak self] state in
             if case .failed = state {
-                self?.listener?.cancel()
-                self?.listener = nil
+                self?.stop()
             }
         }
         listener.start(queue: queue)
-        self.listener = listener
     }
 
     func stop() {
-        listener?.cancel()
+        stateLock.lock()
+        let currentListener = listener
         listener = nil
+        generation += 1
+        let connections = Array(activeConnections.values)
+        activeConnections.removeAll()
+        let tasks = Array(activeTasks.values)
+        activeTasks.removeAll()
+        stateLock.unlock()
+
+        currentListener?.cancel()
+        connections.forEach { $0.cancel() }
+        tasks.forEach { $0.cancel() }
     }
 
-    private func handle(_ connection: NWConnection) {
+    private func handle(_ connection: NWConnection, generation: UInt) {
         guard Self.isLoopback(connection.endpoint) else {
             connection.cancel()
             return
         }
+        let id = ObjectIdentifier(connection)
+        stateLock.lock()
+        guard generation == self.generation, listener != nil else {
+            stateLock.unlock()
+            connection.cancel()
+            return
+        }
+        activeConnections[id] = connection
+        stateLock.unlock()
+        connection.stateUpdateHandler = { [weak self] state in
+            guard case .cancelled = state else { return }
+            self?.removeConnection(id)
+        }
         connection.start(queue: queue)
-        receiveMessage(from: connection)
+        receiveMessage(from: connection, generation: generation)
     }
 
-    private func receiveMessage(from connection: NWConnection) {
+    private func receiveMessage(from connection: NWConnection, generation: UInt) {
         connection.receiveMessage { [weak self] data, _, _, error in
             guard let self else {
                 connection.cancel()
@@ -78,14 +116,32 @@ final class KeyboardLocalServer {
                 return
             }
 
-            Task {
+            let taskID = UUID()
+            let task = Task { [weak self] in
+                await Task.yield()
+                guard let self else { return }
+                guard self.isCurrentGeneration(generation) else {
+                    connection.cancel()
+                    self.removeTask(taskID)
+                    return
+                }
                 let status = await self.status(for: request)
+                guard !Task.isCancelled, self.isCurrentGeneration(generation) else {
+                    connection.cancel()
+                    self.removeTask(taskID)
+                    return
+                }
                 self.send(status, connection: connection)
+                self.removeTask(taskID)
             }
+            self.storeTask(task, id: taskID, generation: generation)
         }
     }
 
     private func status(for request: KeyboardLocalBridgeRequest) async -> KeyboardBridgeStatus {
+        guard await isAuthorized(request) else {
+            return KeyboardBridgeStatus(state: .error, message: "Keyboard bridge unauthorized")
+        }
         switch request.action {
         case .status:
             return await statusProvider?() ?? .idle
@@ -96,6 +152,13 @@ final class KeyboardLocalServer {
             return await onCommand?(command)
                 ?? KeyboardBridgeStatus(state: .error, message: "Keyboard command handler is unavailable")
         }
+    }
+
+    private func isAuthorized(_ request: KeyboardLocalBridgeRequest) async -> Bool {
+        guard let expectedToken = await expectedTokenProvider?(),
+              !expectedToken.isEmpty
+        else { return false }
+        return request.bridgeToken == expectedToken
     }
 
     private func send(_ status: KeyboardBridgeStatus, connection: NWConnection) {
@@ -110,8 +173,36 @@ final class KeyboardLocalServer {
         })
     }
 
+    private func storeTask(_ task: Task<Void, Never>, id: UUID, generation: UInt) {
+        stateLock.lock()
+        if generation == self.generation, listener != nil {
+            activeTasks[id] = task
+        } else {
+            task.cancel()
+        }
+        stateLock.unlock()
+    }
+
+    private func removeTask(_ id: UUID) {
+        stateLock.lock()
+        activeTasks[id] = nil
+        stateLock.unlock()
+    }
+
+    private func removeConnection(_ id: ObjectIdentifier) {
+        stateLock.lock()
+        activeConnections[id] = nil
+        stateLock.unlock()
+    }
+
+    private func isCurrentGeneration(_ generation: UInt) -> Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return generation == self.generation && listener != nil
+    }
+
     private static func isLoopback(_ endpoint: NWEndpoint) -> Bool {
-        guard case let .hostPort(host, _) = endpoint else { return true }
+        guard case let .hostPort(host, _) = endpoint else { return false }
         switch host {
         case .ipv4(let address):
             return String(describing: address) == "127.0.0.1"
