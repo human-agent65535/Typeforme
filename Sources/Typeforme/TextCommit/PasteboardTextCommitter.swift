@@ -5,9 +5,10 @@ import Carbon
 ///   save input source → switch CJK→ASCII if needed → write text to
 ///   pasteboard → refocus target → Cmd+V → restore input source.
 ///
-/// The corrected text intentionally remains on the pasteboard. If the target
-/// app has no focused text field, the synthetic paste may go nowhere; keeping
-/// the text on the pasteboard gives the user a reliable manual Cmd+V path.
+/// Successful synthetic pastes restore the previous pasteboard afterwards so
+/// dictated private text does not linger in Universal Clipboard. If paste
+/// cannot even be attempted, the corrected text remains available for manual
+/// Cmd+V fallback.
 @MainActor
 final class PasteboardTextCommitter: TextCommitter {
     private static let vKeyCode: CGKeyCode = 9  // kVK_ANSI_V
@@ -29,10 +30,15 @@ final class PasteboardTextCommitter: TextCommitter {
 
         let savedSource = InputSourceManager.current()
         let switched = InputSourceManager.switchToASCIIIfNeeded()
+        let pasteboardSnapshot = PasteboardSnapshot.capture()
+        var didPaste = false
 
         defer {
             if switched != nil, let savedSource {
                 _ = InputSourceManager.select(savedSource)
+            }
+            if didPaste {
+                pasteboardSnapshot.restore()
             }
         }
 
@@ -51,6 +57,7 @@ final class PasteboardTextCommitter: TextCommitter {
 
         try sendCommandV()
         try? await Task.sleep(nanoseconds: 120_000_000)
+        didPaste = true
     }
 
     func commitTextEdit(
@@ -60,6 +67,13 @@ final class PasteboardTextCommitter: TextCommitter {
         cancelToken: CommitCancellationToken?
     ) async throws {
         try await checkCancelled(cancelToken)
+        let pasteboardSnapshot = PasteboardSnapshot.capture()
+        var didPaste = false
+        defer {
+            if didPaste {
+                pasteboardSnapshot.restore()
+            }
+        }
         Self.copyForManualPaste(text)
 
         guard AccessibilityPermissions.isTrusted else {
@@ -80,6 +94,7 @@ final class PasteboardTextCommitter: TextCommitter {
             }
             try sendCommandV()
             try? await Task.sleep(nanoseconds: 120_000_000)
+            didPaste = true
         case .focusedValue:
             let current = TextEditTargetCapture.currentValue(of: target) ?? ""
             guard current == target.targetText else {
@@ -88,6 +103,7 @@ final class PasteboardTextCommitter: TextCommitter {
             guard TextEditTargetCapture.setFocusedValue(text, target: target) else {
                 throw TextCommitterError.eventPostFailed
             }
+            didPaste = true
         }
     }
 
@@ -115,5 +131,32 @@ final class PasteboardTextCommitter: TextCommitter {
         if let token, await token.isCancelled() {
             throw TextCommitterError.cancelled
         }
+    }
+}
+
+private struct PasteboardSnapshot {
+    private let items: [NSPasteboardItem]
+
+    static func capture() -> PasteboardSnapshot {
+        let copiedItems = NSPasteboard.general.pasteboardItems?.map { item -> NSPasteboardItem in
+            let copy = NSPasteboardItem()
+            for type in item.types {
+                if let data = item.data(forType: type) {
+                    copy.setData(data, forType: type)
+                } else if let string = item.string(forType: type) {
+                    copy.setString(string, forType: type)
+                }
+            }
+            return copy
+        } ?? []
+        return PasteboardSnapshot(items: copiedItems)
+    }
+
+    @MainActor
+    func restore() {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        guard !items.isEmpty else { return }
+        pasteboard.writeObjects(items)
     }
 }
