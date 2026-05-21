@@ -2,6 +2,7 @@ import Foundation
 
 final class QwenLlamaASRService: ASRService {
     static let maxTransientASRAttempts = 2
+    private static let requestBodyAudioChunkSize = 48 * 1024
 
     private let server: LlamaCppServerManager
 
@@ -147,40 +148,31 @@ final class QwenLlamaASRService: ASRService {
             }
         }
 
-        let audioBase64: String
-        do {
-            audioBase64 = try Data(contentsOf: uploadURL).base64EncodedString()
-        } catch {
-            throw ASRAudioSupportError.requestBodyFailed(error.localizedDescription)
-        }
-
         let endpoint = chatCompletionsEndpoint(port: port)
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
         request.timeoutInterval = timeout
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
-        let body = QwenASRChatRequest(
-            model: model.isEmpty ? "qwen3-asr" : model,
-            messages: [
-                .init(
-                    role: "user",
-                    content: [
-                        .text(transcriptionPrompt(languageIDs: languageIDs)),
-                        .inputAudio(data: audioBase64, format: "wav")
-                    ]
-                )
-            ],
-            temperature: 0,
-            maxTokens: maxTokens,
-            stream: false
-        )
-
+        let bodyFile: QwenASRChatBodyFile
         do {
-            request.httpBody = try BridgeJSON.encode(body)
+            bodyFile = try await writeChatRequestBodyFile(
+                uploadURL: uploadURL,
+                languageIDs: languageIDs,
+                maxTokens: maxTokens,
+                model: model.isEmpty ? "qwen3-asr" : model
+            )
         } catch {
             throw ASRAudioSupportError.requestBodyFailed(error.localizedDescription)
         }
+        defer {
+            try? FileManager.default.removeItem(at: bodyFile.url)
+        }
+        guard let bodyStream = InputStream(url: bodyFile.url) else {
+            throw ASRAudioSupportError.requestBodyFailed("Could not open Qwen ASR request body")
+        }
+        request.httpBodyStream = bodyStream
+        request.setValue(String(bodyFile.byteCount), forHTTPHeaderField: "Content-Length")
 
         let session = URLSession(configuration: .ephemeral)
         let (data, response) = try await session.data(for: request)
@@ -191,6 +183,60 @@ final class QwenLlamaASRService: ASRService {
             throw ASRAudioSupportError.emptyTranscript
         }
         return LocaleTextNormalizer.normalize(text, languageIDs: languageIDs)
+    }
+
+    private static func writeChatRequestBodyFile(
+        uploadURL: URL,
+        languageIDs: [String],
+        maxTokens: Int,
+        model: String
+    ) async throws -> QwenASRChatBodyFile {
+        try await Task.detached(priority: .utility) {
+            let bodyURL = URL(fileURLWithPath: NSTemporaryDirectory())
+                .appendingPathComponent("typeforme-qwen-asr-\(UUID().uuidString).json")
+            _ = FileManager.default.createFile(atPath: bodyURL.path, contents: nil)
+            let output = try FileHandle(forWritingTo: bodyURL)
+            defer { try? output.close() }
+
+            func write(_ string: String) throws {
+                try output.write(contentsOf: Data(string.utf8))
+            }
+            func write(_ data: Data) throws {
+                try output.write(contentsOf: data)
+            }
+            func writeJSONString(_ string: String) throws {
+                try write(BridgeJSON.encode(string))
+            }
+
+            try write(#"{"model":"#)
+            try writeJSONString(model)
+            try write(#","messages":[{"role":"user","content":[{"type":"text","text":"#)
+            try writeJSONString(transcriptionPrompt(languageIDs: languageIDs))
+            try write(#"},{"type":"input_audio","input_audio":{"data":""#)
+            try writeBase64Audio(uploadURL, to: output)
+            try write(#"","format":"wav"}}]}],"temperature":0,"max_tokens":"#)
+            try write(String(maxTokens))
+            try write(#","stream":false}"#)
+
+            let byteCount = try FileManager.default.attributesOfItem(atPath: bodyURL.path)[.size] as? NSNumber
+            return QwenASRChatBodyFile(url: bodyURL, byteCount: byteCount?.uint64Value ?? 0)
+        }.value
+    }
+
+    private static func writeBase64Audio(_ audioURL: URL, to output: FileHandle) throws {
+        let input = try FileHandle(forReadingFrom: audioURL)
+        defer { try? input.close() }
+
+        while true {
+            let chunk = try input.read(upToCount: requestBodyAudioChunkSize) ?? Data()
+            guard !chunk.isEmpty else { break }
+            try output.write(contentsOf: chunk.base64EncodedData())
+        }
+    }
+
+    private struct QwenASRChatBodyFile {
+        let url: URL
+        let byteCount: UInt64
     }
 
     private static func transcribeViaLlamaChatWithRetry(
@@ -222,57 +268,6 @@ final class QwenLlamaASRService: ASRService {
             }
         }
         throw lastError ?? ASRAudioSupportError.emptyTranscript
-    }
-}
-
-private struct QwenASRChatRequest: Encodable {
-    struct Message: Encodable {
-        let role: String
-        let content: [ContentPart]
-    }
-
-    enum ContentPart: Encodable {
-        case text(String)
-        case inputAudio(data: String, format: String)
-
-        enum CodingKeys: String, CodingKey {
-            case type
-            case text
-            case inputAudio = "input_audio"
-        }
-
-        enum AudioCodingKeys: String, CodingKey {
-            case data
-            case format
-        }
-
-        func encode(to encoder: Encoder) throws {
-            var container = encoder.container(keyedBy: CodingKeys.self)
-            switch self {
-            case .text(let text):
-                try container.encode("text", forKey: .type)
-                try container.encode(text, forKey: .text)
-            case .inputAudio(let data, let format):
-                try container.encode("input_audio", forKey: .type)
-                var audio = container.nestedContainer(keyedBy: AudioCodingKeys.self, forKey: .inputAudio)
-                try audio.encode(data, forKey: .data)
-                try audio.encode(format, forKey: .format)
-            }
-        }
-    }
-
-    let model: String
-    let messages: [Message]
-    let temperature: Double
-    let maxTokens: Int
-    let stream: Bool
-
-    enum CodingKeys: String, CodingKey {
-        case model
-        case messages
-        case temperature
-        case maxTokens = "max_tokens"
-        case stream
     }
 }
 
