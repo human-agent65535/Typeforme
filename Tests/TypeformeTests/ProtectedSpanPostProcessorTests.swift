@@ -59,12 +59,12 @@ struct ProtectedSpanPostProcessorTests {
         #expect(output == "今天把这个 feature ship 到 prod，但是 release note 还没写，先不要 merge。")
     }
 
-    @Test func restoresMissingSupermarketInStructuredOutput() {
+    @Test func doesNotInventMissingStructuredFacts() {
         let output = ProtectedSpanPostProcessor.apply(
             "让我试试这个新的APP好不好用？\n- 要买：菠萝、苹果、香蕉\n- 时间：三点，哦不对，是四点。",
             rawTranscript: "让我试试这个新的APP好不好用？比如说，今天我要买菠萝、苹果、香蕉，要在超市三哦，不对，是四点去超市买。"
         )
-        #expect(output.contains("\n- 地点：超市"))
+        #expect(!output.contains("\n- 地点：超市"))
     }
 
     @Test func rejectsTranslationExecutionWhenMarkerDisappears() {

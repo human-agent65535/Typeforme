@@ -53,7 +53,9 @@ enum ASRAudioSupport {
             .appendingPathComponent("typeforme-asr-\(UUID().uuidString).wav")
         do {
             try AppPaths.ensureDirectories()
-            try writeWAV(input: url, output: output)
+            try await Task.detached(priority: .utility) {
+                try writeWAV(input: url, output: output)
+            }.value
             return output
         } catch {
             try? FileManager.default.removeItem(at: output)

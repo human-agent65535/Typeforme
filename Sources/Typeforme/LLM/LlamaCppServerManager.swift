@@ -44,6 +44,7 @@ actor LlamaCppServerManager {
     private var logFileHandle: FileHandle?
 
     private static let maxLogBytes: UInt64 = 2 * 1024 * 1024
+    private static let maxLaunchPortAttempts = 3
 
     init(modelPath: String,
          contextSize: Int,
@@ -141,17 +142,18 @@ actor LlamaCppServerManager {
 
         terminateStaleServer()
 
-        var port = try FreePortFinder.findFreeLocalhostPort()
-        Log.llm.info("starting llama-server on port \(port)")
-
         // Try with flash-attn first if requested; fall back without on failure (§12).
+        let port: Int
         do {
-            try await launch(port: port, flashAttn: useFlashAttn)
+            port = try await launchWithPortRetries(flashAttn: useFlashAttn)
         } catch let primary {
+            guard useFlashAttn else {
+                status = .failed(primary.localizedDescription)
+                throw primary
+            }
             Log.llm.notice("primary launch failed (\(primary.localizedDescription, privacy: .public)); retrying without --flash-attn")
             do {
-                port = try FreePortFinder.findFreeLocalhostPort()
-                try await launch(port: port, flashAttn: false)
+                port = try await launchWithPortRetries(flashAttn: false)
             } catch {
                 status = .failed(error.localizedDescription)
                 throw error
@@ -162,6 +164,34 @@ actor LlamaCppServerManager {
         status = .running(port: port, pid: pid)
         try? String(pid).write(to: pidFile, atomically: true, encoding: .utf8)
         return port
+    }
+
+    private func launchWithPortRetries(flashAttn: Bool) async throws -> Int {
+        var lastError: Error?
+        for attempt in 1...Self.maxLaunchPortAttempts {
+            let port = try FreePortFinder.findFreeLocalhostPort()
+            Log.llm.info("starting llama-server on port \(port)")
+            do {
+                try await launch(port: port, flashAttn: flashAttn)
+                return port
+            } catch {
+                lastError = error
+                guard Self.isRetryableLaunchFailure(error),
+                      attempt < Self.maxLaunchPortAttempts
+                else { throw error }
+                Log.llm.notice("llama-server launch attempt \(attempt) failed; retrying on a new port")
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+        }
+        throw lastError ?? LlamaServerError.launchFailed("no launch attempts were made")
+    }
+
+    private static func isRetryableLaunchFailure(_ error: Error) -> Bool {
+        guard let llamaError = error as? LlamaServerError else { return false }
+        if case .launchFailed = llamaError {
+            return true
+        }
+        return false
     }
 
     private func launch(port: Int, flashAttn: Bool) async throws {
@@ -192,9 +222,14 @@ actor LlamaCppServerManager {
         self.process = proc
 
         do {
-            try await waitForReady(port: port, timeout: coldTimeoutSec)
+            try await waitForReady(port: port, timeout: coldTimeoutSec, process: proc)
         } catch {
-            proc.terminate()
+            if proc.isRunning {
+                proc.terminate()
+                await Task.detached(priority: .utility) {
+                    proc.waitUntilExit()
+                }.value
+            }
             self.process = nil
             closeLogFile()
             throw error
@@ -233,11 +268,14 @@ actor LlamaCppServerManager {
         try? FileManager.default.moveItem(at: url, to: rotated)
     }
 
-    private func waitForReady(port: Int, timeout: TimeInterval) async throws {
+    private func waitForReady(port: Int, timeout: TimeInterval, process: Process) async throws {
         let deadline = Date().addingTimeInterval(timeout)
         var req = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/health")!)
         req.timeoutInterval = 0.5
         while Date() < deadline {
+            if !process.isRunning {
+                throw LlamaServerError.launchFailed("exited before ready with status \(process.terminationStatus)")
+            }
             do {
                 let (_, resp) = try await URLSession.shared.data(for: req)
                 if let http = resp as? HTTPURLResponse, http.statusCode == 200 {

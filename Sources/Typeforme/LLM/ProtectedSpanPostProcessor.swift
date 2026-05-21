@@ -14,8 +14,6 @@ enum ProtectedSpanPostProcessor {
         if dropsProtectedTechnicalToken(output, rawTranscript: rawTranscript) {
             return rawTranscript
         }
-        output = restoreSimpleStructuredFacts(output, rawTranscript: rawTranscript)
-
         if let leadingSpan = leadingNonCJKSpanBeforeCJK(in: rawTranscript),
            !contains(output, leadingSpan) {
             output = restoreLeadingSpan(leadingSpan, in: output)
@@ -136,16 +134,6 @@ enum ProtectedSpanPostProcessor {
             return true
         }
         return false
-    }
-
-    private static func restoreSimpleStructuredFacts(_ text: String, rawTranscript: String) -> String {
-        var out = text
-        if rawTranscript.contains("超市"),
-           !out.contains("超市"),
-           out.contains("\n") {
-            out += "\n- 地点：超市"
-        }
-        return out
     }
 
     private static func isCJK(_ scalar: Unicode.Scalar) -> Bool {
