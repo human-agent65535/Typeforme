@@ -44,7 +44,9 @@ final class DictationCoordinator: ObservableObject {
         self.textEditService = TextEditService(dictionary: dictionary)
         recorder.onLevel = { [weak self] level in self?.audioLevel = level }
         recorder.onConfigurationChanged = { [weak self] in
-            self?.reportError("Audio device changed mid-recording")
+            Task { @MainActor in
+                await self?.handleAudioConfigurationChanged()
+            }
         }
     }
 
@@ -357,6 +359,16 @@ final class DictationCoordinator: ObservableObject {
             reportError(error.localizedDescription)
             scheduleAutoReset(after: Self.errorResetDelay)
         }
+    }
+
+    private func handleAudioConfigurationChanged() async {
+        if startInProgress {
+            stopAfterStart = true
+            return
+        }
+        guard state == .recording else { return }
+        Log.audio.notice("audio device changed mid-recording; processing captured audio")
+        await stopDictation()
     }
 
     // MARK: - State helpers

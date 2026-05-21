@@ -65,11 +65,22 @@ final class DoubleTapModifierMonitor {
     private var wasPressed = false
     private var isHolding = false
     private var pendingHoldTask: Task<Void, Never>?
+    private var pendingModifier: HoldModifier?
 
     var onHoldStart: (() -> Void)?
     var onHoldEnd:   (() -> Void)?
 
     func install(modifier: HoldModifier) {
+        guard modifier != self.modifier || globalMonitor == nil || localMonitor == nil else { return }
+        if wasPressed || isHolding || pendingHoldTask != nil {
+            pendingModifier = modifier
+            Log.hotkey.info("double-tap monitor deferring modifier change to \(modifier.rawValue, privacy: .public)")
+            return
+        }
+        installImmediately(modifier: modifier)
+    }
+
+    private func installImmediately(modifier: HoldModifier) {
         uninstall()
         self.modifier = modifier
         guard modifier != .none else { return }
@@ -96,6 +107,7 @@ final class DoubleTapModifierMonitor {
         }
         pendingHoldTask?.cancel()
         pendingHoldTask = nil
+        pendingModifier = nil
         if isHolding {
             isHolding = false
             onHoldEnd?()
@@ -143,5 +155,12 @@ final class DoubleTapModifierMonitor {
             }
         }
         wasPressed = pressedNow
+        applyPendingModifierIfIdle()
+    }
+
+    private func applyPendingModifierIfIdle() {
+        guard !wasPressed, !isHolding, pendingHoldTask == nil, let modifier = pendingModifier else { return }
+        pendingModifier = nil
+        installImmediately(modifier: modifier)
     }
 }

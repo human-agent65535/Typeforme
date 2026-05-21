@@ -16,6 +16,8 @@ final class ModelDownloader: NSObject, ObservableObject {
 
     private var task: URLSessionDownloadTask?
     private var destination: URL?
+    private var resumeData: Data?
+    private var resumeDestination: URL?
     /// Delegate callbacks fire on the main queue so we can safely touch
     /// `@Published` from inside them.
     private lazy var session: URLSession = {
@@ -26,23 +28,54 @@ final class ModelDownloader: NSObject, ObservableObject {
     }()
 
     func start(from url: URL, to destination: URL) {
-        cancel()
+        if task != nil {
+            cancel()
+        }
         self.destination = destination
         state = .downloading(received: 0, total: 0)
-        let req = URLRequest(url: url)
-        let t = session.downloadTask(with: req)
+        let t: URLSessionDownloadTask
+        if let data = resumeData, resumeDestination == destination {
+            t = session.downloadTask(withResumeData: data)
+            resumeData = nil
+        } else {
+            resumeData = nil
+            let req = URLRequest(url: url)
+            t = session.downloadTask(with: req)
+        }
+        resumeDestination = destination
         task = t
         t.resume()
     }
 
     func cancel() {
-        task?.cancel()
-        task = nil
+        guard let task else {
+            if case .downloading = state { state = .idle }
+            return
+        }
+        let cancelledDestination = destination
+        task.cancel { [weak self] data in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                if let data, !data.isEmpty {
+                    self.resumeData = data
+                    self.resumeDestination = cancelledDestination
+                }
+                let isCurrentTask = self.task === task
+                if isCurrentTask {
+                    self.task = nil
+                    if case .downloading = self.state {
+                        self.state = .idle
+                    }
+                }
+            }
+        }
         if case .downloading = state { state = .idle }
     }
 
     func reset() {
         cancel()
+        resumeData = nil
+        resumeDestination = nil
         state = .idle
     }
 
@@ -83,6 +116,8 @@ extension ModelDownloader: URLSessionDownloadDelegate {
                                    withIntermediateDirectories: true)
             try? fm.removeItem(at: dest)
             try fm.moveItem(at: location, to: dest)
+            resumeData = nil
+            resumeDestination = nil
             state = .completed(at: dest)
             Log.store.info("model downloaded: \(dest.lastPathComponent, privacy: .public)")
         } catch {
@@ -95,7 +130,14 @@ extension ModelDownloader: URLSessionDownloadDelegate {
                     didCompleteWithError error: Error?) {
         guard let error else { return }
         if case .completed = state { return }     // success path beat us here
+        let isCurrentTask = self.task.map { $0 === task } ?? false
         let ns = error as NSError
+        if let data = ns.userInfo[NSURLSessionDownloadTaskResumeData] as? Data, !data.isEmpty {
+            resumeData = data
+            resumeDestination = destination
+        }
+        guard isCurrentTask else { return }
+        self.task = nil
         if ns.code == NSURLErrorCancelled {
             state = .idle
         } else {
