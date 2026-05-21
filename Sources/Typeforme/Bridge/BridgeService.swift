@@ -489,6 +489,14 @@ final class BridgeService {
     }
 
     private func writeAudio(_ request: BridgeDictateRequest) async throws -> URL {
+        if let audioFileURL = request.audioFileURL {
+            _ = try Self.validatedClientAudioExtension(request.audioExtension)
+            let size = (try? FileManager.default.attributesOfItem(atPath: audioFileURL.path)[.size] as? NSNumber)?.intValue ?? 0
+            guard size > 0 else {
+                throw BridgeServiceError.invalidAudio
+            }
+            return audioFileURL
+        }
         guard let data = request.audioData, !data.isEmpty else {
             throw BridgeServiceError.invalidAudio
         }

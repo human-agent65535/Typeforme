@@ -492,42 +492,54 @@ final class BridgeHTTPServer: @unchecked Sendable {
             contentType: contentType,
             maxHeaderBytes: Self.maxMultipartHeaderBytes
         )
-        var fields: [String: String] = [:]
-        var audioData: Data?
-        var audioFilename: String?
+        var tempAudioURL: URL?
+        do {
+            var fields: [String: String] = [:]
+            var audioFilename: String?
 
-        for part in parts {
-            if part.name == "audio" {
-                guard part.data.count <= Self.maxBodyBytes else {
-                    throw BridgeServiceError.invalidRequest("Audio part is too large")
+            for part in parts {
+                if part.name == "audio" {
+                    guard part.data.count <= Self.maxBodyBytes else {
+                        throw BridgeServiceError.invalidRequest("Audio part is too large")
+                    }
+                    try AppPaths.ensureDirectories()
+                    let url = AppPaths.bridgeDir.appendingPathComponent("\(UUID().uuidString).upload")
+                    try part.data.write(to: url, options: .atomic)
+                    tempAudioURL = url
+                    audioFilename = part.filename
+                } else if let value = String(data: part.data, encoding: .utf8) {
+                    guard part.data.count <= Self.maxMultipartFieldBytes else {
+                        throw BridgeServiceError.invalidRequest("Multipart field is too large: \(part.name)")
+                    }
+                    fields[part.name] = value.trimmingCharacters(in: .whitespacesAndNewlines)
                 }
-                audioData = part.data
-                audioFilename = part.filename
-            } else if let value = String(data: part.data, encoding: .utf8) {
-                guard part.data.count <= Self.maxMultipartFieldBytes else {
-                    throw BridgeServiceError.invalidRequest("Multipart field is too large: \(part.name)")
-                }
-                fields[part.name] = value.trimmingCharacters(in: .whitespacesAndNewlines)
             }
-        }
 
-        guard let audioData, !audioData.isEmpty else {
-            throw BridgeServiceError.invalidAudio
-        }
+            guard let tempAudioURL,
+                  ((try? FileManager.default.attributesOfItem(atPath: tempAudioURL.path)[.size] as? NSNumber)?.intValue ?? 0) > 0
+            else {
+                throw BridgeServiceError.invalidAudio
+            }
 
-        return BridgeDictateRequest(
-            audioData: audioData,
-            audioExtension: fields["audio_extension"] ?? audioFilename.flatMap(fileExtension),
-            languageIDs: parseLanguageIDs(fields["language_ids"]),
-            languageMode: fields["language_mode"],
-            correctionMode: fields["correction_mode"],
-            appName: fields["app_name"],
-            bundleID: fields["bundle_id"],
-            appCategory: fields["app_category"],
-            contextBefore: fields["context_before"],
-            contextAfter: fields["context_after"],
-            includeRawTranscript: parseBool(fields["include_raw_transcript"])
-        )
+            return BridgeDictateRequest(
+                audioFileURL: tempAudioURL,
+                audioExtension: fields["audio_extension"] ?? audioFilename.flatMap(fileExtension),
+                languageIDs: parseLanguageIDs(fields["language_ids"]),
+                languageMode: fields["language_mode"],
+                correctionMode: fields["correction_mode"],
+                appName: fields["app_name"],
+                bundleID: fields["bundle_id"],
+                appCategory: fields["app_category"],
+                contextBefore: fields["context_before"],
+                contextAfter: fields["context_after"],
+                includeRawTranscript: parseBool(fields["include_raw_transcript"])
+            )
+        } catch {
+            if let tempAudioURL {
+                try? FileManager.default.removeItem(at: tempAudioURL)
+            }
+            throw error
+        }
     }
 
     private static func parseLanguageIDs(_ raw: String?) -> [String]? {

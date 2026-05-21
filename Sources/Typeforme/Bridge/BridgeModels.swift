@@ -17,6 +17,7 @@ struct BridgeHealthResponse: Codable, Sendable {
 
 struct BridgeDictateRequest {
     var audioData: Data?
+    var audioFileURL: URL?
     var audioExtension: String?
     var languageIDs: [String]?
     var languageMode: String?
@@ -30,6 +31,7 @@ struct BridgeDictateRequest {
 
     init(
         audioData: Data? = nil,
+        audioFileURL: URL? = nil,
         audioExtension: String?,
         languageIDs: [String]?,
         languageMode: String? = nil,
@@ -42,6 +44,7 @@ struct BridgeDictateRequest {
         includeRawTranscript: Bool?
     ) {
         self.audioData = audioData
+        self.audioFileURL = audioFileURL
         self.audioExtension = audioExtension
         self.languageIDs = languageIDs
         self.languageMode = languageMode
