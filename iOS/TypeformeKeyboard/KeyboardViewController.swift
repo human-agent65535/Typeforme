@@ -207,6 +207,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private static let rootHorizontalInset: CGFloat = 4
     private static let rootVerticalInset: CGFloat = 6
     private static let stackSpacing: CGFloat = 4
+    private static let candidateExpandButtonWidth: CGFloat = 28
     private static let topRowHeight: CGFloat = 44
     private static let utilityRowHeight: CGFloat = 48
     private static func orbContainerHeight(for contentHeight: CGFloat) -> CGFloat {
@@ -243,6 +244,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private let textLanguageButton = UIButton(type: .system)
     private let textLanguageLabel = UILabel()
     private let candidateScrollView = UIScrollView()
+    private let candidateScrollMask = CAShapeLayer()
     private let candidateStack = UIStackView()
     private let keyRowsStack = UIStackView()
     private let candidateGridScrollView = UIScrollView()
@@ -1269,6 +1271,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             )
             ring.path = UIBezierPath(ovalIn: CGRect(origin: .zero, size: CGSize(width: diameter, height: diameter))).cgPath
         }
+        updateCandidateScrollViewportMask()
         CATransaction.commit()
     }
 
@@ -1379,7 +1382,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         attachPressAnimation(textHostSettingsButton)
 
         configureCandidateExpandButton(isExpanded: false)
-        textCandidateGridButton.widthAnchor.constraint(equalToConstant: 28).isActive = true
+        textCandidateGridButton.widthAnchor.constraint(equalToConstant: Self.candidateExpandButtonWidth).isActive = true
         textCandidateGridButton.accessibilityLabel = NSLocalizedString("Show more candidates", comment: "Accessibility label for expanding candidate list")
         textCandidateGridButton.isHidden = true
         textCandidateGridButton.addTarget(self, action: #selector(toggleCandidateGrid), for: .touchUpInside)
@@ -4310,6 +4313,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
         resetCandidateStackForReuse()
         updateCandidateToolbarControls(for: state)
+        textToolbar.setNeedsLayout()
+        textToolbar.layoutIfNeeded()
+        updateCandidateScrollViewportMask()
 
         if let errorMessage = state.errorMessage {
             addCandidateStatus(errorMessage, color: .systemOrange)
@@ -4362,6 +4368,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             candidateGridScrollView.layoutIfNeeded()
             textToolbar.setNeedsLayout()
             textToolbar.layoutIfNeeded()
+            updateCandidateScrollViewportMask()
             removeCandidateRefreshAnimations()
         }
         CATransaction.commit()
@@ -4426,6 +4433,41 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         // current app, which on real devices flips the keyboard into the
         // "Opening Typeforme…" spinner pointlessly.
         textHostSettingsButton.isHidden = !showIdleIcons || isRunningInsideHostApp
+    }
+
+    private func updateCandidateScrollViewportMask() {
+        let reserve = candidateScrollTrailingReserve()
+        candidateScrollView.contentInset.right = reserve
+        candidateScrollView.horizontalScrollIndicatorInsets.right = reserve
+
+        guard candidateScrollView.bounds.width > 0,
+              candidateScrollView.bounds.height > 0,
+              reserve > 0
+        else {
+            candidateScrollView.layer.mask = nil
+            return
+        }
+
+        let visibleWidth = max(0, candidateScrollView.bounds.width - reserve)
+        candidateScrollMask.frame = candidateScrollView.bounds
+        candidateScrollMask.path = UIBezierPath(rect: CGRect(
+            x: 0,
+            y: 0,
+            width: visibleWidth,
+            height: candidateScrollView.bounds.height
+        )).cgPath
+        candidateScrollView.layer.mask = candidateScrollMask
+    }
+
+    private func candidateScrollTrailingReserve() -> CGFloat {
+        guard !textCandidateGridButton.isHidden else { return 0 }
+        let scrollFrame = candidateScrollView.convert(candidateScrollView.bounds, to: textToolbar)
+        let buttonFrame = textCandidateGridButton.convert(textCandidateGridButton.bounds, to: textToolbar)
+        let overlap = max(0, scrollFrame.maxX - buttonFrame.minX)
+        // Keep a small visual/hit-test gap even when Auto Layout places the
+        // chevron exactly after the scroll view. Without this, the final glyph
+        // can sit under the transparent chevron hit area in the expanded row.
+        return overlap + 8
     }
 
     private var isRunningInsideHostApp: Bool {
@@ -4536,8 +4578,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     private func candidatesVisibleInTopScroll(_ state: RimeKeyboardState) -> Int {
         let scrollWidth = candidateScrollView.bounds.width > 0
-            ? candidateScrollView.bounds.width
-            : view.bounds.width - Self.rootHorizontalInset * 2 - 28 // chevron fallback
+            ? max(0, candidateScrollView.bounds.width - candidateScrollTrailingReserve())
+            : view.bounds.width - Self.rootHorizontalInset * 2 - Self.candidateExpandButtonWidth // chevron fallback
         guard scrollWidth > 0 else { return 0 }
         var totalWidth: CGFloat = 0
         let separatorWidth: CGFloat = 1.0 / UIScreen.main.scale
