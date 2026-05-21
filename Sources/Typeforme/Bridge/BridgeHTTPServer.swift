@@ -486,34 +486,21 @@ final class BridgeHTTPServer: @unchecked Sendable {
 
     private static func decodeDictateRequest(from request: Request) async throws -> BridgeDictateRequest {
         let contentType = request.headers[.contentType] ?? ""
-        let buffer = try await request.body.collect(upTo: Self.maxBodyBytes)
-        let parts = try BridgeMultipart.parseFormData(
-            Data(buffer.readableBytesView),
+        let parser = try BridgeMultipart.StreamingFormDataParser(
             contentType: contentType,
-            maxHeaderBytes: Self.maxMultipartHeaderBytes
+            maxBodyBytes: Self.maxBodyBytes,
+            maxHeaderBytes: Self.maxMultipartHeaderBytes,
+            maxFieldBytes: Self.maxMultipartFieldBytes,
+            audioDirectory: AppPaths.bridgeDir
         )
         var tempAudioURL: URL?
         do {
-            var fields: [String: String] = [:]
-            var audioFilename: String?
-
-            for part in parts {
-                if part.name == "audio" {
-                    guard part.data.count <= Self.maxBodyBytes else {
-                        throw BridgeServiceError.invalidRequest("Audio part is too large")
-                    }
-                    try AppPaths.ensureDirectories()
-                    let url = AppPaths.bridgeDir.appendingPathComponent("\(UUID().uuidString).upload")
-                    try part.data.write(to: url, options: .atomic)
-                    tempAudioURL = url
-                    audioFilename = part.filename
-                } else if let value = String(data: part.data, encoding: .utf8) {
-                    guard part.data.count <= Self.maxMultipartFieldBytes else {
-                        throw BridgeServiceError.invalidRequest("Multipart field is too large: \(part.name)")
-                    }
-                    fields[part.name] = value.trimmingCharacters(in: .whitespacesAndNewlines)
-                }
+            for try await chunk in request.body {
+                try parser.append(Data(chunk.readableBytesView))
             }
+            let form = try parser.finish()
+            let fields = form.fields
+            tempAudioURL = form.audioFileURL
 
             guard let tempAudioURL,
                   ((try? FileManager.default.attributesOfItem(atPath: tempAudioURL.path)[.size] as? NSNumber)?.intValue ?? 0) > 0
@@ -523,7 +510,7 @@ final class BridgeHTTPServer: @unchecked Sendable {
 
             return BridgeDictateRequest(
                 audioFileURL: tempAudioURL,
-                audioExtension: fields["audio_extension"] ?? audioFilename.flatMap(fileExtension),
+                audioExtension: fields["audio_extension"] ?? form.audioFilename.flatMap(fileExtension),
                 languageIDs: parseLanguageIDs(fields["language_ids"]),
                 languageMode: fields["language_mode"],
                 correctionMode: fields["correction_mode"],
@@ -535,6 +522,7 @@ final class BridgeHTTPServer: @unchecked Sendable {
                 includeRawTranscript: parseBool(fields["include_raw_transcript"])
             )
         } catch {
+            parser.cleanup()
             if let tempAudioURL {
                 try? FileManager.default.removeItem(at: tempAudioURL)
             }

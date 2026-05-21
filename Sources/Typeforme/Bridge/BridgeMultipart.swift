@@ -12,11 +12,10 @@ enum BridgeMultipartError: LocalizedError {
 }
 
 enum BridgeMultipart {
-    struct Part {
-        let name: String
-        let filename: String?
-        let contentType: String?
-        let data: Data
+    struct StreamedFormData {
+        let fields: [String: String]
+        let audioFileURL: URL?
+        let audioFilename: String?
     }
 
     struct Body {
@@ -210,18 +209,232 @@ enum BridgeMultipart {
         }
     }
 
-    static func parseFormData(
-        _ body: Data,
-        contentType: String,
-        maxHeaderBytes: Int
-    ) throws -> [Part] {
-        guard contentType.lowercased().contains("multipart/form-data") else {
-            throw BridgeMultipartError.invalidRequest("Content-Type must be multipart/form-data")
+    final class StreamingFormDataParser {
+        private enum State: Equatable {
+            case boundary
+            case afterBoundary
+            case headers
+            case body
+            case finished
         }
-        guard let boundary = boundary(from: contentType) else {
-            throw BridgeMultipartError.invalidRequest("Missing multipart boundary")
+
+        private let delimiter: Data
+        private let prefixedDelimiter: Data
+        private let headerSeparator = Data([13, 10, 13, 10])
+        private let closing = Data("--".utf8)
+        private let lineBreak = Data([13, 10])
+        private let maxBodyBytes: Int
+        private let maxHeaderBytes: Int
+        private let maxFieldBytes: Int
+        private let audioDirectory: URL
+
+        private var state: State = .boundary
+        private var buffer = Data()
+        private var receivedBytes = 0
+        private var fields: [String: String] = [:]
+        private var currentPart: PartMetadata?
+        private var currentFieldData = Data()
+        private var audioHandle: FileHandle?
+        private var audioBytes = 0
+        private var didReturnAudioFile = false
+
+        private(set) var audioFileURL: URL?
+        private(set) var audioFilename: String?
+
+        init(
+            contentType: String,
+            maxBodyBytes: Int,
+            maxHeaderBytes: Int,
+            maxFieldBytes: Int,
+            audioDirectory: URL
+        ) throws {
+            guard contentType.lowercased().contains("multipart/form-data") else {
+                throw BridgeMultipartError.invalidRequest("Content-Type must be multipart/form-data")
+            }
+            guard let boundary = BridgeMultipart.boundary(from: contentType) else {
+                throw BridgeMultipartError.invalidRequest("Missing multipart boundary")
+            }
+            self.delimiter = Data("--\(boundary)".utf8)
+            self.prefixedDelimiter = Data("\r\n--\(boundary)".utf8)
+            self.maxBodyBytes = maxBodyBytes
+            self.maxHeaderBytes = maxHeaderBytes
+            self.maxFieldBytes = maxFieldBytes
+            self.audioDirectory = audioDirectory
         }
-        return try parseFormData(body, boundary: boundary, maxHeaderBytes: maxHeaderBytes)
+
+        deinit {
+            if !didReturnAudioFile {
+                cleanup()
+            }
+        }
+
+        func append(_ chunk: Data) throws {
+            receivedBytes += chunk.count
+            guard receivedBytes <= maxBodyBytes else {
+                throw BridgeMultipartError.invalidRequest("Multipart body is too large")
+            }
+            guard state != .finished else { return }
+            buffer.append(chunk)
+            try processBuffer(final: false)
+        }
+
+        func finish() throws -> StreamedFormData {
+            try processBuffer(final: true)
+            guard state == .finished else {
+                throw BridgeMultipartError.invalidRequest("Malformed multipart body")
+            }
+            try closeAudioHandle()
+            didReturnAudioFile = audioFileURL != nil
+            return StreamedFormData(
+                fields: fields,
+                audioFileURL: audioFileURL,
+                audioFilename: audioFilename
+            )
+        }
+
+        func cleanup() {
+            try? audioHandle?.close()
+            audioHandle = nil
+            if let audioFileURL {
+                try? FileManager.default.removeItem(at: audioFileURL)
+            }
+            audioFileURL = nil
+            didReturnAudioFile = false
+        }
+
+        private func processBuffer(final: Bool) throws {
+            while true {
+                switch state {
+                case .boundary:
+                    guard let range = buffer.range(of: delimiter) else {
+                        if final {
+                            throw BridgeMultipartError.invalidRequest("Malformed multipart body")
+                        }
+                        retainPossibleBoundaryPrefix()
+                        return
+                    }
+                    buffer.removeSubrange(buffer.startIndex..<range.upperBound)
+                    state = .afterBoundary
+
+                case .afterBoundary:
+                    if buffer.starts(with: closing) {
+                        buffer.removeSubrange(buffer.startIndex..<buffer.index(buffer.startIndex, offsetBy: closing.count))
+                        state = .finished
+                        buffer.removeAll(keepingCapacity: false)
+                        return
+                    }
+                    if buffer.starts(with: lineBreak) {
+                        buffer.removeSubrange(buffer.startIndex..<buffer.index(buffer.startIndex, offsetBy: lineBreak.count))
+                        state = .headers
+                        continue
+                    }
+                    if !final, buffer.count < max(closing.count, lineBreak.count) {
+                        return
+                    }
+                    throw BridgeMultipartError.invalidRequest("Malformed multipart boundary")
+
+                case .headers:
+                    guard let headerRange = buffer.range(of: headerSeparator) else {
+                        if buffer.count > maxHeaderBytes + headerSeparator.count || final {
+                            throw BridgeMultipartError.invalidRequest("Malformed multipart headers")
+                        }
+                        return
+                    }
+                    let headerData = buffer[buffer.startIndex..<headerRange.lowerBound]
+                    guard headerData.count <= maxHeaderBytes,
+                          let headerText = String(data: headerData, encoding: .utf8)
+                    else {
+                        throw BridgeMultipartError.invalidRequest("Malformed multipart headers")
+                    }
+                    currentPart = BridgeMultipart.partMetadata(from: headerText)
+                    currentFieldData.removeAll(keepingCapacity: true)
+                    buffer.removeSubrange(buffer.startIndex..<headerRange.upperBound)
+                    state = .body
+
+                case .body:
+                    if let range = buffer.range(of: prefixedDelimiter) {
+                        try appendCurrentPartBytes(buffer[buffer.startIndex..<range.lowerBound])
+                        try finalizeCurrentPart()
+                        buffer.removeSubrange(buffer.startIndex..<range.upperBound)
+                        state = .afterBoundary
+                        continue
+                    }
+
+                    let retainedTailBytes = max(0, prefixedDelimiter.count - 1)
+                    if buffer.count > retainedTailBytes {
+                        let flushEnd = buffer.index(buffer.endIndex, offsetBy: -retainedTailBytes)
+                        try appendCurrentPartBytes(buffer[buffer.startIndex..<flushEnd])
+                        buffer.removeSubrange(buffer.startIndex..<flushEnd)
+                    }
+
+                    if final {
+                        throw BridgeMultipartError.invalidRequest("Malformed multipart body")
+                    }
+                    return
+
+                case .finished:
+                    buffer.removeAll(keepingCapacity: false)
+                    return
+                }
+            }
+        }
+
+        private func retainPossibleBoundaryPrefix() {
+            guard buffer.count >= delimiter.count else { return }
+            let keepStart = buffer.index(buffer.endIndex, offsetBy: -(delimiter.count - 1))
+            buffer.removeSubrange(buffer.startIndex..<keepStart)
+        }
+
+        private func appendCurrentPartBytes(_ bytes: Data) throws {
+            guard !bytes.isEmpty, let currentPart else { return }
+            if currentPart.name == "audio" {
+                try ensureAudioFile(for: currentPart)
+                try audioHandle?.write(contentsOf: bytes)
+                audioBytes += bytes.count
+                guard audioBytes <= maxBodyBytes else {
+                    throw BridgeMultipartError.invalidRequest("Audio part is too large")
+                }
+            } else {
+                currentFieldData.append(bytes)
+                guard currentFieldData.count <= maxFieldBytes else {
+                    throw BridgeMultipartError.invalidRequest("Multipart field is too large: \(currentPart.name)")
+                }
+            }
+        }
+
+        private func finalizeCurrentPart() throws {
+            defer {
+                currentPart = nil
+                currentFieldData.removeAll(keepingCapacity: true)
+            }
+            guard let currentPart else { return }
+            if currentPart.name == "audio" {
+                try closeAudioHandle()
+                return
+            }
+            if let value = String(data: currentFieldData, encoding: .utf8) {
+                fields[currentPart.name] = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
+
+        private func ensureAudioFile(for part: PartMetadata) throws {
+            if audioHandle != nil { return }
+            guard audioFileURL == nil else {
+                throw BridgeMultipartError.invalidRequest("Multipart request contains multiple audio parts")
+            }
+            try FileManager.default.createDirectory(at: audioDirectory, withIntermediateDirectories: true)
+            let url = audioDirectory.appendingPathComponent("\(UUID().uuidString).upload")
+            _ = FileManager.default.createFile(atPath: url.path, contents: nil)
+            audioHandle = try FileHandle(forWritingTo: url)
+            audioFileURL = url
+            audioFilename = part.filename
+        }
+
+        private func closeAudioHandle() throws {
+            guard let audioHandle else { return }
+            try audioHandle.close()
+            self.audioHandle = nil
+        }
     }
 
     static func mimeType(forExtension ext: String) -> String {
@@ -256,54 +469,13 @@ enum BridgeMultipart {
         return true
     }
 
-    private static func parseFormData(_ body: Data, boundary: String, maxHeaderBytes: Int) throws -> [Part] {
-        let delimiter = Data("--\(boundary)".utf8)
-        let prefixedDelimiter = Data("\r\n--\(boundary)".utf8)
-        let headerSeparator = Data([13, 10, 13, 10])
-        let closing = Data("--".utf8)
-        let lineBreak = Data([13, 10])
-        var parts: [Part] = []
-        var cursor = body.startIndex
-
-        while let boundaryRange = body.range(of: delimiter, in: cursor..<body.endIndex) {
-            cursor = boundaryRange.upperBound
-            if body[cursor...].starts(with: closing) {
-                break
-            }
-            if body[cursor...].starts(with: lineBreak) {
-                cursor += 2
-            }
-
-            guard let headerRange = body.range(of: headerSeparator, in: cursor..<body.endIndex)
-            else {
-                throw BridgeMultipartError.invalidRequest("Malformed multipart headers")
-            }
-            let headerData = body[cursor..<headerRange.lowerBound]
-            guard headerData.count <= maxHeaderBytes,
-                  let headerText = String(data: headerData, encoding: .utf8)
-            else {
-                throw BridgeMultipartError.invalidRequest("Malformed multipart headers")
-            }
-            cursor = headerRange.upperBound
-
-            guard let nextBoundary = body.range(of: prefixedDelimiter, in: cursor..<body.endIndex) else {
-                throw BridgeMultipartError.invalidRequest("Malformed multipart body")
-            }
-
-            let partData = body[cursor..<nextBoundary.lowerBound]
-            if let part = part(from: headerText, data: partData) {
-                parts.append(part)
-            }
-            cursor = nextBoundary.lowerBound + 2
-        }
-
-        if parts.isEmpty {
-            throw BridgeMultipartError.invalidRequest("Multipart request contains no form parts")
-        }
-        return parts
+    private struct PartMetadata {
+        let name: String
+        let filename: String?
+        let contentType: String?
     }
 
-    private static func part(from headerText: String, data: Data) -> Part? {
+    private static func partMetadata(from headerText: String) -> PartMetadata? {
         var headers: [String: String] = [:]
         for line in headerText.components(separatedBy: "\r\n") {
             guard let colon = line.firstIndex(of: ":") else { continue }
@@ -316,11 +488,10 @@ enum BridgeMultipart {
         else {
             return nil
         }
-        return Part(
+        return PartMetadata(
             name: name,
             filename: headerParameter("filename", in: disposition),
-            contentType: headers["content-type"],
-            data: data
+            contentType: headers["content-type"]
         )
     }
 
