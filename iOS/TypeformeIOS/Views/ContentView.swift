@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct ContentView: View {
     @EnvironmentObject private var state: AppState
@@ -222,6 +223,12 @@ private struct SetupStatusCard: View {
             guard !didApplyInitialExpansion else { return }
             didApplyInitialExpansion = true
             isExpanded = !state.keyboardEverContacted
+        }
+        .onChange(of: state.keyboardEverContacted) { _, contacted in
+            guard contacted else { return }
+            withAnimation(.snappy(duration: 0.2)) {
+                isExpanded = false
+            }
         }
     }
 }
@@ -452,6 +459,7 @@ private struct HeroRecordCard: View {
                 guard !isPressed else { return }
                 guard state.canInteractWithHostDictation else { return }
                 isPressed = true
+                lightImpact()
                 if state.inputMode == .hold {
                     Task { await state.beginHostHoldRecording() }
                 }
@@ -459,6 +467,7 @@ private struct HeroRecordCard: View {
             .onEnded { _ in
                 guard isPressed else { return }
                 isPressed = false
+                lightImpact()
                 switch state.inputMode {
                 case .hold:
                     Task { await state.endHostHoldRecording() }
@@ -466,6 +475,10 @@ private struct HeroRecordCard: View {
                     Task { await state.toggleHostTapRecording() }
                 }
             }
+    }
+
+    private func lightImpact() {
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
     }
 
     private var inputModeBinding: Binding<VoiceInputMode> {
@@ -550,7 +563,7 @@ private struct PulseRingsHalo: View {
     let diameter: CGFloat
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 60.0)) { timeline in
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
             let phase = timeline.date.timeIntervalSinceReferenceDate
             ZStack {
                 ForEach(0..<3, id: \.self) { i in
@@ -586,7 +599,7 @@ private struct VoicePrintBars: View {
     var body: some View {
         GeometryReader { geo in
             if isActive {
-                TimelineView(.animation(minimumInterval: 1.0 / 60.0)) { timeline in
+                TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
                     Canvas { context, _ in
                         let phase = timeline.date.timeIntervalSinceReferenceDate
                         drawBars(context: context, size: geo.size, phase: phase)
@@ -764,7 +777,7 @@ private struct KeyboardSettingsView: View {
             } header: {
                 Text("Typing")
             } footer: {
-                Text("These settings apply to the Typeforme keyboard after Full Access is enabled.")
+                Text("Changes apply immediately after Full Access is enabled.")
             }
             Section {
                 Picker("Host audio session", selection: hostAudioSessionLengthBinding) {
@@ -776,7 +789,7 @@ private struct KeyboardSettingsView: View {
             } header: {
                 Text("Audio")
             } footer: {
-                Text("Controls how long Typeforme keeps keyboard dictation ready after the host app is opened.")
+                Text("Changes apply immediately. Controls how long Typeforme keeps keyboard dictation ready after the host app is opened.")
             }
         }
         .navigationTitle("Keyboard Settings")
@@ -1188,8 +1201,16 @@ private struct MacSettingsView: View {
                     .disabled(isSaving)
             }
             ToolbarItem(placement: .confirmationAction) {
-                Button(isSaving ? "Saving…" : "Save") {
+                Button {
                     Task { await saveAndDismiss() }
+                } label: {
+                    HStack(spacing: 6) {
+                        if isSaving {
+                            ProgressView()
+                                .scaleEffect(0.72)
+                        }
+                        Text(isSaving ? "Saving…" : "Save")
+                    }
                 }
                 .disabled(draft == nil || isSaving || !hasUnsavedChanges)
             }

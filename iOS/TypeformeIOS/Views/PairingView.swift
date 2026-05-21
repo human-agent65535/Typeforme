@@ -12,6 +12,7 @@ struct PairingView: View {
     @State private var routeStatus: BridgeRouteStatus
     @State private var tokenVisible = false
     @State private var showingQRScanner = false
+    @State private var pairingParseTask: Task<Void, Never>?
 
     let onSave: (PairingConfig) -> Void
 
@@ -48,7 +49,7 @@ struct PairingView: View {
                             .autocorrectionDisabled()
                             .textInputAutocapitalization(.never)
                             .onChange(of: pairingJSON) { _, _ in
-                                parsePairingJSON(pairingJSON)
+                                schedulePairingParse(pairingJSON)
                             }
                     }
                     if parsedSuccessfully {
@@ -178,8 +179,12 @@ struct PairingView: View {
             .sheet(isPresented: $showingQRScanner) {
                 PairingQRScannerView { payload in
                     pairingJSON = payload
-                    parsePairingJSON(payload)
+                    schedulePairingParse(payload)
                 }
+            }
+            .onDisappear {
+                pairingParseTask?.cancel()
+                pairingParseTask = nil
             }
         }
     }
@@ -235,10 +240,19 @@ struct PairingView: View {
             return
         }
         if pasted == pairingJSON {
-            parsePairingJSON(pasted)
+            schedulePairingParse(pasted)
         } else {
             pairingJSON = pasted
-            parsePairingJSON(pasted)
+            schedulePairingParse(pasted)
+        }
+    }
+
+    private func schedulePairingParse(_ rawValue: String) {
+        pairingParseTask?.cancel()
+        pairingParseTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            guard !Task.isCancelled else { return }
+            parsePairingJSON(rawValue)
         }
     }
 

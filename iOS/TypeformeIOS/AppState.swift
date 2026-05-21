@@ -208,6 +208,7 @@ final class AppState: ObservableObject {
     /// either the dedicated recorder or the standby audio session.
     private var recorderCancellable: AnyCancellable?
     private var keyboardAudioSessionCancellable: AnyCancellable?
+    private var lastKeyboardDefaultsSignature = ""
 
     /// Force-refresh cloud/unavailable routes if cached probe is older than
     /// this. Local routes get a shorter TTL because stale LAN IPs hurt more
@@ -301,7 +302,7 @@ final class AppState: ObservableObject {
         keyboardAudioSessionCancellable = keyboardAudioSession.objectWillChange.sink { [weak self] in
             self?.objectWillChange.send()
         }
-        publishKeyboardDefaults()
+        publishKeyboardDefaults(force: true)
         scheduleHostRecorderPreWarm()
     }
 
@@ -446,15 +447,6 @@ final class AppState: ObservableObject {
         publishKeyboardDefaults()
     }
 
-    private func refreshServerSettingsIfStale(maxAge: TimeInterval = 5) async {
-        guard isConfigured else { return }
-        if let macSettingsFetchedAt,
-           Date().timeIntervalSince(macSettingsFetchedAt) < maxAge {
-            return
-        }
-        _ = try? await refreshMacSettings(timeout: 2)
-    }
-
     private func scheduleHostRecorderPreWarm() {
         guard AVAudioApplication.shared.recordPermission == .granted else { return }
         guard !recorder.isRecording,
@@ -504,16 +496,21 @@ final class AppState: ObservableObject {
         return token
     }
 
-    private func publishKeyboardDefaults() {
-        let payload: [String: Any] = [
+    private func publishKeyboardDefaults(force: Bool = false) {
+        let stablePayload: [String: Any] = [
             "version": 1,
             "bridge_token": keyboardBridgeToken,
             "correction_mode": config.correctionMode.rawValue,
             "auto_capitalization_enabled": keyboardAutoCapitalizationEnabled,
             "character_preview_enabled": keyboardCharacterPreviewEnabled,
             "chinese_punctuation_style": keyboardChinesePunctuationStyle.rawValue,
-            "updated_at": Date().timeIntervalSince1970,
         ]
+        let signature = stableKeyboardDefaultsSignature(stablePayload)
+        guard force || signature != lastKeyboardDefaultsSignature else { return }
+        lastKeyboardDefaultsSignature = signature
+
+        var payload = stablePayload
+        payload["updated_at"] = Date().timeIntervalSince1970
         guard JSONSerialization.isValidJSONObject(payload),
               let data = try? JSONSerialization.data(withJSONObject: payload, options: []),
               let text = String(data: data, encoding: .utf8),
@@ -521,6 +518,16 @@ final class AppState: ObservableObject {
         else { return }
         pasteboard.string = text
         KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.keyboardDefaultsChanged)
+    }
+
+    private func stableKeyboardDefaultsSignature(_ payload: [String: Any]) -> String {
+        guard JSONSerialization.isValidJSONObject(payload),
+              let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]),
+              let text = String(data: data, encoding: .utf8)
+        else {
+            return UUID().uuidString
+        }
+        return text
     }
 
     private func persistActiveLocalRouteIfNeeded(_ status: BridgeRouteStatus) {
@@ -627,7 +634,6 @@ final class AppState: ObservableObject {
             acquireIdleTimer()
             setPhase(.recording)
         } catch {
-            hostRecordingUsesKeyboardAudioSession = false
             setFailure(error.localizedDescription)
             await resumeKeyboardStandbyAfterCommand()
         }
@@ -680,7 +686,6 @@ final class AppState: ObservableObject {
             acquireIdleTimer()
             setPhase(.recording)
         } catch {
-            hostRecordingUsesKeyboardAudioSession = false
             setFailure(error.localizedDescription)
             await resumeKeyboardStandbyAfterCommand()
         }
@@ -952,7 +957,6 @@ final class AppState: ObservableObject {
                 await resumeKeyboardStandbyAfterCommand()
                 return
             }
-            KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.dictationStopped)
             // A stale route is the most common cause of `.unauthorizedOrUnavailable`
             // after the public Bridge URL was unavailable for a while. Force a
             // single re-probe so the next press doesn't need a manual refresh.
@@ -1501,8 +1505,8 @@ final class AppState: ObservableObject {
         }
         keyboardServer.statusProvider = { [weak self] in
             guard let self else { return .idle }
-            await self.markKeyboardEverContacted()
             return await MainActor.run {
+                self.markKeyboardEverContacted()
                 let base = self.keyboardBridgeStatus
                 guard base.state == .recording else {
                     return base
@@ -1517,7 +1521,7 @@ final class AppState: ObservableObject {
             guard let self else {
                 return KeyboardBridgeStatus(commandID: command.id, state: .error, message: "Typeforme is unavailable")
             }
-            await self.markKeyboardEverContacted()
+            self.markKeyboardEverContacted()
             return await self.handleKeyboardCommand(command)
         }
     }
@@ -1724,8 +1728,7 @@ final class AppState: ObservableObject {
 
     private func startKeyboardRecording(
         commandID: String?,
-        allowSessionStart: Bool,
-        requestMicrophoneIfNeeded: Bool = false
+        allowSessionStart: Bool
     ) async {
         if keyboardAudioSession.isRecording {
             keyboardCaptureStartedFromKeyboard = true
@@ -1743,7 +1746,7 @@ final class AppState: ObservableObject {
             }
             do {
                 let isInputReady = try await prepareKeyboardInputStandby(
-                    requestMicrophoneIfNeeded: requestMicrophoneIfNeeded
+                    requestMicrophoneIfNeeded: false
                 )
                 guard isInputReady else {
                     clearKeyboardCaptureContext()
