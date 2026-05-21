@@ -170,7 +170,7 @@ enum AppPermissions {
         }
 
         if AppSettings.bridgeLANEnabled {
-            let token = UserDefaults.standard.string(forKey: AppSettings.Keys.bridgeAuthToken) ?? ""
+            let token = AppSettings.bridgeAuthToken
             for rawURL in BridgePairingPayload.lanBridgeURLs(port: AppSettings.bridgePort) {
                 if let target = bridgeProbeTarget(baseURL: rawURL, token: token),
                    isLocalNetworkHost(target.url.host) {

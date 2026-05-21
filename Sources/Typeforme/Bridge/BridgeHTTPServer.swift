@@ -435,13 +435,11 @@ final class BridgeHTTPServer: @unchecked Sendable {
             throw BridgeServiceError.invalidRequest("Content-Type must be application/json")
         }
         let body = try await request.body.collect(upTo: Self.maxBodyBytes)
-        return try JSONDecoder().decode(T.self, from: Data(body.readableBytesView))
+        return try BridgeJSON.decode(T.self, from: Data(body.readableBytesView))
     }
 
     private static func jsonResponse<T: Encodable>(_ value: T, status: Int = 200, reason: String = "OK") -> Response {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
-        guard let data = try? encoder.encode(value) else {
+        guard let data = try? BridgeJSON.encodeSorted(value) else {
             return errorResponse(500, "Internal Server Error", "Could not encode response")
         }
         var headers = HTTPFields()
@@ -535,7 +533,7 @@ final class BridgeHTTPServer: @unchecked Sendable {
     private static func parseLanguageIDs(_ raw: String?) -> [String]? {
         guard let raw, !raw.isEmpty else { return nil }
         if let data = raw.data(using: .utf8),
-           let ids = try? JSONDecoder().decode([String].self, from: data) {
+           let ids = try? BridgeJSON.decode([String].self, from: data) {
             return ids
         }
         return raw

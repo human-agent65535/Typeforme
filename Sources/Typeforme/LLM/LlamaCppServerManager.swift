@@ -81,6 +81,14 @@ actor LlamaCppServerManager {
             return port
         case .starting:
             while case .starting = status {
+                if let p = process, !p.isRunning {
+                    let reason = "llama-server exited during startup"
+                    Log.llm.notice("\(reason, privacy: .public)")
+                    process = nil
+                    closeLogFile()
+                    status = .failed(reason)
+                    break
+                }
                 try await Task.sleep(nanoseconds: 100_000_000)
             }
             return try await ensureRunning()
@@ -133,7 +141,7 @@ actor LlamaCppServerManager {
 
         terminateStaleServer()
 
-        let port = try FreePortFinder.findFreeLocalhostPort()
+        var port = try FreePortFinder.findFreeLocalhostPort()
         Log.llm.info("starting llama-server on port \(port)")
 
         // Try with flash-attn first if requested; fall back without on failure (§12).
@@ -142,6 +150,7 @@ actor LlamaCppServerManager {
         } catch let primary {
             Log.llm.notice("primary launch failed (\(primary.localizedDescription, privacy: .public)); retrying without --flash-attn")
             do {
+                port = try FreePortFinder.findFreeLocalhostPort()
                 try await launch(port: port, flashAttn: false)
             } catch {
                 status = .failed(error.localizedDescription)

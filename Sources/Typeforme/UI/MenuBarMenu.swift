@@ -46,12 +46,6 @@ struct MenuBarMenu: View {
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             refreshAccessibilityState()
         }
-        .task {
-            while !Task.isCancelled {
-                refreshAccessibilityState()
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
-            }
-        }
     }
 
     private func refreshAccessibilityState() {

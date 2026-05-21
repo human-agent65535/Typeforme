@@ -46,7 +46,7 @@ final class AudioRecorder: @unchecked Sendable {
 
         let m4aURL = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("typeforme-\(UUID().uuidString).m4a")
-        fileWriter.begin(url: m4aURL, sampleRate: format.sampleRate)
+        try fileWriter.begin(url: m4aURL, sampleRate: format.sampleRate)
 
         let writer = fileWriter
         let levelHandler = onLevel
@@ -151,122 +151,21 @@ final class AudioRecorder: @unchecked Sendable {
 private final class MonoM4ABufferWriter: @unchecked Sendable {
     private let lock = NSLock()
     private var url: URL?
-    private var sampleRate: Double = 0
+    private var file: AVAudioFile?
+    private var writeFormat: AVAudioFormat?
     private var frameCount: Int = 0
-    private var pcm = Data()
+    private var writeError: Error?
 
-    func begin(url: URL, sampleRate: Double) {
-        lock.lock()
-        self.url = url
-        self.sampleRate = sampleRate > 0 ? sampleRate : 48_000
-        self.frameCount = 0
-        self.pcm = Data()
-        lock.unlock()
-    }
-
-    func write(_ buffer: AVAudioPCMBuffer) {
-        let frames = Int(buffer.frameLength)
-        let channels = max(1, Int(buffer.format.channelCount))
-        guard frames > 0 else { return }
-
-        var chunk = Data()
-        chunk.reserveCapacity(frames * MemoryLayout<Int16>.size)
-
-        if let data = buffer.floatChannelData {
-            let interleaved = buffer.format.isInterleaved
-            for frame in 0..<frames {
-                var sum: Float = 0
-                for channel in 0..<channels {
-                    sum += interleaved ? data[0][frame * channels + channel] : data[channel][frame]
-                }
-                chunk.appendPCM16(sum / Float(channels))
-            }
-        } else if let data = buffer.int16ChannelData {
-            let interleaved = buffer.format.isInterleaved
-            for frame in 0..<frames {
-                var sum = 0
-                for channel in 0..<channels {
-                    let sample = interleaved ? data[0][frame * channels + channel] : data[channel][frame]
-                    sum += Int(sample)
-                }
-                chunk.appendInt16(Int16(max(Int(Int16.min), min(Int(Int16.max), sum / channels))))
-            }
-        } else {
-            return
-        }
-
-        lock.lock()
-        if url != nil {
-            pcm.append(chunk)
-            frameCount += frames
-            if sampleRate <= 0 {
-                sampleRate = buffer.format.sampleRate
-            }
-        }
-        lock.unlock()
-    }
-
-    func finish() throws {
-        lock.lock()
-        let outputURL = url
-        let data = pcm
-        let rate = sampleRate
-        let frames = frameCount
-        url = nil
-        pcm = Data()
-        frameCount = 0
-        sampleRate = 0
-        lock.unlock()
-
-        guard let outputURL else {
-            throw AudioRecorderError.fileSetupFailed("No recording file")
-        }
-        try Self.writeM4A(data: data, sampleRate: rate, frameCount: frames, to: outputURL)
-    }
-
-    func cancel() {
-        lock.lock()
-        let outputURL = url
-        url = nil
-        pcm = Data()
-        frameCount = 0
-        sampleRate = 0
-        lock.unlock()
-        if let outputURL {
-            try? FileManager.default.removeItem(at: outputURL)
-        }
-    }
-
-    private static func writeM4A(data: Data, sampleRate: Double, frameCount: Int, to url: URL) throws {
-        let sampleCount = min(frameCount, data.count / MemoryLayout<Int16>.size)
-        guard sampleCount > 0 else {
-            throw AudioRecorderError.fileSetupFailed("Recorded M4A contains no audio data")
-        }
-        let rate = max(1, sampleRate)
+    func begin(url: URL, sampleRate: Double) throws {
+        let rate = sampleRate > 0 ? sampleRate : 48_000
         guard let format = AVAudioFormat(
-            commonFormat: .pcmFormatInt16,
+            commonFormat: .pcmFormatFloat32,
             sampleRate: rate,
             channels: 1,
             interleaved: false
-        ),
-              let buffer = AVAudioPCMBuffer(
-                pcmFormat: format,
-                frameCapacity: AVAudioFrameCount(sampleCount)
-              )
-        else {
-            throw AudioRecorderError.fileSetupFailed("Could not create M4A conversion buffer")
+        ) else {
+            throw AudioRecorderError.fileSetupFailed("Could not create M4A writer format")
         }
-        buffer.frameLength = AVAudioFrameCount(sampleCount)
-        data.withUnsafeBytes { rawBuffer in
-            if let source = rawBuffer.baseAddress,
-               let destination = buffer.int16ChannelData?[0] {
-                UnsafeMutableRawPointer(destination).copyMemory(
-                    from: source,
-                    byteCount: sampleCount * MemoryLayout<Int16>.size
-                )
-            }
-        }
-
         let settings: [String: Any] = [
             AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
             AVSampleRateKey: rate,
@@ -277,27 +176,113 @@ private final class MonoM4ABufferWriter: @unchecked Sendable {
         let file = try AVAudioFile(
             forWriting: url,
             settings: settings,
-            commonFormat: .pcmFormatInt16,
+            commonFormat: .pcmFormatFloat32,
             interleaved: false
         )
-        try file.write(from: buffer)
 
-        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+        lock.lock()
+        self.url = url
+        self.file = file
+        self.writeFormat = format
+        self.frameCount = 0
+        self.writeError = nil
+        lock.unlock()
+    }
+
+    func write(_ buffer: AVAudioPCMBuffer) {
+        let frames = Int(buffer.frameLength)
+        let channels = max(1, Int(buffer.format.channelCount))
+        guard frames > 0 else { return }
+
+        lock.lock()
+        guard let file, let writeFormat, url != nil, writeError == nil else {
+            lock.unlock()
+            return
+        }
+        lock.unlock()
+
+        guard let mono = AVAudioPCMBuffer(
+            pcmFormat: writeFormat,
+            frameCapacity: AVAudioFrameCount(frames)
+        ), let destination = mono.floatChannelData?[0] else { return }
+        mono.frameLength = AVAudioFrameCount(frames)
+
+        if let data = buffer.floatChannelData {
+            let interleaved = buffer.format.isInterleaved
+            for frame in 0..<frames {
+                var sum: Float = 0
+                for channel in 0..<channels {
+                    sum += interleaved ? data[0][frame * channels + channel] : data[channel][frame]
+                }
+                destination[frame] = sum / Float(channels)
+            }
+        } else if let data = buffer.int16ChannelData {
+            let interleaved = buffer.format.isInterleaved
+            for frame in 0..<frames {
+                var sum = 0
+                for channel in 0..<channels {
+                    let sample = interleaved ? data[0][frame * channels + channel] : data[channel][frame]
+                    sum += Int(sample)
+                }
+                let averaged = Float(sum / channels) / Float(Int16.max)
+                destination[frame] = max(-1, min(1, averaged))
+            }
+        } else {
+            return
+        }
+
+        lock.lock()
+        do {
+            if url != nil, writeError == nil {
+                try file.write(from: mono)
+                frameCount += frames
+            }
+        } catch {
+            writeError = error
+        }
+        lock.unlock()
+    }
+
+    func finish() throws {
+        lock.lock()
+        let outputURL = url
+        let frames = frameCount
+        let error = writeError
+        url = nil
+        file = nil
+        writeFormat = nil
+        frameCount = 0
+        writeError = nil
+        lock.unlock()
+
+        guard let outputURL else {
+            throw AudioRecorderError.fileSetupFailed("No recording file")
+        }
+        if let error {
+            throw AudioRecorderError.fileSetupFailed(error.localizedDescription)
+        }
+        guard frames > 0 else {
+            throw AudioRecorderError.fileSetupFailed("Recorded M4A contains no audio data")
+        }
+
+        let attributes = try FileManager.default.attributesOfItem(atPath: outputURL.path)
         let byteCount = attributes[.size] as? NSNumber
         guard (byteCount?.intValue ?? 0) > 0 else {
             throw AudioRecorderError.fileSetupFailed("Recorded M4A contains no audio data")
         }
     }
-}
 
-private extension Data {
-    mutating func appendInt16(_ value: Int16) {
-        var littleEndian = value.littleEndian
-        Swift.withUnsafeBytes(of: &littleEndian) { append(contentsOf: $0) }
-    }
-
-    mutating func appendPCM16(_ sample: Float) {
-        let clamped = Swift.max(-1, Swift.min(1, sample))
-        appendInt16(Int16(clamped * Float(Int16.max)))
+    func cancel() {
+        lock.lock()
+        let outputURL = url
+        url = nil
+        file = nil
+        writeFormat = nil
+        frameCount = 0
+        writeError = nil
+        lock.unlock()
+        if let outputURL {
+            try? FileManager.default.removeItem(at: outputURL)
+        }
     }
 }

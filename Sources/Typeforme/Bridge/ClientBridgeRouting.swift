@@ -127,6 +127,35 @@ struct ClientBridgeRouteResolver {
             return status
         }
 
+        if !localURLs.isEmpty, let cloudURL {
+            async let localProbe = probeFirstAvailable(urls: localURLs, token: token, timeout: 0.75)
+            async let cloudProbe = probe(url: cloudURL, token: token, timeout: 3.0)
+            let local = await localProbe
+            status.localChecked = true
+            status.localOK = local.ok
+            status.localLatencyMs = local.latencyMs
+            if local.ok, let activeURL = local.url {
+                status.activeKind = .local
+                status.activeURL = activeURL
+                status.message = "Local"
+                return status
+            }
+
+            let cloud = await cloudProbe
+            status.cloudChecked = true
+            status.cloudOK = cloud.ok
+            status.cloudLatencyMs = cloud.latencyMs
+            if cloud.ok {
+                status.activeKind = .cloud
+                status.activeURL = cloudURL
+                status.message = "Cloud"
+                return status
+            }
+
+            status.message = "Unavailable"
+            return status
+        }
+
         if !localURLs.isEmpty {
             let local = await probeFirstAvailable(urls: localURLs, token: token, timeout: 1.5)
             status.localChecked = true

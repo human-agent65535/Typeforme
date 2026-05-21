@@ -38,6 +38,8 @@ final class WhisperKitASRService: ASRService {
     let modelName: String
     private var pipe: WhisperKit?
     private var unloadTask: Task<Void, Never>?
+    private var activeTranscriptionID: UUID?
+    private var activeTranscriptionTask: Task<String, Error>?
 
     init(modelName: String) {
         self.modelName = modelName
@@ -108,9 +110,26 @@ final class WhisperKitASRService: ASRService {
     }
 
     func transcribe(audioFileURL: URL, languageIDs: [String]) async throws -> String {
+        guard activeTranscriptionTask == nil else {
+            throw ASRAudioSupportError.httpStatus(
+                503,
+                "WhisperKit transcription is still draining after cancellation"
+            )
+        }
         let timeoutSeconds = AppSettings.asrWhisperKitTimeoutSeconds
+        let transcriptionID = UUID()
         let operation = Task { @MainActor in
             try await self.transcribeWithoutTimeout(audioFileURL: audioFileURL, languageIDs: languageIDs)
+        }
+        activeTranscriptionID = transcriptionID
+        activeTranscriptionTask = operation
+        Task { [weak self] in
+            _ = try? await operation.value
+            await MainActor.run {
+                guard self?.activeTranscriptionID == transcriptionID else { return }
+                self?.activeTranscriptionID = nil
+                self?.activeTranscriptionTask = nil
+            }
         }
 
         return try await withTaskCancellationHandler {

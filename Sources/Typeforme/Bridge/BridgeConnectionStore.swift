@@ -287,25 +287,68 @@ final class BridgeConnectionStore: ObservableObject, @unchecked Sendable {
 
     private let lock = NSLock()
     private var accumulator = BridgeConnectionAccumulator()
+    private var pendingSnapshot: BridgeConnectionSnapshot?
+    private var pendingActivity: BridgeClientRequestActivity?
+    private var publishWorkItem: DispatchWorkItem?
+    private static let publishDebounce: TimeInterval = 0.15
 
     func record(_ activity: BridgeClientRequestActivity) {
+        let shouldSchedule: Bool
         lock.lock()
         let nextSnapshot = accumulator.record(activity)
+        pendingSnapshot = nextSnapshot
+        pendingActivity = activity
+        shouldSchedule = publishWorkItem == nil
         lock.unlock()
 
-        DispatchQueue.main.async { [weak self] in
-            self?.snapshot = nextSnapshot
-            NotificationCenter.default.post(name: Self.clientRequestNotification, object: activity)
+        if shouldSchedule {
+            schedulePublish()
         }
     }
 
     func reset() {
+        let workItem: DispatchWorkItem?
         lock.lock()
         let nextSnapshot = accumulator.reset()
+        pendingSnapshot = nil
+        pendingActivity = nil
+        workItem = publishWorkItem
+        publishWorkItem = nil
         lock.unlock()
 
+        workItem?.cancel()
         DispatchQueue.main.async { [weak self] in
             self?.snapshot = nextSnapshot
+        }
+    }
+
+    private func schedulePublish() {
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.flushPendingPublish()
+        }
+        lock.lock()
+        publishWorkItem = workItem
+        lock.unlock()
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + Self.publishDebounce,
+            execute: workItem
+        )
+    }
+
+    private func flushPendingPublish() {
+        lock.lock()
+        let nextSnapshot = pendingSnapshot
+        let activity = pendingActivity
+        pendingSnapshot = nil
+        pendingActivity = nil
+        publishWorkItem = nil
+        lock.unlock()
+
+        if let nextSnapshot {
+            snapshot = nextSnapshot
+        }
+        if let activity {
+            NotificationCenter.default.post(name: Self.clientRequestNotification, object: activity)
         }
     }
 }

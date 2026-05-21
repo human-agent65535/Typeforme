@@ -9,6 +9,8 @@ final class SingleInstanceGuard {
     private init() {}
 
     func acquireOrActivateExisting() -> Bool {
+        if lockFD >= 0 { return true }
+
         let lockURL = lockFileURL()
         try? FileManager.default.createDirectory(
             at: lockURL.deletingLastPathComponent(),

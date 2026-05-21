@@ -7,6 +7,7 @@ final class CorrectorFactory {
 
     private var servers: [String: LlamaCppServerManager] = [:]
     private var activeServerKeyByModelPath: [String: String] = [:]
+    private var correctorServices: [String: CorrectorService] = [:]
 
     /// Explicit backend selection. Do not automatically fall back to another
     /// engine: failures should surface as failures so quality issues are visible.
@@ -19,7 +20,12 @@ final class CorrectorFactory {
         case .qwen35_9B:
             return makeLlama(modelPath: AppSettings.llama9BPath, kind: .qwen35_9B)
         case .externalLMStudio:
-            return LMStudioCorrectorService()
+            if let service = correctorServices["lmstudio"] {
+                return service
+            }
+            let service = LMStudioCorrectorService()
+            correctorServices["lmstudio"] = service
+            return service
         }
     }
 
@@ -38,11 +44,21 @@ final class CorrectorFactory {
     }
 
     private func makeLlama(modelPath: String, kind: CorrectionBackendKind) -> CorrectorService {
-        AutoInstallingLlamaCorrectorService(
+        let key = [
+            kind.rawValue,
+            modelPath,
+            downloadURLString(for: kind)
+        ].joined(separator: "|")
+        if let service = correctorServices[key] {
+            return service
+        }
+        let service = AutoInstallingLlamaCorrectorService(
             kind: kind,
             modelPath: modelPath,
             downloadURLString: downloadURLString(for: kind)
         )
+        correctorServices[key] = service
+        return service
     }
 
     func installedLlamaService(modelPath: String, kind: CorrectionBackendKind) -> CorrectorService {
@@ -121,6 +137,7 @@ final class CorrectorFactory {
         }
         servers.removeAll()
         activeServerKeyByModelPath.removeAll()
+        correctorServices.removeAll()
     }
 }
 

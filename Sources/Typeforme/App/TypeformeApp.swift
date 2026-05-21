@@ -1,4 +1,5 @@
 import SwiftUI
+import Foundation
 
 @main
 struct TypeformeApp: App {
@@ -6,6 +7,9 @@ struct TypeformeApp: App {
 
     init() {
         CommandLineHandler.exitIfHandled()
+        guard SingleInstanceGuard.shared.acquireOrActivateExisting() else {
+            Foundation.exit(0)
+        }
     }
 
     var body: some Scene {

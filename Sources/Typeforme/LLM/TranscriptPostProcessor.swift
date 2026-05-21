@@ -455,7 +455,7 @@ enum TranscriptPostProcessor {
     }
 
     private static func regexReplace(_ text: String, pattern: String, with template: String) -> String {
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { return text }
+        guard let regex = regex(for: pattern) else { return text }
         let range = NSRange(text.startIndex..<text.endIndex, in: text)
         return regex.stringByReplacingMatches(in: text, range: range, withTemplate: template)
     }
@@ -465,7 +465,7 @@ enum TranscriptPostProcessor {
         pattern: String,
         transform: ([String]) -> String?
     ) -> String {
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { return text }
+        guard let regex = regex(for: pattern) else { return text }
         let fullRange = NSRange(text.startIndex..<text.endIndex, in: text)
         let matches = regex.matches(in: text, range: fullRange)
         guard !matches.isEmpty else { return text }
@@ -487,6 +487,21 @@ enum TranscriptPostProcessor {
         return out
     }
 
+    private static func regex(for pattern: String) -> NSRegularExpression? {
+        regexLock.lock()
+        if let cached = regexCache[pattern] {
+            regexLock.unlock()
+            return cached
+        }
+        regexLock.unlock()
+
+        guard let compiled = try? NSRegularExpression(pattern: pattern) else { return nil }
+        regexLock.lock()
+        regexCache[pattern] = compiled
+        regexLock.unlock()
+        return compiled
+    }
+
     private static func containsCJK(_ text: String) -> Bool {
         text.unicodeScalars.contains { scalar in
             (0x4E00...0x9FFF).contains(Int(scalar.value)) ||
@@ -497,4 +512,6 @@ enum TranscriptPostProcessor {
 
     private static let terminalPunctuation: Set<Character> = [".", "!", "?", "。", "！", "？", "…", ":", "："]
     private static let trailingClosers: Set<Character> = ["\"", "'", "”", "’", ")", "]", "}", "）", "】", "》", "」", "』"]
+    private static let regexLock = NSLock()
+    private static var regexCache: [String: NSRegularExpression] = [:]
 }

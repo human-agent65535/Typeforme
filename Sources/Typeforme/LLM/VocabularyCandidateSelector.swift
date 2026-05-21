@@ -8,6 +8,13 @@ struct VocabularyCandidatePayload: Codable, Sendable, Equatable {
 enum VocabularyCandidateSelector {
     static let defaultLimit = 40
 
+    private struct CacheKey: Hashable {
+        let entriesHash: Int
+        let rawText: String
+        let extraContext: String
+        let limit: Int
+    }
+
     private struct ContextSignals {
         var person = 0
         var project = 0
@@ -23,8 +30,22 @@ enum VocabularyCandidateSelector {
         extraContext: [String] = [],
         limit: Int = defaultLimit
     ) -> [DictionaryEntry] {
+        let extraContextText = extraContext.joined(separator: " ")
+        let cacheKey = CacheKey(
+            entriesHash: hash(entries),
+            rawText: rawText,
+            extraContext: extraContextText,
+            limit: limit
+        )
+        cacheLock.lock()
+        if let cached = selectionCache[cacheKey] {
+            cacheLock.unlock()
+            return cached
+        }
+        cacheLock.unlock()
+
         let text = normalize(rawText)
-        let context = normalize(extraContext.joined(separator: " "))
+        let context = normalize(extraContextText)
         let phoneticText = phoneticKey(rawText)
         let loosePhoneticText = loosePinyinKey(rawText)
         let compactText = compactNormalized(rawText)
@@ -46,7 +67,7 @@ enum VocabularyCandidateSelector {
             return (entry, score)
         }
 
-        return scored
+        let selected = scored
             .sorted {
                 if $0.1 != $1.1 { return $0.1 > $1.1 }
                 if $0.0.type != $1.0.type { return $0.0.type < $1.0.type }
@@ -54,6 +75,13 @@ enum VocabularyCandidateSelector {
             }
             .prefix(limit)
             .map(\.0)
+        cacheLock.lock()
+        selectionCache[cacheKey] = selected
+        if selectionCache.count > maxCachedSelections {
+            selectionCache.removeAll(keepingCapacity: true)
+        }
+        cacheLock.unlock()
+        return selected
     }
 
     static func promptPayload(
@@ -127,6 +155,14 @@ enum VocabularyCandidateSelector {
         }
 
         return matched ? score : 0
+    }
+
+    private static func hash(_ entries: [DictionaryEntry]) -> Int {
+        var hasher = Hasher()
+        for entry in entries {
+            hasher.combine(entry)
+        }
+        return hasher.finalize()
     }
 
     private static func basePriority(for type: String) -> Int {
@@ -511,4 +547,8 @@ enum VocabularyCandidateSelector {
             (65...90).contains(Int(value)) ||
             (97...122).contains(Int(value))
     }
+
+    private static let cacheLock = NSLock()
+    private static var selectionCache: [CacheKey: [DictionaryEntry]] = [:]
+    private static let maxCachedSelections = 64
 }

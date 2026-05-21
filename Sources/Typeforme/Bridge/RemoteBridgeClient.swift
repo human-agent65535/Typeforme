@@ -4,7 +4,10 @@ enum RemoteBridgeClientError: LocalizedError {
     case missingURL
     case missingToken
     case invalidURL
-    case unauthorizedOrUnavailable
+    case unavailable
+    case unauthorized
+    case forbidden
+    case notFound
     case invalidResponse
     case server(String)
     case correctionFailed(String)
@@ -18,8 +21,14 @@ enum RemoteBridgeClientError: LocalizedError {
             return "Client Bridge token is empty"
         case .invalidURL:
             return "Client Bridge URL is invalid"
-        case .unauthorizedOrUnavailable:
-            return "Client Bridge unavailable or token rejected"
+        case .unavailable:
+            return "Client Bridge is unavailable"
+        case .unauthorized:
+            return "Client Bridge token is missing or rejected"
+        case .forbidden:
+            return "Client Bridge access is forbidden for this token"
+        case .notFound:
+            return "Client Bridge endpoint was not found; check the URL"
         case .invalidResponse:
             return "Client Bridge returned an invalid response"
         case .server(let message):
@@ -122,7 +131,7 @@ struct RemoteBridgeClient {
         guard !trimmedURL.isEmpty else { throw RemoteBridgeClientError.missingURL }
         guard !trimmedToken.isEmpty else { throw RemoteBridgeClientError.missingToken }
 
-        let normalized = Self.normalizedBaseURL(trimmedURL)
+        let normalized = ClientBridgeConfiguration.normalizedBaseURL(trimmedURL)
         guard let url = URL(string: normalized), let scheme = url.scheme, ["http", "https"].contains(scheme) else {
             throw RemoteBridgeClientError.invalidURL
         }
@@ -144,7 +153,7 @@ struct RemoteBridgeClient {
             probeAllEndpoints: probeAllEndpoints
         )
         guard let activeURL = status.activeURL else {
-            throw RemoteBridgeClientError.unauthorizedOrUnavailable
+            throw RemoteBridgeClientError.unavailable
         }
         return (
             try RemoteBridgeClient(baseURLString: activeURL.absoluteString, token: config.token),
@@ -296,21 +305,6 @@ struct RemoteBridgeClient {
         return response
     }
 
-    private static func normalizedBaseURL(_ raw: String) -> String {
-        if raw.hasPrefix("http://") || raw.hasPrefix("https://") {
-            return raw
-        }
-        if raw.hasPrefix("localhost")
-            || raw.hasPrefix("127.")
-            || raw.hasPrefix("192.168.")
-            || raw.hasPrefix("10.")
-            || raw.range(of: #"^172\.(1[6-9]|2[0-9]|3[0-1])\."#, options: .regularExpression) != nil
-            || raw.contains(":") {
-            return "http://\(raw)"
-        }
-        return "https://\(raw)"
-    }
-
     private func validate(_ response: BridgeDictateResponse) throws {
         if response.correctionStatus == "error" {
             throw RemoteBridgeClientError.correctionFailed(response.correctionError ?? "")
@@ -344,7 +338,7 @@ struct RemoteBridgeClient {
         json body: Body,
         timeout: TimeInterval
     ) async throws -> T {
-        let data = try JSONEncoder().encode(body)
+        let data = try BridgeJSON.encode(body)
         return try await request(path: path, method: method, body: data, contentType: "application/json", timeout: timeout)
     }
 
@@ -376,17 +370,24 @@ struct RemoteBridgeClient {
         guard let http = response as? HTTPURLResponse else {
             throw RemoteBridgeClientError.invalidResponse
         }
-        guard http.statusCode != 401 && http.statusCode != 403 && http.statusCode != 404 else {
-            throw RemoteBridgeClientError.unauthorizedOrUnavailable
+        switch http.statusCode {
+        case 401:
+            throw RemoteBridgeClientError.unauthorized
+        case 403:
+            throw RemoteBridgeClientError.forbidden
+        case 404:
+            throw RemoteBridgeClientError.notFound
+        default:
+            break
         }
         guard (200..<300).contains(http.statusCode) else {
-            let message = (try? JSONDecoder().decode(BridgeErrorResponse.self, from: data).error)
+            let message = (try? BridgeJSON.decode(BridgeErrorResponse.self, from: data).error)
                 ?? String(data: data, encoding: .utf8)
                 ?? "HTTP \(http.statusCode)"
             throw RemoteBridgeClientError.server(message)
         }
         do {
-            return try JSONDecoder().decode(T.self, from: data)
+            return try BridgeJSON.decode(T.self, from: data)
         } catch {
             throw RemoteBridgeClientError.invalidResponse
         }

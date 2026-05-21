@@ -28,6 +28,8 @@ final class HUDWindowController {
     /// Set while we're moving the panel ourselves (entrance / width change);
     /// suppresses the user-drag observer so we don't treat it as a manual move.
     private var isProgrammaticallyMoving = false
+    private var cachedPreviewText: String?
+    private var cachedPreviewSize: NSSize?
 
     private static let compactHeight: CGFloat = 52
     /// Idle is a small circular presence pip — the panel shrinks to this on
@@ -228,10 +230,28 @@ final class HUDWindowController {
         guard ud.object(forKey: anchorXKey) != nil,
               ud.object(forKey: anchorYKey) != nil else { return nil }
         let p = NSPoint(x: ud.double(forKey: anchorXKey), y: ud.double(forKey: anchorYKey))
-        // Reject anchors that aren't on any current screen (display unplugged
-        // or resolution changed). The HUD falls back to default bottom anchor.
-        guard NSScreen.screens.contains(where: { $0.frame.contains(p) }) else { return nil }
-        return p
+        guard !NSScreen.screens.isEmpty else { return nil }
+        if NSScreen.screens.contains(where: { $0.frame.contains(p) }) {
+            return p
+        }
+
+        // Display topology can change while the app is running. Preserve the
+        // user's intent by clamping the old point onto the nearest screen
+        // instead of discarding their placement.
+        guard let nearest = NSScreen.screens.min(by: {
+            distanceSquared(from: p, to: $0.frame.center) < distanceSquared(from: p, to: $1.frame.center)
+        }) else { return nil }
+        let visible = nearest.visibleFrame
+        return NSPoint(
+            x: max(visible.minX + edgePadding, min(visible.maxX - edgePadding, p.x)),
+            y: max(visible.minY + edgePadding, min(visible.maxY - edgePadding, p.y))
+        )
+    }
+
+    private static func distanceSquared(from lhs: NSPoint, to rhs: NSPoint) -> CGFloat {
+        let dx = lhs.x - rhs.x
+        let dy = lhs.y - rhs.y
+        return dx * dx + dy * dy
     }
 
     private func handleManualMove() {
@@ -269,9 +289,15 @@ final class HUDWindowController {
         // a 200pt-tall panel with empty material below the chips.
         let raw = coordinator.lastCorrected.trimmingCharacters(in: .whitespacesAndNewlines)
         let text = raw.isEmpty ? "Preview" : raw
+        if cachedPreviewText == text, let cachedPreviewSize {
+            return cachedPreviewSize
+        }
         let textHeight = Self.measuredTextHeight(for: text, inWidth: Self.previewWidth - 36)
         let height = min(textHeight + Self.previewChromeHeight, Self.previewMaxHeight)
-        return NSSize(width: Self.previewWidth, height: height)
+        let size = NSSize(width: Self.previewWidth, height: height)
+        cachedPreviewText = text
+        cachedPreviewSize = size
+        return size
     }
 
     private static func measuredTextHeight(for text: String, inWidth width: CGFloat) -> CGFloat {
@@ -297,5 +323,11 @@ final class HUDWindowController {
         case .success:                       return 100
         case .error:                         return 380
         }
+    }
+}
+
+private extension NSRect {
+    var center: NSPoint {
+        NSPoint(x: midX, y: midY)
     }
 }

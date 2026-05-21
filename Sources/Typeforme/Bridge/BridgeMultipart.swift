@@ -204,7 +204,7 @@ enum BridgeMultipart {
                 throw BridgeMultipartError.invalidRequest("Malformed multipart body")
             }
 
-            let partData = Data(body[cursor..<nextBoundary.lowerBound])
+            let partData = body[cursor..<nextBoundary.lowerBound]
             if let part = part(from: headerText, data: partData) {
                 parts.append(part)
             }
@@ -272,7 +272,7 @@ enum BridgeMultipart {
     }
 
     private static func jsonString<T: Encodable>(_ value: T) -> String {
-        guard let data = try? JSONEncoder().encode(value),
+        guard let data = try? BridgeJSON.encode(value),
               let text = String(data: data, encoding: .utf8)
         else { return "[]" }
         return text
