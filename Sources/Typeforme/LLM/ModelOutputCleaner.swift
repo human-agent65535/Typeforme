@@ -46,15 +46,16 @@ enum ModelOutputCleaner {
     }
 
     private static func stripThinkBlocks(_ s: String) -> String {
-        guard let re = try? NSRegularExpression(pattern: "<think>[\\s\\S]*?</think>") else { return s }
         let range = NSRange(s.startIndex..<s.endIndex, in: s)
-        return re.stringByReplacingMatches(in: s, range: range, withTemplate: "")
+        return thinkBlockRegex.stringByReplacingMatches(in: s, range: range, withTemplate: "")
     }
 
     private static func stripFences(_ s: String) -> String {
         // Strip ``` optionally followed by a language tag and a newline, plus closing ```.
-        guard let re = try? NSRegularExpression(pattern: "```[a-zA-Z0-9_+\\-]*\\n?|```") else { return s }
         let range = NSRange(s.startIndex..<s.endIndex, in: s)
-        return re.stringByReplacingMatches(in: s, range: range, withTemplate: "")
+        return codeFenceRegex.stringByReplacingMatches(in: s, range: range, withTemplate: "")
     }
+
+    private static let thinkBlockRegex = try! NSRegularExpression(pattern: "<think>[\\s\\S]*?</think>")
+    private static let codeFenceRegex = try! NSRegularExpression(pattern: "```[a-zA-Z0-9_+\\-]*\\n?|```")
 }

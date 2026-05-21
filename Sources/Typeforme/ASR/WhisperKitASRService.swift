@@ -123,27 +123,11 @@ final class WhisperKitASRService: ASRService {
         }
         activeTranscriptionID = transcriptionID
         activeTranscriptionTask = operation
-        Task { [weak self] in
-            _ = try? await operation.value
-            await MainActor.run {
-                guard self?.activeTranscriptionID == transcriptionID else { return }
-                self?.activeTranscriptionID = nil
-                self?.activeTranscriptionTask = nil
-            }
-        }
 
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 let completion = OneShotTranscriptionCompletion()
-                Task {
-                    do {
-                        let text = try await operation.value
-                        completion.complete(continuation, result: .success(text))
-                    } catch {
-                        completion.complete(continuation, result: .failure(error))
-                    }
-                }
-                Task {
+                let timeoutTask = Task {
                     try? await Task.sleep(nanoseconds: Self.timeoutNanoseconds(seconds: timeoutSeconds))
                     guard !Task.isCancelled else { return }
                     operation.cancel()
@@ -151,6 +135,21 @@ final class WhisperKitASRService: ASRService {
                         continuation,
                         result: .failure(ASRAudioSupportError.timeout(seconds: timeoutSeconds))
                     )
+                }
+                Task { [weak self] in
+                    let result: Result<String, Error>
+                    do {
+                        result = .success(try await operation.value)
+                    } catch {
+                        result = .failure(error)
+                    }
+                    timeoutTask.cancel()
+                    await MainActor.run {
+                        guard self?.activeTranscriptionID == transcriptionID else { return }
+                        self?.activeTranscriptionID = nil
+                        self?.activeTranscriptionTask = nil
+                    }
+                    completion.complete(continuation, result: result)
                 }
             }
         } onCancel: {
