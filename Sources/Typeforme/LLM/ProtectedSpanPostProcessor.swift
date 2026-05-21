@@ -118,10 +118,11 @@ enum ProtectedSpanPostProcessor {
 
     private static func restoreProtectedEnglishTokens(_ text: String, rawTranscript: String) -> String {
         var out = text
-        let lowerRaw = rawTranscript.lowercased()
-        if lowerRaw.range(of: #"\bpath\b"#, options: .regularExpression) != nil,
-           out.range(of: #"\bpath\b"#, options: [.caseInsensitive, .regularExpression]) == nil {
-            out = regexReplace(out, pattern: #"(路径|路徑)(?=\s*[:：/])"#, with: "path")
+        let rawRange = NSRange(rawTranscript.startIndex..<rawTranscript.endIndex, in: rawTranscript)
+        let outputRange = NSRange(out.startIndex..<out.endIndex, in: out)
+        if pathWordRegex.firstMatch(in: rawTranscript, range: rawRange) != nil,
+           pathWordRegex.firstMatch(in: out, range: outputRange) == nil {
+            out = regexReplace(out, regex: chinesePathLabelRegex, with: "path")
         }
         return out
     }
@@ -150,8 +151,7 @@ enum ProtectedSpanPostProcessor {
             (0x00C0...0x024F).contains(value)
     }
 
-    private static func regexReplace(_ text: String, pattern: String, with template: String) -> String {
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { return text }
+    private static func regexReplace(_ text: String, regex: NSRegularExpression, with template: String) -> String {
         let range = NSRange(text.startIndex..<text.endIndex, in: text)
         return regex.stringByReplacingMatches(in: text, range: range, withTemplate: template)
     }
@@ -169,4 +169,9 @@ enum ProtectedSpanPostProcessor {
         "npm install",
         "git status",
     ]
+    private static let pathWordRegex = try! NSRegularExpression(
+        pattern: #"\bpath\b"#,
+        options: [.caseInsensitive]
+    )
+    private static let chinesePathLabelRegex = try! NSRegularExpression(pattern: #"(路径|路徑)(?=\s*[:：/])"#)
 }

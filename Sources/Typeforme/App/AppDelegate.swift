@@ -52,13 +52,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         super.init()
     }
 
-    func applicationWillFinishLaunching(_ notification: Notification) {
-        guard SingleInstanceGuard.shared.acquireOrActivateExisting() else {
-            NSApp.terminate(nil)
-            return
-        }
-    }
-
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
 
