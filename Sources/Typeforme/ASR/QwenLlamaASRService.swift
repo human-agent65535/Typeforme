@@ -177,7 +177,7 @@ final class QwenLlamaASRService: ASRService {
         )
 
         do {
-            request.httpBody = try JSONEncoder().encode(body)
+            request.httpBody = try BridgeJSON.encode(body)
         } catch {
             throw ASRAudioSupportError.requestBodyFailed(error.localizedDescription)
         }

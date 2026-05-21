@@ -69,12 +69,11 @@ final class AudioRecorder: @unchecked Sendable {
             queue: .main
         ) { [weak self] _ in
             guard let self else { return }
-            Log.audio.notice("AVAudioEngineConfigurationChange — stopping recording")
-            let url = self.currentURL
-            _ = self.stop()
-            if let url { try? FileManager.default.removeItem(at: url) }
+            Log.audio.notice("AVAudioEngineConfigurationChange — requesting recording stop")
             if let h = self.onConfigurationChanged {
                 Task { @MainActor in h() }
+            } else {
+                _ = self.stop()
             }
         }
 

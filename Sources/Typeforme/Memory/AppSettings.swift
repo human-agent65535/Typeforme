@@ -390,7 +390,9 @@ enum AppSettings {
 
     private static func saveScopedSettings(for mode: ProcessingMode, defaults: UserDefaults) {
         let keys = scopedSettingKeys(for: mode)
-        var snapshot: [String: Any] = [:]
+        var snapshot: [String: Any] = [
+            scopedSnapshotVersionKey: scopedSnapshotVersion
+        ]
         for key in keys {
             if let value = defaults.object(forKey: key) {
                 snapshot[key] = value
@@ -401,6 +403,8 @@ enum AppSettings {
 
     private static func restoreScopedSettings(for mode: ProcessingMode, defaults: UserDefaults) {
         guard let snapshot = defaults.dictionary(forKey: snapshotKey(for: mode)) else { return }
+        let version = snapshot[scopedSnapshotVersionKey] as? Int ?? 0
+        guard version <= scopedSnapshotVersion else { return }
         for key in scopedSettingKeys(for: mode) {
             if let value = snapshot[key] {
                 defaults.set(value, forKey: key)
@@ -421,6 +425,10 @@ enum AppSettings {
         case .client: return Keys.clientSettingsSnapshot
         }
     }
+
+    private static let scopedSnapshotVersion = 1
+    private static let scopedSnapshotVersionKey = "__typeforme_snapshot_version"
+
     static var clientLocalBridgeURLsRaw: String {
         ud.string(forKey: Keys.clientLocalBridgeURLs) ?? ""
     }
