@@ -175,6 +175,7 @@ enum BridgeMultipart {
         let prefixedDelimiter = Data("\r\n--\(boundary)".utf8)
         let headerSeparator = Data([13, 10, 13, 10])
         let closing = Data("--".utf8)
+        let lineBreak = Data([13, 10])
         var parts: [Part] = []
         var cursor = body.startIndex
 
@@ -183,7 +184,7 @@ enum BridgeMultipart {
             if body[cursor...].starts(with: closing) {
                 break
             }
-            if body[cursor...].starts(with: Data([13, 10])) {
+            if body[cursor...].starts(with: lineBreak) {
                 cursor += 2
             }
 

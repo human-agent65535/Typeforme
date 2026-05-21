@@ -34,6 +34,7 @@ final class BridgeHTTPServer: @unchecked Sendable {
     private let service: BridgeService
     private let stateLock = NSLock()
     private var serverTask: Task<Void, Never>?
+    private var pendingStartTask: Task<Void, Never>?
     private var activePort: Int?
     private var activeHost: String?
     private var activeRunID: UUID?
@@ -42,6 +43,7 @@ final class BridgeHTTPServer: @unchecked Sendable {
     private static let maxBodyBytes = 25 * 1024 * 1024
     private static let maxMultipartHeaderBytes = 16 * 1024
     private static let maxMultipartFieldBytes = 1 * 1024 * 1024
+    private static let restartSettleDelay: UInt64 = 150_000_000
 
     @MainActor
     init(dictionary: UserDictionaryStore) {
@@ -49,6 +51,7 @@ final class BridgeHTTPServer: @unchecked Sendable {
     }
 
     func applySettings() {
+        cancelPendingStart()
         guard AppSettings.bridgeEnabled else {
             stop()
             return
@@ -59,20 +62,28 @@ final class BridgeHTTPServer: @unchecked Sendable {
         let current = stateSnapshot()
         if current.running, current.port == port, current.host == host { return }
         stop()
-        start(host: host, port: port)
+        if current.running {
+            scheduleStart(host: host, port: port, after: Self.restartSettleDelay)
+        } else {
+            startIfSettingsStillMatch(host: host, port: port)
+        }
     }
 
     func stop() {
         let task: Task<Void, Never>?
+        let pending: Task<Void, Never>?
         stateLock.lock()
         task = serverTask
+        pending = pendingStartTask
         serverTask = nil
+        pendingStartTask = nil
         activePort = nil
         activeHost = nil
         activeRunID = nil
         running = false
         stateLock.unlock()
 
+        pending?.cancel()
         task?.cancel()
         if task != nil {
             Log.app.info("Bridge stopping")
@@ -98,8 +109,38 @@ final class BridgeHTTPServer: @unchecked Sendable {
         return (running, activePort, activeHost)
     }
 
+    private func cancelPendingStart() {
+        let pending: Task<Void, Never>?
+        stateLock.lock()
+        pending = pendingStartTask
+        pendingStartTask = nil
+        stateLock.unlock()
+        pending?.cancel()
+    }
+
     private static func bindHost() -> String {
         AppSettings.bridgeLANEnabled ? "0.0.0.0" : "127.0.0.1"
+    }
+
+    private func scheduleStart(host: String, port: Int, after delay: UInt64) {
+        let task = Task.detached(priority: .utility) { [weak self] in
+            try? await Task.sleep(nanoseconds: delay)
+            guard !Task.isCancelled else { return }
+            self?.startIfSettingsStillMatch(host: host, port: port)
+        }
+        stateLock.lock()
+        pendingStartTask = task
+        stateLock.unlock()
+    }
+
+    private func startIfSettingsStillMatch(host: String, port: Int) {
+        guard AppSettings.bridgeEnabled,
+              AppSettings.bridgePort == port,
+              Self.bindHost() == host
+        else { return }
+        let current = stateSnapshot()
+        guard !current.running else { return }
+        start(host: host, port: port)
     }
 
     private func start(host: String, port: Int) {
@@ -334,11 +375,12 @@ final class BridgeHTTPServer: @unchecked Sendable {
         guard let clientIdentityID = cleanHeader(request.headers[.typeformeClientID], maxLength: 96) else {
             return
         }
+        let trustForwardedHeaders = shouldTrustForwardedHeaders(from: context.remoteAddress)
         let activity = BridgeClientRequestActivity(
             endpoint: endpoint,
             clientHost: context.remoteAddress?.ipAddress ?? "unknown",
             clientPort: context.remoteAddress?.port,
-            userAgent: request.headers[.userAgent],
+            userAgent: cleanHeader(request.headers[.userAgent], maxLength: 160),
             clientIdentityID: clientIdentityID,
             statusCode: statusCode,
             occurredAt: finishedAt,
@@ -348,10 +390,16 @@ final class BridgeHTTPServer: @unchecked Sendable {
             clientDisplayName: cleanHeader(request.headers[.typeformeClientName], maxLength: 80),
             clientPlatform: cleanHeader(request.headers[.typeformeClientPlatform], maxLength: 32),
             clientBundleID: cleanHeader(request.headers[.typeformeClientBundleID], maxLength: 120),
-            forwardedClientIP: forwardedClientIP(from: request),
-            cloudflareRayID: cleanHeader(request.headers[.cfRay], maxLength: 80)
+            forwardedClientIP: trustForwardedHeaders ? forwardedClientIP(from: request) : nil,
+            cloudflareRayID: trustForwardedHeaders ? cleanHeader(request.headers[.cfRay], maxLength: 80) : nil
         )
         BridgeConnectionStore.shared.record(activity)
+    }
+
+    private static func shouldTrustForwardedHeaders(from remoteAddress: SocketAddress?) -> Bool {
+        guard AppSettings.bridgePublicEnabled else { return false }
+        guard let ip = remoteAddress?.ipAddress else { return false }
+        return ip == "127.0.0.1" || ip == "::1" || ip == "localhost"
     }
 
     private static func forwardedClientIP(from request: Request) -> String? {

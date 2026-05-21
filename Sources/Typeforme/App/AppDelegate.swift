@@ -1,6 +1,20 @@
 import AppKit
 import Combine
 
+private struct BridgeListenerSettings: Equatable {
+    let enabled: Bool
+    let lanEnabled: Bool
+    let port: Int
+
+    static var current: BridgeListenerSettings {
+        BridgeListenerSettings(
+            enabled: AppSettings.bridgeEnabled,
+            lanEnabled: AppSettings.bridgeLANEnabled,
+            port: AppSettings.bridgePort
+        )
+    }
+}
+
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let coordinator: DictationCoordinator
@@ -14,11 +28,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let holdMonitor = DoubleTapModifierMonitor()
     private var cancellables: Set<AnyCancellable> = []
     private var escMonitor: Any?
+    private var localEscMonitor: Any?
     private var enterMonitor: Any?
+    private var localEnterMonitor: Any?
     private var comboHotkeyIsDown = false
     private var commandTextEditHotkeyIsDown = false
     private var comboHotkeyReleaseWatchdog: Task<Void, Never>?
+    private var terminationTask: Task<Void, Never>?
     private static let comboHotkeyReleaseWatchdogDelay: UInt64 = 1_500_000_000
+    private static let terminationShutdownDeadline: UInt64 = 4_000_000_000
     private var lastComboHotkeyPressAt: Date?
     private var lastCommandTextEditHotkeyPressAt: Date?
     private static let hotkeyBounceWindow: TimeInterval = 0.35
@@ -95,8 +113,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         NotificationCenter.default
             .publisher(for: UserDefaults.didChangeNotification)
-            .sink { [weak self] _ in
-                if AppSettings.processingMode == .server {
+            .map { _ in BridgeListenerSettings.current }
+            .removeDuplicates()
+            .sink { [weak self] settings in
+                if AppSettings.processingMode == .server, settings.enabled {
                     self?.bridgeServer.applySettings()
                 } else {
                     self?.bridgeServer.stop()
@@ -150,9 +170,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         coordinator.shutdown()
         bridgeServer.stop()
-        Task { @MainActor in
-            await ASRFactory.shared.stopQwenLlama()
-            await CorrectorFactory.shared.shutdownAll()
+        terminationTask?.cancel()
+        terminationTask = Task { @MainActor in
+            let deadline = Self.terminationShutdownDeadline
+            let shutdownTask = Task {
+                await ASRFactory.shared.stopQwenLlama()
+                await CorrectorFactory.shared.shutdownAll()
+            }
+            let completed = await withTaskGroup(of: Bool.self, returning: Bool.self) { group in
+                group.addTask {
+                    await shutdownTask.value
+                    return true
+                }
+                group.addTask {
+                    try? await Task.sleep(nanoseconds: deadline)
+                    return false
+                }
+                let result = await group.next() ?? false
+                group.cancelAll()
+                if !result {
+                    shutdownTask.cancel()
+                }
+                return result
+            }
+            if !completed {
+                Log.app.error("Shutdown timed out; allowing macOS termination")
+            }
             NSApp.reply(toApplicationShouldTerminate: true)
         }
         return .terminateLater
@@ -163,7 +206,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         clientSettingsSync.cancel()
         holdMonitor.uninstall()
         comboHotkeyReleaseWatchdog?.cancel()
+        terminationTask?.cancel()
         if let m = escMonitor { NSEvent.removeMonitor(m); escMonitor = nil }
+        if let m = localEscMonitor { NSEvent.removeMonitor(m); localEscMonitor = nil }
         removeEnterMonitor()
     }
 
@@ -254,6 +299,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Esc cancel (spec §8)
 
     private func installEscMonitor() {
+        guard escMonitor == nil, localEscMonitor == nil else { return }
         escMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard event.keyCode == 53 else { return }  // kVK_Escape
             guard let self else { return }
@@ -264,10 +310,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         }
+        localEscMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard event.keyCode == 53 else { return event }  // kVK_Escape
+            guard let self else { return event }
+            Task { @MainActor in
+                if self.coordinator.state != .idle {
+                    Log.app.debug("Esc — cancelling dictation")
+                    await self.coordinator.cancelDictation()
+                }
+            }
+            return event
+        }
     }
 
     private func installEnterMonitor() {
-        guard enterMonitor == nil else { return }
+        guard enterMonitor == nil, localEnterMonitor == nil else { return }
         enterMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
             // Plain Return / numpad Enter only; Cmd/Shift/Opt+Enter stays
             // with the foreground app (newline, send, etc.).
@@ -281,12 +338,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 await self.coordinator.commitPreview()
             }
         }
+        localEnterMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard event.keyCode == 36 || event.keyCode == 76 else { return event }
+            let mods = event.modifierFlags.intersection([.shift, .control, .option, .command])
+            guard mods.isEmpty else { return event }
+            guard let self else { return event }
+            Task { @MainActor in
+                guard self.coordinator.state == .preview else { return }
+                Log.app.debug("Enter — committing preview")
+                await self.coordinator.commitPreview()
+            }
+            return nil
+        }
     }
 
     private func removeEnterMonitor() {
         if let m = enterMonitor {
             NSEvent.removeMonitor(m)
             enterMonitor = nil
+        }
+        if let m = localEnterMonitor {
+            NSEvent.removeMonitor(m)
+            localEnterMonitor = nil
         }
     }
 
