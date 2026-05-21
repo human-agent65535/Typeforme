@@ -2,6 +2,7 @@ import UIKit
 import Darwin
 import ObjectiveC
 import OSLog
+import QuartzCore
 
 private let kbLog = Logger(subsystem: "com.typeforme.keyboard", category: "ui")
 
@@ -204,7 +205,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private static let portraitKeyboardContentHeight: CGFloat = 270
     private static let compactKeyboardContentHeight: CGFloat = 256
     private static let rootHorizontalInset: CGFloat = 4
-    private static let rootVerticalInset: CGFloat = 8
+    private static let rootVerticalInset: CGFloat = 6
     private static let stackSpacing: CGFloat = 4
     private static let topRowHeight: CGFloat = 44
     private static let utilityRowHeight: CGFloat = 48
@@ -1387,6 +1388,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         candidateScrollView.showsHorizontalScrollIndicator = false
         candidateScrollView.alwaysBounceHorizontal = true
         candidateScrollView.delaysContentTouches = false
+        // UIScrollView's clipsToBounds default is false — without this, the
+        // last candidate near the right edge can render under the chevron.
+        candidateScrollView.clipsToBounds = true
         candidateScrollView.heightAnchor.constraint(equalToConstant: 44).isActive = true
         candidateScrollView.setContentHuggingPriority(.defaultLow, for: .horizontal)
         candidateScrollView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
@@ -1407,6 +1411,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         candidateGridScrollView.showsVerticalScrollIndicator = false
         candidateGridScrollView.alwaysBounceVertical = true
         candidateGridScrollView.delaysContentTouches = false
+        candidateGridScrollView.clipsToBounds = true
         candidateGridScrollView.isHidden = true
 
         candidateGridStack.axis = .vertical
@@ -4293,6 +4298,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func renderRimeState(_ state: RimeKeyboardState) {
+        performCandidateRefreshWithoutAnimation {
+            renderRimeStateImmediately(state)
+        }
+    }
+
+    private func renderRimeStateImmediately(_ state: RimeKeyboardState) {
         if !state.isComposing {
             setCandidateGridExpanded(false, state: state)
         }
@@ -4334,6 +4345,42 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
         candidateScrollView.setContentOffset(.zero, animated: false)
         renderCandidateGrid(state)
+    }
+
+    private func performCandidateRefreshWithoutAnimation(_ updates: () -> Void) {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        UIView.performWithoutAnimation {
+            updates()
+            candidateStack.setNeedsLayout()
+            candidateStack.layoutIfNeeded()
+            candidateScrollView.setNeedsLayout()
+            candidateScrollView.layoutIfNeeded()
+            candidateGridStack.setNeedsLayout()
+            candidateGridStack.layoutIfNeeded()
+            candidateGridScrollView.setNeedsLayout()
+            candidateGridScrollView.layoutIfNeeded()
+            textToolbar.setNeedsLayout()
+            textToolbar.layoutIfNeeded()
+            removeCandidateRefreshAnimations()
+        }
+        CATransaction.commit()
+    }
+
+    private func removeCandidateRefreshAnimations() {
+        let containers: [UIView] = [
+            candidateStack,
+            candidateScrollView,
+            candidateGridStack,
+            candidateGridScrollView,
+            textToolbar,
+        ]
+        for container in containers {
+            container.layer.removeAllAnimations()
+            for subview in container.subviews {
+                subview.layer.removeAllAnimations()
+            }
+        }
     }
 
     private func resetCandidateStackForReuse() {
