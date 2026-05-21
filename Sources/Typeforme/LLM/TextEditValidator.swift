@@ -29,7 +29,7 @@ enum TextEditValidator {
         }
         let payload: TextEditPayload
         do {
-            payload = try JSONDecoder().decode(TextEditPayload.self, from: data)
+            payload = try BridgeJSON.decode(TextEditPayload.self, from: data)
         } catch {
             throw TextEditValidationError.parseFailed(error.localizedDescription)
         }

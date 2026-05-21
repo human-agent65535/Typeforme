@@ -98,7 +98,7 @@ final class QwenLlamaASRService: ASRService {
     }
 
     static func parseChatTranscript(data: Data) throws -> String {
-        guard let response = try? JSONDecoder().decode(QwenASRChatResponse.self, from: data) else {
+        guard let response = try? BridgeJSON.decode(QwenASRChatResponse.self, from: data) else {
             return ASRAudioSupport.cleanTranscriptText(
                 String(data: data, encoding: .utf8) ?? ""
             )
@@ -110,7 +110,7 @@ final class QwenLlamaASRService: ASRService {
     }
 
     private static func responseSummary(data: Data) -> String {
-        guard let response = try? JSONDecoder().decode(QwenASRChatResponse.self, from: data) else {
+        guard let response = try? BridgeJSON.decode(QwenASRChatResponse.self, from: data) else {
             return "non_json bytes=\(data.count)"
         }
 

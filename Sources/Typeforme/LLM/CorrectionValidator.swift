@@ -28,7 +28,7 @@ enum CorrectionValidator {
         }
         let payload: CorrectionPayload
         do {
-            payload = try JSONDecoder().decode(CorrectionPayload.self, from: data)
+            payload = try BridgeJSON.decode(CorrectionPayload.self, from: data)
         } catch {
             throw CorrectionValidationError.parseFailed(error.localizedDescription)
         }

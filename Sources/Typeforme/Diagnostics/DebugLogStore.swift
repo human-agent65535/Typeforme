@@ -265,7 +265,7 @@ enum DebugLogStore {
 
     private static func read(in directory: URL) throws -> DebugLogRecord {
         let data = try Data(contentsOf: directory.appendingPathComponent(recordFileName))
-        return try JSONDecoder().decode(DebugLogRecord.self, from: data)
+        return try BridgeJSON.decode(DebugLogRecord.self, from: data)
     }
 
     private static func correctionInput(_ request: CorrectionRequest) -> DebugLogCorrectionInput {
@@ -298,9 +298,7 @@ enum DebugLogStore {
     }
 
     private static func write(_ record: DebugLogRecord, in directory: URL) throws {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        let data = try encoder.encode(record)
+        let data = try BridgeJSON.encodePrettySorted(record)
         try data.write(to: directory.appendingPathComponent(recordFileName), options: .atomic)
     }
 

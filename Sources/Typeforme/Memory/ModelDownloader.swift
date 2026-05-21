@@ -34,9 +34,13 @@ final class ModelDownloader: NSObject, ObservableObject {
         self.destination = destination
         state = .downloading(received: 0, total: 0)
         let t: URLSessionDownloadTask
-        if let data = resumeData, resumeDestination == destination {
+        let matchingResumeData = resumeDestination == destination ? resumeData : nil
+        let diskResumeData = matchingResumeData ?? loadResumeData(for: destination)
+        if let data = matchingResumeData {
             t = session.downloadTask(withResumeData: data)
             resumeData = nil
+        } else if let diskResumeData {
+            t = session.downloadTask(withResumeData: diskResumeData)
         } else {
             resumeData = nil
             let req = URLRequest(url: url)
@@ -57,8 +61,7 @@ final class ModelDownloader: NSObject, ObservableObject {
             DispatchQueue.main.async {
                 guard let self else { return }
                 if let data, !data.isEmpty {
-                    self.resumeData = data
-                    self.resumeDestination = cancelledDestination
+                    self.storeResumeData(data, for: cancelledDestination)
                 }
                 let isCurrentTask = self.task === task
                 if isCurrentTask {
@@ -76,6 +79,7 @@ final class ModelDownloader: NSObject, ObservableObject {
         cancel()
         resumeData = nil
         resumeDestination = nil
+        removeResumeData(for: destination)
         state = .idle
     }
 
@@ -116,8 +120,7 @@ extension ModelDownloader: URLSessionDownloadDelegate {
                                    withIntermediateDirectories: true)
             try? fm.removeItem(at: dest)
             try fm.moveItem(at: location, to: dest)
-            resumeData = nil
-            resumeDestination = nil
+            removeResumeData(for: dest)
             state = .completed(at: dest)
             Log.store.info("model downloaded: \(dest.lastPathComponent, privacy: .public)")
         } catch {
@@ -132,16 +135,48 @@ extension ModelDownloader: URLSessionDownloadDelegate {
         if case .completed = state { return }     // success path beat us here
         let isCurrentTask = self.task.map { $0 === task } ?? false
         let ns = error as NSError
+        let didStoreResumeData: Bool
         if let data = ns.userInfo[NSURLSessionDownloadTaskResumeData] as? Data, !data.isEmpty {
-            resumeData = data
-            resumeDestination = destination
+            storeResumeData(data, for: destination)
+            didStoreResumeData = true
+        } else {
+            didStoreResumeData = false
         }
         guard isCurrentTask else { return }
         self.task = nil
+        if ns.code != NSURLErrorCancelled && !didStoreResumeData {
+            removeResumeData(for: destination)
+        }
         if ns.code == NSURLErrorCancelled {
             state = .idle
         } else {
             state = .failed(error.localizedDescription)
         }
+    }
+
+    private func storeResumeData(_ data: Data, for destination: URL?) {
+        resumeData = data
+        resumeDestination = destination
+        guard let destination else { return }
+        try? data.write(to: resumeDataURL(for: destination), options: .atomic)
+    }
+
+    private func loadResumeData(for destination: URL) -> Data? {
+        let url = resumeDataURL(for: destination)
+        guard let data = try? Data(contentsOf: url), !data.isEmpty else { return nil }
+        resumeDestination = destination
+        return data
+    }
+
+    private func removeResumeData(for destination: URL?) {
+        resumeData = nil
+        resumeDestination = nil
+        guard let destination else { return }
+        try? FileManager.default.removeItem(at: resumeDataURL(for: destination))
+    }
+
+    private func resumeDataURL(for destination: URL) -> URL {
+        destination.deletingLastPathComponent()
+            .appendingPathComponent(".\(destination.lastPathComponent).resumeData")
     }
 }

@@ -104,9 +104,7 @@ struct TextEditPromptInputPayload: Codable, Sendable, Equatable {
 
 enum PromptPayloadEncoder {
     static func jsonString<T: Encodable>(_ payload: T) -> String? {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
-        guard let data = try? encoder.encode(payload) else { return nil }
+        guard let data = try? BridgeJSON.encodeSorted(payload) else { return nil }
         return String(data: data, encoding: .utf8)?
             .replacingOccurrences(of: "</", with: "<\\/")
     }

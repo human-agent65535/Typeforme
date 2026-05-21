@@ -18,7 +18,7 @@ final class UserDictionaryStore: ObservableObject {
             return
         }
         do {
-            entries = try JSONDecoder().decode([DictionaryEntry].self, from: data)
+            entries = try BridgeJSON.decode([DictionaryEntry].self, from: data)
                 .filter(\.isValid)
             save()
         } catch {
@@ -29,7 +29,7 @@ final class UserDictionaryStore: ObservableObject {
 
     func save() {
         do {
-            let data = try JSONEncoder().encode(entries)
+            let data = try BridgeJSON.encode(entries)
             try data.write(to: url, options: .atomic)
         } catch {
             Log.store.error("user dictionary save failed: \(error.localizedDescription)")

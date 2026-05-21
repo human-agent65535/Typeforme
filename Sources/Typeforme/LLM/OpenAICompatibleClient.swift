@@ -85,7 +85,7 @@ enum OpenAICompatibleClient {
     ) async throws -> String {
         let bodyData: Data
         do {
-            bodyData = try JSONEncoder().encode(body)
+            bodyData = try BridgeJSON.encode(body)
         } catch {
             throw OpenAICompatibleClientError.bodyEncode(error.localizedDescription)
         }
@@ -121,7 +121,7 @@ enum OpenAICompatibleClient {
     }
 
     static func modelIDs(data: Data) -> [String] {
-        guard let response = try? JSONDecoder().decode(ModelsResponse.self, from: data) else {
+        guard let response = try? BridgeJSON.decode(ModelsResponse.self, from: data) else {
             return []
         }
         return response.data.compactMap { model in
@@ -176,7 +176,7 @@ enum OpenAICompatibleClient {
     }
 
     private static func chatCompletionContent(from data: Data) throws -> String {
-        guard let response = try? JSONDecoder().decode(ChatCompletionResponse.self, from: data),
+        guard let response = try? BridgeJSON.decode(ChatCompletionResponse.self, from: data),
               let first = response.choices.first
         else {
             throw OpenAICompatibleClientError.invalidResponse("unexpected /v1/chat/completions response shape")
@@ -197,7 +197,7 @@ enum OpenAICompatibleClient {
     }
 
     private static func errorMessage(data: Data) -> String {
-        if let response = try? JSONDecoder().decode(ErrorResponse.self, from: data) {
+        if let response = try? BridgeJSON.decode(ErrorResponse.self, from: data) {
             let message = response.error.message.trimmingCharacters(in: .whitespacesAndNewlines)
             if !message.isEmpty { return String(message.prefix(500)) }
         }

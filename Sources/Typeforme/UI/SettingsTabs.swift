@@ -852,7 +852,7 @@ struct ClientServerSettingsView: View {
             return
         }
         do {
-            let payload = try JSONDecoder().decode(BridgePairingPayload.self, from: data)
+            let payload = try BridgeJSON.decode(BridgePairingPayload.self, from: data)
             let config = ClientBridgeConfiguration.fromPairingPayload(payload)
             clientLocalBridgeURLsRaw = ClientBridgeConfiguration.rawValue(for: config.localBridgeURLs)
             clientCloudBridgeURL = config.cloudBridgeURL
@@ -2657,9 +2657,7 @@ struct BridgeSettingsView: View {
     /// `.prettyPrinted`) so the QR is denser; iOS parser tolerates both.
     private func pairingPayloadJSONString() -> String? {
         let payload = BridgePairingPayload.current()
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
-        guard let data = try? encoder.encode(payload) else { return nil }
+        guard let data = try? BridgeJSON.encodeSorted(payload) else { return nil }
         return String(data: data, encoding: .utf8)
     }
 
