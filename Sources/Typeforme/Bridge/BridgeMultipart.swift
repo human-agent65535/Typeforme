@@ -161,8 +161,8 @@ enum BridgeMultipart {
         includeRawTranscript: Bool
     ) throws -> FileBody {
         let boundary = "Typeforme-\(UUID().uuidString)"
-        try AppPaths.ensureDirectories()
-        let bodyURL = AppPaths.bridgeDir.appendingPathComponent("\(UUID().uuidString).multipart")
+        let bodyURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("typeforme-\(UUID().uuidString).multipart")
         FileManager.default.createFile(atPath: bodyURL.path, contents: nil)
         let handle = try FileHandle(forWritingTo: bodyURL)
 
@@ -398,7 +398,7 @@ enum BridgeMultipart {
     }
 
     private static func jsonString<T: Encodable>(_ value: T) -> String {
-        guard let data = try? BridgeJSON.encode(value),
+        guard let data = try? JSONEncoder().encode(value),
               let text = String(data: data, encoding: .utf8)
         else { return "[]" }
         return text
