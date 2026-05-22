@@ -34,6 +34,59 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         case text
     }
 
+    private struct KeyboardFocusPager {
+        static let minimumSwipeDistance: CGFloat = 110
+        static let minimumSwipeVelocity: CGFloat = 900
+        static let axisDominance: CGFloat = 1.6
+        static let handledCooldown: CFTimeInterval = 0.45
+        static let commitSuppressionDuration: CFTimeInterval = 0.35
+
+        static func horizontalIntent(translation: CGPoint, velocity: CGPoint) -> CGFloat? {
+            if isSwipeIntent(dx: translation.x, dy: translation.y, threshold: minimumSwipeDistance) {
+                return translation.x
+            }
+            if isSwipeIntent(dx: velocity.x, dy: velocity.y, threshold: minimumSwipeVelocity) {
+                return velocity.x
+            }
+            return nil
+        }
+
+        static func horizontalIntent(start: CGPoint, current: CGPoint) -> CGFloat? {
+            let dx = current.x - start.x
+            let dy = current.y - start.y
+            guard isSwipeIntent(dx: dx, dy: dy, threshold: minimumSwipeDistance) else { return nil }
+            return dx
+        }
+
+        static func target(from current: KeyboardFocus, horizontalIntent: CGFloat) -> KeyboardFocus? {
+            guard abs(horizontalIntent) > .ulpOfOne else { return nil }
+
+            // Fixed spatial model: voice is always the left page, text /
+            // traditional keyboard is always the right page. A left swipe
+            // moves rightward in the model (voice -> text); a right swipe
+            // moves back (text -> voice).
+            if horizontalIntent < 0, current == .voice {
+                return .text
+            }
+            if horizontalIntent > 0, current == .text {
+                return .voice
+            }
+            return nil
+        }
+
+        static func enteringOffset(for target: KeyboardFocus, width: CGFloat) -> CGFloat {
+            target == .text ? width : -width
+        }
+
+        static func leavingOffset(for target: KeyboardFocus, width: CGFloat) -> CGFloat {
+            target == .text ? -width : width
+        }
+
+        private static func isSwipeIntent(dx: CGFloat, dy: CGFloat, threshold: CGFloat) -> Bool {
+            abs(dx) >= threshold && abs(dx) > abs(dy) * axisDominance
+        }
+    }
+
     private enum TextInputLanguage: String {
         case chinese
         case english
@@ -4462,13 +4515,14 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             guard !didHandleKeyboardFocusPan else { return }
             let translation = recognizer.translation(in: view)
             let velocity = recognizer.velocity(in: view)
-            // Higher thresholds since swipes are accepted on key surfaces too:
-            // accidental finger drift during a key tap is typically < 30pt,
-            // a deliberate sideways swipe travels 100pt+ within ~150ms.
-            let hasSwipeDistance = abs(translation.x) >= 110 && abs(translation.x) > abs(translation.y) * 1.6
-            let hasSwipeVelocity = abs(velocity.x) >= 900 && abs(velocity.x) > abs(velocity.y) * 1.6
-            guard hasSwipeDistance || hasSwipeVelocity else { return }
-            performKeyboardFocusSwipe(horizontalIntent: hasSwipeDistance ? translation.x : velocity.x)
+            // Swipes are accepted on key surfaces too. Keep thresholds in one
+            // policy object so normal pan and KeyboardInputView fallback pan
+            // cannot drift apart.
+            guard let horizontalIntent = KeyboardFocusPager.horizontalIntent(
+                translation: translation,
+                velocity: velocity
+            ) else { return }
+            performKeyboardFocusSwipe(horizontalIntent: horizontalIntent)
         case .cancelled, .failed:
             didHandleKeyboardFocusPan = false
         default:
@@ -4478,6 +4532,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     fileprivate func switchKeyboardFocusFromFallbackSwipe(deltaX: CGFloat) {
         performKeyboardFocusSwipe(horizontalIntent: deltaX)
+    }
+
+    fileprivate func keyboardFocusSwipeIntent(start: CGPoint, current: CGPoint) -> CGFloat? {
+        KeyboardFocusPager.horizontalIntent(start: start, current: current)
     }
 
     private func performKeyboardFocusSwipe(horizontalIntent: CGFloat) {
@@ -4490,24 +4548,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         guard now >= keyboardFocusSwipeHandledUntil else { return }
         guard let target = keyboardFocusTarget(forHorizontalIntent: horizontalIntent) else { return }
         didHandleKeyboardFocusPan = true
-        keyboardFocusSwipeHandledUntil = now + 0.45
-        suppressTextKeyCommitUntil = now + 0.35
+        keyboardFocusSwipeHandledUntil = now + KeyboardFocusPager.handledCooldown
+        suppressTextKeyCommitUntil = now + KeyboardFocusPager.commitSuppressionDuration
         setKeyboardFocus(target, animated: true)
     }
 
     private func keyboardFocusTarget(forHorizontalIntent horizontalIntent: CGFloat) -> KeyboardFocus? {
-        guard abs(horizontalIntent) > .ulpOfOne else { return nil }
-
-        // Fixed spatial model: voice is always the left page, text/traditional
-        // keyboard is always the right page. A left swipe moves rightward in
-        // the model (voice -> text); a right swipe moves back (text -> voice).
-        if horizontalIntent < 0, keyboardFocus == .voice {
-            return .text
-        }
-        if horizontalIntent > 0, keyboardFocus == .text {
-            return .voice
-        }
-        return nil
+        KeyboardFocusPager.target(from: keyboardFocus, horizontalIntent: horizontalIntent)
     }
 
     private func setKeyboardFocus(_ focus: KeyboardFocus, animated: Bool) {
@@ -4556,8 +4603,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         view.layoutIfNeeded()
 
         let width = view.bounds.width
-        let enteringFrom: CGFloat = isTextFocus ? width : -width
-        let leavingTo: CGFloat = isTextFocus ? -width : width
+        let targetFocus: KeyboardFocus = isTextFocus ? .text : .voice
+        let enteringFrom = KeyboardFocusPager.enteringOffset(for: targetFocus, width: width)
+        let leavingTo = KeyboardFocusPager.leavingOffset(for: targetFocus, width: width)
         let focusName = isTextFocus ? "text" : "voice"
         let animationStartedAt = Date()
 
@@ -6822,15 +6870,12 @@ final class KeyboardInputView: UIInputView {
             return
         }
         let point = touch.location(in: self)
-        let dx = point.x - fallbackStartPoint.x
-        let dy = point.y - fallbackStartPoint.y
-        let isFocusSwipeIntent = abs(dx) >= 110 && abs(dx) > abs(dy) * 1.6
-        if isFocusSwipeIntent {
+        if let horizontalIntent = hitController.keyboardFocusSwipeIntent(start: fallbackStartPoint, current: point) {
             if !fallbackDidCancel {
                 fallbackDidCancel = true
                 hitController.cancelFallbackTextKeyTouch(on: button)
             }
-            hitController.switchKeyboardFocusFromFallbackSwipe(deltaX: dx)
+            hitController.switchKeyboardFocusFromFallbackSwipe(deltaX: horizontalIntent)
             clearFallbackTouch()
         }
     }
@@ -6875,12 +6920,12 @@ final class KeyboardInputView: UIInputView {
               !didHandleDirectFocusSwipe
         else { return }
         let point = touch.location(in: self)
-        let dx = point.x - directFocusSwipeStartPoint.x
-        let dy = point.y - directFocusSwipeStartPoint.y
-        let isFocusSwipeIntent = abs(dx) >= 110 && abs(dx) > abs(dy) * 1.6
-        guard isFocusSwipeIntent else { return }
+        guard let horizontalIntent = hitController?.keyboardFocusSwipeIntent(
+            start: directFocusSwipeStartPoint,
+            current: point
+        ) else { return }
         didHandleDirectFocusSwipe = true
-        hitController?.switchKeyboardFocusFromFallbackSwipe(deltaX: dx)
+        hitController?.switchKeyboardFocusFromFallbackSwipe(deltaX: horizontalIntent)
     }
 
     private func clearFallbackTouch() {
