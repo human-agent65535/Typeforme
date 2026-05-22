@@ -257,9 +257,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private let candidateGridStack = UIStackView()
     private let keyPreviewBubble = UIView()
     private let keyPreviewLabel = UILabel()
-    private lazy var keyboardFocusPanRecognizer: UIPanGestureRecognizer = {
-        makeKeyboardFocusPanRecognizer()
-    }()
+    private var keyboardFocusPanRecognizers: [UIPanGestureRecognizer] = []
     private lazy var textTrackpadPanRecognizer = UIPanGestureRecognizer(target: self, action: #selector(handleTextTrackpadPan(_:)))
     private lazy var candidateScrollTapRecognizer: UITapGestureRecognizer = {
         let recognizer = UITapGestureRecognizer(target: self, action: #selector(handleCandidateScrollTap(_:)))
@@ -302,6 +300,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private lazy var keyboardHapticGenerator = UIImpactFeedbackGenerator(style: .light)
     private var lastKeyboardFeedbackTime: CFTimeInterval = 0
     private var didHandleKeyboardFocusPan = false
+    private var keyboardFocusSwipeHandledUntil: CFTimeInterval = 0
     private var suppressTextKeyCommitUntil: CFTimeInterval = 0
     private var isShowingTextRecordingStatus = false
     private let activePressedControls = NSHashTable<UIControl>.weakObjects()
@@ -951,7 +950,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         rootStack.spacing = Self.stackSpacing
         rootStack.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(rootStack)
-        view.addGestureRecognizer(keyboardFocusPanRecognizer)
+        attachKeyboardFocusPan(to: view)
+        attachKeyboardFocusPan(to: rootStack)
 
         heightConstraint = view.heightAnchor.constraint(equalToConstant: currentContentHeight + Self.topChromeCoverHeight)
         heightConstraint?.priority = .required
@@ -1249,6 +1249,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         voiceTitleLabel.translatesAutoresizingMaskIntoConstraints = false
         voiceTitleLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
         voiceTitleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        attachKeyboardFocusPan(to: topRow)
 
         // Use the SAME toolbar-icon styling as the text-mode toolbar's mic /
         // waveform / gear so the chrome buttons feel like a single design
@@ -1316,6 +1317,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private func configureVoiceButton() {
         orbContainer.translatesAutoresizingMaskIntoConstraints = false
         orbContainer.isUserInteractionEnabled = true
+        attachKeyboardFocusPan(to: orbContainer)
         rootStack.addArrangedSubview(orbContainer)
 
         // Pulse rings: three concentric circles that bloom outward during
@@ -1397,6 +1399,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
         configureCorrectionModePanel()
         configureInputModeSwitch()
+        attachKeyboardFocusPan(to: inputModeSwitch)
         inputModeSwitch.onSelection = { [weak self] rawValue in
             self?.selectInputMode(rawValue)
         }
@@ -1599,6 +1602,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         utilityRow.spacing = 6
         utilityRow.alignment = .fill
         utilityRow.distribution = .fill
+        attachKeyboardFocusPan(to: utilityRow)
         utilityRow.heightAnchor.constraint(equalToConstant: Self.utilityRowHeight).isActive = true
 
         configureCapsuleButton(pasteButton, title: "", image: "doc.on.clipboard", style: .utility)
@@ -1641,6 +1645,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         textKeyboardContainer.spacing = 8
         textKeyboardContainer.alignment = .fill
         textKeyboardContainer.distribution = .fill
+        attachKeyboardFocusPan(to: textKeyboardContainer)
         textKeyboardContainerHeightConstraint = textKeyboardContainer.heightAnchor.constraint(
             equalToConstant: Self.textKeyboardBodyHeight(for: currentKeyboardContentHeight)
         )
@@ -1650,6 +1655,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         textToolbar.spacing = 4
         textToolbar.alignment = .fill
         textToolbar.distribution = .fill
+        attachKeyboardFocusPan(to: textToolbar)
         textToolbar.heightAnchor.constraint(equalToConstant: Self.candidateToolbarHeight).isActive = true
 
         // Wand (voice-command edit selected/recent text) — text-mode users
@@ -1764,6 +1770,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         keyRowsStack.spacing = 9
         keyRowsStack.alignment = .fill
         keyRowsStack.distribution = .fillEqually
+        attachKeyboardFocusPan(to: keyRowsStack)
         textTrackpadPanRecognizer.isEnabled = false
         textTrackpadPanRecognizer.cancelsTouchesInView = true
         textKeyboardContainer.addGestureRecognizer(textTrackpadPanRecognizer)
@@ -2619,6 +2626,15 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private func attachPressAnimation(_ control: UIControl) {
         control.addTarget(self, action: #selector(controlPressDown(_:)), for: [.touchDown, .touchDragEnter])
         control.addTarget(self, action: #selector(controlPressUp(_:)), for: [.touchUpInside, .touchUpOutside, .touchCancel, .touchDragExit])
+    }
+
+    private func attachKeyboardFocusPan(to surface: UIView) {
+        if surface.gestureRecognizers?.contains(where: { isKeyboardFocusPanRecognizer($0) }) == true {
+            return
+        }
+        let recognizer = makeKeyboardFocusPanRecognizer()
+        surface.addGestureRecognizer(recognizer)
+        keyboardFocusPanRecognizers.append(recognizer)
     }
 
     private func makeKeyboardFocusPanRecognizer() -> UIPanGestureRecognizer {
@@ -4325,7 +4341,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     @objc private func handleKeyboardFocusPan(_ recognizer: UIPanGestureRecognizer) {
         switch recognizer.state {
         case .began:
-            didHandleKeyboardFocusPan = false
+            if CACurrentMediaTime() >= keyboardFocusSwipeHandledUntil {
+                didHandleKeyboardFocusPan = false
+            }
         case .changed, .ended:
             guard !didHandleKeyboardFocusPan else { return }
             let translation = recognizer.translation(in: view)
@@ -4336,18 +4354,32 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             let hasSwipeDistance = abs(translation.x) >= 110 && abs(translation.x) > abs(translation.y) * 1.6
             let hasSwipeVelocity = abs(velocity.x) >= 900 && abs(velocity.x) > abs(velocity.y) * 1.6
             guard hasSwipeDistance || hasSwipeVelocity else { return }
-            didHandleKeyboardFocusPan = true
-            suppressTextKeyCommitUntil = CACurrentMediaTime() + 0.35
-            if translation.x < 0 || velocity.x < 0 {
-                setKeyboardFocus(.text, animated: true)
-            } else {
-                setKeyboardFocus(.voice, animated: true)
-            }
+            performKeyboardFocusSwipe(horizontalIntent: hasSwipeDistance ? translation.x : velocity.x)
         case .cancelled, .failed:
             didHandleKeyboardFocusPan = false
         default:
             break
         }
+    }
+
+    fileprivate func switchKeyboardFocusFromFallbackSwipe(deltaX: CGFloat) {
+        performKeyboardFocusSwipe(horizontalIntent: deltaX)
+    }
+
+    private func performKeyboardFocusSwipe(horizontalIntent: CGFloat) {
+        guard !isTextSpaceCursorTracking,
+              currentBridgeStatus?.state != .recording,
+              currentBridgeStatus?.state != .sending,
+              !isStartRequestInFlight
+        else { return }
+        let now = CACurrentMediaTime()
+        guard now >= keyboardFocusSwipeHandledUntil else { return }
+        let target: KeyboardFocus = horizontalIntent < 0 ? .text : .voice
+        guard target != keyboardFocus else { return }
+        didHandleKeyboardFocusPan = true
+        keyboardFocusSwipeHandledUntil = now + 0.45
+        suppressTextKeyCommitUntil = now + 0.35
+        setKeyboardFocus(target, animated: true)
     }
 
     private func setKeyboardFocus(_ focus: KeyboardFocus, animated: Bool) {
@@ -6580,6 +6612,9 @@ final class KeyboardInputView: UIInputView {
     private weak var fallbackButton: UIButton?
     private var fallbackStartPoint: CGPoint = .zero
     private var fallbackDidCancel = false
+    private var directFocusSwipeTouch: UITouch?
+    private var directFocusSwipeStartPoint: CGPoint = .zero
+    private var didHandleDirectFocusSwipe = false
 
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
         let defaultHit = super.hitTest(point, with: event)
@@ -6592,6 +6627,12 @@ final class KeyboardInputView: UIInputView {
               let hitController,
               let button = hitController.fallbackTextKeyTarget(at: touch.location(in: self))
         else {
+            if directFocusSwipeTouch == nil,
+               let touch = touches.first {
+                directFocusSwipeTouch = touch
+                directFocusSwipeStartPoint = touch.location(in: self)
+                didHandleDirectFocusSwipe = false
+            }
             super.touchesBegan(touches, with: event)
             return
         }
@@ -6606,9 +6647,9 @@ final class KeyboardInputView: UIInputView {
         guard let touch = fallbackTouch,
               touches.contains(touch),
               let button = fallbackButton,
-              !fallbackDidCancel,
               let hitController
         else {
+            handleDirectFocusSwipeMove(touches)
             super.touchesMoved(touches, with: event)
             return
         }
@@ -6616,9 +6657,13 @@ final class KeyboardInputView: UIInputView {
         let dx = point.x - fallbackStartPoint.x
         let dy = point.y - fallbackStartPoint.y
         let isSwipeIntent = abs(dx) >= 28 && abs(dx) > abs(dy) * 1.35
-        if isSwipeIntent {
+        if isSwipeIntent, !fallbackDidCancel {
             fallbackDidCancel = true
             hitController.cancelFallbackTextKeyTouch(on: button)
+        }
+        let isFocusSwipeIntent = abs(dx) >= 110 && abs(dx) > abs(dy) * 1.6
+        if isFocusSwipeIntent {
+            hitController.switchKeyboardFocusFromFallbackSwipe(deltaX: dx)
             clearFallbackTouch()
         }
     }
@@ -6629,18 +6674,24 @@ final class KeyboardInputView: UIInputView {
               let button = fallbackButton,
               let hitController
         else {
+            if let touch = directFocusSwipeTouch,
+               touches.contains(touch) {
+                clearDirectFocusSwipe()
+            }
             super.touchesEnded(touches, with: event)
             return
         }
-        if fallbackDidCancel {
-            hitController.cancelFallbackTextKeyTouch(on: button)
-        } else {
+        if !fallbackDidCancel {
             hitController.commitFallbackTextKeyTouch(on: button)
         }
         clearFallbackTouch()
     }
 
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
+        if let touch = directFocusSwipeTouch,
+           touches.contains(touch) {
+            clearDirectFocusSwipe()
+        }
         if let touch = fallbackTouch,
            touches.contains(touch),
            let button = fallbackButton {
@@ -6651,10 +6702,30 @@ final class KeyboardInputView: UIInputView {
         super.touchesCancelled(touches, with: event)
     }
 
+    private func handleDirectFocusSwipeMove(_ touches: Set<UITouch>) {
+        guard let touch = directFocusSwipeTouch,
+              touches.contains(touch),
+              !didHandleDirectFocusSwipe
+        else { return }
+        let point = touch.location(in: self)
+        let dx = point.x - directFocusSwipeStartPoint.x
+        let dy = point.y - directFocusSwipeStartPoint.y
+        let isFocusSwipeIntent = abs(dx) >= 110 && abs(dx) > abs(dy) * 1.6
+        guard isFocusSwipeIntent else { return }
+        didHandleDirectFocusSwipe = true
+        hitController?.switchKeyboardFocusFromFallbackSwipe(deltaX: dx)
+    }
+
     private func clearFallbackTouch() {
         fallbackTouch = nil
         fallbackButton = nil
         fallbackStartPoint = .zero
         fallbackDidCancel = false
+    }
+
+    private func clearDirectFocusSwipe() {
+        directFocusSwipeTouch = nil
+        directFocusSwipeStartPoint = .zero
+        didHandleDirectFocusSwipe = false
     }
 }
