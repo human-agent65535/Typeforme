@@ -76,11 +76,6 @@ struct ContentView: View {
                     NavigationStack {
                         KeyboardSettingsView()
                             .environmentObject(state)
-                            .toolbar {
-                                ToolbarItem(placement: .confirmationAction) {
-                                    Button("Done") { showingKeyboardSettings = false }
-                                }
-                            }
                     }
                 }
                 .sheet(isPresented: $showingKeyboardGuide) {
@@ -768,6 +763,7 @@ private struct LanguagesRow: View {
 
 private struct KeyboardSettingsView: View {
     @EnvironmentObject private var state: AppState
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         List {
@@ -798,6 +794,12 @@ private struct KeyboardSettingsView: View {
             }
         }
         .navigationTitle("Keyboard Settings")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Done") { dismiss() }
+            }
+        }
     }
 
     private var autoCapitalizationBinding: Binding<Bool> {

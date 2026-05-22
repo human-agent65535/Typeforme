@@ -93,7 +93,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private var isSymbolKeyboard = false
     private var isAlternateSymbolKeyboard = false
     private var isAutoCapitalizationEnabled = true
-    private var isCharacterPreviewEnabled = true
+    private var isCharacterPreviewEnabled = false
     private var chinesePunctuationStyle: ChinesePunctuationStyle = .chinese
     private let rimeInput = RimeInputController()
     private var activeMarkedText = ""
@@ -204,11 +204,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private static let orbDiameter: CGFloat = 132
     private static let portraitKeyboardContentHeight: CGFloat = 270
     private static let compactKeyboardContentHeight: CGFloat = 256
-    private static let rootHorizontalInset: CGFloat = 4
-    private static let rootVerticalInset: CGFloat = 6
+    private static let rootHorizontalInset: CGFloat = 5
+    private static let rootVerticalInset: CGFloat = 4
     private static let stackSpacing: CGFloat = 4
-    private static let candidateExpandButtonWidth: CGFloat = 28
-    private static let topRowHeight: CGFloat = 44
+    private static let candidateExpandButtonWidth: CGFloat = 56
+    private static let topCandidateSpacing: CGFloat = 10
+    private static let topRowHeight: CGFloat = 36
     private static let utilityRowHeight: CGFloat = 48
     private static func orbContainerHeight(for contentHeight: CGFloat) -> CGFloat {
         contentHeight
@@ -237,7 +238,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private let textToolsButton = UIButton(type: .system)
     private let textKeyboardSwitchButton = UIButton(type: .system)
     private let textHostSettingsButton = UIButton(type: .system)
-    private let textCandidateGridButton = UIButton(type: .system)
+    private let textCandidateGridButton = HitInsetButton(frame: .zero)
     private let textModeButton = UIButton(type: .system)
     private let textAlternateSymbolButton = UIButton(type: .system)
     private let textGlobeButton = UIButton(type: .system)
@@ -255,7 +256,20 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         makeKeyboardFocusPanRecognizer()
     }()
     private lazy var textTrackpadPanRecognizer = UIPanGestureRecognizer(target: self, action: #selector(handleTextTrackpadPan(_:)))
+    private lazy var candidateScrollTapRecognizer: UITapGestureRecognizer = {
+        let recognizer = UITapGestureRecognizer(target: self, action: #selector(handleCandidateScrollTap(_:)))
+        recognizer.cancelsTouchesInView = false
+        recognizer.delegate = self
+        return recognizer
+    }()
+    private lazy var candidateGridTapRecognizer: UITapGestureRecognizer = {
+        let recognizer = UITapGestureRecognizer(target: self, action: #selector(handleCandidateGridTap(_:)))
+        recognizer.cancelsTouchesInView = false
+        recognizer.delegate = self
+        return recognizer
+    }()
     private var textKeyboardButtons: [UIButton] = []
+    private var textKeyboardHitRows: [TextKeyboardHitRow] = []
     private var letterButtonMap: [String: UIButton] = [:]
     private var reusableCandidateButtons: [UIButton] = []
     private var candidateButtonWidthConstraints: [NSLayoutConstraint] = []
@@ -278,12 +292,31 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private var singleQuoteOpen = true
     private weak var activeTrackpadSourceView: UIView?
     private var textTrackpadLastStepX = 0
-    private lazy var keyboardHapticGenerator = UIImpactFeedbackGenerator(style: .medium)
+    // Keyboard feedback needs to be crisp without feeling like a full control
+    // tap. .medium/0.9 was too strong; .soft/0.4 was too easy to miss.
+    private lazy var keyboardHapticGenerator = UIImpactFeedbackGenerator(style: .light)
     private var lastKeyboardFeedbackTime: CFTimeInterval = 0
     private var didHandleKeyboardFocusPan = false
+    private var suppressTextKeyCommitUntil: CFTimeInterval = 0
     private var isShowingTextRecordingStatus = false
     private let activePressedControls = NSHashTable<UIControl>.weakObjects()
     private var pressCleanupWorkItems: [ObjectIdentifier: DispatchWorkItem] = [:]
+
+    private struct TextKeyboardHitRow {
+        weak var row: UIStackView?
+        let buttons: [UIButton]
+        let kind: TextKeyboardHitRowKind
+    }
+
+    private enum TextKeyboardHitRowKind {
+        case character
+        case bottom
+    }
+
+    private struct TextKeyboardHitButton {
+        let button: UIButton
+        let frame: CGRect
+    }
 
     override init(nibName nibNameOrNil: String?, bundle nibBundleOrNil: Bundle?) {
         super.init(nibName: nibNameOrNil, bundle: nibBundleOrNil)
@@ -309,24 +342,33 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     /// Called by KeyboardInputView before returning the touch's hit-test
-    /// result. Snaps touches that fell on non-control areas (screen-edge
-    /// margins, row gaps, container backgrounds) to the nearest text key by
-    /// center distance. Only active in text mode.
+    /// result. Routes touches in key-row dead space to a key using row-first
+    /// bands, then column bands. This keeps horizontal gaps and row edge
+    /// margins tappable without letting vertical gaps jump to the wrong row.
     fileprivate func adjustedHitTest(point: CGPoint, defaultHit: UIView?) -> UIView? {
         guard keyboardFocus == .text else { return defaultHit }
 
-        // Respect direct hits on any control: text keys, toolbar buttons,
-        // pager/expand, mic, candidate cells, etc. The snap only kicks in
-        // when the user touched dead space (stack background, blur layer,
-        // screen-edge margin) — i.e. defaultHit is nil or a non-control.
-        if let hit = defaultHit, containingControl(of: hit) != nil {
-            return hit
+        if expandedFrame(of: candidateScrollView, dx: 0, dy: 4).contains(point) {
+            if let hit = defaultHit,
+               let control = containingControl(of: hit),
+               control.isDescendant(of: candidateScrollView) {
+                let localPoint = control.convert(point, from: view)
+                return control.bounds.contains(localPoint) ? hit : candidateScrollView
+            }
+            return candidateScrollView
+        }
+        if expandedFrame(of: candidateGridScrollView, dx: 0, dy: 4).contains(point) {
+            // Expanded candidates are a scroll surface first. Returning a
+            // snapped button here makes vertical drags start on UIControl
+            // tracking and can starve UIScrollView's pan recognizer. Taps are
+            // resolved by candidateGridTapRecognizer instead.
+            return candidateGridScrollView
         }
 
-        // Candidate/tool areas are functional chrome, not keyboard dead
-        // space. Do not snap blank candidate-bar taps to the top letter row:
-        // that creates a visible key press without a matching key action
-        // because the touch began outside the key's own tracking bounds.
+        // Toolbar / candidate areas keep their own routing — those controls
+        // already handle their own touches and snapping into the key rows
+        // from there causes visible mismatches (touch starts in candidate
+        // bar but a key flashes).
         if let hit = defaultHit,
            hit.isDescendant(of: textToolbar)
             || hit.isDescendant(of: candidateScrollView)
@@ -334,36 +376,130 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             return defaultHit
         }
 
-        let buttons = textKeyboardButtons
-        guard !buttons.isEmpty else { return defaultHit }
+        if let hit = defaultHit,
+           let control = containingControl(of: hit),
+           control.isDescendant(of: keyRowsStack) {
+            let localPoint = control.convert(point, from: view)
+            let stableControlCore = control.bounds.insetBy(dx: 8, dy: 4)
+            if stableControlCore.contains(localPoint) {
+                return hit
+            }
+            if textKeyFallbackTarget(at: point) != nil {
+                return view
+            }
+            return hit
+        }
 
-        let keyboardRegion = keyRowsStack.convert(
-            keyRowsStack.bounds.insetBy(dx: -24, dy: -24),
-            to: view
+        // Other UIControls outside the key rows (settings gear etc.) — let
+        // them keep their direct hit.
+        if let hit = defaultHit,
+           let control = containingControl(of: hit),
+           !control.isDescendant(of: keyRowsStack) {
+            return hit
+        }
+
+        if textKeyFallbackTarget(at: point) != nil {
+            return view
+        }
+        return defaultHit
+    }
+
+    fileprivate func fallbackTextKeyTarget(at point: CGPoint) -> UIButton? {
+        guard keyboardFocus == .text,
+              !keyRowsStack.isHidden,
+              keyRowsStack.alpha > 0.01
+        else { return nil }
+        return textKeyFallbackTarget(at: point)
+    }
+
+    fileprivate func beginFallbackTextKeyTouch(on button: UIButton) {
+        button.sendActions(for: .touchDown)
+    }
+
+    fileprivate func commitFallbackTextKeyTouch(on button: UIButton) {
+        button.sendActions(for: .touchUpInside)
+    }
+
+    fileprivate func cancelFallbackTextKeyTouch(on button: UIButton) {
+        button.sendActions(for: .touchCancel)
+    }
+
+    private func candidateScrollHitTarget(at point: CGPoint) -> UIButton? {
+        guard !candidateScrollView.isHidden,
+              !textCandidateGridButton.isHidden
+        else { return nil }
+
+        let scrollFrame = candidateScrollView.convert(candidateScrollView.bounds, to: view)
+        guard scrollFrame.insetBy(dx: 0, dy: -4).contains(point) else { return nil }
+        let buttons = candidateStack.arrangedSubviews.compactMap { $0 as? UIButton }
+        return horizontalButtonBandTarget(
+            in: buttons,
+            at: point,
+            leftLimit: scrollFrame.minX,
+            rightLimit: scrollFrame.maxX,
+            edgeExpansion: 8
         )
-        guard keyboardRegion.contains(point) else { return defaultHit }
+    }
 
-        var nearest: UIButton?
-        var nearestDistSq: CGFloat = .greatestFiniteMagnitude
-        var largestKeyDimension: CGFloat = 0
-        for button in buttons {
-            guard !button.isHidden, button.isEnabled, button.alpha > 0.01 else { continue }
-            largestKeyDimension = max(largestKeyDimension, button.bounds.width, button.bounds.height)
-            let center = button.convert(CGPoint(x: button.bounds.midX, y: button.bounds.midY), to: view)
-            let dx = point.x - center.x
-            let dy = point.y - center.y
-            let distSq = dx * dx + dy * dy
-            if distSq < nearestDistSq {
-                nearestDistSq = distSq
-                nearest = button
+    private func candidateGridHitTarget(at point: CGPoint) -> UIButton? {
+        guard !candidateGridScrollView.isHidden else { return nil }
+        let gridFrame = candidateGridScrollView.convert(candidateGridScrollView.bounds, to: view)
+        guard gridFrame.insetBy(dx: 0, dy: -4).contains(point) else { return nil }
+
+        let rows = candidateGridStack.arrangedSubviews
+            .compactMap { $0 as? UIStackView }
+            .filter { !$0.isHidden && $0.alpha > 0.01 }
+            .sorted { $0.convert($0.bounds, to: view).midY < $1.convert($1.bounds, to: view).midY }
+        for row in rows {
+            let rowFrame = row.convert(row.bounds, to: view)
+            guard rowFrame.insetBy(dx: 0, dy: -4).contains(point) else { continue }
+            let buttons = row.arrangedSubviews.compactMap { $0 as? UIButton }
+            return horizontalButtonBandTarget(
+                in: buttons,
+                at: point,
+                leftLimit: rowFrame.minX,
+                rightLimit: rowFrame.maxX,
+                edgeExpansion: 6
+            )
+        }
+        return nil
+    }
+
+    private func horizontalButtonBandTarget(
+        in sourceButtons: [UIButton],
+        at point: CGPoint,
+        leftLimit: CGFloat,
+        rightLimit: CGFloat,
+        edgeExpansion: CGFloat
+    ) -> UIButton? {
+        let buttons = visibleHitButtons(in: sourceButtons)
+            .map { button in
+                TextKeyboardHitButton(button: button, frame: button.convert(button.bounds, to: view))
+            }
+            .filter { !$0.frame.isEmpty }
+            .sorted { $0.frame.midX < $1.frame.midX }
+        guard !buttons.isEmpty else { return nil }
+
+        for index in buttons.indices {
+            let frame = buttons[index].frame
+            let leftBoundary: CGFloat
+            let rightBoundary: CGFloat
+            if index == buttons.startIndex {
+                leftBoundary = max(leftLimit, frame.minX - edgeExpansion)
+            } else {
+                leftBoundary = (buttons[index - 1].frame.maxX + frame.minX) * 0.5
+            }
+            if index == buttons.index(before: buttons.endIndex) {
+                rightBoundary = min(rightLimit, frame.maxX + edgeExpansion)
+            } else {
+                rightBoundary = (frame.maxX + buttons[index + 1].frame.minX) * 0.5
+            }
+            let isLastButton = index == buttons.index(before: buttons.endIndex)
+            if point.x >= leftBoundary && (point.x < rightBoundary || (isLastButton && point.x <= rightBoundary)) {
+                return buttons[index].button
             }
         }
-        // Cap snap distance so touches in unrelated regions (above keyboard,
-        // far into safe-area) don't get hijacked to a far key.
-        let snapRadius = min(max(largestKeyDimension * 1.2, 48), 64)
-        let maxSnapDistSq = snapRadius * snapRadius
-        guard nearestDistSq <= maxSnapDistSq else { return defaultHit }
-        return nearest
+        return nil
     }
 
     private func containingControl(of view: UIView) -> UIControl? {
@@ -373,6 +509,177 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             current = v.superview
         }
         return nil
+    }
+
+    private func expandedFrame(of targetView: UIView, dx: CGFloat, dy: CGFloat) -> CGRect {
+        guard !targetView.isHidden, targetView.alpha > 0.01 else { return .null }
+        return targetView.convert(targetView.bounds, to: view).insetBy(dx: -dx, dy: -dy)
+    }
+
+    private func keyRowHitTarget(at point: CGPoint) -> UIButton? {
+        guard !keyRowsStack.isHidden, keyRowsStack.alpha > 0.01 else { return nil }
+        let keyboardRegion = keyRowsStack.convert(keyRowsStack.bounds.insetBy(dx: -24, dy: -10), to: view)
+        guard keyboardRegion.contains(point) else { return nil }
+
+        let rows = textKeyboardHitRows.compactMap { hitRow -> (frame: CGRect, buttons: [UIButton], kind: TextKeyboardHitRowKind)? in
+            guard let row = hitRow.row,
+                  !row.isHidden,
+                  row.alpha > 0.01,
+                  row.bounds.width > 0,
+                  row.bounds.height > 0 else { return nil }
+            let buttons = visibleHitButtons(in: hitRow.buttons)
+            guard !buttons.isEmpty else { return nil }
+            return (row.convert(row.bounds, to: view), buttons, hitRow.kind)
+        }
+        .filter { !$0.frame.isEmpty }
+        .sorted { $0.frame.midY < $1.frame.midY }
+
+        guard !rows.isEmpty else { return nil }
+        for index in rows.indices {
+            let row = rows[index]
+            let topBoundary: CGFloat
+            let bottomBoundary: CGFloat
+            let lastRowIndex = rows.index(before: rows.endIndex)
+            if index == rows.startIndex {
+                topBoundary = row.frame.minY - 6
+            } else if index == lastRowIndex {
+                topBoundary = rows[index - 1].frame.maxY
+            } else {
+                topBoundary = (rows[index - 1].frame.maxY + row.frame.minY) * 0.5
+            }
+            if index == lastRowIndex {
+                bottomBoundary = row.frame.maxY + 6
+            } else if rows.index(after: index) == lastRowIndex {
+                bottomBoundary = row.frame.maxY
+            } else {
+                bottomBoundary = (row.frame.maxY + rows[index + 1].frame.minY) * 0.5
+            }
+            let isLastRow = index == lastRowIndex
+            guard point.y >= topBoundary && (point.y < bottomBoundary || (isLastRow && point.y <= bottomBoundary)) else { continue }
+            return keyButton(in: row.buttons, at: point, rowKind: row.kind)
+        }
+        return nil
+    }
+
+    private func textKeyFallbackTarget(at point: CGPoint) -> UIButton? {
+        if let rowTarget = keyRowHitTarget(at: point) {
+            return rowTarget
+        }
+        return nearestTextKeyButton(at: point)
+    }
+
+    private func nearestTextKeyButton(at point: CGPoint) -> UIButton? {
+        guard !keyRowsStack.isHidden,
+              keyRowsStack.alpha > 0.01,
+              expandedFrame(of: keyRowsStack, dx: 32, dy: 18).contains(point)
+        else { return nil }
+
+        let entries = visibleHitButtons(in: textKeyboardButtons)
+            .filter { $0.isDescendant(of: keyRowsStack) }
+            .map { button in
+                TextKeyboardHitButton(button: button, frame: button.convert(button.bounds, to: view))
+            }
+            .filter { !$0.frame.isEmpty }
+        guard !entries.isEmpty else { return nil }
+
+        let sortedWidths = entries.map(\.frame.width).sorted()
+        let sortedHeights = entries.map(\.frame.height).sorted()
+        let commonWidth = sortedWidths[sortedWidths.count / 2]
+        let commonHeight = sortedHeights[sortedHeights.count / 2]
+        let radiusX = max(commonWidth * 0.82, 34)
+        let radiusY = max(commonHeight * 0.78, 30)
+
+        var best: UIButton?
+        var bestScore = CGFloat.greatestFiniteMagnitude
+        for entry in entries {
+            let frame = entry.frame
+            let dx = (point.x - frame.midX) / radiusX
+            let dy = (point.y - frame.midY) / radiusY
+            let score = dx * dx + dy * dy
+            if score < bestScore {
+                bestScore = score
+                best = entry.button
+            }
+        }
+        return bestScore <= 1.65 ? best : nil
+    }
+
+    private func visibleHitButtons(in buttons: [UIButton]) -> [UIButton] {
+        buttons.filter {
+            !$0.isHidden
+                && $0.isEnabled
+                && $0.alpha > 0.01
+                && $0.bounds.width > 0
+                && $0.bounds.height > 0
+        }
+    }
+
+    private func keyButton(in buttons: [UIButton], at point: CGPoint, rowKind: TextKeyboardHitRowKind) -> UIButton? {
+        let buttons = visibleHitButtons(in: buttons)
+            .map { button in
+                TextKeyboardHitButton(button: button, frame: button.convert(button.bounds, to: view))
+            }
+            .filter { !$0.frame.isEmpty }
+            .sorted { $0.frame.midX < $1.frame.midX }
+        guard !buttons.isEmpty else { return nil }
+
+        guard rowKind == .bottom else {
+            return scoredCharacterKeyButton(in: buttons, at: point)
+        }
+        return columnBandKeyButton(in: buttons, at: point)
+    }
+
+    private func columnBandKeyButton(in buttons: [TextKeyboardHitButton], at point: CGPoint) -> UIButton? {
+        for index in buttons.indices {
+            let frame = buttons[index].frame
+            let leftBoundary: CGFloat
+            let rightBoundary: CGFloat
+            if index == buttons.startIndex {
+                leftBoundary = view.bounds.minX
+            } else {
+                leftBoundary = (buttons[index - 1].frame.maxX + frame.minX) * 0.5
+            }
+            if index == buttons.index(before: buttons.endIndex) {
+                rightBoundary = view.bounds.maxX
+            } else {
+                rightBoundary = (frame.maxX + buttons[index + 1].frame.minX) * 0.5
+            }
+            let isLastButton = index == buttons.index(before: buttons.endIndex)
+            if point.x >= leftBoundary && (point.x < rightBoundary || (isLastButton && point.x <= rightBoundary)) {
+                return buttons[index].button
+            }
+        }
+        return nil
+    }
+
+    private func scoredCharacterKeyButton(in buttons: [TextKeyboardHitButton], at point: CGPoint) -> UIButton? {
+        // Soft keyboards should not use hard midpoint boundaries. AOSP
+        // LatinIME feeds nearby keys plus touch-position correction into its
+        // decoder; at this UI layer we keep the same idea locally: score only
+        // keys in the selected row, with a small rightward sweet-spot shift to
+        // tolerate finger centroid landing slightly right of the intended key.
+        let sortedWidths = buttons.map(\.frame.width).sorted()
+        let commonKeyWidth = sortedWidths[sortedWidths.count / 2]
+        let xCorrection = min(max(commonKeyWidth * 0.06, 1.5), 3.0)
+        var best: UIButton?
+        var bestScore = CGFloat.greatestFiniteMagnitude
+        for entry in buttons {
+            let frame = entry.frame
+            let center = CGPoint(x: frame.midX + xCorrection, y: frame.midY)
+            let radiusX = max(frame.width * 0.5 + 6, 24)
+            let radiusY = max(frame.height * 0.5 + 8, 24)
+            let dx = (point.x - center.x) / radiusX
+            let dy = (point.y - center.y) / radiusY
+            var score = dx * dx + dy * dy
+            if frame.insetBy(dx: -1, dy: -1).contains(point) {
+                score *= 0.72
+            }
+            if score < bestScore {
+                bestScore = score
+                best = entry.button
+            }
+        }
+        return best
     }
 
     override func viewDidLoad() {
@@ -1331,7 +1638,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         textToolbar.spacing = 4
         textToolbar.alignment = .fill
         textToolbar.distribution = .fill
-        textToolbar.heightAnchor.constraint(equalToConstant: 44).isActive = true
+        textToolbar.heightAnchor.constraint(equalToConstant: 36).isActive = true
 
         // Wand (voice-command edit selected/recent text) — text-mode users
         // already have fingers on keys, so press-and-hold is awkward. Use
@@ -1383,6 +1690,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
         configureCandidateExpandButton(isExpanded: false)
         textCandidateGridButton.widthAnchor.constraint(equalToConstant: Self.candidateExpandButtonWidth).isActive = true
+        // Keep the chevron's full 44pt target inside its own toolbar slot.
+        // Expanding left would steal touches from the final candidate word;
+        // expanding outside the parent is clipped by UIKit hit-testing.
+        textCandidateGridButton.hitInsets = UIEdgeInsets(top: -4, left: 0, bottom: -4, right: 0)
         textCandidateGridButton.accessibilityLabel = NSLocalizedString("Show more candidates", comment: "Accessibility label for expanding candidate list")
         textCandidateGridButton.isHidden = true
         textCandidateGridButton.addTarget(self, action: #selector(toggleCandidateGrid), for: .touchUpInside)
@@ -1391,15 +1702,18 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         candidateScrollView.showsHorizontalScrollIndicator = false
         candidateScrollView.alwaysBounceHorizontal = true
         candidateScrollView.delaysContentTouches = false
+        candidateScrollView.canCancelContentTouches = true
+        candidateScrollView.isDirectionalLockEnabled = true
+        candidateScrollView.addGestureRecognizer(candidateScrollTapRecognizer)
         // UIScrollView's clipsToBounds default is false — without this, the
         // last candidate near the right edge can render under the chevron.
         candidateScrollView.clipsToBounds = true
-        candidateScrollView.heightAnchor.constraint(equalToConstant: 44).isActive = true
+        candidateScrollView.heightAnchor.constraint(equalToConstant: 36).isActive = true
         candidateScrollView.setContentHuggingPriority(.defaultLow, for: .horizontal)
         candidateScrollView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         candidateStack.axis = .horizontal
-        candidateStack.spacing = 0
+        candidateStack.spacing = Self.topCandidateSpacing
         candidateStack.alignment = .fill
         candidateStack.distribution = .fill
         candidateStack.translatesAutoresizingMaskIntoConstraints = false
@@ -1414,12 +1728,15 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         candidateGridScrollView.showsVerticalScrollIndicator = false
         candidateGridScrollView.alwaysBounceVertical = true
         candidateGridScrollView.delaysContentTouches = false
+        candidateGridScrollView.canCancelContentTouches = true
+        candidateGridScrollView.isDirectionalLockEnabled = true
+        candidateGridScrollView.addGestureRecognizer(candidateGridTapRecognizer)
         candidateGridScrollView.clipsToBounds = true
         candidateGridScrollView.isHidden = true
 
         candidateGridStack.axis = .vertical
         candidateGridStack.spacing = 0
-        candidateGridStack.alignment = .fill
+        candidateGridStack.alignment = .leading
         candidateGridStack.distribution = .fill
         candidateGridStack.translatesAutoresizingMaskIntoConstraints = false
         candidateGridScrollView.addSubview(candidateGridStack)
@@ -1432,7 +1749,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         ])
 
         keyRowsStack.axis = .vertical
-        keyRowsStack.spacing = 8
+        keyRowsStack.spacing = 9
         keyRowsStack.alignment = .fill
         keyRowsStack.distribution = .fillEqually
         textTrackpadPanRecognizer.isEnabled = false
@@ -1512,6 +1829,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             row.removeFromSuperview()
         }
         textKeyboardButtons.removeAll()
+        textKeyboardHitRows.removeAll()
         letterButtonMap.removeAll()
         lastLetterCasingSnapshot = nil
         textShiftButton = nil
@@ -1531,18 +1849,40 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func symbolRowsForCurrentLanguage() -> [[String]] {
-        if isAlternateSymbolKeyboard {
-            return [
-                ["[", "]", "{", "}", "#", "%", "^", "*", "+", "="],
-                ["_", "\\", "|", "~", "<", ">", "€", "£", "¥", "•"],
-                [".", ",", "?", "!", "'", "`"],
-            ]
-        }
-        return [
+        // Style-swap design (Chinese language):
+        //   - 123 page = the user's current punctuation-style set
+        //     (Chinese or English depending on chinesePunctuationStyle)
+        //   - #+= page = the OTHER style. Toggling lets users grab either
+        //     set without leaving the symbol keyboard. Reversing the style
+        //     setting swaps which set lives on which page.
+        // English language: keep iOS-style 123 + #+= (numbers/punct +
+        // alternate specials with brackets, math, currency).
+        let chinesePunctPage: [[String]] = [
+            ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"],
+            ["-", "/", ":", ";", "(", ")", "¥", "&", "@", "\""],
+            ["。", "，", "、", "？", "！"],
+        ]
+        let englishPunctPage: [[String]] = [
             ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"],
             ["-", "/", ":", ";", "(", ")", "$", "&", "@", "\""],
             [".", ",", "?", "!", "'"],
         ]
+
+        if textInputLanguage == .chinese {
+            let primaryIsChinese = chinesePunctuationStyle == .chinese
+            let pageIsChinese = isAlternateSymbolKeyboard ? !primaryIsChinese : primaryIsChinese
+            return pageIsChinese ? chinesePunctPage : englishPunctPage
+        }
+
+        if isAlternateSymbolKeyboard {
+            // iOS English "#+=" page — brackets / math / currency.
+            return [
+                ["[", "]", "{", "}", "#", "%", "^", "*", "+", "="],
+                ["_", "\\", "|", "~", "<", ">", "€", "£", "¥", "•"],
+                [".", ",", "?", "!", "'"],
+            ]
+        }
+        return englishPunctPage
     }
 
     private func addTextKeyRow(
@@ -1614,14 +1954,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         )
         keyRowsStack.addArrangedSubview(row)
 
-        // Edge super-expansion: the leftmost and rightmost interactive button
-        // in this row claims touches all the way to the keyboard view edge.
-        // Without this, the 4pt rootHorizontalInset margin (plus any 18pt
-        // leadingInset spacer on the a/l row) is dead space — touches there
-        // fall on the stackview and don't register as keys. iOS's system
-        // keyboard has the same edge-key extension; that's why pressing on
-        // the screen-edge column still types a or l.
-        let baseHorizontalExpansion: CGFloat = 3.5
+        // Edge keys get a wider catch band than inter-key gaps. A finger can
+        // land partly off the visual keyboard on a/l/q/p; system keyboards
+        // still resolve that to the nearest edge key instead of dropping it.
+        let baseHorizontalExpansion: CGFloat = 12
         let leftEdgeExpansion = leadingInset + Self.rootHorizontalInset + baseHorizontalExpansion
         let rightEdgeExpansion = trailingInset + Self.rootHorizontalInset + baseHorizontalExpansion
         let leftmost = leadingUtilityButton ?? keyButtons.first
@@ -1632,6 +1968,15 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         if let rightmost = rightmost as? HitInsetButton {
             rightmost.hitInsets.right = -rightEdgeExpansion
         }
+        registerTextKeyboardHitRow(
+            row,
+            buttons: [leadingUtilityButton].compactMap(\.self) + keyButtons + [trailingUtilityButton].compactMap(\.self),
+            kind: .character
+        )
+    }
+
+    private func registerTextKeyboardHitRow(_ row: UIStackView, buttons: [UIButton], kind: TextKeyboardHitRowKind) {
+        textKeyboardHitRows.append(TextKeyboardHitRow(row: row, buttons: buttons, kind: kind))
     }
 
     private func addFixedTextRowSpacer(to row: UIStackView, width: CGFloat) {
@@ -1667,6 +2012,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     private func makeTextShiftButton() -> UIButton {
         let button = makeTextKeyButton(title: "", image: isTextShiftEnabled ? "shift.fill" : "shift", weight: .utility)
+        button.isSelected = isTextShiftEnabled || isTextShiftLocked
+        button.setNeedsUpdateConfiguration()
         button.accessibilityLabel = isTextShiftEnabled
             ? NSLocalizedString("Shift on", comment: "Accessibility label for active Shift key")
             : NSLocalizedString("Shift", comment: "Accessibility label for Shift key")
@@ -1676,9 +2023,20 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func displayTitle(forTextKey key: String, autoCap: Bool? = nil) -> String {
+        // The 123 / #+= symbol pages stay literal-English even in Chinese
+        // mode — matches iOS Simplified Chinese keyboard. Reason: users need
+        // real "." "/" "@" for URLs / emails / file paths. Chinese
+        // punctuation comes from the punctuation row of LETTER mode (via
+        // Rime's punctuator) or the bottom-row period key when added.
+        //
+        // Also skip the conversion entirely when the host field's
+        // keyboardType signals URL / email / numeric input — matches iOS
+        // system Simplified Chinese's context-aware behavior.
         if textInputLanguage == .chinese,
            !isAlphabeticTextKey(key),
-           chinesePunctuationStyle == .chinese {
+           chinesePunctuationStyle == .chinese,
+           !isSymbolKeyboard,
+           isChinesePunctuationContext {
             return chinesePunctuationDisplayTitle(for: key)
         }
         if isAlphabeticTextKey(key),
@@ -1718,6 +2076,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         lastReturnKeyImageName = returnKeyImageName
 
         keyRowsStack.addArrangedSubview(row)
+        registerTextKeyboardHitRow(
+            row,
+            buttons: [textModeButton, textGlobeButton, textLanguageButton, spaceKey, returnKey],
+            kind: .bottom
+        )
     }
 
     private func refreshReturnKeyTitle() {
@@ -1800,7 +2163,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private func makeTextKeyRow() -> UIStackView {
         let row = UIStackView()
         row.axis = .horizontal
-        row.spacing = 7
+        row.spacing = 8
         row.alignment = .fill
         row.distribution = .fill
         return row
@@ -1825,20 +2188,16 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         // visual configuration (font, colors, image) so we don't need the
         // type: .system defaults.
         let button = HitInsetButton(frame: .zero)
-        button.hitInsets = UIEdgeInsets(top: -6, left: -3.5, bottom: -6, right: -3.5)
+        // -7pt horizontal makes adjacent buttons fully cover the 7pt
+        // inter-key spacing. iOS reverse-iterates subviews on hit-test, so
+        // ties resolve to the later (rightward) key — deterministic, no dead
+        // zone. Critical fix for "tap between n/m registers nothing".
+        button.hitInsets = UIEdgeInsets(top: -8, left: -8, bottom: -8, right: -8)
         configureTextKeyButton(button, title: title, image: image, weight: weight)
         button.titleLabel?.adjustsFontSizeToFitWidth = true
         button.titleLabel?.minimumScaleFactor = 0.7
         button.titleLabel?.numberOfLines = 1
         button.titleLabel?.lineBreakMode = .byClipping
-        // 1pt drop shadow — the signature "key floats above keyboard" depth.
-        // Shadow is on the button layer (rectangular), but at radius=0/offset=1
-        // the only visible part is a 1pt seam below the rounded background,
-        // which reads as a soft edge rather than a rectangle outline.
-        button.layer.shadowColor = UIColor.black.cgColor
-        button.layer.shadowOffset = CGSize(width: 0, height: 1)
-        button.layer.shadowRadius = 0
-        button.layer.shadowOpacity = 0.30
         button.onTrackingFinished = { [weak self] button in
             self?.resetPressedControlState(button, animated: true)
         }
@@ -1875,52 +2234,105 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         var configuration = UIButton.Configuration.plain()
         configuration.image = UIImage(systemName: isExpanded ? "chevron.up" : "chevron.down")
         configuration.cornerStyle = .fixed
-        configuration.contentInsets = NSDirectionalEdgeInsets(top: 4, leading: 4, bottom: 4, trailing: 4)
-        configuration.baseForegroundColor = .secondaryLabel
+        configuration.contentInsets = NSDirectionalEdgeInsets(top: 3, leading: 6, bottom: 3, trailing: 6)
+        configuration.baseForegroundColor = .label
         configuration.background.backgroundColor = .clear
-        configuration.preferredSymbolConfigurationForImage = UIImage.SymbolConfiguration(pointSize: 15, weight: .semibold)
+        configuration.preferredSymbolConfigurationForImage = UIImage.SymbolConfiguration(pointSize: 21, weight: .medium)
         textCandidateGridButton.configuration = configuration
     }
 
     private func configureTextKeyButton(_ button: UIButton, title: String, image: String?, weight: TextKeyWeight) {
+        button.configurationUpdateHandler = nil
+        let configuration = textKeyConfiguration(title: title, image: image, weight: weight, isPressed: false, isSelected: button.isSelected)
+        button.configuration = configuration
+        button.configurationUpdateHandler = { [weak self, weak button] control in
+            guard let self, let button else { return }
+            let isPressed = control.isHighlighted
+            let isSelected = control.isSelected
+            button.configuration = self.textKeyConfiguration(title: title, image: image, weight: weight, isPressed: isPressed, isSelected: isSelected)
+            self.applyTextKeyLayerStyle(to: button, weight: weight, isPressed: isPressed, isSelected: isSelected)
+        }
+        applyTextKeyLayerStyle(to: button, weight: weight, isPressed: false, isSelected: button.isSelected)
+        button.accessibilityLabel = title.isEmpty ? image : title
+    }
+
+    private func textKeyConfiguration(
+        title: String,
+        image: String?,
+        weight: TextKeyWeight,
+        isPressed: Bool,
+        isSelected: Bool
+    ) -> UIButton.Configuration {
         var configuration = UIButton.Configuration.filled()
         configuration.title = title
         configuration.image = image.flatMap { UIImage(systemName: $0) }
         configuration.titleLineBreakMode = .byClipping
         configuration.cornerStyle = .fixed
-        configuration.background.cornerRadius = 5
-        configuration.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: 4, bottom: 6, trailing: 4)
-        configuration.baseForegroundColor = .label
-        configuration.baseBackgroundColor = systemKeyboardKeyBackground(for: weight)
+        configuration.background.cornerRadius = 6
+        configuration.contentInsets = NSDirectionalEdgeInsets(top: 5, leading: 4, bottom: 5, trailing: 4)
+        configuration.baseForegroundColor = systemKeyboardKeyForeground(for: weight, isSelected: isSelected)
+        configuration.baseBackgroundColor = systemKeyboardKeyBackground(for: weight, isPressed: isPressed, isSelected: isSelected)
+        configuration.background.strokeWidth = isPressed ? 0 : 0.35
+        configuration.background.strokeColor = UIColor.separator.withAlphaComponent(isKeyboardDark ? 0.18 : 0.10)
         configuration.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
             var outgoing = incoming
             let isShortGlyph = title.count <= 2
             outgoing.font = .systemFont(ofSize: isShortGlyph ? 22 : 15, weight: isShortGlyph ? .regular : .medium)
             return outgoing
         }
-        button.configuration = configuration
-        button.accessibilityLabel = title.isEmpty ? image : title
+        return configuration
     }
 
-    private func systemKeyboardKeyBackground(for weight: TextKeyWeight) -> UIColor {
-        // Solid, opaque-ish dynamic colors tuned to match the system keyboard.
-        // No UIBlurEffect on the key itself — the parent UIInputView already
-        // supplies the system keyboard chrome (blur + tint). Keys sit on top
-        // as flat chips with a 1pt drop shadow (set once in makeTextKeyButton).
+    private func applyTextKeyLayerStyle(to button: UIButton, weight: TextKeyWeight, isPressed: Bool, isSelected: Bool) {
+        button.layer.cornerRadius = 6
+        button.layer.cornerCurve = .continuous
+        button.layer.masksToBounds = false
+        button.layer.shadowColor = UIColor.black.cgColor
+        button.layer.shadowOffset = CGSize(width: 0, height: isPressed ? 0.4 : 1.1)
+        button.layer.shadowRadius = isPressed ? 0 : 0.2
+        let baseOpacity: Float = {
+            switch weight {
+            case .normal, .primary:
+                return isKeyboardDark ? 0.48 : 0.24
+            case .utility:
+                return isKeyboardDark ? 0.54 : 0.30
+            }
+        }()
+        button.layer.shadowOpacity = isPressed ? baseOpacity * 0.35 : baseOpacity
+        button.layer.borderWidth = isPressed ? 0.35 : 0
+        button.layer.borderColor = UIColor.label.withAlphaComponent(isKeyboardDark ? 0.08 : 0.05).cgColor
+    }
+
+    private func systemKeyboardKeyForeground(for weight: TextKeyWeight, isSelected: Bool) -> UIColor {
+        UIColor { traits in
+            if isSelected {
+                return traits.userInterfaceStyle == .dark ? .black : .label
+            }
+            return .label
+        }
+    }
+
+    private func systemKeyboardKeyBackground(for weight: TextKeyWeight, isPressed: Bool = false, isSelected: Bool = false) -> UIColor {
         UIColor { traits in
             if traits.userInterfaceStyle == .dark {
+                if isSelected {
+                    return UIColor(white: 0.86, alpha: 1.0)
+                }
                 switch weight {
                 case .normal, .primary:
-                    return UIColor(white: 0.55, alpha: 1.0)
+                    return UIColor(white: isPressed ? 0.42 : 0.33, alpha: 1.0)
                 case .utility:
-                    return UIColor(white: 0.38, alpha: 1.0)
+                    return UIColor(white: isPressed ? 0.36 : 0.25, alpha: 1.0)
                 }
+            }
+            if isSelected {
+                return UIColor(white: 0.98, alpha: 1.0)
             }
             switch weight {
             case .normal, .primary:
-                return UIColor(white: 1.0, alpha: 1.0)
+                return UIColor(white: isPressed ? 0.78 : 0.99, alpha: 1.0)
             case .utility:
-                return UIColor(red: 0.67, green: 0.69, blue: 0.72, alpha: 1.0)
+                return UIColor(white: isPressed ? 0.56 : 0.68, alpha: 1.0)
             }
         }
     }
@@ -2274,7 +2686,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         schedulePressedControlCleanup(for: sender)
         showKeyPressOverlay(on: sender)
         UIView.animate(withDuration: 0.06, delay: 0, options: [.allowUserInteraction, .beginFromCurrentState]) {
-            sender.transform = CGAffineTransform(scaleX: 0.982, y: 0.982)
+            sender.transform = CGAffineTransform(translationX: 0, y: 1.0).scaledBy(x: 0.972, y: 0.972)
         }
     }
 
@@ -2290,7 +2702,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             self.resetPressedControlState(control, animated: true)
         }
         pressCleanupWorkItems[id] = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.7, execute: workItem)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: workItem)
     }
 
     private func resetPressedControlState(_ control: UIControl, animated: Bool) {
@@ -2334,7 +2746,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         overlay.layer.cornerRadius = 7
         overlay.layer.masksToBounds = true
         control.addSubview(overlay)
-        overlay.backgroundColor = UIColor.label.withAlphaComponent(isKeyboardDark ? 0.14 : 0.09)
+        overlay.backgroundColor = UIColor.label.withAlphaComponent(isKeyboardDark ? 0.18 : 0.13)
         overlay.alpha = 0
         UIView.animate(withDuration: 0.045, delay: 0, options: [.allowUserInteraction, .beginFromCurrentState]) {
             overlay.alpha = 1
@@ -2362,7 +2774,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let now = CACurrentMediaTime()
         guard now - lastKeyboardFeedbackTime > 0.035 else { return }
         lastKeyboardFeedbackTime = now
-        keyboardHapticGenerator.impactOccurred(intensity: 0.9)
+        keyboardHapticGenerator.impactOccurred(intensity: 0.65)
         keyboardHapticGenerator.prepare()
     }
 
@@ -3862,6 +4274,16 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        if gestureRecognizer === candidateScrollTapRecognizer || gestureRecognizer === candidateGridTapRecognizer {
+            guard let touchedView = touch.view else { return true }
+            if let control = containingControl(of: touchedView),
+               control.isDescendant(of: candidateScrollView) || control.isDescendant(of: candidateGridScrollView) {
+                let point = touch.location(in: control)
+                return !control.point(inside: point, with: nil)
+            }
+            return true
+        }
+
         guard isKeyboardFocusPanRecognizer(gestureRecognizer) else { return true }
         guard let touchedView = touch.view else { return true }
         // Block scrollable candidate areas where horizontal pan owns the gesture.
@@ -3897,6 +4319,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             let hasSwipeVelocity = abs(velocity.x) >= 900 && abs(velocity.x) > abs(velocity.y) * 1.6
             guard hasSwipeDistance || hasSwipeVelocity else { return }
             didHandleKeyboardFocusPan = true
+            suppressTextKeyCommitUntil = CACurrentMediaTime() + 0.35
             if translation.x < 0 || velocity.x < 0 {
                 setKeyboardFocus(.text, animated: true)
             } else {
@@ -4072,7 +4495,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     private func refreshShiftButtonImage() {
         guard let textShiftButton else { return }
-        textShiftButton.configuration?.image = UIImage(systemName: isTextShiftLocked ? "capslock.fill" : (isTextShiftEnabled ? "shift.fill" : "shift"))
+        textShiftButton.isSelected = isTextShiftEnabled || isTextShiftLocked
+        configureTextKeyButton(
+            textShiftButton,
+            title: "",
+            image: isTextShiftLocked ? "capslock.fill" : (isTextShiftEnabled ? "shift.fill" : "shift"),
+            weight: .utility
+        )
         textShiftButton.accessibilityLabel = isTextShiftLocked
             ? NSLocalizedString("Caps Lock on", comment: "Accessibility label for active Caps Lock key")
             : (isTextShiftEnabled
@@ -4119,20 +4548,15 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         // Apply the standard utility key chrome so the button is visible
         // (solid background + 1pt shadow) like other bottom-row keys. Then
         // overlay textLanguageLabel on top with the attributed "中/英" text.
-        var configuration = UIButton.Configuration.filled()
-        configuration.title = nil
-        configuration.attributedTitle = nil
-        configuration.image = nil
-        configuration.cornerStyle = .fixed
-        configuration.background.cornerRadius = 5
-        configuration.contentInsets = .zero
-        configuration.baseForegroundColor = .label
-        configuration.baseBackgroundColor = systemKeyboardKeyBackground(for: .utility)
-        textLanguageButton.configuration = configuration
-        textLanguageButton.layer.shadowColor = UIColor.black.cgColor
-        textLanguageButton.layer.shadowOffset = CGSize(width: 0, height: 1)
-        textLanguageButton.layer.shadowRadius = 0
-        textLanguageButton.layer.shadowOpacity = 0.30
+        textLanguageButton.configurationUpdateHandler = { [weak self] button in
+            guard let self else { return }
+            let control = button
+            let isPressed = control.isHighlighted
+            button.configuration = self.textKeyConfiguration(title: "", image: nil, weight: .utility, isPressed: isPressed, isSelected: false)
+            self.applyTextKeyLayerStyle(to: button, weight: .utility, isPressed: isPressed, isSelected: false)
+        }
+        textLanguageButton.configuration = textKeyConfiguration(title: "", image: nil, weight: .utility, isPressed: false, isSelected: false)
+        applyTextKeyLayerStyle(to: textLanguageButton, weight: .utility, isPressed: false, isSelected: false)
 
         let activeTitle = textInputLanguage == .chinese ? "中" : "英"
         let inactiveTitle = textInputLanguage == .chinese ? "英" : "中"
@@ -4167,8 +4591,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func handleTextCharacter(_ character: String) {
-        guard keyboardFocus == .text else {
-            textDocumentProxy.insertText(character)
+        guard keyboardFocus == .text,
+              CACurrentMediaTime() >= suppressTextKeyCommitUntil
+        else {
             return
         }
         clearRestyleSuggestions()
@@ -4301,7 +4726,17 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func renderRimeState(_ state: RimeKeyboardState) {
-        performCandidateRefreshWithoutAnimation {
+        // Wrapping in CATransaction + performWithoutAnimation eliminates the
+        // perceptible candidate-swap animation, BUT if we run it before the
+        // root view has a non-zero size (during the keyboard's initial
+        // appearance) the chained layoutIfNeeded calls commit a 0-sized
+        // intermediate layout that the system then has to "jump" out of.
+        // Only use the fast path once layout is established.
+        if view.bounds.width > 0 {
+            performCandidateRefreshWithoutAnimation {
+                renderRimeStateImmediately(state)
+            }
+        } else {
             renderRimeStateImmediately(state)
         }
     }
@@ -4336,10 +4771,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             return
         }
 
-        for (index, candidate) in state.candidates.enumerated() {
-            if index > 0 {
-                addCandidateSeparator()
-            }
+        let visibleCandidateCount = min(state.candidates.count, max(1, candidatesVisibleInTopScroll(state)))
+        for index in 0..<visibleCandidateCount {
+            let candidate = state.candidates[index]
             let button = reusableCandidateButton(at: index)
             configureCandidateButton(
                 button,
@@ -4407,6 +4841,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private func updateCandidateToolbarControls(for state: RimeKeyboardState) {
         let isComposing = state.isComposing
         let hasCandidates = !state.candidates.isEmpty
+        let showingRestyleChips = !isComposing && wouldShowRestyleChips()
 
         // Grid expand chevron only when there are candidates to expand.
         textCandidateGridButton.isHidden = !(isComposing && hasCandidates)
@@ -4415,24 +4850,35 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             ? NSLocalizedString("Hide candidates", comment: "Accessibility label for collapsing candidate list")
             : NSLocalizedString("Show more candidates", comment: "Accessibility label for expanding candidate list")
 
-        // Right-side idle icons (wand / paste / mic / voice-keyboard switch /
-        // host settings) hide as soon as the user starts composing so the
-        // candidate list gets the full toolbar width. They come back when
-        // composition ends — including when the candidate area shows the
-        // 5 style chips for a recent dictation result. Style chips and wand
-        // intentionally coexist there: chips run a preset rewrite, wand
-        // records a free-form voice command on the same selection.
-        let showIdleIcons = !isComposing && !hasCandidates
-        textWandButton.isHidden = !showIdleIcons
-        textStylePickerButton.isHidden = !showIdleIcons
-        textPasteButton.isHidden = !showIdleIcons
-        textToolsButton.isHidden = !showIdleIcons
-        textKeyboardSwitchButton.isHidden = !showIdleIcons
+        // Chip companions: when the 5 preset chips render, three icons stay
+        // alongside — wand (free-form voice command on the same text) and
+        // mic (record the next sentence). Paintbrush is redundant with the
+        // chips themselves; paste / waveform / gear aren't central to the
+        // chip flow. They return after the chip TTL or when the user types.
+        let showAllIdleIcons = !isComposing && !hasCandidates && !showingRestyleChips
+        let showChipCompanions = !isComposing && !hasCandidates && showingRestyleChips
+        textWandButton.isHidden = !(showAllIdleIcons || showChipCompanions)
+        textToolsButton.isHidden = !(showAllIdleIcons || showChipCompanions) // mic
+        textStylePickerButton.isHidden = !showAllIdleIcons
+        textPasteButton.isHidden = !showAllIdleIcons
+        textKeyboardSwitchButton.isHidden = !showAllIdleIcons
         // Hide the "Open Typeforme" gear when the keyboard is already running
         // inside Typeforme itself — tapping it would launch a URL into the
         // current app, which on real devices flips the keyboard into the
         // "Opening Typeforme…" spinner pointlessly.
-        textHostSettingsButton.isHidden = !showIdleIcons || isRunningInsideHostApp
+        textHostSettingsButton.isHidden = !showAllIdleIcons || isRunningInsideHostApp
+    }
+
+    /// Mirrors `renderRecentRestyleActions`'s guard conditions so the toolbar
+    /// can reserve width for the 5 chips BEFORE the render call. Keep these
+    /// two in sync.
+    private func wouldShowRestyleChips() -> Bool {
+        styleRewriteCommandID == nil &&
+            currentBridgeStatus?.state != .recording &&
+            currentBridgeStatus?.state != .sending &&
+            (recentRestyleText?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false) &&
+            Date().timeIntervalSince1970 - recentRestyleShownAt <= restyleSuggestionTTL &&
+            recentInsertedTextRewriteTarget() != nil
     }
 
     private func updateCandidateScrollViewportMask() {
@@ -4463,11 +4909,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         guard !textCandidateGridButton.isHidden else { return 0 }
         let scrollFrame = candidateScrollView.convert(candidateScrollView.bounds, to: textToolbar)
         let buttonFrame = textCandidateGridButton.convert(textCandidateGridButton.bounds, to: textToolbar)
-        let overlap = max(0, scrollFrame.maxX - buttonFrame.minX)
-        // Keep a small visual/hit-test gap even when Auto Layout places the
-        // chevron exactly after the scroll view. Without this, the final glyph
-        // can sit under the transparent chevron hit area in the expanded row.
-        return overlap + 8
+        let visibleRight = min(scrollFrame.maxX, buttonFrame.minX - 10)
+        return max(0, scrollFrame.maxX - visibleRight)
     }
 
     private var isRunningInsideHostApp: Bool {
@@ -4502,6 +4945,20 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         lightHaptic()
     }
 
+    @objc private func handleCandidateScrollTap(_ recognizer: UITapGestureRecognizer) {
+        guard recognizer.state == .ended else { return }
+        let point = recognizer.location(in: view)
+        guard let button = candidateScrollHitTarget(at: point) else { return }
+        candidateButtonTapped(button)
+    }
+
+    @objc private func handleCandidateGridTap(_ recognizer: UITapGestureRecognizer) {
+        guard recognizer.state == .ended else { return }
+        let point = recognizer.location(in: view)
+        guard let button = candidateGridHitTarget(at: point) else { return }
+        candidateGridButtonTapped(button)
+    }
+
     private func setCandidateGridExpanded(_ expanded: Bool, state: RimeKeyboardState? = nil) {
         let next = expanded && (state?.isComposing ?? rimeInput.state().isComposing)
         guard isCandidateGridExpanded != next else {
@@ -4529,34 +4986,44 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
         guard isCandidateGridExpanded, state.isComposing, !state.candidates.isEmpty else { return }
 
-        // Skip candidates already visible in the top scroll — the user
-        // explicitly wants no duplication between the two surfaces. Width
-        // heuristic mirrors the top scroll's button sizing.
+        // Skip exactly the candidates that fit in the top row. The expanded
+        // grid must use the same count as the top row or selection indexes
+        // drift: a candidate can be hidden by the chevron while also skipped
+        // from the grid.
         let topCount = candidatesVisibleInTopScroll(state)
         guard topCount < state.candidates.count else {
             candidateGridScrollView.setContentOffset(.zero, animated: false)
             return
         }
 
-        // Dynamic-width flow layout: each cell is sized to its content (text
-        // width + padding) rather than splitting the row into equal columns.
-        // Cells wrap to a new row when the current row would overflow.
-        let availableWidth = max(candidateGridScrollView.bounds.width, view.bounds.width - Self.rootHorizontalInset * 2)
+        // Dynamic-width flow layout within the candidate content band. The
+        // right-side chevron column stays blank, matching the system keyboard's
+        // expanded candidate panel instead of filling the whole width.
+        let availableWidth = candidateGridContentWidth()
         var currentRow: UIStackView?
         var currentRowWidth: CGFloat = 0
+        var didAddRow = false
 
         for index in topCount..<state.candidates.count {
             let candidate = state.candidates[index]
             let cellWidth = gridCellWidth(for: candidate)
             let needsNewRow = currentRow == nil || currentRowWidth + cellWidth > availableWidth
             if needsNewRow {
+                if let row = currentRow {
+                    addCandidateGridTrailingSpacer(to: row)
+                }
+                if didAddRow {
+                    addCandidateGridRowSeparator(width: availableWidth)
+                }
                 let nextRow = makeTextKeyRow()
                 nextRow.spacing = 0
                 nextRow.distribution = .fill
                 nextRow.alignment = .fill
+                nextRow.widthAnchor.constraint(equalToConstant: availableWidth).isActive = true
                 candidateGridStack.addArrangedSubview(nextRow)
                 currentRow = nextRow
                 currentRowWidth = 0
+                didAddRow = true
             }
             let button = makeCandidateGridButton(
                 candidate: candidate,
@@ -4567,25 +5034,28 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             currentRowWidth += cellWidth
         }
 
-        // Trailing spacer so the last row aligns left instead of stretching.
-        if let row = currentRow, currentRowWidth < availableWidth {
-            let spacer = UIView()
-            spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-            row.addArrangedSubview(spacer)
+        // Trailing spacer so every row aligns left instead of stretching the
+        // final one or two cells to fill the remaining width.
+        if let currentRow {
+            addCandidateGridTrailingSpacer(to: currentRow)
         }
         candidateGridScrollView.setContentOffset(.zero, animated: false)
     }
 
+    private func candidateGridContentWidth() -> CGFloat {
+        let fullWidth = candidateGridScrollView.bounds.width > 0
+            ? candidateGridScrollView.bounds.width
+            : view.bounds.width - Self.rootHorizontalInset * 2
+        return min(fullWidth, max(140, fullWidth - Self.candidateExpandButtonWidth - 8))
+    }
+
     private func candidatesVisibleInTopScroll(_ state: RimeKeyboardState) -> Int {
-        let scrollWidth = candidateScrollView.bounds.width > 0
-            ? max(0, candidateScrollView.bounds.width - candidateScrollTrailingReserve())
-            : view.bounds.width - Self.rootHorizontalInset * 2 - Self.candidateExpandButtonWidth // chevron fallback
+        let scrollWidth = topCandidateVisibleWidth()
         guard scrollWidth > 0 else { return 0 }
         var totalWidth: CGFloat = 0
-        let separatorWidth: CGFloat = 1.0 / UIScreen.main.scale
         for (i, candidate) in state.candidates.enumerated() {
             let cellWidth = candidateButtonMinimumWidth(for: candidate, isFirst: i == 0)
-            let prefix = i > 0 ? separatorWidth : 0
+            let prefix = i > 0 ? Self.topCandidateSpacing : 0
             if totalWidth + prefix + cellWidth > scrollWidth {
                 return i
             }
@@ -4594,43 +5064,73 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         return state.candidates.count
     }
 
+    private func topCandidateVisibleWidth() -> CGFloat {
+        let fallback = view.bounds.width - Self.rootHorizontalInset * 2 - Self.candidateExpandButtonWidth - 14
+        guard candidateScrollView.bounds.width > 0 else { return max(0, fallback) }
+        let scrollFrame = candidateScrollView.convert(candidateScrollView.bounds, to: textToolbar)
+        let rightLimit: CGFloat
+        if textCandidateGridButton.isHidden {
+            rightLimit = scrollFrame.maxX
+        } else {
+            let buttonFrame = textCandidateGridButton.convert(textCandidateGridButton.bounds, to: textToolbar)
+            rightLimit = min(scrollFrame.maxX, buttonFrame.minX - 10)
+        }
+        return max(0, rightLimit - scrollFrame.minX)
+    }
+
+    private func addCandidateGridTrailingSpacer(to row: UIStackView) {
+        let spacer = UIView()
+        spacer.translatesAutoresizingMaskIntoConstraints = false
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        spacer.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        row.addArrangedSubview(spacer)
+    }
+
+    private func addCandidateGridRowSeparator(width: CGFloat) {
+        let separator = UIView()
+        separator.backgroundColor = UIColor.separator.withAlphaComponent(isKeyboardDark ? 0.42 : 0.32)
+        separator.translatesAutoresizingMaskIntoConstraints = false
+        separator.heightAnchor.constraint(equalToConstant: 1.0 / UIScreen.main.scale).isActive = true
+        separator.widthAnchor.constraint(equalToConstant: width).isActive = true
+        candidateGridStack.addArrangedSubview(separator)
+    }
+
     private func gridCellWidth(for candidate: RimeKeyboardCandidate) -> CGFloat {
-        let font = UIFont.systemFont(ofSize: 17, weight: .medium)
+        let font = UIFont.systemFont(ofSize: 18, weight: .regular)
         let textWidth = ceil((candidate.text as NSString).size(withAttributes: [.font: font]).width)
-        // Min 44pt clears iOS HIG; +18pt padding mirrors the top scroll's
-        // single-char floor so 1-char cells still feel tappable.
-        return max(44, textWidth + 18)
+        return max(56, textWidth + 28)
     }
 
     private func makeCandidateGridButton(candidate: RimeKeyboardCandidate, selectionIndex: Int, width: CGFloat) -> UIButton {
-        // HitInsetButton so the cell's tap area extends past its visible
-        // bounds. Cells are flush against each other (spacing=0, 1pt border);
-        // overlap eats the borderline dead zone and matches the keyboard's
-        // letter-key mistouch tolerance pattern.
         let button = HitInsetButton(frame: .zero)
         button.tag = selectionIndex
-        button.hitInsets = UIEdgeInsets(top: -3, left: -3, bottom: -3, right: -3)
-        button.heightAnchor.constraint(equalToConstant: 48).isActive = true
+        // Expanded candidate grid cells are visual targets only. The scroll
+        // view owns touch delivery so vertical drags always scroll; taps are
+        // resolved by candidateGridTapRecognizer using the same row-local
+        // hit bands.
+        button.isUserInteractionEnabled = false
+        button.hitInsets = UIEdgeInsets(top: -6, left: -10, bottom: -6, right: -10)
+        button.heightAnchor.constraint(equalToConstant: 50).isActive = true
         button.widthAnchor.constraint(equalToConstant: width).isActive = true
+        button.setContentHuggingPriority(.required, for: .horizontal)
+        button.setContentCompressionResistancePriority(.required, for: .horizontal)
         var configuration = UIButton.Configuration.plain()
         configuration.title = candidate.text
         configuration.cornerStyle = .fixed
         configuration.background.cornerRadius = 0
         configuration.baseForegroundColor = .label
         configuration.background.backgroundColor = .clear
-        configuration.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: 4, bottom: 6, trailing: 4)
+        configuration.contentInsets = NSDirectionalEdgeInsets(top: 7, leading: 10, bottom: 7, trailing: 10)
         configuration.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
             var outgoing = incoming
-            outgoing.font = .systemFont(ofSize: 17, weight: .medium)
+            outgoing.font = .systemFont(ofSize: 18, weight: .regular)
             return outgoing
         }
         button.configuration = configuration
-        button.layer.borderWidth = 1.0 / UIScreen.main.scale
-        button.layer.borderColor = UIColor.separator.withAlphaComponent(isKeyboardDark ? 0.42 : 0.28).cgColor
+        button.layer.borderWidth = 0
+        button.layer.borderColor = UIColor.clear.cgColor
         button.titleLabel?.adjustsFontSizeToFitWidth = true
         button.titleLabel?.minimumScaleFactor = 0.72
-        button.addTarget(self, action: #selector(candidateGridButtonTapped(_:)), for: .touchUpInside)
-        attachPressAnimation(button)
         return button
     }
 
@@ -4643,14 +5143,16 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         if index < reusableCandidateButtons.count {
             return reusableCandidateButtons[index]
         }
-        // HitInsetButton: the 1pt separator between candidates leaves a
-        // visible dead zone; -3pt horizontal hit insets let adjacent cells
-        // overlap there so taps on the line still hit a candidate.
+        // HitInsetButton: candidate cells are visually 36pt tall; -8pt
+        // vertical hit insets brings effective tap region to ~52pt tall,
+        // well past iOS HIG. -18pt horizontal covers the row-local snap
+        // band so separators and candidate edges are selectable without
+        // switching to .touchDown, which would break horizontal scrolling.
         let button = HitInsetButton(frame: .zero)
-        button.hitInsets = UIEdgeInsets(top: -2, left: -3, bottom: -2, right: -3)
+        button.hitInsets = UIEdgeInsets(top: -8, left: -18, bottom: -8, right: -18)
         button.addTarget(self, action: #selector(candidateButtonTapped(_:)), for: .touchUpInside)
-        button.heightAnchor.constraint(equalToConstant: 44).isActive = true
-        let widthConstraint = button.widthAnchor.constraint(greaterThanOrEqualToConstant: 40)
+        button.heightAnchor.constraint(equalToConstant: 36).isActive = true
+        let widthConstraint = button.widthAnchor.constraint(greaterThanOrEqualToConstant: 52)
         widthConstraint.isActive = true
         attachPressAnimation(button)
         reusableCandidateButtons.append(button)
@@ -4669,17 +5171,17 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         configuration.title = candidate.text
         configuration.subtitle = nil
         configuration.cornerStyle = .fixed
-        configuration.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: displayIndex == 0 ? 9 : 7, bottom: 0, trailing: displayIndex == 0 ? 9 : 7)
+        configuration.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 12, bottom: 0, trailing: 12)
         configuration.baseForegroundColor = .label
         configuration.background.cornerRadius = 0
         configuration.background.backgroundColor = .clear
         configuration.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
             var outgoing = incoming
-            outgoing.font = .systemFont(ofSize: displayIndex == 0 ? 19 : 18, weight: displayIndex == 0 ? .semibold : .medium)
+            outgoing.font = .systemFont(ofSize: 18, weight: .medium)
             return outgoing
         }
         button.configuration = configuration
-        candidateButtonWidthConstraints[displayIndex].constant = candidateButtonMinimumWidth(for: candidate, isFirst: displayIndex == 0)
+        candidateButtonWidthConstraints[displayIndex].constant = candidateButtonMinimumWidth(for: candidate, isFirst: false)
     }
 
     @objc private func candidateButtonTapped(_ sender: UIButton) {
@@ -4687,9 +5189,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func candidateButtonMinimumWidth(for candidate: RimeKeyboardCandidate, isFirst: Bool) -> CGFloat {
-        let titleFont = UIFont.systemFont(ofSize: isFirst ? 19 : 18, weight: isFirst ? .semibold : .medium)
+        // Uniform weight/size for all candidates — user prefers no
+        // emphasis on the first one.
+        let titleFont = UIFont.systemFont(ofSize: 18, weight: .medium)
         let titleWidth = ceil((candidate.text as NSString).size(withAttributes: [.font: titleFont]).width)
-        return max(isFirst ? 44 : 40, titleWidth + (isFirst ? 18 : 14))
+        return max(52, titleWidth + 24)
     }
 
     private func addCandidateStatus(_ text: String, color: UIColor, emphasized: Bool = false) {
@@ -4877,7 +5381,14 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func chineseDirectText(for character: String) -> String {
-        guard chinesePunctuationStyle == .chinese else { return character }
+        // Symbol pages always insert literal English chars in Chinese mode
+        // (so URLs / emails / file paths can be typed). Mirrors iOS system
+        // Simplified Chinese keyboard. URL / email / numeric host fields
+        // also skip conversion via isChinesePunctuationContext.
+        guard chinesePunctuationStyle == .chinese,
+              !isSymbolKeyboard,
+              isChinesePunctuationContext
+        else { return character }
         switch character {
         case "\"":
             let quote = doubleQuoteOpen ? "\u{201C}" : "\u{201D}"
@@ -4900,9 +5411,25 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private func shouldInsertDirectChinesePunctuation(_ character: String) -> Bool {
         guard textInputLanguage == .chinese,
               chinesePunctuationStyle == .chinese,
-              !isAlphabeticTextKey(character)
+              !isAlphabeticTextKey(character),
+              isChinesePunctuationContext
         else { return false }
         return ",.?!:;()\"'/\\|`~$^_<>-[]{}#%&*+=@€£¥•".contains(character)
+    }
+
+    /// `false` when the host field hints it wants literal ASCII (URLs,
+    /// emails, numeric input, etc.). Mirrors iOS system Simplified Chinese
+    /// keyboard: in these field types, Chinese punctuation conversion is
+    /// entirely suppressed so you can type "https://example.com" or "3.14"
+    /// directly without leaving the keyboard.
+    private var isChinesePunctuationContext: Bool {
+        switch textDocumentProxy.keyboardType {
+        case .URL, .emailAddress, .numberPad, .phonePad,
+             .decimalPad, .twitter, .webSearch, .asciiCapableNumberPad:
+            return false
+        default:
+            return true
+        }
     }
 
     private func insertChineseDirectTextKey(_ character: String) {
@@ -5133,7 +5660,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func lightHaptic() {
-        UIImpactFeedbackGenerator(style: .medium).impactOccurred(intensity: 0.85)
+        UIImpactFeedbackGenerator(style: .light).impactOccurred(intensity: 0.65)
     }
 
     private var currentBridgeStatus: KeyboardBridgeStatus? {
@@ -5975,7 +6502,8 @@ final class HitInsetButton: UIButton {
     var onTrackingFinished: ((HitInsetButton) -> Void)?
 
     override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
-        bounds.inset(by: hitInsets).contains(point)
+        guard isUserInteractionEnabled, !isHidden, alpha > 0.01 else { return false }
+        return bounds.inset(by: hitInsets).contains(point)
     }
 
     override func endTracking(_ touch: UITouch?, with event: UIEvent?) {
@@ -5989,19 +6517,93 @@ final class HitInsetButton: UIButton {
     }
 }
 
-/// UIInputView subclass that snaps margin / dead-space touches to the
-/// nearest text key via the controller's `adjustedHitTest`. Without this,
-/// iOS's default hit-test cascade rejects any touch outside the visible
-/// keyboard bounds (rootHorizontalInset margins, inter-row gaps), making
-/// edge keys like a/l/q/p impossible to hit on the outer sides — even if
-/// each key's own pointInside is extended via HitInsetButton, the parent
-/// containers' pointInside short-circuits the descent before the button
-/// gets a chance.
+/// UIInputView subclass that owns dead-zone key touches end-to-end. Expanding
+/// individual button `pointInside` is not enough: parent stack views can still
+/// short-circuit hit testing, and touches that start just outside a button's
+/// stable bounds can show press feedback without producing a reliable
+/// `.touchUpInside`. The controller resolves those touches to the most likely
+/// key; this view then sends the matching down/up/cancel events immediately.
 final class KeyboardInputView: UIInputView {
     weak var hitController: KeyboardViewController?
+    private var fallbackTouch: UITouch?
+    private weak var fallbackButton: UIButton?
+    private var fallbackStartPoint: CGPoint = .zero
+    private var fallbackDidCancel = false
 
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
         let defaultHit = super.hitTest(point, with: event)
         return hitController?.adjustedHitTest(point: point, defaultHit: defaultHit) ?? defaultHit
+    }
+
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        guard fallbackTouch == nil,
+              let touch = touches.first,
+              let hitController,
+              let button = hitController.fallbackTextKeyTarget(at: touch.location(in: self))
+        else {
+            super.touchesBegan(touches, with: event)
+            return
+        }
+        fallbackTouch = touch
+        fallbackButton = button
+        fallbackStartPoint = touch.location(in: self)
+        fallbackDidCancel = false
+        hitController.beginFallbackTextKeyTouch(on: button)
+    }
+
+    override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
+        guard let touch = fallbackTouch,
+              touches.contains(touch),
+              let button = fallbackButton,
+              !fallbackDidCancel,
+              let hitController
+        else {
+            super.touchesMoved(touches, with: event)
+            return
+        }
+        let point = touch.location(in: self)
+        let dx = point.x - fallbackStartPoint.x
+        let dy = point.y - fallbackStartPoint.y
+        let isSwipeIntent = abs(dx) >= 28 && abs(dx) > abs(dy) * 1.35
+        if isSwipeIntent {
+            fallbackDidCancel = true
+            hitController.cancelFallbackTextKeyTouch(on: button)
+            clearFallbackTouch()
+        }
+    }
+
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
+        guard let touch = fallbackTouch,
+              touches.contains(touch),
+              let button = fallbackButton,
+              let hitController
+        else {
+            super.touchesEnded(touches, with: event)
+            return
+        }
+        if fallbackDidCancel {
+            hitController.cancelFallbackTextKeyTouch(on: button)
+        } else {
+            hitController.commitFallbackTextKeyTouch(on: button)
+        }
+        clearFallbackTouch()
+    }
+
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
+        if let touch = fallbackTouch,
+           touches.contains(touch),
+           let button = fallbackButton {
+            hitController?.cancelFallbackTextKeyTouch(on: button)
+            clearFallbackTouch()
+            return
+        }
+        super.touchesCancelled(touches, with: event)
+    }
+
+    private func clearFallbackTouch() {
+        fallbackTouch = nil
+        fallbackButton = nil
+        fallbackStartPoint = .zero
+        fallbackDidCancel = false
     }
 }

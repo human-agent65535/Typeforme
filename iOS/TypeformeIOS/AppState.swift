@@ -294,7 +294,7 @@ final class AppState: ObservableObject {
         self.keyboardAutoCapitalizationEnabled = UserDefaults.standard.object(forKey: Self.keyboardAutoCapitalizationKey)
             .map { _ in UserDefaults.standard.bool(forKey: Self.keyboardAutoCapitalizationKey) } ?? true
         self.keyboardCharacterPreviewEnabled = UserDefaults.standard.object(forKey: Self.keyboardCharacterPreviewKey)
-            .map { _ in UserDefaults.standard.bool(forKey: Self.keyboardCharacterPreviewKey) } ?? true
+            .map { _ in UserDefaults.standard.bool(forKey: Self.keyboardCharacterPreviewKey) } ?? false
         self.keyboardChinesePunctuationStyle = UserDefaults.standard.string(forKey: Self.keyboardChinesePunctuationStyleKey)
             .flatMap(KeyboardChinesePunctuationStyle.init(rawValue:)) ?? .chinese
         self.keyboardEverContacted = UserDefaults.standard.bool(forKey: Self.keyboardEverContactedKey)
@@ -968,9 +968,9 @@ final class AppState: ObservableObject {
             }
             resultText = text
             lastGeneratedResultText = text
-            if let submittedRaw = source.rawTranscript {
-                rawTranscript = submittedRaw
-            }
+            // Do NOT overwrite rawTranscript with the submitted source — it's
+            // either the original raw (unchanged, no-op) or the previous
+            // styled result (corruption). Keep raw from initial dictation.
             sessionID = response.sessionID
             latestServerTiming = ServerTimingSummary(
                 transcriptionLatencyMs: latestServerTiming?.transcriptionLatencyMs,
@@ -1010,12 +1010,16 @@ final class AppState: ObservableObject {
     }
 
     private func currentRestyleSource() -> RestyleSource? {
+        // Restyle acts on the visible Result editor. Passing the old session
+        // would make the Mac prefer the original raw transcript and discard
+        // manual edits or the previous style output.
         let visibleText = resultText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !visibleText.isEmpty else { return nil }
-        return RestyleSource(
-            sessionID: nil,
-            rawTranscript: visibleText
-        )
+        if !visibleText.isEmpty {
+            return RestyleSource(sessionID: nil, rawTranscript: visibleText)
+        }
+        let rawText = rawTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !rawText.isEmpty else { return nil }
+        return RestyleSource(sessionID: sessionID, rawTranscript: rawText)
     }
 
     func handleOpenURL(_ url: URL, sourceApplication: String? = nil) async {
