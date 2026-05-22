@@ -19,21 +19,17 @@ struct ASRAudioSupportTests {
         #expect(try QwenLlamaASRService.parseChatTranscript(data: data) == "你好，世界。")
     }
 
-    @Test func qwenPromptKeepsMixedLanguagesAndScript() {
-        let prompt = QwenLlamaASRService.transcriptionPrompt(languageIDs: ["zh-CN", "en-US"])
-        #expect(prompt.contains("Chinese (Simplified), English"))
-        #expect(prompt.contains("Transcribe every audible sentence"))
-        #expect(prompt.contains("do not summarize"))
-        #expect(prompt.contains("Preserve mixed-language speech"))
-        #expect(prompt.contains("Use Simplified Chinese"))
+    @Test func qwenASRConstrainsLanguageCombosWithAssistantPrefix() {
+        #expect(QwenLlamaASRService.languageAssistantPrefix(languageIDs: ["zh-CN", "en-US"]) == "language Chinese, English<asr_text>")
+        #expect(QwenLlamaASRService.languageAssistantPrefix(languageIDs: ["zh-CN", "en-US", "vi"]) == "language Vietnamese, Chinese, English<asr_text>")
+        #expect(QwenLlamaASRService.languageAssistantPrefix(languageIDs: ["zh-CN", "en-US", "ja"]) == "language Japanese, Chinese, English<asr_text>")
     }
 
-    @Test func qwenPromptProtectsDiacriticsAndShortWordsWithoutLanguageRules() {
-        let prompt = QwenLlamaASRService.transcriptionPrompt(languageIDs: ["zh-CN", "en-US", "vi"])
-        #expect(prompt.contains("Vietnamese"))
-        #expect(prompt.contains("Preserve audible diacritics, tones, accents"))
-        #expect(prompt.contains("Do not expand a short word into a longer phrase"))
-        #expect(!prompt.contains("keo/kéo"))
+    @Test func qwenASRUsesForcedPrefixForSingleLanguage() {
+        #expect(QwenLlamaASRService.languageAssistantPrefix(languageIDs: ["zh-CN"]) == "language Chinese<asr_text>")
+        #expect(QwenLlamaASRService.languageAssistantPrefix(languageIDs: ["vi"]) == "language Vietnamese<asr_text>")
+        #expect(QwenLlamaASRService.languageAssistantPrefix(languageIDs: ["ja"]) == "language Japanese<asr_text>")
+        #expect(QwenLlamaASRService.languageAssistantPrefix(languageIDs: ["tl"]) == "language Filipino<asr_text>")
     }
 
     @Test func qwenRetriesOnlyTransientASRErrors() {

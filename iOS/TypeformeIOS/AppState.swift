@@ -193,6 +193,7 @@ final class AppState: ObservableObject {
     private var lastGeneratedResultText: String?
     private var activeKeyboardTextEditContext: KeyboardTextEditContext?
     private var activeKeyboardDictationContext: KeyboardDictationContext?
+    private var canceledKeyboardCommandIDs: [String: TimeInterval] = [:]
     private var lastHandledOpenURL: (value: String, time: TimeInterval)?
 
     /// Force-refresh cloud/unavailable routes if cached probe is older than
@@ -201,6 +202,7 @@ final class AppState: ObservableObject {
     private static let routeCacheTTL: TimeInterval = 30
     private static let localRouteCacheTTL: TimeInterval = 5
     private static let networkPathSameSignatureRefreshInterval: TimeInterval = 2
+    private static let canceledKeyboardCommandTTL: TimeInterval = 10
     /// How long a `.success` / `.failure` phase sticks before reverting to
     /// `.idle`. Long enough to read, short enough not to block the next press.
     private static let phaseAutoResetDelay: TimeInterval = 2.4
@@ -1519,6 +1521,22 @@ final class AppState: ObservableObject {
         keyboardCaptureStartedFromKeyboard = false
     }
 
+    private func rememberCanceledKeyboardCommand(_ commandID: String) {
+        guard !commandID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        pruneCanceledKeyboardCommands()
+        canceledKeyboardCommandIDs[commandID] = Date().timeIntervalSince1970
+    }
+
+    private func consumeCanceledKeyboardCommand(_ commandID: String) -> Bool {
+        pruneCanceledKeyboardCommands()
+        return canceledKeyboardCommandIDs.removeValue(forKey: commandID) != nil
+    }
+
+    private func pruneCanceledKeyboardCommands() {
+        let cutoff = Date().timeIntervalSince1970 - Self.canceledKeyboardCommandTTL
+        canceledKeyboardCommandIDs = canceledKeyboardCommandIDs.filter { $0.value >= cutoff }
+    }
+
     private func configureKeyboardDarwinBridge() {
         keyboardDarwinObservers.forEach { $0.stopObserving() }
         guard let requestStartName = KeyboardDarwinNotificationName.authenticatedRequest(
@@ -1599,6 +1617,12 @@ final class AppState: ObservableObject {
         }
         switch command.action {
         case .start:
+            guard !consumeCanceledKeyboardCommand(command.id) else {
+                clearKeyboardCaptureContext()
+                publishKeyboardStatus(.standby, commandID: command.id, message: "Ready")
+                KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.dictationStopped)
+                return keyboardBridgeStatus
+            }
             if let requestedMode = CorrectionModeID(rawValue: command.correctionMode) {
                 applyKeyboardDefaultCorrectionMode(requestedMode)
             }
@@ -1609,6 +1633,7 @@ final class AppState: ObservableObject {
         case .stop:
             await stopAndSend(keyboardCommandID: command.id)
         case .cancel:
+            rememberCanceledKeyboardCommand(command.id)
             clearKeyboardCaptureContext()
             if keyboardAudioSession.isRecording {
                 keyboardAudioSession.cancelRecording()

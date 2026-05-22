@@ -67,35 +67,49 @@ final class QwenLlamaASRService: ASRService {
         URL(string: "http://127.0.0.1:\(port)/v1/chat/completions")!
     }
 
-    static func transcriptionPrompt(languageIDs: [String]) -> String {
-        let names = ASRLanguageSelection.displayNames(
-            for: languageIDs,
+    static func languageAssistantPrefix(languageIDs: [String]) -> String? {
+        let ids = ASRLanguageSelection.validatedIDs(
+            languageIDs,
             supportedOptions: ASRLanguageSelection.qwenASRSupportedLanguages
         )
-        let languageClause = names.isEmpty
-            ? "Detect the spoken language."
-            : "The expected spoken languages may include: \(names.joined(separator: ", "))."
-        let scriptClause: String
-        switch ASRLanguageSelection.scriptPreference(for: languageIDs) {
-        case .simplified:
-            scriptClause = "Use Simplified Chinese for Chinese text."
-        case .traditional:
-            scriptClause = "Use Traditional Chinese for Chinese text."
-        case .preserve:
-            scriptClause = "Preserve the spoken script when it is clear."
+        var seen = Set<String>()
+        let names = qwenASRPrefixOrderedLanguageIDs(ids).compactMap { id -> String? in
+            guard let name = qwenASRLanguageName(for: id),
+                  !seen.contains(name)
+            else { return nil }
+            seen.insert(name)
+            return name
         }
-        return [
-            "Transcribe every audible sentence in the audio in order.",
-            "This is speech-to-text only: do not summarize, rewrite, translate, answer, or infer the speaker's intent.",
-            "Do not stop after the first sentence.",
-            "Keep repeated words, fillers, false starts, and self-corrections when audible; a later cleanup step will edit them.",
-            languageClause,
-            "Preserve mixed-language speech instead of translating it.",
-            "Preserve audible diacritics, tones, accents, and short content words. Do not expand a short word into a longer phrase unless the extra words are clearly audible.",
-            scriptClause,
-            "Use light punctuation when it is clear from the speech.",
-            "Output only the transcript."
-        ].joined(separator: " ")
+        guard !names.isEmpty else { return nil }
+        return "language \(names.joined(separator: ", "))<asr_text>"
+    }
+
+    private static func qwenASRPrefixOrderedLanguageIDs(_ ids: [String]) -> [String] {
+        let defaultIDs = Set(ASRLanguageSelection.defaultIDs)
+        return ids.enumerated().sorted { lhs, rhs in
+            let lhsIsDefault = defaultIDs.contains(lhs.element)
+            let rhsIsDefault = defaultIDs.contains(rhs.element)
+            if lhsIsDefault != rhsIsDefault {
+                return !lhsIsDefault
+            }
+            return lhs.offset < rhs.offset
+        }.map(\.element)
+    }
+
+    private static func qwenASRLanguageName(for id: String) -> String? {
+        switch id {
+        case "zh-CN", "zh-TW":
+            return "Chinese"
+        case "tl":
+            return "Filipino"
+        default:
+            guard let option = ASRLanguageSelection.option(for: id) else { return nil }
+            return option.displayName
+                .components(separatedBy: " / ")
+                .first?
+                .components(separatedBy: " (")
+                .first
+        }
     }
 
     static func parseChatTranscript(data: Data) throws -> String {
@@ -208,14 +222,23 @@ final class QwenLlamaASRService: ASRService {
                 try write(BridgeJSON.encode(string))
             }
 
+            let languagePrefix = languageAssistantPrefix(languageIDs: languageIDs)
+
             try write(#"{"model":"#)
             try writeJSONString(model)
-            try write(#","messages":[{"role":"user","content":[{"type":"text","text":"#)
-            try writeJSONString(transcriptionPrompt(languageIDs: languageIDs))
-            try write(#"},{"type":"input_audio","input_audio":{"data":""#)
+            try write(#","messages":[{"role":"user","content":[{"type":"input_audio","input_audio":{"data":""#)
             try writeBase64Audio(uploadURL, to: output)
-            try write(#"","format":"wav"}}]}],"temperature":0,"max_tokens":"#)
+            try write(#"","format":"wav"}}]}"#)
+            if let languagePrefix {
+                try write(#",{"role":"assistant","content":"#)
+                try writeJSONString(languagePrefix)
+                try write(#"}"#)
+            }
+            try write(#"],"temperature":0,"max_tokens":"#)
             try write(String(maxTokens))
+            if languagePrefix != nil {
+                try write(#","continue_final_message":true,"add_generation_prompt":false"#)
+            }
             try write(#","stream":false}"#)
 
             let byteCount = try FileManager.default.attributesOfItem(atPath: bodyURL.path)[.size] as? NSNumber
