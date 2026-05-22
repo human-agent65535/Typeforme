@@ -222,7 +222,7 @@ final class BridgeService {
             correctionLatencyMs = elapsedMs(since: correctionStarted)
         } catch {
             let latencyMs = elapsedMs(since: correctionStarted)
-            guard Self.isCorrectionTimeout(error) else {
+            guard Self.canFallbackToRawTranscript(error) else {
                 DebugLogStore.recordCorrection(
                     debugLog,
                     mode: correctionMode,
@@ -235,14 +235,17 @@ final class BridgeService {
                 )
                 throw error
             }
-            let timeoutResult = normalize(
+            // Correction backend failed (timeout / network / validation /
+            // unavailable). Keep the dictation usable by surfacing the raw
+            // transcript — user can copy/edit instead of losing the audio.
+            let fallbackResult = normalize(
                 CorrectionResult(action: .commit, text: trimmed, risk: .medium),
                 languageIDs: languageIDs,
                 correctionMode: correctionMode
             )
             correction = BridgeCorrectionOutput(
-                result: timeoutResult,
-                status: "timeout",
+                result: fallbackResult,
+                status: Self.fallbackCorrectionStatus(error),
                 error: error.localizedDescription
             )
             correctionLatencyMs = latencyMs
@@ -328,15 +331,15 @@ final class BridgeService {
             correctionLatencyMs = elapsedMs(since: correctionStarted)
         } catch {
             let latencyMs = elapsedMs(since: correctionStarted)
-            guard Self.isCorrectionTimeout(error) else { throw error }
-            let timeoutResult = normalize(
+            guard Self.canFallbackToRawTranscript(error) else { throw error }
+            let fallbackResult = normalize(
                 CorrectionResult(action: .commit, text: rawTranscript, risk: .medium),
                 languageIDs: languageIDs,
                 correctionMode: correctionMode
             )
             correction = BridgeCorrectionOutput(
-                result: timeoutResult,
-                status: "timeout",
+                result: fallbackResult,
+                status: Self.fallbackCorrectionStatus(error),
                 error: error.localizedDescription
             )
             correctionLatencyMs = latencyMs
@@ -372,6 +375,34 @@ final class BridgeService {
             return true
         }
         return error.localizedDescription.localizedCaseInsensitiveContains("timed out")
+    }
+
+    /// `.timeout`, `.unavailable`, `.requestFailed`, `.validationFailed` are
+    /// all "ASR succeeded but correction backend let us down" — fall back to
+    /// the raw transcript instead of dropping the dictation. `.empty` stays
+    /// throw-only because there's nothing to fall back to.
+    private static func canFallbackToRawTranscript(_ error: Error) -> Bool {
+        if let correctorError = error as? CorrectorError {
+            switch correctorError {
+            case .timeout, .unavailable, .requestFailed, .validationFailed:
+                return true
+            case .empty:
+                return false
+            }
+        }
+        // Network errors that escaped CorrectorError translation.
+        let message = error.localizedDescription.lowercased()
+        return message.contains("offline")
+            || message.contains("timed out")
+            || message.contains("unreach")
+            || message.contains("connection")
+    }
+
+    private static func fallbackCorrectionStatus(_ error: Error) -> String {
+        if let correctorError = error as? CorrectorError, correctorError == .timeout {
+            return "timeout"
+        }
+        return "fallback"
     }
 
     func editText(_ request: BridgeTextEditRequest) async throws -> BridgeTextEditResponse {

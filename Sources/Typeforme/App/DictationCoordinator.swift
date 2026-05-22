@@ -319,25 +319,34 @@ final class DictationCoordinator: ObservableObject {
                 activeDictationContextBefore = ""
                 activeDictationContextAfter = ""
                 transition(to: .idle)
-            } catch CorrectorError.timeout {
+            } catch let correctorError as CorrectorError where
+                correctorError == .timeout
+                || Self.isCorrectorRecoverableError(correctorError)
+            {
+                // Timeout / network / validation / backend-unavailable: keep
+                // the dictation usable by committing the raw transcript so
+                // the user doesn't lose the audio just because the styler is
+                // down. `.empty` is intentionally NOT in this set (handled
+                // above) — there's no raw text to fall back to.
                 try await ensureActive(sessionID: sessionID, token: cancelToken)
-                let timeoutResult = normalizeResult(
+                let fallbackResult = normalizeResult(
                     CorrectionResult(action: .commit, text: trimmed, risk: .medium),
                     correctionMode: request.correctionMode
                 )
+                let statusLabel: String = correctorError == .timeout ? "timeout" : "fallback"
                 DebugLogStore.recordCorrection(
                     debugLog,
                     mode: request.correctionMode,
-                    text: timeoutResult.text,
-                    status: "timeout",
-                    error: CorrectorError.timeout.localizedDescription,
+                    text: fallbackResult.text,
+                    status: statusLabel,
+                    error: correctorError.localizedDescription,
                     latencyMs: elapsedMs(since: correctionStarted),
                     request: request,
                     timeoutMs: AppSettings.correctionTimeoutMs
                 )
                 previewCorrectionMode = request.correctionMode
-                lastCorrected = timeoutResult.text
-                await finish(with: timeoutResult, sessionID: sessionID, cancelToken: cancelToken)
+                lastCorrected = fallbackResult.text
+                await finish(with: fallbackResult, sessionID: sessionID, cancelToken: cancelToken)
             }
         } catch is CancellationError {
             try? FileManager.default.removeItem(at: url)
@@ -386,6 +395,19 @@ final class DictationCoordinator: ObservableObject {
         guard elapsed < Self.minimumToggleStopInterval else { return false }
         Log.coordinator.debug("toggle stop ignored during recording warmup")
         return true
+    }
+
+    /// `.unavailable` / `.requestFailed` / `.validationFailed` mean ASR
+    /// succeeded but the styling backend let us down — we can still commit
+    /// the raw transcript so the user doesn't lose dictation. `.empty` and
+    /// `.timeout` are handled by their own catches.
+    private static func isCorrectorRecoverableError(_ error: CorrectorError) -> Bool {
+        switch error {
+        case .unavailable, .requestFailed, .validationFailed:
+            return true
+        case .timeout, .empty:
+            return false
+        }
     }
 
     func reportError(_ message: String) {

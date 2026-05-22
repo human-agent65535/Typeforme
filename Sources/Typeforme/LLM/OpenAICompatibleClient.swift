@@ -76,6 +76,25 @@ enum OpenAICompatibleClientError: LocalizedError, Equatable {
 }
 
 enum OpenAICompatibleClient {
+    /// Custom session: `waitsForConnectivity = true` so a transient OS-level
+    /// "offline" reachability flag (e.g., during a Wi-Fi route flap) doesn't
+    /// instantly reject a perfectly reachable LAN endpoint with
+    /// NSURLErrorNotConnectedToInternet (-1009). With this flag, URLSession
+    /// waits for the route to come back instead of throwing in ~3ms — at
+    /// which point our higher-level timeoutMs still bounds the overall wait.
+    /// `URLSession.shared` carries process-wide reachability state which is
+    /// what was producing the false-positive offline rejections.
+    private static let session: URLSession = {
+        let config = URLSessionConfiguration.ephemeral
+        config.waitsForConnectivity = true
+        config.timeoutIntervalForRequest = 60
+        config.timeoutIntervalForResource = 120
+        config.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+        config.allowsConstrainedNetworkAccess = true
+        config.allowsExpensiveNetworkAccess = true
+        return URLSession(configuration: config)
+    }()
+
     static func chatCompletionContent(
         endpoint: URL,
         request body: OpenAIChatCompletionRequest,
@@ -112,7 +131,7 @@ enum OpenAICompatibleClient {
         }
         let (data, response): (Data, URLResponse)
         do {
-            (data, response) = try await URLSession.shared.data(for: request)
+            (data, response) = try await session.data(for: request)
         } catch {
             throw OpenAICompatibleClientError.unavailable(error.localizedDescription)
         }
@@ -137,7 +156,7 @@ enum OpenAICompatibleClient {
     ) async throws -> Data {
         let completion = RequestCompletionFlag()
         let networkTask = Task<(Data, URLResponse), Error> {
-            try await URLSession.shared.data(for: request)
+            try await session.data(for: request)
         }
         let timeoutTask = Task<Void, Error> {
             try await Task.sleep(nanoseconds: UInt64(timeoutMs) * 1_000_000)
