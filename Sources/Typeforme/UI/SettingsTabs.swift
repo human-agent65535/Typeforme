@@ -340,6 +340,12 @@ struct ClientServerSettingsView: View {
                         Label(isChecking ? "Checking…" : "Check Routes", systemImage: "network")
                     }
                     .disabled(isChecking || !clientConfig.isConfigured)
+                    Button(role: .destructive) {
+                        unpairClient()
+                    } label: {
+                        Label("Unpair", systemImage: "link.badge.minus")
+                    }
+                    .disabled(!clientConfig.isConfigured)
                     Spacer()
                     if !statusMessage.isEmpty {
                         Text(statusMessage)
@@ -867,6 +873,16 @@ struct ClientServerSettingsView: View {
             statusMessage = "Couldn't parse pairing JSON"
             statusIsError = true
         }
+    }
+
+    private func unpairClient() {
+        clientLocalBridgeURLsRaw = ""
+        clientCloudBridgeURL = ""
+        clientBridgeToken = ""
+        draft = nil
+        routeStatus = ClientBridgeRouteStatus()
+        statusMessage = "Unpaired"
+        statusIsError = false
     }
 }
 

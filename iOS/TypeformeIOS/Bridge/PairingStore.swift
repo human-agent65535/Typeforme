@@ -8,7 +8,6 @@ struct PairingStore {
     func load() -> PairingConfig {
         if let data = UserDefaults.standard.data(forKey: key),
            var config = try? JSONDecoder().decode(PairingConfig.self, from: data) {
-            let persistedToken = config.token.trimmingCharacters(in: .whitespacesAndNewlines)
             if let token = tokenStore.load(), !token.isEmpty {
                 config.token = token
             } else {
@@ -28,6 +27,11 @@ struct PairingStore {
             tokenStore.save(token)
         }
         persistConfigPayloadWithoutToken(config)
+    }
+
+    func delete() {
+        tokenStore.delete()
+        UserDefaults.standard.removeObject(forKey: key)
     }
 
     private func persistConfigPayloadWithoutToken(_ config: PairingConfig) {

@@ -15,11 +15,18 @@ struct PairingView: View {
     @State private var pairingParseTask: Task<Void, Never>?
 
     let onSave: (PairingConfig) -> Void
+    let onUnpair: () -> Void
 
-    init(config: PairingConfig, routeStatus: BridgeRouteStatus, onSave: @escaping (PairingConfig) -> Void) {
+    init(
+        config: PairingConfig,
+        routeStatus: BridgeRouteStatus,
+        onSave: @escaping (PairingConfig) -> Void,
+        onUnpair: @escaping () -> Void
+    ) {
         self._config = State(initialValue: config)
         self._routeStatus = State(initialValue: routeStatus)
         self.onSave = onSave
+        self.onUnpair = onUnpair
     }
 
     var body: some View {
@@ -135,6 +142,24 @@ struct PairingView: View {
                     .disabled(isPulling || !config.hasAnyBridgeURL || config.token.isEmpty)
                 }
 
+                if isPaired {
+                    Section("Repair") {
+                        Button(role: .destructive) {
+                            pairingParseTask?.cancel()
+                            pairingParseTask = nil
+                            config = .empty
+                            pairingJSON = ""
+                            parseError = nil
+                            parsedSuccessfully = false
+                            routeStatus = BridgeRouteStatus()
+                            onUnpair()
+                            dismiss()
+                        } label: {
+                            Label("Unpair This Device", systemImage: "link.badge.minus")
+                        }
+                    }
+                }
+
                 Section("Routing") {
                     PairingRouteRow(
                         title: "Local",
@@ -212,6 +237,10 @@ struct PairingView: View {
     private var serverEndpoint: String {
         let trimmed = config.publicBridgeURL.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? NSLocalizedString("Not configured", comment: "Pairing route missing endpoint") : trimmed
+    }
+
+    private var isPaired: Bool {
+        config.hasAnyBridgeURL || !config.token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private func endpointState(isConfigured: Bool, isChecked: Bool, isOK: Bool) -> String {

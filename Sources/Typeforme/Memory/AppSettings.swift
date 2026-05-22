@@ -478,35 +478,21 @@ enum AppSettings {
 
     @discardableResult
     static func ensureBridgeAuthToken() -> String {
-        if let token = BridgeAuthTokenStore.load() {
-            return token
-        }
-
-        // Migration exception for security hardening.
-        // Input: UserDefaults key `bridge.authToken`.
-        // Output: Keychain generic password service `com.example.typeforme.mac.bridge`,
-        // account `bridge.authToken`.
-        // Code location: AppSettings.ensureBridgeAuthToken() and BridgeAuthTokenStore.
-        // Removal date: 2026-09-01, after active installs have rotated or migrated tokens.
         if let token = ud.string(forKey: Keys.bridgeAuthToken)?
             .trimmingCharacters(in: .whitespacesAndNewlines),
            !token.isEmpty {
-            BridgeAuthTokenStore.save(token)
-            ud.removeObject(forKey: Keys.bridgeAuthToken)
             return token
         }
 
         let token = newBridgeAuthToken()
-        BridgeAuthTokenStore.save(token)
-        ud.removeObject(forKey: Keys.bridgeAuthToken)
+        ud.set(token, forKey: Keys.bridgeAuthToken)
         return token
     }
 
     @discardableResult
     static func rotateBridgeAuthToken() -> String {
         let token = newBridgeAuthToken()
-        BridgeAuthTokenStore.save(token)
-        ud.removeObject(forKey: Keys.bridgeAuthToken)
+        ud.set(token, forKey: Keys.bridgeAuthToken)
         return token
     }
 

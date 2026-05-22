@@ -132,6 +132,7 @@ final class AppState: ObservableObject {
     @Published var phase: AppPhase = .idle
     @Published var errorMessage: String?
     @Published var routeStatus = BridgeRouteStatus()
+    @Published private(set) var isRefreshingRoute = false
     @Published var keyboardStandbyEnabled = true
     @Published var hostAudioSessionLength: HostAudioSessionLength
     @Published var keyboardAutoCapitalizationEnabled: Bool
@@ -189,6 +190,7 @@ final class AppState: ObservableObject {
     private var recorderPreWarmTask: Task<Void, Never>?
     private var lifecycleObservers: [NSObjectProtocol] = []
     private var keyboardDarwinObservers: [KeyboardDarwinNotificationObserver] = []
+    private var routeRefreshInFlightCount = 0
     private var idleTimerHolders = 0
     private var lastGeneratedResultText: String?
     private var activeKeyboardTextEditContext: KeyboardTextEditContext?
@@ -262,6 +264,7 @@ final class AppState: ObservableObject {
     var canInteractWithHostDictation: Bool {
         guard isConfigured else { return false }
         if recorder.isRecording || keyboardAudioSession.isRecording || phase == .preparing { return true }
+        guard !isRefreshingRoute else { return false }
         guard routeStatus.activeURL != nil else { return false }
         return phase.allowsRecordingStart
     }
@@ -351,6 +354,22 @@ final class AppState: ObservableObject {
         }
     }
 
+    func unpair() {
+        stopModelStatusPolling()
+        let empty = PairingConfig.empty
+        config = empty
+        correctionMode = empty.correctionMode
+        selectedLanguageIDs = Set(empty.validatedLanguageIDs)
+        store.delete()
+        routeStatus = BridgeRouteStatus()
+        routeFetchedAt = nil
+        macSettings = nil
+        macSettingsFetchedAt = nil
+        errorMessage = nil
+        setPhase(.idle)
+        publishKeyboardDefaults(force: true)
+    }
+
     func persistLanguageSelection() {
         let ordered = ASRLanguageSelection.validatedIDs(
             Array(selectedLanguageIDs),
@@ -403,9 +422,21 @@ final class AppState: ObservableObject {
            routeStatusSatisfiesProbeMode(probeAllEndpoints) {
             return
         }
+        beginRouteRefreshIndicator()
+        defer { endRouteRefreshIndicator() }
         routeStatus = await routeResolver.resolve(config: config, probeAllEndpoints: probeAllEndpoints)
         persistActiveLocalRouteIfNeeded(routeStatus)
         routeFetchedAt = Date()
+    }
+
+    private func beginRouteRefreshIndicator() {
+        routeRefreshInFlightCount += 1
+        isRefreshingRoute = true
+    }
+
+    private func endRouteRefreshIndicator() {
+        routeRefreshInFlightCount = max(0, routeRefreshInFlightCount - 1)
+        isRefreshingRoute = routeRefreshInFlightCount > 0
     }
 
     private func routeStatusSatisfiesProbeMode(_ probeAllEndpoints: Bool) -> Bool {
@@ -547,6 +578,15 @@ final class AppState: ObservableObject {
         return BridgeClient(baseURL: baseURL, token: config.token)
     }
 
+    private func ensureRouteReadyForHostRecording() async -> Bool {
+        await refreshRoute(force: true, probeAllEndpoints: false)
+        guard routeStatus.activeURL != nil else {
+            setFailure("Mac Bridge is offline. Start the Mac app or Server, then refresh.")
+            return false
+        }
+        return true
+    }
+
     // MARK: - Recording (host UI)
 
     func toggleRecording() async {
@@ -576,16 +616,17 @@ final class AppState: ObservableObject {
         hostHoldReleasePending = false
         setPhase(.preparing)
         errorMessage = nil
-        guard await ensureMicrophonePermissionForUserAction() else {
-            if phase == .preparing {
-                setPhase(.idle)
-            }
+
+        guard await ensureRouteReadyForHostRecording() else {
+            hostHoldReleasePending = false
             return
         }
 
-        guard routeStatus.activeURL != nil else {
+        guard await ensureMicrophonePermissionForUserAction() else {
             hostHoldReleasePending = false
-            setFailure("Mac Bridge is offline. Start the Mac app or Server, then tap refresh.")
+            if phase == .preparing {
+                setPhase(.idle)
+            }
             return
         }
 
@@ -627,14 +668,14 @@ final class AppState: ObservableObject {
         guard phase.allowsRecordingStart else { return }
         setPhase(.preparing)
 
+        guard await ensureRouteReadyForHostRecording() else {
+            return
+        }
+
         guard await ensureMicrophonePermissionForUserAction() else {
             if phase == .preparing {
                 setPhase(.idle)
             }
-            return
-        }
-        guard routeStatus.activeURL != nil else {
-            setFailure("Mac Bridge is offline. Start the Mac app or Server, then tap refresh.")
             return
         }
 

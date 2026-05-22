@@ -30,7 +30,7 @@ struct ContentView: View {
                             } label: {
                                 Image(systemName: "arrow.clockwise")
                             }
-                            .disabled(state.isBusy)
+                            .disabled(state.isBusy || state.isRefreshingRoute)
                         }
                     }
                     ToolbarItem(placement: .topBarTrailing) {
@@ -62,13 +62,22 @@ struct ContentView: View {
                     }
                 }
                 .sheet(isPresented: $showingPairing) {
-                    PairingView(config: state.config, routeStatus: state.routeStatus) { newConfig in
-                        state.saveConfig(newConfig)
-                    }
+                    PairingView(
+                        config: state.config,
+                        routeStatus: state.routeStatus,
+                        onSave: { newConfig in
+                            state.saveConfig(newConfig)
+                        },
+                        onUnpair: {
+                            state.unpair()
+                        }
+                    )
                 }
                 .sheet(isPresented: $showingMacSettings) {
                     NavigationStack {
-                        MacSettingsView()
+                        MacSettingsView {
+                            showingPairing = true
+                        }
                             .environmentObject(state)
                     }
                 }
@@ -115,7 +124,9 @@ struct ContentView: View {
                         ResultCard()
                         RawTranscriptCard(expanded: $rawTranscriptExpanded)
                         if let error = state.errorMessage, !error.isEmpty {
-                            ErrorBanner(message: error) {
+                            ErrorBanner(message: error, canRepair: state.isConfigured) {
+                                showingPairing = true
+                            } onDismiss: {
                                 state.errorMessage = nil
                             }
                         }
@@ -162,9 +173,12 @@ private struct SetupStatusCard: View {
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.tertiary)
                 }
+                .frame(maxWidth: .infinity, minHeight: 44, alignment: .center)
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel(isExpanded ? "Hide setup steps" : "Show setup steps")
+            .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
 
             if isExpanded {
                 Divider()
@@ -387,9 +401,29 @@ private struct HeroRecordCard: View {
                     .accessibilityElement(children: .ignore)
                     .accessibilityLabel(title)
                     .accessibilityAddTraits(.isButton)
+                    .accessibilityHint(accessibilityHint)
             }
             .frame(height: orbDiameter + 40)
             .opacity(state.canInteractWithHostDictation ? 1 : 0.5)
+
+            if showsOfflineRefresh {
+                Button {
+                    Task { await state.refreshRoute(force: true) }
+                } label: {
+                    if state.isRefreshingRoute {
+                        HStack(spacing: 8) {
+                            ProgressView()
+                                .controlSize(.small)
+                            Text("Checking Bridge")
+                        }
+                    } else {
+                        Label("Refresh Bridge", systemImage: "arrow.clockwise")
+                    }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(state.isRefreshingRoute || state.isBusy)
+            }
 
             Picker("Input mode", selection: inputModeBinding) {
                 ForEach(VoiceInputMode.allCases) { mode in
@@ -431,7 +465,7 @@ private struct HeroRecordCard: View {
                 if isRecording {
                     VoicePrintBars(level: state.hostRecordingLevel, isActive: true, tint: .white)
                         .frame(width: orbDiameter * 0.62, height: orbDiameter * 0.34)
-                } else if state.phase == .preparing || state.phase == .sending || state.phase == .restyling {
+                } else if state.isRefreshingRoute || state.phase == .preparing || state.phase == .sending || state.phase == .restyling {
                     ProgressView()
                         .controlSize(.large)
                         .tint(.white)
@@ -494,9 +528,17 @@ private struct HeroRecordCard: View {
     /// status. Status goes to `detail`, errors go to `ErrorBanner`.
     private var title: String {
         if state.phase == .preparing {
-            return NSLocalizedString("Preparing…", comment: "Host recording preparing title")
+            return state.isRefreshingRoute
+                ? NSLocalizedString("Checking Bridge…", comment: "Host recording route check title")
+                : NSLocalizedString("Preparing…", comment: "Host recording preparing title")
         }
         if isRecording { return state.inputMode.recordingTitle }
+        if state.isRefreshingRoute {
+            return NSLocalizedString("Checking Bridge…", comment: "Host route refresh title")
+        }
+        if state.isConfigured && state.routeStatus.activeURL == nil {
+            return NSLocalizedString("Mac Bridge Offline", comment: "Host record button unavailable title")
+        }
         switch state.phase {
         case .sending:
             return NSLocalizedString("Sending…", comment: "Host dictation sending title")
@@ -510,11 +552,14 @@ private struct HeroRecordCard: View {
         if !state.isConfigured {
             return "Pair the Mac Bridge first."
         }
+        if state.isRefreshingRoute {
+            return "Checking whether your paired Mac is reachable."
+        }
         if isRecording {
             return state.inputMode == .tap ? "Tap again when you're done." : "Keep holding while you speak."
         }
         if state.routeStatus.activeURL == nil {
-            return "Mac Bridge is offline. Start it, then tap refresh."
+            return "Start the Mac app or Server, then refresh."
         }
         if let installing = state.activeModelInstallText,
            state.phase == .sending || state.phase == .restyling {
@@ -530,10 +575,27 @@ private struct HeroRecordCard: View {
     }
 
     private var iconName: String {
+        if state.isConfigured && state.routeStatus.activeURL == nil {
+            return "exclamationmark.triangle.fill"
+        }
         switch state.phase {
         case .success: return "checkmark"
         default: return "mic.fill"
         }
+    }
+
+    private var showsOfflineRefresh: Bool {
+        state.isConfigured
+            && state.routeStatus.activeURL == nil
+            && !isRecording
+            && state.phase != .sending
+            && state.phase != .restyling
+    }
+
+    private var accessibilityHint: String {
+        state.canInteractWithHostDictation
+            ? detail
+            : "Start the Mac app or Server, then refresh before recording."
     }
 
     /// Gradient only shifts color for states the user actively triggered. A
@@ -545,6 +607,8 @@ private struct HeroRecordCard: View {
 
     private var gradient: OrbGradient {
         if isPressed || isRecording { return .recording }
+        if state.isRefreshingRoute { return .sending }
+        if state.isConfigured && state.routeStatus.activeURL == nil { return .blocked }
         switch state.phase {
         case .sending, .restyling: return .sending
         case .success:             return .success
@@ -910,8 +974,12 @@ private struct RawTranscriptCard: View {
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.tertiary)
                 }
+                .frame(maxWidth: .infinity, minHeight: 44, alignment: .center)
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .accessibilityLabel(expanded ? "Hide raw transcript" : "Show raw transcript")
+            .accessibilityValue(expanded ? "Expanded" : "Collapsed")
 
             if expanded {
                 Group {
@@ -944,6 +1012,8 @@ private struct RawTranscriptCard: View {
 
 private struct ErrorBanner: View {
     let message: String
+    var canRepair = false
+    var onRepair: () -> Void = {}
     let onDismiss: () -> Void
 
     var body: some View {
@@ -954,6 +1024,19 @@ private struct ErrorBanner: View {
                 .font(.footnote)
                 .foregroundStyle(.primary)
             Spacer(minLength: 0)
+            if canRepair {
+                Button {
+                    onRepair()
+                } label: {
+                    Label("Repair", systemImage: "wrench.and.screwdriver")
+                        .labelStyle(.iconOnly)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.orange)
+                        .padding(6)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Repair pairing")
+            }
             Button {
                 onDismiss()
             } label: {
@@ -1087,6 +1170,7 @@ private struct ToastView: View {
 private struct MacSettingsView: View {
     @EnvironmentObject private var state: AppState
     @Environment(\.dismiss) private var dismiss
+    let onRepairPairing: () -> Void
     @State private var initialDraft: BridgeMacSettingsPayload?
     @State private var draft: BridgeMacSettingsPayload?
     @State private var isLoading = false
@@ -1199,8 +1283,26 @@ private struct MacSettingsView: View {
 
             if let errorMessage {
                 Section {
-                    Text(errorMessage)
-                        .foregroundStyle(.red)
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text(errorMessage)
+                            .foregroundStyle(.red)
+                        HStack(spacing: 10) {
+                            Button {
+                                repairPairing(clearExisting: false)
+                            } label: {
+                                Label("Repair Pairing", systemImage: "qrcode.viewfinder")
+                            }
+                            .buttonStyle(.bordered)
+
+                            Button(role: .destructive) {
+                                repairPairing(clearExisting: true)
+                            } label: {
+                                Label("Unpair", systemImage: "link.badge.minus")
+                            }
+                            .buttonStyle(.bordered)
+                        }
+                    }
+                    .padding(.vertical, 2)
                 }
             }
         }
@@ -1255,6 +1357,16 @@ private struct MacSettingsView: View {
             showingDiscardConfirmation = true
         } else {
             dismiss()
+        }
+    }
+
+    private func repairPairing(clearExisting: Bool) {
+        if clearExisting {
+            state.unpair()
+        }
+        dismiss()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+            onRepairPairing()
         }
     }
 
