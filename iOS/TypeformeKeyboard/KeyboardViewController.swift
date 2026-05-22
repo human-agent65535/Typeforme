@@ -201,6 +201,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private let voiceSpinner = UIActivityIndicatorView(style: .large)
     private let voiceTitleLabel = UILabel()
     private let inputModeSwitch = VoiceInputModeSwitch()
+    /// Driving-safe "send" button on the voice keyboard's left column,
+    /// above the Restyle trigger. Tapping inserts "\n" via the host text
+    /// document proxy — in chat apps (iMessage / WhatsApp / WeChat) that
+    /// triggers the send action. Bigger and more obvious than the host
+    /// app's own send button so it's easier to hit one-handed.
+    private let voiceSendButton = HitInsetButton(frame: .zero)
     private static let orbDiameter: CGFloat = 132
     private static let portraitKeyboardContentHeight: CGFloat = 270
     private static let compactKeyboardContentHeight: CGFloat = 256
@@ -213,6 +219,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private static let candidateGridMinimumColumnWidth: CGFloat = 58
     private static let candidateGridMaximumColumns = 5
     private static let candidateActionColumnGap: CGFloat = 10
+    private static let candidateExpandTouchOverflowY: CGFloat = 16
     private static let topCandidateSpacing: CGFloat = 10
     private static let topRowHeight: CGFloat = 36
     private static let utilityRowHeight: CGFloat = 48
@@ -352,7 +359,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     fileprivate func adjustedHitTest(point: CGPoint, defaultHit: UIView?) -> UIView? {
         guard keyboardFocus == .text else { return defaultHit }
 
-        if expandedFrame(of: textCandidateGridButton, dx: 0, dy: 0).contains(point) {
+        if expandedFrame(
+            of: textCandidateGridButton,
+            dx: Self.candidateActionColumnGap,
+            dy: Self.candidateExpandTouchOverflowY
+        ).contains(point) {
             if let hit = defaultHit,
                hit.isDescendant(of: textCandidateGridButton) {
                 return hit
@@ -677,7 +688,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         for entry in buttons {
             let frame = entry.frame
             let center = CGPoint(x: frame.midX + xCorrection, y: frame.midY)
-            let radiusX = max(frame.width * 0.5 + 6, 24)
+            let radiusX = max(frame.width * 0.5 + 10, 28)
             let radiusY = max(frame.height * 0.5 + 8, 24)
             let dx = (point.x - center.x) / radiusX
             let dy = (point.y - center.y) / radiusY
@@ -1074,6 +1085,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             topRowVoicePrint,
             voiceTitleLabel,
             inputModeSwitch,
+            voiceSendButton,
             utilityRow,
             pasteButton,
             spaceButton,
@@ -1403,7 +1415,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         inputModeSwitch.onSelection = { [weak self] rawValue in
             self?.selectInputMode(rawValue)
         }
+        configureVoiceSendButton()
         orbContainer.addSubview(correctionModePanel)
+        orbContainer.addSubview(voiceSendButton)
         orbContainer.addSubview(voiceButton)
         orbContainer.addSubview(inputModeSwitch)
 
@@ -1453,11 +1467,23 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             voiceSpinner.centerXAnchor.constraint(equalTo: voiceButton.centerXAnchor),
             voiceSpinner.centerYAnchor.constraint(equalTo: voiceButton.centerYAnchor),
 
+            // Left column: voiceSendButton on top, correctionModePanel
+            // below. 8pt gap between them; whole column centered on the
+            // orb's vertical mid-line so the two buttons read as a paired
+            // unit balanced against the Hold/Tap switch on the right.
+            // 104pt wide fits the longest labels ("Structure+", "Return")
+            // without text wrap, with adjustsFontSizeToFitWidth as fallback.
+            voiceSendButton.leadingAnchor.constraint(equalTo: orbContainer.leadingAnchor, constant: 10),
+            voiceSendButton.trailingAnchor.constraint(lessThanOrEqualTo: voiceButton.leadingAnchor, constant: -8),
+            voiceSendButton.widthAnchor.constraint(equalToConstant: 104),
+            voiceSendButton.heightAnchor.constraint(equalToConstant: 42),
+            voiceSendButton.bottomAnchor.constraint(equalTo: voiceButton.centerYAnchor, constant: -5),
+
             correctionModePanel.leadingAnchor.constraint(equalTo: orbContainer.leadingAnchor, constant: 10),
             correctionModePanel.trailingAnchor.constraint(lessThanOrEqualTo: voiceButton.leadingAnchor, constant: -8),
-            correctionModePanel.centerYAnchor.constraint(equalTo: voiceButton.centerYAnchor),
-            correctionModePanel.widthAnchor.constraint(equalToConstant: 92),
-            correctionModePanel.heightAnchor.constraint(equalToConstant: 44),
+            correctionModePanel.topAnchor.constraint(equalTo: voiceButton.centerYAnchor, constant: 5),
+            correctionModePanel.widthAnchor.constraint(equalToConstant: 104),
+            correctionModePanel.heightAnchor.constraint(equalToConstant: 42),
 
             inputModeSwitch.leadingAnchor.constraint(greaterThanOrEqualTo: voiceButton.trailingAnchor, constant: 8),
             inputModeSwitch.centerYAnchor.constraint(equalTo: voiceButton.centerYAnchor),
@@ -1476,6 +1502,65 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         inputModeSwitch.accessibilityLabel = inputMode.idleTitle
     }
 
+    private func configureVoiceSendButton() {
+        voiceSendButton.translatesAutoresizingMaskIntoConstraints = false
+        voiceSendButton.hitInsets = UIEdgeInsets(top: -4, left: -4, bottom: -4, right: -4)
+        voiceSendButton.accessibilityLabel = NSLocalizedString("发送听写文本", comment: "Accessibility label for voice-mode send button")
+        voiceSendButton.addTarget(self, action: #selector(voiceSendTapped), for: .touchUpInside)
+        attachPressAnimation(voiceSendButton)
+        applyVoiceSendButtonConfiguration()
+    }
+
+    /// `\n` only triggers "send" when the host's returnKeyType is one of
+    /// .send/.go/.search/etc. In Notes / Mail body / freeform compose
+    /// fields, the same character is a literal newline. So the button label
+    /// follows the host's reported intent — e.g., "发送" in iMessage,
+    /// "换行" in Notes.
+    /// Visual: filled blue with paperplane to stand apart from the gray
+    /// frosted Restyle picker directly below it. The two stacked buttons
+    /// would otherwise be indistinguishable.
+    private func applyVoiceSendButtonConfiguration() {
+        var configuration = UIButton.Configuration.filled()
+        configuration.title = voiceSendButtonTitle
+        configuration.image = UIImage(systemName: "paperplane.fill")
+        configuration.imagePlacement = .leading
+        configuration.imagePadding = 5
+        configuration.cornerStyle = .capsule
+        configuration.baseBackgroundColor = .systemBlue
+        configuration.baseForegroundColor = .white
+        configuration.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: 8, bottom: 6, trailing: 8)
+        configuration.preferredSymbolConfigurationForImage = UIImage.SymbolConfiguration(pointSize: 12, weight: .semibold)
+        let font: UIFont = voiceSendButtonTitle.count > 4
+            ? .systemFont(ofSize: 13, weight: .semibold)
+            : .systemFont(ofSize: 15, weight: .semibold)
+        configuration.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
+            var outgoing = incoming
+            outgoing.font = font
+            return outgoing
+        }
+        voiceSendButton.configuration = configuration
+        voiceSendButton.titleLabel?.numberOfLines = 1
+        voiceSendButton.titleLabel?.lineBreakMode = .byTruncatingTail
+        voiceSendButton.titleLabel?.adjustsFontSizeToFitWidth = true
+        voiceSendButton.titleLabel?.minimumScaleFactor = 0.7
+    }
+
+    private var voiceSendButtonTitle: String {
+        let contextual = returnKeyTitle
+        if !contextual.isEmpty { return contextual }
+        return textInputLanguage == .chinese
+            ? NSLocalizedString("换行", comment: "Voice send button default title (Chinese)")
+            : NSLocalizedString("return", comment: "Voice send button default title (English)")
+    }
+
+    @objc private func voiceSendTapped() {
+        // Insert a newline — host decides if that's "send" (chat apps) or
+        // an actual newline (notes / mail / compose). Same path the text
+        // Return key uses.
+        textDocumentProxy.insertText("\n")
+        lightHaptic()
+    }
+
     private func configureCorrectionModePanel() {
         correctionModePanel.translatesAutoresizingMaskIntoConstraints = false
         correctionModeButtons.removeAll()
@@ -1490,7 +1575,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             correctionModeTrigger.leadingAnchor.constraint(equalTo: correctionModePanel.leadingAnchor),
             correctionModeTrigger.trailingAnchor.constraint(equalTo: correctionModePanel.trailingAnchor),
             correctionModeTrigger.centerYAnchor.constraint(equalTo: correctionModePanel.centerYAnchor),
-            correctionModeTrigger.heightAnchor.constraint(equalToConstant: 44),
+            correctionModeTrigger.heightAnchor.constraint(equalToConstant: 40),
         ])
 
         // Popover lives at the keyboard root so it floats above orbContainer
@@ -1756,6 +1841,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         candidateGridStack.spacing = 0
         candidateGridStack.alignment = .leading
         candidateGridStack.distribution = .fill
+        candidateGridStack.isUserInteractionEnabled = false
         candidateGridStack.translatesAutoresizingMaskIntoConstraints = false
         candidateGridScrollView.addSubview(candidateGridStack)
         NSLayoutConstraint.activate([
@@ -2103,6 +2189,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func refreshReturnKeyTitle() {
+        applyVoiceSendButtonConfiguration()
         guard let textReturnKeyButton else { return }
         let next = returnKeyTitle
         let nextImage = returnKeyImageName
@@ -3826,26 +3913,25 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     /// Builds the trigger button's compact "current preset + chevron"
-    /// configuration. Mirrors `correctionModeButtonConfiguration` but tuned
-    /// for the always-visible chip so it fits the 92×44 panel slot.
+    /// configuration. Shares the `capsuleButtonConfiguration` factory used
+    /// by the bottom utility row so the Restyle chip's frosted-glass blur,
+    /// stroke, capsule shape, and contrast match paste / space / delete /
+    /// return exactly. The chevron sits on the TRAILING side (matches
+    /// iOS picker affordance); the dynamic title is the current mode.
     private func applyCorrectionTriggerConfiguration(isEnabled: Bool) {
-        var configuration = UIButton.Configuration.tinted()
-        configuration.title = correctionMode.title
-        configuration.image = UIImage(systemName: "chevron.up.chevron.down")
+        var configuration = capsuleButtonConfiguration(
+            title: correctionMode.title,
+            image: "chevron.up.chevron.down",
+            style: .utility
+        )
         configuration.imagePlacement = .trailing
         configuration.imagePadding = 4
-        configuration.cornerStyle = .capsule
-        configuration.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: 10, bottom: 6, trailing: 10)
-        configuration.baseForegroundColor = .label
-        configuration.baseBackgroundColor = UIColor.systemBackground
-            .withAlphaComponent(isKeyboardDark ? 0.30 : 0.78)
-        configuration.preferredSymbolConfigurationForImage = UIImage.SymbolConfiguration(pointSize: 9, weight: .semibold)
-        configuration.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
-            var outgoing = incoming
-            outgoing.font = .systemFont(ofSize: 12, weight: .semibold)
-            return outgoing
-        }
+        configuration.preferredSymbolConfigurationForImage = UIImage.SymbolConfiguration(pointSize: 10, weight: .bold)
         correctionModeTrigger.configuration = configuration
+        correctionModeTrigger.titleLabel?.numberOfLines = 1
+        correctionModeTrigger.titleLabel?.lineBreakMode = .byTruncatingTail
+        correctionModeTrigger.titleLabel?.adjustsFontSizeToFitWidth = true
+        correctionModeTrigger.titleLabel?.minimumScaleFactor = 0.7
         correctionModeTrigger.isEnabled = isEnabled
         correctionModeTrigger.alpha = isEnabled ? 1 : 0.45
         let modeLabelFormat = NSLocalizedString("Correction mode: %@", comment: "Accessibility label for the mode trigger")
@@ -4374,7 +4460,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         else { return }
         let now = CACurrentMediaTime()
         guard now >= keyboardFocusSwipeHandledUntil else { return }
-        let target: KeyboardFocus = horizontalIntent < 0 ? .text : .voice
+        let target: KeyboardFocus = keyboardFocus == .text ? .voice : .text
         guard target != keyboardFocus else { return }
         didHandleKeyboardFocusPan = true
         keyboardFocusSwipeHandledUntil = now + 0.45
@@ -5020,7 +5106,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private func candidateActionColumnFrame() -> CGRect {
         guard !textCandidateGridButton.isHidden else { return .null }
         let buttonFrame = textCandidateGridButton.convert(textCandidateGridButton.bounds, to: view)
-        var frame = buttonFrame.insetBy(dx: -Self.candidateActionColumnGap, dy: 0)
+        var frame = buttonFrame.insetBy(dx: -Self.candidateActionColumnGap, dy: -Self.candidateExpandTouchOverflowY)
         frame.origin.x = max(buttonFrame.minX - Self.candidateActionColumnGap, view.bounds.minX)
         frame.size.width = max(buttonFrame.width + Self.candidateActionColumnGap, view.bounds.maxX - frame.minX)
         if isCandidateGridExpanded, !candidateGridScrollView.isHidden {
