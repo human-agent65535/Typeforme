@@ -7045,7 +7045,7 @@ final class KeyboardTouchSurfaceView: UIView {
         didSet { touchProxy.hitController = hitController }
     }
 
-    private let touchProxy = KeyboardTouchProxyView()
+    private let touchProxy = KeyboardTouchProxyControl()
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -7062,6 +7062,7 @@ final class KeyboardTouchSurfaceView: UIView {
         touchProxy.backgroundColor = .clear
         touchProxy.isOpaque = false
         touchProxy.isMultipleTouchEnabled = true
+        touchProxy.configureActivationFallback()
         addSubview(touchProxy)
     }
 
@@ -7085,7 +7086,7 @@ final class KeyboardTouchSurfaceView: UIView {
     }
 }
 
-final class KeyboardTouchProxyView: UIView {
+final class KeyboardTouchProxyControl: UIControl {
     weak var hitController: KeyboardViewController?
 
     private struct ActiveKeyboardTouch {
@@ -7094,25 +7095,41 @@ final class KeyboardTouchProxyView: UIView {
     }
 
     private var activeTouches: [UITouch: ActiveKeyboardTouch] = [:]
+    private var pendingActivationTarget: KeyboardTouchTarget?
+    private var pendingActivationPoint: CGPoint?
+    private var lastTouchCommitTime: CFTimeInterval = 0
 
     override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
         guard isUserInteractionEnabled, !isHidden, alpha > 0.01 else { return false }
         return bounds.contains(point)
     }
 
+    func configureActivationFallback() {
+        removeTarget(self, action: #selector(activatePendingTarget), for: .primaryActionTriggered)
+        addTarget(self, action: #selector(activatePendingTarget), for: .primaryActionTriggered)
+    }
+
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
         guard self.point(inside: point, with: event),
               let hitController,
               let rootView = hitController.view
-        else { return nil }
+        else {
+            pendingActivationTarget = nil
+            pendingActivationPoint = nil
+            return nil
+        }
 
         let rootPoint = convert(point, to: rootView)
         let target = hitController.keyboardOverlayTouchTarget(at: rootPoint)
         hitController.logKeyboardTouchEvent("hitTest", target: target, point: rootPoint)
         switch target {
         case .textKey, .focusSurface:
+            pendingActivationTarget = target
+            pendingActivationPoint = rootPoint
             return self
         case .candidateAction, .none:
+            pendingActivationTarget = nil
+            pendingActivationPoint = nil
             return nil
         }
     }
@@ -7130,6 +7147,8 @@ final class KeyboardTouchProxyView: UIView {
             let rootPoint = touch.location(in: rootView)
             guard let target = hitController.keyboardOverlayTouchTarget(at: rootPoint) else { continue }
             releaseExistingTouchIfNeeded(for: target)
+            pendingActivationTarget = nil
+            pendingActivationPoint = nil
             activeTouches[touch] = ActiveKeyboardTouch(target: target, startPoint: rootPoint)
             hitController.beginKeyboardTouchTarget(target, point: rootPoint)
             handledAnyTouch = true
@@ -7185,6 +7204,7 @@ final class KeyboardTouchProxyView: UIView {
             guard let active = activeTouches[touch] else { continue }
             hitController.commitKeyboardTouchTarget(active.target, point: touch.location(in: hitController.view))
             activeTouches.removeValue(forKey: touch)
+            lastTouchCommitTime = CACurrentMediaTime()
             handledAnyTouch = true
         }
         if !handledAnyTouch {
@@ -7209,6 +7229,25 @@ final class KeyboardTouchProxyView: UIView {
         if !handledAnyTouch {
             super.touchesCancelled(touches, with: event)
         }
+    }
+
+    override func accessibilityActivate() -> Bool {
+        activatePendingTarget()
+        return pendingActivationTarget == nil
+    }
+
+    @objc private func activatePendingTarget() {
+        guard activeTouches.isEmpty,
+              CACurrentMediaTime() - lastTouchCommitTime > 0.18,
+              let hitController,
+              let target = pendingActivationTarget,
+              let point = pendingActivationPoint
+        else { return }
+
+        hitController.beginKeyboardTouchTarget(target, point: point)
+        hitController.commitKeyboardTouchTarget(target, point: point)
+        pendingActivationTarget = nil
+        pendingActivationPoint = nil
     }
 
     private func releaseExistingTouchIfNeeded(for target: KeyboardTouchTarget) {
