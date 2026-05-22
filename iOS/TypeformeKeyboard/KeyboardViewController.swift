@@ -211,7 +211,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private static let candidateToolbarHeight: CGFloat = 44
     private static let candidateGridRowHeight: CGFloat = 54
     private static let candidateGridMinimumColumnWidth: CGFloat = 58
-    private static let candidateGridMaximumColumns = 6
+    private static let candidateGridMaximumColumns = 5
     private static let candidateActionColumnGap: CGFloat = 10
     private static let topCandidateSpacing: CGFloat = 10
     private static let topRowHeight: CGFloat = 36
@@ -4313,7 +4313,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
-        isKeyboardFocusPanRecognizer(gestureRecognizer) && isKeyboardFocusPanRecognizer(otherGestureRecognizer)
+        if (gestureRecognizer === candidateGridTapRecognizer && otherGestureRecognizer === candidateGridScrollView.panGestureRecognizer)
+            || (otherGestureRecognizer === candidateGridTapRecognizer && gestureRecognizer === candidateGridScrollView.panGestureRecognizer)
+            || (gestureRecognizer === candidateScrollTapRecognizer && otherGestureRecognizer === candidateScrollView.panGestureRecognizer)
+            || (otherGestureRecognizer === candidateScrollTapRecognizer && gestureRecognizer === candidateScrollView.panGestureRecognizer) {
+            return true
+        }
+        return isKeyboardFocusPanRecognizer(gestureRecognizer) && isKeyboardFocusPanRecognizer(otherGestureRecognizer)
     }
 
     @objc private func handleKeyboardFocusPan(_ recognizer: UIPanGestureRecognizer) {
@@ -5162,7 +5168,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         configuration.background.cornerRadius = 0
         configuration.baseForegroundColor = .label
         configuration.background.backgroundColor = .clear
-        configuration.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12)
+        configuration.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: 6, bottom: 6, trailing: 6)
         configuration.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
             var outgoing = incoming
             outgoing.font = .systemFont(ofSize: 22, weight: .regular)
@@ -5173,6 +5179,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         button.layer.borderColor = UIColor.clear.cgColor
         button.titleLabel?.adjustsFontSizeToFitWidth = true
         button.titleLabel?.minimumScaleFactor = 0.72
+        button.titleLabel?.numberOfLines = 1
+        button.titleLabel?.lineBreakMode = .byClipping
         return button
     }
 
