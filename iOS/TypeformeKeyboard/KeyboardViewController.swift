@@ -106,6 +106,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private var lastMissingAudioLevelLogAt: TimeInterval = 0
     private var bridgeStatus: KeyboardBridgeStatus?
     private var lastBridgeContactAt: TimeInterval = 0
+    /// Set whenever the host posts a Darwin signal that proves the bridge is
+    /// alive (sessionStarted, dictationStarted, dictationStopped). Cleared by
+    /// `sessionEnded` or by a confirmed `.start` failure. This is a durable
+    /// liveness signal independent of `lastBridgeContactAt`'s 3s freshness
+    /// window, so a mic press right after a finished dictation skips the
+    /// 0.9s probe even if the keyboard hasn't received a fresh status frame.
+    private var lastDarwinAwakeAt: TimeInterval = 0
     private var openingHostUntil: TimeInterval = 0
     private var appliedKeyboardInterfaceStyle: UIUserInterfaceStyle?
     private var lastCorrectionModeButtonSignature = ""
@@ -142,7 +149,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private var deferredStartupWorkItem: DispatchWorkItem?
     private var keyboardDarwinObservers: [KeyboardDarwinNotificationObserver] = []
     private let minimumHoldRecordingDuration: TimeInterval = 0.55
-    private let minimumIntentReleaseDuration: TimeInterval = 0.28
+    /// Hold-mode releases shorter than this are treated as accidental brushes
+    /// and cancel the in-flight start. iOS system mic accepts very short taps,
+    /// so this should be just long enough to reject finger-brushes (~100ms)
+    /// rather than reject deliberate quick taps.
+    private let minimumIntentReleaseDuration: TimeInterval = 0.10
     private let selectionSnapshotTTL: TimeInterval = 1.25
     private let restyleSuggestionTTL: TimeInterval = 45
     private static let dictationContextLimit = 600
@@ -215,11 +226,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private static let stackSpacing: CGFloat = 4
     private static let candidateExpandButtonWidth: CGFloat = 62
     private static let candidateToolbarHeight: CGFloat = 44
-    private static let candidateGridRowHeight: CGFloat = 54
-    private static let candidateGridMinimumColumnWidth: CGFloat = 58
-    private static let candidateGridMaximumColumns = 5
-    private static let candidateActionColumnGap: CGFloat = 10
-    private static let candidateExpandTouchOverflowY: CGFloat = 16
+    private static let candidateGridRowHeight: CGFloat = 58
+    private static let candidateGridMinimumColumnWidth: CGFloat = 60
+    private static let candidateGridMaximumColumns = 6
+    private static let candidateActionColumnGap: CGFloat = 6
+    private static let candidateExpandTouchOverflowY: CGFloat = 24
     private static let topCandidateSpacing: CGFloat = 10
     private static let topRowHeight: CGFloat = 36
     private static let utilityRowHeight: CGFloat = 48
@@ -256,6 +267,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private let textGlobeButton = UIButton(type: .system)
     private let textLanguageButton = UIButton(type: .system)
     private let textLanguageLabel = UILabel()
+    private let candidateActionOverlay = UIControl()
     private let candidateScrollView = UIScrollView()
     private let candidateScrollMask = CAShapeLayer()
     private let candidateStack = UIStackView()
@@ -359,16 +371,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     fileprivate func adjustedHitTest(point: CGPoint, defaultHit: UIView?) -> UIView? {
         guard keyboardFocus == .text else { return defaultHit }
 
-        if expandedFrame(
-            of: textCandidateGridButton,
-            dx: Self.candidateActionColumnGap,
-            dy: Self.candidateExpandTouchOverflowY
-        ).contains(point) {
-            if let hit = defaultHit,
-               hit.isDescendant(of: textCandidateGridButton) {
-                return hit
-            }
-            return textCandidateGridButton
+        if let hit = defaultHit,
+           hit.isDescendant(of: candidateActionOverlay) {
+            return hit
         }
         if expandedFrame(of: candidateScrollView, dx: 0, dy: 4).contains(point) {
             if let hit = defaultHit,
@@ -1100,6 +1105,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             textKeyboardSwitchButton,
             textHostSettingsButton,
             textCandidateGridButton,
+            candidateActionOverlay,
             textModeButton,
             textAlternateSymbolButton,
             textGlobeButton,
@@ -1161,6 +1167,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 DispatchQueue.main.async {
                     guard let self else { return }
                     self.cancelHostWakeResetTask()
+                    self.lastDarwinAwakeAt = Date().timeIntervalSince1970
                     if self.currentBridgeStatus?.state != .recording,
                        self.currentBridgeStatus?.state != .sending {
                         self.applyBridgeStatus(KeyboardBridgeStatus(state: .standby, message: "Ready"))
@@ -1181,6 +1188,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                     self.tapRecordingActive = false
                     self.bridgeStatus = KeyboardBridgeStatus(state: .idle, message: self.inputMode.idleTitle)
                     self.lastBridgeContactAt = 0
+                    self.lastDarwinAwakeAt = 0
                     self.updateUI()
                 }
             },
@@ -1190,6 +1198,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                     let status = KeyboardBridgeStatus(state: .recording, message: "Recording")
                     self.cancelScheduledHostOpen()
                     self.cancelHostWakeResetTask()
+                    self.lastDarwinAwakeAt = Date().timeIntervalSince1970
                     self.applyBridgeStatus(status)
                     self.finishStartRequestIfNeeded(status: status)
                 }
@@ -1198,6 +1207,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 DispatchQueue.main.async {
                     guard let self else { return }
                     let wasStarting = self.isStartRequestInFlight
+                    self.lastDarwinAwakeAt = Date().timeIntervalSince1970
                     self.finishStoppedNotification()
                     if wasStarting {
                         self.openHostForDictation()
@@ -1679,6 +1689,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             ring.path = UIBezierPath(ovalIn: CGRect(origin: .zero, size: CGSize(width: diameter, height: diameter))).cgPath
         }
         updateCandidateScrollViewportMask()
+        updateCandidateActionOverlayFrame()
         CATransaction.commit()
     }
 
@@ -1793,14 +1804,27 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
         configureCandidateExpandButton(isExpanded: false)
         textCandidateGridButton.widthAnchor.constraint(equalToConstant: Self.candidateExpandButtonWidth).isActive = true
-        // Keep the chevron's hit target exactly equal to the visible toolbar
-        // slot. Extra hitInsets made the press feedback and actual trigger
-        // area diverge because parent stack views still clip outside hits.
-        textCandidateGridButton.hitInsets = .zero
+        // Keep UIControl's "inside" test in sync with adjustedHitTest.
+        // Otherwise touches below the visible chevron get touchDown feedback
+        // but finish as touchUpOutside and never toggle the grid.
+        textCandidateGridButton.hitInsets = UIEdgeInsets(
+            top: -Self.candidateExpandTouchOverflowY,
+            left: -Self.candidateActionColumnGap,
+            bottom: -Self.candidateExpandTouchOverflowY,
+            right: -Self.candidateActionColumnGap
+        )
         textCandidateGridButton.accessibilityLabel = NSLocalizedString("Show more candidates", comment: "Accessibility label for expanding candidate list")
         textCandidateGridButton.isHidden = true
         textCandidateGridButton.addTarget(self, action: #selector(toggleCandidateGrid), for: .touchUpInside)
         attachPressAnimation(textCandidateGridButton)
+
+        candidateActionOverlay.backgroundColor = .clear
+        candidateActionOverlay.isHidden = true
+        candidateActionOverlay.accessibilityLabel = NSLocalizedString("Show more candidates", comment: "Accessibility label for expanding candidate list")
+        candidateActionOverlay.addTarget(self, action: #selector(candidateActionOverlayPressDown), for: [.touchDown, .touchDragEnter])
+        candidateActionOverlay.addTarget(self, action: #selector(candidateActionOverlayPressUp), for: .touchUpInside)
+        candidateActionOverlay.addTarget(self, action: #selector(candidateActionOverlayPressCancel), for: [.touchUpOutside, .touchCancel, .touchDragExit])
+        view.addSubview(candidateActionOverlay)
 
         candidateScrollView.showsHorizontalScrollIndicator = false
         candidateScrollView.alwaysBounceHorizontal = true
@@ -2889,7 +2913,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let now = CACurrentMediaTime()
         guard now - lastKeyboardFeedbackTime > 0.035 else { return }
         lastKeyboardFeedbackTime = now
-        keyboardHapticGenerator.impactOccurred(intensity: 0.65)
+        keyboardHapticGenerator.impactOccurred(intensity: 0.74)
         keyboardHapticGenerator.prepare()
     }
 
@@ -3366,6 +3390,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         isStartRequestInFlight = false
         shouldStopWhenStartCompletes = false
         shouldCancelWhenStartCompletes = false
+        // Bridge is unreachable — drop the durable awake signal so the next
+        // press takes the probe path instead of optimistically fast-pathing.
+        lastDarwinAwakeAt = 0
         if inputMode == .tap {
             tapRecordingActive = false
         }
@@ -4403,7 +4430,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         // Block scrollable candidate areas where horizontal pan owns the gesture.
         if touchedView.isDescendant(of: candidateScrollView)
             || touchedView.isDescendant(of: candidateGridScrollView)
-            || touchedView.isDescendant(of: textCandidateGridButton) {
+            || touchedView.isDescendant(of: textCandidateGridButton)
+            || touchedView.isDescendant(of: candidateActionOverlay) {
             return false
         }
         // Accept everywhere else, including over buttons. Empty gaps between
@@ -4460,12 +4488,26 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         else { return }
         let now = CACurrentMediaTime()
         guard now >= keyboardFocusSwipeHandledUntil else { return }
-        let target: KeyboardFocus = keyboardFocus == .text ? .voice : .text
-        guard target != keyboardFocus else { return }
+        guard let target = keyboardFocusTarget(forHorizontalIntent: horizontalIntent) else { return }
         didHandleKeyboardFocusPan = true
         keyboardFocusSwipeHandledUntil = now + 0.45
         suppressTextKeyCommitUntil = now + 0.35
         setKeyboardFocus(target, animated: true)
+    }
+
+    private func keyboardFocusTarget(forHorizontalIntent horizontalIntent: CGFloat) -> KeyboardFocus? {
+        guard abs(horizontalIntent) > .ulpOfOne else { return nil }
+
+        // Fixed spatial model: voice is always the left page, text/traditional
+        // keyboard is always the right page. A left swipe moves rightward in
+        // the model (voice -> text); a right swipe moves back (text -> voice).
+        if horizontalIntent < 0, keyboardFocus == .voice {
+            return .text
+        }
+        if horizontalIntent > 0, keyboardFocus == .text {
+            return .voice
+        }
+        return nil
     }
 
     private func setKeyboardFocus(_ focus: KeyboardFocus, animated: Bool) {
@@ -4499,8 +4541,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
         // Snapshot the current state, apply the change, then slide the
         // snapshot off one edge while sliding the new content in from the
-        // other. Direction follows the swipe convention: text enters from
-        // the right (user swiped left), voice enters from the left.
+        // other. This follows the fixed spatial model above: voice lives on
+        // the left page, text/traditional keyboard lives on the right page.
         let snapshot = rootStack.snapshotView(afterScreenUpdates: false)
         if let snapshot {
             snapshot.frame = rootStack.frame
@@ -4549,6 +4591,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         voiceTitleLabel.text = isTextFocus
             ? NSLocalizedString("中文键盘", comment: "Title for Chinese keyboard focus")
             : voiceTitle
+        updateCandidateActionOverlayFrame()
     }
 
     @objc private func toggleSymbolKeyboard() {
@@ -4621,6 +4664,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         textCandidateGridButton.accessibilityLabel = isCandidateGridExpanded
             ? NSLocalizedString("Hide candidates", comment: "Accessibility label for collapsing candidate list")
             : NSLocalizedString("Show more candidates", comment: "Accessibility label for expanding candidate list")
+        candidateActionOverlay.accessibilityLabel = textCandidateGridButton.accessibilityLabel
         configureTextLanguageButton()
         refreshReturnKeyTitle()
     }
@@ -4986,11 +5030,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             ? NSLocalizedString("Hide candidates", comment: "Accessibility label for collapsing candidate list")
             : NSLocalizedString("Show more candidates", comment: "Accessibility label for expanding candidate list")
 
-        // Chip companions: when the 5 preset chips render, three icons stay
-        // alongside — wand (free-form voice command on the same text) and
-        // mic (record the next sentence). Paintbrush is redundant with the
-        // chips themselves; paste / waveform / gear aren't central to the
-        // chip flow. They return after the chip TTL or when the user types.
+        // The icon row is an idle/restyle affordance. Once Rime has
+        // candidates, it collapses so the candidate strip owns the width.
         let showAllIdleIcons = !isComposing && !hasCandidates && !showingRestyleChips
         let showChipCompanions = !isComposing && !hasCandidates && showingRestyleChips
         textWandButton.isHidden = !(showAllIdleIcons || showChipCompanions)
@@ -4998,11 +5039,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         textStylePickerButton.isHidden = !showAllIdleIcons
         textPasteButton.isHidden = !showAllIdleIcons
         textKeyboardSwitchButton.isHidden = !showAllIdleIcons
-        // Hide the "Open Typeforme" gear when the keyboard is already running
-        // inside Typeforme itself — tapping it would launch a URL into the
-        // current app, which on real devices flips the keyboard into the
-        // "Opening Typeforme…" spinner pointlessly.
         textHostSettingsButton.isHidden = !showAllIdleIcons || isRunningInsideHostApp
+        updateCandidateActionOverlayFrame()
     }
 
     /// Mirrors `renderRecentRestyleActions`'s guard conditions so the toolbar
@@ -5081,6 +5119,21 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         lightHaptic()
     }
 
+    @objc private func candidateActionOverlayPressDown() {
+        guard !textCandidateGridButton.isHidden else { return }
+        controlPressDown(textCandidateGridButton)
+    }
+
+    @objc private func candidateActionOverlayPressUp() {
+        guard !textCandidateGridButton.isHidden else { return }
+        resetPressedControlState(textCandidateGridButton, animated: true)
+        toggleCandidateGrid()
+    }
+
+    @objc private func candidateActionOverlayPressCancel() {
+        resetPressedControlState(textCandidateGridButton, animated: true)
+    }
+
     @objc private func handleCandidateScrollTap(_ recognizer: UITapGestureRecognizer) {
         guard recognizer.state == .ended else { return }
         let point = recognizer.location(in: view)
@@ -5106,15 +5159,36 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private func candidateActionColumnFrame() -> CGRect {
         guard !textCandidateGridButton.isHidden else { return .null }
         let buttonFrame = textCandidateGridButton.convert(textCandidateGridButton.bounds, to: view)
+        let toolbarFrame = textToolbar.convert(textToolbar.bounds, to: view)
         var frame = buttonFrame.insetBy(dx: -Self.candidateActionColumnGap, dy: -Self.candidateExpandTouchOverflowY)
         frame.origin.x = max(buttonFrame.minX - Self.candidateActionColumnGap, view.bounds.minX)
         frame.size.width = max(buttonFrame.width + Self.candidateActionColumnGap, view.bounds.maxX - frame.minX)
+        frame.origin.y = min(frame.minY, toolbarFrame.minY)
+        if !isCandidateGridExpanded, !keyRowsStack.isHidden {
+            let keyRowsFrame = keyRowsStack.convert(keyRowsStack.bounds, to: view)
+            let bottom = min(max(frame.maxY, toolbarFrame.maxY + 20), keyRowsFrame.minY - 2)
+            frame.size.height = max(0, bottom - frame.minY)
+        }
         if isCandidateGridExpanded, !candidateGridScrollView.isHidden {
             let gridFrame = candidateGridScrollView.convert(candidateGridScrollView.bounds, to: view)
             frame.origin.y = min(frame.minY, gridFrame.minY)
             frame.size.height = max(frame.height, gridFrame.maxY - frame.minY)
         }
         return frame
+    }
+
+    private func updateCandidateActionOverlayFrame() {
+        let frame = candidateActionColumnFrame()
+        let shouldShow = keyboardFocus == .text
+            && !textCandidateGridButton.isHidden
+            && !frame.isNull
+            && frame.width > 0
+            && frame.height > 0
+        candidateActionOverlay.isHidden = !shouldShow
+        guard shouldShow else { return }
+        candidateActionOverlay.frame = frame
+        view.bringSubviewToFront(candidateActionOverlay)
+        view.bringSubviewToFront(keyPreviewBubble)
     }
 
     private func setCandidateGridExpanded(_ expanded: Bool, state: RimeKeyboardState? = nil) {
@@ -5132,9 +5206,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         textCandidateGridButton.accessibilityLabel = next
             ? NSLocalizedString("Hide candidates", comment: "Accessibility label for collapsing candidate list")
             : NSLocalizedString("Show more candidates", comment: "Accessibility label for expanding candidate list")
+        candidateActionOverlay.accessibilityLabel = textCandidateGridButton.accessibilityLabel
         if next, let state {
             renderCandidateGrid(state)
         }
+        updateCandidateActionOverlayFrame()
     }
 
     private func renderCandidateGrid(_ state: RimeKeyboardState) {
@@ -5144,19 +5220,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
         guard isCandidateGridExpanded, state.isComposing, !state.candidates.isEmpty else { return }
 
-        // Skip exactly the candidates that fit in the top row. The expanded
-        // grid must use the same count as the top row or selection indexes
-        // drift: a candidate can be hidden by the chevron while also skipped
-        // from the grid.
-        let topCount = candidatesVisibleInTopScroll(state)
-        guard topCount < state.candidates.count else {
-            candidateGridScrollView.setContentOffset(.zero, animated: false)
-            return
-        }
-
-        // System-style expanded candidates: fixed content band, blank action
-        // column on the right, no vertical dividers. Short candidates occupy
-        // one column slot; longer phrases span multiple slots.
+        // System-style expanded candidates: show the full candidate list
+        // starting from the first candidate, keep a blank action column on the
+        // right for the chevron, and avoid vertical dividers. The index sent
+        // to Rime must be the displayed candidate's absolute index, so the
+        // expanded page must not skip candidates that are visible in the top
+        // row.
         let availableWidth = candidateGridContentWidth()
         let columnCount = candidateGridColumnCount(for: availableWidth)
         let columnWidth = floor(availableWidth / CGFloat(columnCount))
@@ -5164,10 +5233,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         var usedColumns = 0
         var didAddRow = false
 
-        for index in topCount..<state.candidates.count {
+        for index in state.candidates.indices {
             let candidate = state.candidates[index]
-            let span = gridCellSpan(for: candidate, columnWidth: columnWidth, maxColumns: columnCount)
-            let needsNewRow = currentRow == nil || usedColumns + span > columnCount
+            let needsNewRow = currentRow == nil || usedColumns >= columnCount
             if needsNewRow {
                 if let row = currentRow {
                     addCandidateGridTrailingSpacer(to: row)
@@ -5187,11 +5255,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             }
             let button = makeCandidateGridButton(
                 candidate: candidate,
+                displayIndex: index,
                 selectionIndex: state.candidateOffset + index,
-                width: columnWidth * CGFloat(span)
+                width: columnWidth
             )
             currentRow?.addArrangedSubview(button)
-            usedColumns += span
+            usedColumns += 1
         }
 
         // Trailing spacer so every row aligns left instead of stretching the
@@ -5260,14 +5329,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         candidateGridStack.addArrangedSubview(separator)
     }
 
-    private func gridCellSpan(for candidate: RimeKeyboardCandidate, columnWidth: CGFloat, maxColumns: Int) -> Int {
-        let font = UIFont.systemFont(ofSize: 22, weight: .regular)
-        let textWidth = ceil((candidate.text as NSString).size(withAttributes: [.font: font]).width)
-        let preferredWidth = textWidth + 14
-        return max(1, min(maxColumns, Int(ceil(preferredWidth / max(columnWidth, 1)))))
-    }
-
-    private func makeCandidateGridButton(candidate: RimeKeyboardCandidate, selectionIndex: Int, width: CGFloat) -> UIButton {
+    private func makeCandidateGridButton(
+        candidate: RimeKeyboardCandidate,
+        displayIndex: Int,
+        selectionIndex: Int,
+        width: CGFloat
+    ) -> UIButton {
         let button = HitInsetButton(frame: .zero)
         button.tag = selectionIndex
         // Expanded candidate grid cells are visual targets only. The scroll
@@ -5283,13 +5350,15 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         var configuration = UIButton.Configuration.plain()
         configuration.title = candidate.text
         configuration.cornerStyle = .fixed
-        configuration.background.cornerRadius = 0
+        configuration.background.cornerRadius = displayIndex == 0 ? 13 : 0
         configuration.baseForegroundColor = .label
-        configuration.background.backgroundColor = .clear
+        configuration.background.backgroundColor = displayIndex == 0
+            ? UIColor.systemBackground.withAlphaComponent(isKeyboardDark ? 0.22 : 0.86)
+            : .clear
         configuration.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: 6, bottom: 6, trailing: 6)
         configuration.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
             var outgoing = incoming
-            outgoing.font = .systemFont(ofSize: 22, weight: .regular)
+            outgoing.font = .systemFont(ofSize: 23, weight: displayIndex == 0 ? .medium : .regular)
             return outgoing
         }
         button.configuration = configuration
@@ -5829,7 +5898,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func lightHaptic() {
-        UIImpactFeedbackGenerator(style: .light).impactOccurred(intensity: 0.65)
+        UIImpactFeedbackGenerator(style: .light).impactOccurred(intensity: 0.74)
     }
 
     private var currentBridgeStatus: KeyboardBridgeStatus? {
@@ -5841,6 +5910,15 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private var isBridgeAwake: Bool {
+        // Strongest signal: a Darwin notification from the host process. Set
+        // by sessionStarted/dictationStarted/dictationStopped, cleared by
+        // sessionEnded. This proves the host bridge is alive regardless of
+        // whether the keyboard's localhost status probe has had time to land,
+        // so a mic press right after the keyboard reattaches (or right after
+        // a previous dictation finishes) can skip the 0.9s probe.
+        if lastDarwinAwakeAt > 0 {
+            return true
+        }
         guard let status = currentBridgeStatus else { return false }
         if Date().timeIntervalSince1970 - lastBridgeContactAt < 3 {
             return status.state != .idle
@@ -5850,8 +5928,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         // `sessionEnded` when that session is explicitly torn down. Do not
         // expire the visible Ready state after a few seconds, because the
         // containing app can be backgrounded and reject localhost status probes.
+        // `.result` and `.sending` only exist because the host bridge actively
+        // produced them, so they're durable too — falling back to a slow probe
+        // after a freshly finished dictation just to confirm what we already
+        // know was the most common source of the 2s mic-press latency.
         switch status.state {
-        case .standby, .recording:
+        case .standby, .recording, .result, .sending:
             return true
         default:
             return false
@@ -6742,13 +6824,12 @@ final class KeyboardInputView: UIInputView {
         let point = touch.location(in: self)
         let dx = point.x - fallbackStartPoint.x
         let dy = point.y - fallbackStartPoint.y
-        let isSwipeIntent = abs(dx) >= 28 && abs(dx) > abs(dy) * 1.35
-        if isSwipeIntent, !fallbackDidCancel {
-            fallbackDidCancel = true
-            hitController.cancelFallbackTextKeyTouch(on: button)
-        }
         let isFocusSwipeIntent = abs(dx) >= 110 && abs(dx) > abs(dy) * 1.6
         if isFocusSwipeIntent {
+            if !fallbackDidCancel {
+                fallbackDidCancel = true
+                hitController.cancelFallbackTextKeyTouch(on: button)
+            }
             hitController.switchKeyboardFocusFromFallbackSwipe(deltaX: dx)
             clearFallbackTouch()
         }
