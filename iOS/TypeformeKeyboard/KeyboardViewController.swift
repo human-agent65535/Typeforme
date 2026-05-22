@@ -289,6 +289,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private static let rootHorizontalInset: CGFloat = 5
     private static let rootVerticalInset: CGFloat = 4
     private static let stackSpacing: CGFloat = 4
+    private static let keyboardTouchableBackgroundColor = UIColor.white.withAlphaComponent(0.01)
     private static let candidateExpandButtonWidth: CGFloat = 62
     private static let candidateToolbarHeight: CGFloat = 44
     /// iOS-native expanded candidate panel uses a flow layout: each cell is
@@ -356,7 +357,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private let keyRowsStack = UIStackView()
     private let candidateGridScrollView = UIScrollView()
     private let candidateGridStack = UIStackView()
-    private let keyboardTouchSurface = KeyboardTouchSurfaceView()
     private let keyPreviewBubble = UIView()
     private let keyPreviewLabel = UILabel()
     private lazy var textTrackpadPanRecognizer = UIPanGestureRecognizer(target: self, action: #selector(handleTextTrackpadPan(_:)))
@@ -449,13 +449,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     override func loadView() {
-        let rootView = UIInputView(frame: .zero, inputViewStyle: .keyboard)
+        let rootView = KeyboardRootInputView(frame: .zero, inputViewStyle: .keyboard)
+        rootView.hitController = self
         rootView.allowsSelfSizing = false
         rootView.isOpaque = false
-        rootView.backgroundColor = .clear
+        rootView.backgroundColor = Self.keyboardTouchableBackgroundColor
         rootView.clipsToBounds = false
         rootView.layer.masksToBounds = false
-        rootView.layer.backgroundColor = UIColor.clear.cgColor
         inputView = rootView
         view = rootView
     }
@@ -1201,42 +1201,30 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         rootStack.spacing = Self.stackSpacing
         rootStack.translatesAutoresizingMaskIntoConstraints = false
 
-        keyboardTouchSurface.hitController = self
-        keyboardTouchSurface.translatesAutoresizingMaskIntoConstraints = false
-        keyboardTouchSurface.backgroundColor = .clear
-        keyboardTouchSurface.isOpaque = false
-        keyboardTouchSurface.isMultipleTouchEnabled = true
-        keyboardTouchSurface.isAccessibilityElement = false
-        view.addSubview(keyboardTouchSurface)
-        keyboardTouchSurface.addSubview(rootStack)
-        keyboardTouchSurface.placeTouchProxyAboveContent()
+        if let rootInputView = view as? KeyboardRootInputView {
+            rootInputView.hitController = self
+        }
+        view.addSubview(rootStack)
 
         heightConstraint = view.heightAnchor.constraint(equalToConstant: currentContentHeight + Self.topChromeCoverHeight)
         heightConstraint?.priority = .required
         heightConstraint?.isActive = true
 
         NSLayoutConstraint.activate([
-            keyboardTouchSurface.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            keyboardTouchSurface.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            keyboardTouchSurface.topAnchor.constraint(equalTo: view.topAnchor),
-            keyboardTouchSurface.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            rootStack.leadingAnchor.constraint(equalTo: keyboardTouchSurface.leadingAnchor, constant: Self.rootHorizontalInset),
-            rootStack.trailingAnchor.constraint(equalTo: keyboardTouchSurface.trailingAnchor, constant: -Self.rootHorizontalInset),
-            rootStack.topAnchor.constraint(equalTo: keyboardTouchSurface.topAnchor, constant: Self.rootVerticalInset + Self.topChromeCoverHeight),
-            rootStack.bottomAnchor.constraint(equalTo: keyboardTouchSurface.bottomAnchor, constant: -Self.rootVerticalInset),
+            rootStack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: Self.rootHorizontalInset),
+            rootStack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -Self.rootHorizontalInset),
+            rootStack.topAnchor.constraint(equalTo: view.topAnchor, constant: Self.rootVerticalInset + Self.topChromeCoverHeight),
+            rootStack.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -Self.rootVerticalInset),
         ])
     }
 
     private func refreshKeyboardBackground() {
-        // self.view IS a UIInputView(inputViewStyle: .keyboard) (set in
-        // loadView). That UIInputView applies the exact system keyboard
-        // material — same blur, same tint, same vibrancy — that iOS uses for
-        // the built-in keyboards. Leave it alone; do not add a second blur
-        // layer on top. Just make sure backgroundColor stays clear so the
-        // input view's chrome shows through.
+        // Hamster/KeyboardKit avoid pure .clear for touchable keyboard
+        // chrome: a 1% alpha fill is visually transparent but still gives
+        // iOS a rendered input-view region for row margins and protection
+        // bands. KeyboardRootInputView then routes those touches.
         view.isOpaque = false
-        view.backgroundColor = .clear
-        view.layer.backgroundColor = UIColor.clear.cgColor
+        view.backgroundColor = Self.keyboardTouchableBackgroundColor
     }
 
     private func configureKeyPreview() {
@@ -1938,18 +1926,18 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func logKeyboardTouchSurfaceLayoutIfNeeded() {
-        #if DEBUG
-        let surfaceFrame = keyboardTouchSurface.frame.integral
+        let surfaceFrame = view.bounds.integral
+        let windowFrame = view.convert(view.bounds, to: nil).integral
+        let safeInsets = view.safeAreaInsets
         let characterBand = textCharacterTouchBandFrame()?.integral
         let bandX = characterBand.map { Int($0.minX) } ?? -1
         let bandY = characterBand.map { Int($0.minY) } ?? -1
         let bandWidth = characterBand.map { Int($0.width) } ?? 0
         let bandHeight = characterBand.map { Int($0.height) } ?? 0
-        let key = "\(Int(surfaceFrame.width))x\(Int(surfaceFrame.height))|\(bandY)-\(bandY + bandHeight)|\(keyboardFocus.rawValue)"
+        let key = "\(Int(surfaceFrame.width))x\(Int(surfaceFrame.height))|\(Int(windowFrame.minY))|\(bandY)-\(bandY + bandHeight)|\(keyboardFocus.rawValue)"
         guard key != lastTouchSurfaceLayoutLogKey else { return }
         lastTouchSurfaceLayoutLogKey = key
-        kbLog.notice("touch layout surface=(\(Int(surfaceFrame.minX), privacy: .public),\(Int(surfaceFrame.minY), privacy: .public),\(Int(surfaceFrame.width), privacy: .public),\(Int(surfaceFrame.height), privacy: .public)) charBand=(\(bandX, privacy: .public),\(bandY, privacy: .public),\(bandWidth, privacy: .public),\(bandHeight, privacy: .public)) focus=\(self.keyboardFocus.rawValue, privacy: .public)")
-        #endif
+        kbLog.notice("touch layout surface=(\(Int(surfaceFrame.minX), privacy: .public),\(Int(surfaceFrame.minY), privacy: .public),\(Int(surfaceFrame.width), privacy: .public),\(Int(surfaceFrame.height), privacy: .public)) window=(\(Int(windowFrame.minX), privacy: .public),\(Int(windowFrame.minY), privacy: .public),\(Int(windowFrame.width), privacy: .public),\(Int(windowFrame.height), privacy: .public)) safe=(\(Int(safeInsets.left), privacy: .public),\(Int(safeInsets.top), privacy: .public),\(Int(safeInsets.right), privacy: .public),\(Int(safeInsets.bottom), privacy: .public)) charBand=(\(bandX, privacy: .public),\(bandY, privacy: .public),\(bandWidth, privacy: .public),\(bandHeight, privacy: .public)) focus=\(self.keyboardFocus.rawValue, privacy: .public)")
     }
 
     private func configureUtilityRow() {
@@ -5448,7 +5436,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func updateKeyboardOverlayOrdering() {
-        view.bringSubviewToFront(keyboardTouchSurface)
+        view.bringSubviewToFront(rootStack)
         view.bringSubviewToFront(correctionPopoverDismissOverlay)
         view.bringSubviewToFront(correctionPopover)
         view.bringSubviewToFront(candidateGridCollapseButton)
@@ -7025,7 +7013,7 @@ private final class VoiceInputModeSwitch: UIControl {
 
 /// UIButton whose direct control target can extend beyond its visible bounds.
 /// Character keys do not use this; their gaps and row margins are owned by
-/// KeyboardTouchSurfaceView so there is only one text-key routing path.
+/// KeyboardRootInputView so there is only one text-key routing path.
 final class HitInsetButton: UIButton {
     var hitInsets: UIEdgeInsets = .zero
 
@@ -7035,56 +7023,10 @@ final class HitInsetButton: UIButton {
     }
 }
 
-/// Frontmost transparent router for key gaps, row margins, and blank chrome.
-/// It returns a real tracking control for routed key/surface touches, while
-/// direct buttons still receive their native UIControl events.
-final class KeyboardTouchSurfaceView: UIView {
-    weak var hitController: KeyboardViewController? {
-        didSet { touchProxy.hitController = hitController }
-    }
-
-    private let touchProxy = KeyboardTouchProxyControl()
-
-    override init(frame: CGRect) {
-        super.init(frame: frame)
-        commonInit()
-    }
-
-    required init?(coder: NSCoder) {
-        super.init(coder: coder)
-        commonInit()
-    }
-
-    private func commonInit() {
-        touchProxy.isAccessibilityElement = false
-        touchProxy.backgroundColor = .clear
-        touchProxy.isOpaque = false
-        touchProxy.isMultipleTouchEnabled = true
-        touchProxy.configureActivationFallback()
-        addSubview(touchProxy)
-    }
-
-    override func layoutSubviews() {
-        super.layoutSubviews()
-        touchProxy.frame = bounds
-        bringSubviewToFront(touchProxy)
-    }
-
-    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
-        guard isUserInteractionEnabled, !isHidden, alpha > 0.01 else { return false }
-        return bounds.contains(point)
-    }
-
-    func placeTouchProxyAboveContent() {
-        if touchProxy.superview == nil {
-            addSubview(touchProxy)
-        }
-        touchProxy.frame = bounds
-        bringSubviewToFront(touchProxy)
-    }
-}
-
-final class KeyboardTouchProxyControl: UIControl {
+/// Root input view that owns routed key touches. This follows Hamster's model:
+/// the same view that contains the key subviews also decides whether a point is
+/// a routed key/focus touch or should fall through to a native UIControl.
+final class KeyboardRootInputView: UIInputView {
     weak var hitController: KeyboardViewController?
 
     private struct ActiveKeyboardTouch {
@@ -7097,52 +7039,58 @@ final class KeyboardTouchProxyControl: UIControl {
     private var pendingActivationPoint: CGPoint?
     private var lastTouchCommitTime: CFTimeInterval = 0
 
+    override init(frame: CGRect, inputViewStyle: UIInputView.Style) {
+        super.init(frame: frame, inputViewStyle: inputViewStyle)
+        commonInit()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        commonInit()
+    }
+
+    private func commonInit() {
+        isMultipleTouchEnabled = true
+        isUserInteractionEnabled = true
+        isAccessibilityElement = false
+    }
+
     override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
         guard isUserInteractionEnabled, !isHidden, alpha > 0.01 else { return false }
         return bounds.contains(point)
     }
 
-    func configureActivationFallback() {
-        removeTarget(self, action: #selector(activatePendingTarget), for: .primaryActionTriggered)
-        addTarget(self, action: #selector(activatePendingTarget), for: .primaryActionTriggered)
-    }
-
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
-        guard self.point(inside: point, with: event),
-              let hitController,
-              let rootView = hitController.view
-        else {
+        guard self.point(inside: point, with: event) else {
             pendingActivationTarget = nil
             pendingActivationPoint = nil
             return nil
         }
+        guard let hitController else { return super.hitTest(point, with: event) }
 
-        let rootPoint = convert(point, to: rootView)
-        let target = hitController.keyboardOverlayTouchTarget(at: rootPoint)
-        hitController.logKeyboardTouchEvent("hitTest", target: target, point: rootPoint)
+        let target = hitController.keyboardOverlayTouchTarget(at: point)
+        hitController.logKeyboardTouchEvent("hitTest", target: target, point: point)
         switch target {
         case .textKey, .focusSurface:
             pendingActivationTarget = target
-            pendingActivationPoint = rootPoint
+            pendingActivationPoint = point
             return self
         case .candidateAction, .none:
             pendingActivationTarget = nil
             pendingActivationPoint = nil
-            return nil
+            return super.hitTest(point, with: event)
         }
     }
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
-        guard let hitController,
-              let rootView = hitController.view
-        else {
+        guard let hitController else {
             super.touchesBegan(touches, with: event)
             return
         }
 
         var handledAnyTouch = false
         for touch in touches {
-            let rootPoint = touch.location(in: rootView)
+            let rootPoint = touch.location(in: self)
             guard let target = hitController.keyboardOverlayTouchTarget(at: rootPoint) else { continue }
             releaseExistingTouchIfNeeded(for: target)
             pendingActivationTarget = nil
@@ -7157,9 +7105,7 @@ final class KeyboardTouchProxyControl: UIControl {
     }
 
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
-        guard let hitController,
-              let rootView = hitController.view
-        else {
+        guard let hitController else {
             super.touchesMoved(touches, with: event)
             return
         }
@@ -7168,7 +7114,7 @@ final class KeyboardTouchProxyControl: UIControl {
         for touch in touches {
             guard let active = activeTouches[touch] else { continue }
             handledAnyTouch = true
-            let rootPoint = touch.location(in: rootView)
+            let rootPoint = touch.location(in: self)
             guard active.target.allowsKeyboardFocusSwipe,
                   let horizontalIntent = hitController.keyboardFocusSwipeIntent(
                     start: active.startPoint,
@@ -7200,7 +7146,7 @@ final class KeyboardTouchProxyControl: UIControl {
         var handledAnyTouch = false
         for touch in touches {
             guard let active = activeTouches[touch] else { continue }
-            hitController.commitKeyboardTouchTarget(active.target, point: touch.location(in: hitController.view))
+            hitController.commitKeyboardTouchTarget(active.target, point: touch.location(in: self))
             activeTouches.removeValue(forKey: touch)
             lastTouchCommitTime = CACurrentMediaTime()
             handledAnyTouch = true
@@ -7220,7 +7166,7 @@ final class KeyboardTouchProxyControl: UIControl {
         var handledAnyTouch = false
         for touch in touches {
             guard let active = activeTouches[touch] else { continue }
-            hitController.cancelKeyboardTouchTarget(active.target, point: touch.location(in: hitController.view))
+            hitController.cancelKeyboardTouchTarget(active.target, point: touch.location(in: self))
             activeTouches.removeValue(forKey: touch)
             handledAnyTouch = true
         }
@@ -7260,7 +7206,7 @@ final class KeyboardTouchProxyControl: UIControl {
               })
         else { return }
 
-        hitController.cancelKeyboardTouchTarget(existing.value.target, point: existing.key.location(in: hitController.view))
+        hitController.cancelKeyboardTouchTarget(existing.value.target, point: existing.key.location(in: self))
         activeTouches.removeValue(forKey: existing.key)
     }
 }
