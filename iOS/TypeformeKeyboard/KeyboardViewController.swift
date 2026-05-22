@@ -563,13 +563,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         point: CGPoint?,
         intent: CGFloat? = nil
     ) {
-        #if DEBUG
         let name = keyboardTouchTargetLogName(target)
         let x = point.map { Int($0.x.rounded()) } ?? -1
         let y = point.map { Int($0.y.rounded()) } ?? -1
         let dx = intent.map { Int($0.rounded()) } ?? 0
         kbLog.notice("touch \(event, privacy: .public) target=\(name, privacy: .public) x=\(x, privacy: .public) y=\(y, privacy: .public) dx=\(dx, privacy: .public) focus=\(self.keyboardFocus.rawValue, privacy: .public)")
-        #endif
     }
 
     fileprivate func beginKeyboardTouchTarget(_ target: KeyboardTouchTarget, point: CGPoint) {
@@ -7244,6 +7242,7 @@ final class KeyboardTouchProxyControl: UIControl {
               let point = pendingActivationPoint
         else { return }
 
+        hitController.logKeyboardTouchEvent("activate", target: target, point: point)
         hitController.beginKeyboardTouchTarget(target, point: point)
         hitController.commitKeyboardTouchTarget(target, point: point)
         pendingActivationTarget = nil
