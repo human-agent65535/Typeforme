@@ -621,7 +621,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         logKeyboardTouchEvent("commit", target: target, point: point)
         switch target {
         case .textKey(let button):
-            resetPressedControlState(button, animated: true)
+            resetPressedControlState(button)
             guard let character = textKeyCommitCharacters[ObjectIdentifier(button)] else { return }
             handleTextCharacter(character)
         case .candidateAction, .focusSurface:
@@ -633,7 +633,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         logKeyboardTouchEvent("cancel", target: target, point: point)
         switch target {
         case .textKey(let button):
-            resetPressedControlState(button, animated: true)
+            resetPressedControlState(button)
         case .candidateAction, .focusSurface:
             break
         }
@@ -3056,7 +3056,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
 
         let gradientColors = voiceGradientColors.map { $0.cgColor }
-        let shouldAnimate = animated && !isVoicePressActive && !isStartRequestInFlight
+        let shouldAnimate = keyboardFocus != .text && animated && !isVoicePressActive && !isStartRequestInFlight
         if shouldAnimate {
             UIView.transition(with: voiceButton, duration: 0.22, options: [.transitionCrossDissolve, .allowUserInteraction], animations: updates)
             let anim = CABasicAnimation(keyPath: "colors")
@@ -3224,6 +3224,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
               !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else { return }
 
+        keyPreviewBubble.layer.removeAllAnimations()
         keyPreviewLabel.text = title
         let keyFrame = control.convert(control.bounds, to: view)
         let bubbleWidth = min(max(keyFrame.width + 18, 48), 76)
@@ -3236,22 +3237,16 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         keyPreviewBubble.frame = CGRect(x: x, y: y, width: bubbleWidth, height: bubbleHeight)
         view.bringSubviewToFront(keyPreviewBubble)
         keyPreviewBubble.isHidden = false
-        keyPreviewBubble.transform = CGAffineTransform(scaleX: 0.92, y: 0.92)
-        UIView.animate(withDuration: 0.08, delay: 0, options: [.beginFromCurrentState, .allowUserInteraction]) {
-            self.keyPreviewBubble.alpha = 1
-            self.keyPreviewBubble.transform = .identity
-        }
+        keyPreviewBubble.alpha = 1
+        keyPreviewBubble.transform = .identity
     }
 
     private func hideKeyPreview() {
         guard !keyPreviewBubble.isHidden else { return }
-        UIView.animate(withDuration: 0.08, delay: 0, options: [.beginFromCurrentState, .allowUserInteraction]) {
-            self.keyPreviewBubble.alpha = 0
-            self.keyPreviewBubble.transform = CGAffineTransform(scaleX: 0.92, y: 0.92)
-        } completion: { _ in
-            self.keyPreviewBubble.isHidden = true
-            self.keyPreviewBubble.transform = .identity
-        }
+        keyPreviewBubble.layer.removeAllAnimations()
+        keyPreviewBubble.alpha = 0
+        keyPreviewBubble.isHidden = true
+        keyPreviewBubble.transform = .identity
     }
 
     @objc private func controlPressDown(_ sender: UIControl) {
@@ -3259,13 +3254,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         activePressedControls.add(sender)
         schedulePressedControlCleanup(for: sender)
         showKeyPressOverlay(on: sender)
-        UIView.animate(withDuration: 0.06, delay: 0, options: [.allowUserInteraction, .beginFromCurrentState]) {
-            sender.transform = CGAffineTransform(translationX: 0, y: 1.0).scaledBy(x: 0.972, y: 0.972)
-        }
+        sender.layer.removeAllAnimations()
+        sender.transform = CGAffineTransform(translationX: 0, y: 1.0).scaledBy(x: 0.972, y: 0.972)
     }
 
     @objc private func controlPressUp(_ sender: UIControl) {
-        resetPressedControlState(sender, animated: true)
+        resetPressedControlState(sender)
     }
 
     private func schedulePressedControlCleanup(for control: UIControl) {
@@ -3273,40 +3267,26 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         pressCleanupWorkItems[id]?.cancel()
         let workItem = DispatchWorkItem { [weak self, weak control] in
             guard let self, let control else { return }
-            self.resetPressedControlState(control, animated: true)
+            self.resetPressedControlState(control)
         }
         pressCleanupWorkItems[id] = workItem
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: workItem)
     }
 
-    private func resetPressedControlState(_ control: UIControl, animated: Bool) {
+    private func resetPressedControlState(_ control: UIControl) {
         let id = ObjectIdentifier(control)
         pressCleanupWorkItems[id]?.cancel()
         pressCleanupWorkItems[id] = nil
         activePressedControls.remove(control)
         hideKeyPreview()
-        hideKeyPressOverlay(on: control, animated: animated)
-        let animations = {
-            control.transform = .identity
-        }
-        if animated {
-            UIView.animate(
-                withDuration: 0.11,
-                delay: 0,
-                usingSpringWithDamping: 0.82,
-                initialSpringVelocity: 0.5,
-                options: [.allowUserInteraction, .beginFromCurrentState],
-                animations: animations
-            )
-        } else {
-            control.layer.removeAllAnimations()
-            animations()
-        }
+        hideKeyPressOverlay(on: control)
+        control.layer.removeAllAnimations()
+        control.transform = .identity
     }
 
     private func resetAllPressedControlStates(animated: Bool) {
         for control in activePressedControls.allObjects {
-            resetPressedControlState(control, animated: animated)
+            resetPressedControlState(control)
         }
         pressCleanupWorkItems.values.forEach { $0.cancel() }
         pressCleanupWorkItems.removeAll()
@@ -3322,26 +3302,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         overlay.layer.masksToBounds = true
         control.addSubview(overlay)
         overlay.backgroundColor = UIColor.label.withAlphaComponent(isKeyboardDark ? 0.18 : 0.13)
-        overlay.alpha = 0
-        UIView.animate(withDuration: 0.045, delay: 0, options: [.allowUserInteraction, .beginFromCurrentState]) {
-            overlay.alpha = 1
-        }
+        overlay.alpha = 1
     }
 
-    private func hideKeyPressOverlay(on control: UIControl, animated: Bool) {
+    private func hideKeyPressOverlay(on control: UIControl) {
         guard let overlay = control.viewWithTag(keyPressOverlayTag) else { return }
         overlay.layer.removeAllAnimations()
-        guard animated else {
-            overlay.removeFromSuperview()
-            return
-        }
-        UIView.animate(withDuration: 0.10, delay: 0, options: [.allowUserInteraction, .beginFromCurrentState]) {
-            overlay.alpha = 0
-        } completion: { _ in
-            if overlay.superview === control {
-                overlay.removeFromSuperview()
-            }
-        }
+        overlay.removeFromSuperview()
     }
 
     private func playKeyboardPressFeedbackIfNeeded(for control: UIControl) {
@@ -5569,13 +5536,20 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             candidateScrollView,
             candidateGridStack,
             candidateGridScrollView,
+            textCandidateGridButton,
+            candidateGridCollapseButton,
+            candidateTrailingSpacer,
             textToolbar,
         ]
         for container in containers {
-            container.layer.removeAllAnimations()
-            for subview in container.subviews {
-                subview.layer.removeAllAnimations()
-            }
+            removeAnimationsRecursively(from: container)
+        }
+    }
+
+    private func removeAnimationsRecursively(from view: UIView) {
+        view.layer.removeAllAnimations()
+        for subview in view.subviews {
+            removeAnimationsRecursively(from: subview)
         }
     }
 
@@ -6416,10 +6390,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             }
             lightHaptic()
             setTextTrackpadMode(true)
-            UIView.animate(withDuration: 0.08, delay: 0, options: [.beginFromCurrentState, .allowUserInteraction]) {
-                keyView.alpha = 0.72
-                keyView.transform = CGAffineTransform(scaleX: 0.98, y: 0.98)
-            }
+            keyView.layer.removeAllAnimations()
+            keyView.alpha = 0.72
+            keyView.transform = CGAffineTransform(scaleX: 0.98, y: 0.98)
         case .changed:
             guard isTextSpaceCursorTracking else { return }
             updateTrackpadCursorPosition(deltaX: location.x - textSpaceCursorStartX)
@@ -6435,10 +6408,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         isTextSpaceCursorTracking = false
         suppressTextSpaceTapUntil = Date().timeIntervalSince1970 + 0.20
         activeTrackpadSourceView = nil
-        UIView.animate(withDuration: 0.10, delay: 0, options: [.beginFromCurrentState, .allowUserInteraction]) {
-            keyView.alpha = 1
-            keyView.transform = .identity
-        }
+        keyView.layer.removeAllAnimations()
+        keyView.alpha = 1
+        keyView.transform = .identity
         setTextTrackpadMode(false)
         renderRestyleSuggestionsIfIdle()
     }
@@ -6451,10 +6423,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         for button in textKeyboardButtons {
             button.isUserInteractionEnabled = !enabled || button === activeTrackpadSourceView
         }
-        UIView.animate(withDuration: 0.10, delay: 0, options: [.beginFromCurrentState, .allowUserInteraction]) {
-            self.keyRowsStack.alpha = enabled ? 0.25 : 1
-            self.candidateScrollView.alpha = enabled ? 0.38 : 1
-        }
+        keyRowsStack.layer.removeAllAnimations()
+        candidateScrollView.layer.removeAllAnimations()
+        keyRowsStack.alpha = enabled ? 0.25 : 1
+        candidateScrollView.alpha = enabled ? 0.38 : 1
     }
 
     @objc private func handleTextTrackpadPan(_ recognizer: UIPanGestureRecognizer) {
