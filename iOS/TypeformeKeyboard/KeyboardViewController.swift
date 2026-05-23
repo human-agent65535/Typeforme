@@ -312,16 +312,18 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private static let rootVerticalInset: CGFloat = 4
     private static let stackSpacing: CGFloat = 4
     private static let keyboardTouchableBackgroundColor = UIColor.white.withAlphaComponent(0.01)
-    private static let candidateExpandButtonWidth: CGFloat = 62
-    private static let candidateToolbarHeight: CGFloat = 44
-    /// iOS-native expanded candidate panel uses a flow layout: each cell is
-    /// sized to the candidate's text, not a fixed column width. Row height
-    /// 48pt and minimum cell width 68pt match the system Chinese keyboard so
-    /// short candidates ("你") still get a comfortable tap target while long
-    /// ones ("沉默的螺旋") stay on a single line.
-    private static let candidateGridRowHeight: CGFloat = 48
-    private static let candidateGridMinimumCellWidth: CGFloat = 68
-    private static let candidateGridCellHorizontalPadding: CGFloat = 34
+    private static let candidateExpandButtonWidth: CGFloat = 45
+    private static let candidateToolbarHeight: CGFloat = 45
+    private static let candidateInlineMinimumCellWidth: CGFloat = 41
+    private static let candidateInlineCellHorizontalPadding: CGFloat = 20
+    private static let candidateTextFontSize: CGFloat = 20
+    /// The native Chinese expanded candidate panel uses compact 45pt rows and
+    /// length-aware cells: short candidates fill six even columns, while long
+    /// candidates reduce the row count and get wider cells.
+    private static let candidateGridRowHeight: CGFloat = 45
+    private static let candidateGridPreferredCellWidth: CGFloat = 66
+    private static let candidateGridMinimumCellWidth: CGFloat = 59
+    private static let candidateGridTwoCharacterMinimumCellWidth: CGFloat = 64
     private static let candidateActionColumnGap: CGFloat = 6
     private static let candidateExpandTouchOverflowY: CGFloat = 24
     /// Per-cell horizontal padding already creates the visible gap between
@@ -365,7 +367,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private let textLanguageButton = UIButton(type: .system)
     private let textLanguageLabel = UILabel()
     private let candidateScrollView = UIScrollView()
-    private let candidateScrollMask = CAShapeLayer()
     private let candidateStack = UIStackView()
     /// Persistent flexible trailing spacer at the end of `candidateStack`.
     /// Cells are pinned at required hugging priority (exact widths), so the
@@ -2001,7 +2002,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             )
             ring.path = UIBezierPath(ovalIn: CGRect(origin: .zero, size: CGSize(width: diameter, height: diameter))).cgPath
         }
-        updateCandidateScrollViewportMask()
+        updateCandidateScrollViewport()
         updateCandidateGridCollapseButtonFrame()
         updateKeyboardOverlayOrdering()
         logKeyboardTouchSurfaceLayoutIfNeeded()
@@ -2265,6 +2266,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         textToolbar.addArrangedSubview(textWandButton)
         textToolbar.addArrangedSubview(candidateScrollView)
         textToolbar.addArrangedSubview(textCandidateGridButton)
+        textToolbar.setCustomSpacing(0, after: candidateScrollView)
         textToolbar.addArrangedSubview(textPasteButton)
         textToolbar.addArrangedSubview(textKeyboardSwitchButton)
         textToolbar.addArrangedSubview(textHostSettingsButton)
@@ -5405,7 +5407,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         updateCandidateToolbarControls(for: state)
         textToolbar.setNeedsLayout()
         textToolbar.layoutIfNeeded()
-        updateCandidateScrollViewportMask()
+        updateCandidateScrollViewport()
 
         if let errorMessage = state.errorMessage {
             addCandidateStatus(errorMessage, color: .systemOrange)
@@ -5466,7 +5468,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             candidateGridScrollView.layoutIfNeeded()
             textToolbar.setNeedsLayout()
             textToolbar.layoutIfNeeded()
-            updateCandidateScrollViewportMask()
+            updateCandidateScrollViewport()
             removeCandidateRefreshAnimations()
         }
         CATransaction.commit()
@@ -5540,36 +5542,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             recentInsertedTextRewriteTarget() != nil
     }
 
-    private func updateCandidateScrollViewportMask() {
-        let reserve = candidateScrollTrailingReserve()
-        candidateScrollView.contentInset.right = reserve
-        candidateScrollView.horizontalScrollIndicatorInsets.right = reserve
-
-        guard candidateScrollView.bounds.width > 0,
-              candidateScrollView.bounds.height > 0,
-              reserve > 0
-        else {
-            candidateScrollView.layer.mask = nil
-            return
-        }
-
-        let visibleWidth = max(0, candidateScrollView.bounds.width - reserve)
-        candidateScrollMask.frame = candidateScrollView.bounds
-        candidateScrollMask.path = UIBezierPath(rect: CGRect(
-            x: 0,
-            y: 0,
-            width: visibleWidth,
-            height: candidateScrollView.bounds.height
-        )).cgPath
-        candidateScrollView.layer.mask = candidateScrollMask
-    }
-
-    private func candidateScrollTrailingReserve() -> CGFloat {
-        guard !textToolbar.isHidden, !textCandidateGridButton.isHidden else { return 0 }
-        let scrollFrame = candidateScrollView.convert(candidateScrollView.bounds, to: textToolbar)
-        let buttonFrame = textCandidateGridButton.convert(textCandidateGridButton.bounds, to: textToolbar)
-        let visibleRight = min(scrollFrame.maxX, buttonFrame.minX - 10)
-        return max(0, scrollFrame.maxX - visibleRight)
+    private func updateCandidateScrollViewport() {
+        candidateScrollView.contentInset.right = 0
+        candidateScrollView.horizontalScrollIndicatorInsets.right = 0
+        candidateScrollView.layer.mask = nil
     }
 
     private var isRunningInsideHostApp: Bool {
@@ -5658,7 +5634,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let gridFrame = candidateGridScrollView.convert(candidateGridScrollView.bounds, to: view)
         let buttonHeight = min(Self.candidateGridRowHeight, max(44, gridFrame.height))
         candidateGridCollapseButton.frame = CGRect(
-            x: max(view.bounds.minX, view.bounds.maxX - Self.rootHorizontalInset - Self.candidateExpandButtonWidth),
+            x: max(view.bounds.minX, view.bounds.maxX - Self.candidateExpandButtonWidth),
             y: gridFrame.minY,
             width: Self.candidateExpandButtonWidth,
             height: buttonHeight
@@ -5716,25 +5692,35 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
         guard isCandidateGridExpanded, state.isComposing, !state.candidates.isEmpty else { return }
 
-        // iOS-native expanded panel: flow layout, no fixed column count.
-        // Each cell is just wide enough for its candidate text (plus padding),
-        // so short and long candidates can share rows without forcing the
-        // long ones to wrap or shrink. Rows wrap when the next candidate
-        // doesn't fit. The list starts from the first candidate so the
+        // iOS-native expanded panel: compact length-aware rows with
+        // single-line labels. The list starts from the first candidate so the
         // selection index sent to Rime matches displayed absolute index.
         let availableWidth = candidateGridContentWidth()
+        let maxColumnCount = candidateGridColumnCount(for: availableWidth)
         var currentRow: UIStackView?
+        var currentRowButtons: [UIButton] = []
+        var currentRowWidths: [CGFloat] = []
         var usedWidth: CGFloat = 0
         var didAddRow = false
 
+        func finishCurrentRow() {
+            guard let row = currentRow else { return }
+            equalizeCandidateGridRowIfNeeded(row, buttons: currentRowButtons, naturalWidths: currentRowWidths, availableWidth: availableWidth)
+            addCandidateGridTrailingSpacer(to: row)
+            currentRow = nil
+            currentRowButtons.removeAll()
+            currentRowWidths.removeAll()
+            usedWidth = 0
+        }
+
         for index in state.candidates.indices {
             let candidate = state.candidates[index]
-            let cellWidth = candidateGridCellWidth(for: candidate, available: availableWidth)
-            let fitsInCurrentRow = currentRow != nil && (usedWidth + cellWidth) <= availableWidth + 0.5
-            if !fitsInCurrentRow {
-                if let row = currentRow {
-                    addCandidateGridTrailingSpacer(to: row)
-                }
+            let cellWidth = candidateGridNaturalCellWidth(for: candidate)
+            if currentRow != nil,
+               currentRowButtons.count >= maxColumnCount || usedWidth + cellWidth > availableWidth + 0.5 {
+                finishCurrentRow()
+            }
+            if currentRow == nil {
                 if didAddRow {
                     addCandidateGridRowSeparator(width: availableWidth)
                 }
@@ -5745,7 +5731,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 nextRow.widthAnchor.constraint(equalToConstant: availableWidth).isActive = true
                 candidateGridStack.addArrangedSubview(nextRow)
                 currentRow = nextRow
-                usedWidth = 0
                 didAddRow = true
             }
             let button = makeCandidateGridButton(
@@ -5754,14 +5739,14 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 width: cellWidth
             )
             currentRow?.addArrangedSubview(button)
+            currentRowButtons.append(button)
+            currentRowWidths.append(cellWidth)
             usedWidth += cellWidth
         }
 
         // Trailing spacer keeps each row left-aligned instead of stretching
         // the final cells to fill remaining width.
-        if let currentRow {
-            addCandidateGridTrailingSpacer(to: currentRow)
-        }
+        finishCurrentRow()
         candidateGridScrollView.setContentOffset(.zero, animated: false)
     }
 
@@ -5769,18 +5754,42 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let fullWidth = candidateGridScrollView.bounds.width > 0
             ? candidateGridScrollView.bounds.width
             : view.bounds.width - Self.rootHorizontalInset * 2
-        return min(fullWidth, max(140, fullWidth - Self.candidateExpandButtonWidth - Self.candidateActionColumnGap))
+        let nativeActionLeft = view.bounds.width > 0
+            ? view.bounds.width - Self.candidateExpandButtonWidth - Self.rootHorizontalInset
+            : fullWidth - Self.candidateExpandButtonWidth
+        return min(fullWidth, max(140, nativeActionLeft))
     }
 
-    /// Cell width = candidate text width + symmetric padding, clamped to a
-    /// minimum so single-character candidates still feel like a tap target
-    /// and to the row width so an unusually long candidate gets the whole
-    /// row to itself instead of overflowing.
-    private func candidateGridCellWidth(for candidate: RimeKeyboardCandidate, available: CGFloat) -> CGFloat {
-        let font = UIFont.systemFont(ofSize: 22, weight: .regular)
+    private func candidateGridColumnCount(for available: CGFloat) -> Int {
+        max(1, Int((available / Self.candidateGridPreferredCellWidth).rounded()))
+    }
+
+    private func candidateGridNaturalCellWidth(for candidate: RimeKeyboardCandidate) -> CGFloat {
+        let font = candidateFont(weight: .regular)
         let textWidth = ceil((candidate.text as NSString).size(withAttributes: [.font: font]).width)
-        let raw = textWidth + Self.candidateGridCellHorizontalPadding
-        return min(available, max(Self.candidateGridMinimumCellWidth, raw))
+        let characterCount = candidate.text.count
+        let minimumWidth = characterCount == 2
+            ? Self.candidateGridTwoCharacterMinimumCellWidth
+            : Self.candidateGridMinimumCellWidth
+        return max(minimumWidth, textWidth + Self.candidateInlineCellHorizontalPadding)
+    }
+
+    private func equalizeCandidateGridRowIfNeeded(
+        _ row: UIStackView,
+        buttons: [UIButton],
+        naturalWidths: [CGFloat],
+        availableWidth: CGFloat
+    ) {
+        guard !buttons.isEmpty else { return }
+        let evenWidth = availableWidth / CGFloat(buttons.count)
+        if buttons.count < candidateGridColumnCount(for: availableWidth)
+            || naturalWidths.allSatisfy({ $0 <= evenWidth + 0.5 }) {
+            for button in buttons {
+                button.constraints
+                    .filter { $0.firstAttribute == .width && $0.firstItem === button }
+                    .forEach { $0.constant = evenWidth }
+            }
+        }
     }
 
     private func addCandidateGridTrailingSpacer(to row: UIStackView) {
@@ -5824,20 +5833,22 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         paragraph.lineBreakMode = .byTruncatingTail
         paragraph.alignment = .center
         let attributes: [NSAttributedString.Key: Any] = [
-            .font: UIFont.systemFont(ofSize: 22, weight: .regular),
+            .font: candidateFont(weight: .regular),
             .foregroundColor: UIColor.label,
             .paragraphStyle: paragraph,
         ]
         var configuration = UIButton.Configuration.plain()
         configuration.attributedTitle = AttributedString(NSAttributedString(string: candidate.text, attributes: attributes))
+        configuration.titleLineBreakMode = .byTruncatingTail
         configuration.cornerStyle = .fixed
         configuration.background.cornerRadius = 0
         configuration.background.backgroundColor = .clear
-        configuration.contentInsets = NSDirectionalEdgeInsets(top: 4, leading: 4, bottom: 4, trailing: 4)
+        configuration.contentInsets = .zero
         button.configuration = configuration
         button.layer.borderWidth = 0
         button.layer.borderColor = UIColor.clear.cgColor
         button.titleLabel?.numberOfLines = 1
+        button.titleLabel?.lineBreakMode = .byTruncatingTail
         return button
     }
 
@@ -5879,15 +5890,16 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         paragraph.lineBreakMode = .byTruncatingTail
         paragraph.alignment = .center
         let attributes: [NSAttributedString.Key: Any] = [
-            .font: UIFont.systemFont(ofSize: 22, weight: displayIndex == 0 ? .semibold : .regular),
+            .font: candidateFont(weight: displayIndex == 0 ? .semibold : .regular),
             .foregroundColor: UIColor.label,
             .paragraphStyle: paragraph,
         ]
         var configuration = UIButton.Configuration.plain()
         configuration.attributedTitle = AttributedString(NSAttributedString(string: candidate.text, attributes: attributes))
+        configuration.titleLineBreakMode = .byTruncatingTail
         configuration.subtitle = nil
         configuration.cornerStyle = .fixed
-        configuration.contentInsets = NSDirectionalEdgeInsets(top: 3, leading: 12, bottom: 3, trailing: 12)
+        configuration.contentInsets = .zero
         configuration.baseForegroundColor = .label
         configuration.background.cornerRadius = displayIndex == 0 ? 11 : 0
         configuration.background.backgroundColor = displayIndex == 0
@@ -5904,16 +5916,16 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func candidateButtonMinimumWidth(for candidate: RimeKeyboardCandidate, isFirst: Bool) -> CGFloat {
-        // The system candidate strip gives the leading candidate a subtle
-        // pill, while keeping the rest plain and immediately tappable.
-        // Padding is the gap on each side of the text, so the visible space
-        // between two adjacent candidates is roughly 2× this value; iOS
-        // native sits at ~18–20pt total, so ~10pt per side per candidate
-        // (slightly more around the first-cell pill).
-        let titleFont = UIFont.systemFont(ofSize: 22, weight: isFirst ? .semibold : .regular)
+        // Native collapsed Chinese candidates are text-width adaptive:
+        // single characters are ~41pt wide and "是很舒服" is ~97pt, both
+        // matching text width + about 20pt of total horizontal padding.
+        let titleFont = candidateFont(weight: isFirst ? .semibold : .regular)
         let titleWidth = ceil((candidate.text as NSString).size(withAttributes: [.font: titleFont]).width)
-        let horizontalPadding: CGFloat = isFirst ? 38 : 34
-        return max(isFirst ? 76 : 72, titleWidth + horizontalPadding)
+        return max(Self.candidateInlineMinimumCellWidth, titleWidth + Self.candidateInlineCellHorizontalPadding)
+    }
+
+    private func candidateFont(weight: UIFont.Weight) -> UIFont {
+        UIFont.systemFont(ofSize: Self.candidateTextFontSize, weight: weight)
     }
 
     private func addCandidateStatus(_ text: String, color: UIColor, emphasized: Bool = false) {
