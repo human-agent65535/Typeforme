@@ -1,7 +1,7 @@
 import AppKit
 import ApplicationServices
 
-/// Spec §4: Accessibility permission is required for synthesized Cmd+V paste.
+/// Spec §4: Accessibility permission is required for synthesized text input.
 enum AccessibilityPermissions {
     static var isTrusted: Bool { AXIsProcessTrusted() }
 

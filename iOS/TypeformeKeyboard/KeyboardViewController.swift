@@ -1949,6 +1949,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
         configureCapsuleButton(pasteButton, title: "", image: "doc.on.clipboard", style: .utility)
         pasteButton.widthAnchor.constraint(equalToConstant: 52).isActive = true
+        pasteButton.accessibilityLabel = NSLocalizedString("Paste from Clipboard", comment: "Paste button accessibility label")
         pasteButton.addTarget(self, action: #selector(pasteResult), for: .touchUpInside)
         attachPressAnimation(pasteButton)
 
@@ -2019,11 +2020,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         textStylePickerButton.addTarget(self, action: #selector(toggleCorrectionPopover), for: .touchUpInside)
         attachPressAnimation(textStylePickerButton)
 
-        // Paste (insert lastInsertedText or clipboard) — same tap contract as
-        // the voice-mode pasteButton.
+        // Paste from the system clipboard — same tap contract as the
+        // voice-mode pasteButton.
         configureToolbarIconButton(textPasteButton, image: "doc.on.clipboard")
         textPasteButton.widthAnchor.constraint(equalToConstant: 32).isActive = true
-        textPasteButton.accessibilityLabel = NSLocalizedString("Paste last result", comment: "Paste button accessibility label")
+        textPasteButton.accessibilityLabel = NSLocalizedString("Paste from Clipboard", comment: "Paste button accessibility label")
         textPasteButton.addTarget(self, action: #selector(pasteResult), for: .touchUpInside)
         attachPressAnimation(textPasteButton)
 
@@ -2766,7 +2767,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             pasteButton.accessibilityLabel = NSLocalizedString("Cancel recording", comment: "Tap-mode cancel paste-slot button")
         } else {
             pasteButton.configuration = capsuleButtonConfiguration(title: "", image: "doc.on.clipboard", style: .utility)
-            pasteButton.accessibilityLabel = NSLocalizedString("Paste last result", comment: "Paste button accessibility label")
+            pasteButton.accessibilityLabel = NSLocalizedString("Paste from Clipboard", comment: "Paste button accessibility label")
         }
     }
 
@@ -4115,15 +4116,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             cancelActiveHoldRecording()
             return
         }
-        let candidates = [
-            UIPasteboard.general.string,
-            defaults.string(forKey: lastInsertedTextKey),
-        ]
-        guard let text = candidates.compactMap({ $0 }).first(where: {
-            !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        }) else { return }
+        let text = UIPasteboard.general.string
+        guard let text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         textDocumentProxy.insertText(text)
-        defaults.set(text, forKey: lastInsertedTextKey)
     }
 
     @objc private func selectCorrectionModeButton(_ sender: UIButton) {
@@ -4560,6 +4555,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
 
         guard applyRewrittenText(text, replacing: target) else {
+            copyFallbackText(text)
             bridgeStatus = KeyboardBridgeStatus(commandID: commandID, state: .error, message: "Selection changed; result copied.")
             lastBridgeContactAt = Date().timeIntervalSince1970
             updateUI()
@@ -4578,7 +4574,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     @discardableResult
     private func applyRewrittenText(_ text: String, replacing target: TextRewriteTarget) -> Bool {
-        UIPasteboard.general.string = text
         switch target {
         case .selection(let original, let contextBefore, let contextAfter):
             guard applySelectionReplacement(
@@ -4591,6 +4586,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             replaceContextText(text, before: before, after: after)
         }
         return true
+    }
+
+    private func copyFallbackText(_ text: String) {
+        guard hasFullAccess else { return }
+        UIPasteboard.general.string = text
     }
 
     private func applySelectionReplacement(
@@ -6586,9 +6586,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
            defaults.string(forKey: lastInsertedCommandIDKey) != commandID,
            let text = status.resultText?.trimmingCharacters(in: .whitespacesAndNewlines),
            !text.isEmpty {
-            if hasFullAccess {
-                UIPasteboard.general.string = text
-            }
             let didApply: Bool
             if let pendingTarget = activeRecordingTextTarget,
                pendingTarget.commandID == commandID {
@@ -6609,6 +6606,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             } else {
                 defaults.set(commandID, forKey: lastInsertedCommandIDKey)
                 defaults.set(text, forKey: lastInsertedTextKey)
+                copyFallbackText(text)
                 bridgeStatus = KeyboardBridgeStatus(commandID: commandID, state: .error, message: "Selection changed; result copied.")
             }
         }

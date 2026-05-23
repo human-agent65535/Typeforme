@@ -22,6 +22,7 @@ enum AppPhase: Equatable {
     case failure(String)
 
     enum SuccessKind: Equatable {
+        case ready
         case copied
         case inserted
     }
@@ -47,6 +48,7 @@ enum AppPhase: Equatable {
         case .recording: return "Recording"
         case .sending: return "Sending"
         case .restyling: return "Restyling"
+        case .success(.ready): return "Result ready"
         case .success(.copied): return "Copied"
         case .success(.inserted): return "Inserted"
         case .failure(let msg): return msg
@@ -921,13 +923,16 @@ final class AppState: ObservableObject {
                 correctionLatencyMs: correctionLatencyMs,
                 totalLatencyMs: totalLatencyMs
             )
-            errorMessage = nil
-            applyCorrectionMetadata(status: response.correctionStatus, error: response.correctionError)
-
             let shouldPublishKeyboardResult = keyboardCommandID != nil
                 || keyboardCaptureWasStartedFromKeyboard
                 || (isKeyboardCapture && !isHostStandbyCapture)
             let resultCommandID = keyboardCommandID ?? (shouldPublishKeyboardResult ? "keyboard-\(UUID().uuidString)" : nil)
+            errorMessage = nil
+            applyCorrectionMetadata(
+                status: response.correctionStatus,
+                error: response.correctionError,
+                successKind: resultCommandID == nil ? .ready : .inserted
+            )
             if let resultCommandID {
                 publishKeyboardStatus(
                     .result,
@@ -939,7 +944,7 @@ final class AppState: ObservableObject {
                     rawTranscriptLength: spokenTranscript.count
                 )
             }
-            publishKeyboardPasteboardResult(text)
+            notifyKeyboardResultReady()
             KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.dictationStopped)
             if resultCommandID != nil {
                 scheduleKeyboardStandbyRefresh()
@@ -1020,7 +1025,7 @@ final class AppState: ObservableObject {
                 correctionLatencyMs: response.correctionLatencyMs ?? response.latencyMs,
                 totalLatencyMs: response.latencyMs
             )
-            publishKeyboardPasteboardResult(text)
+            notifyKeyboardResultReady()
             errorMessage = nil
             applyCorrectionMetadata(status: response.correctionStatus, error: response.correctionError)
         } catch {
@@ -1747,10 +1752,12 @@ final class AppState: ObservableObject {
                 correctionLatencyMs: response.correctionLatencyMs ?? response.latencyMs,
                 totalLatencyMs: response.latencyMs
             )
-            UIPasteboard.general.string = text
             errorMessage = nil
-            applyCorrectionMetadata(status: response.correctionStatus, error: response.correctionError)
-            setPhase(.success(.copied))
+            applyCorrectionMetadata(
+                status: response.correctionStatus,
+                error: response.correctionError,
+                successKind: .inserted
+            )
             publishKeyboardStatus(
                 .result,
                 commandID: command.id,
@@ -1866,8 +1873,7 @@ final class AppState: ObservableObject {
         }
     }
 
-    private func publishKeyboardPasteboardResult(_ text: String) {
-        UIPasteboard.general.string = text
+    private func notifyKeyboardResultReady() {
         KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.transcriptionReady)
     }
 
@@ -1893,7 +1899,11 @@ final class AppState: ObservableObject {
         keyboardBridgeStatus = status
     }
 
-    private func applyCorrectionMetadata(status correctionStatus: String?, error correctionError: String?) {
+    private func applyCorrectionMetadata(
+        status correctionStatus: String?,
+        error correctionError: String?,
+        successKind: AppPhase.SuccessKind = .ready
+    ) {
         if correctionStatus == "error" {
             let message = correctionError?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             setFailure(message.isEmpty ? "Mac correction failed." : message)
@@ -1901,13 +1911,27 @@ final class AppState: ObservableObject {
         }
         if correctionStatus == "timeout" {
             errorMessage = nil
-            setPhase(.success(.copied))
-            showTransient("Correction timed out; copied transcript")
+            setPhase(.success(successKind))
+            switch successKind {
+            case .ready:
+                showTransient("Correction timed out; transcript ready")
+            case .copied:
+                showTransient("Correction timed out; copied transcript")
+            case .inserted:
+                showTransient("Correction timed out; inserted transcript")
+            }
             return
         }
         errorMessage = nil
-        setPhase(.success(.copied))
-        showTransient("Copied")
+        setPhase(.success(successKind))
+        switch successKind {
+        case .ready:
+            showTransient("Ready")
+        case .copied:
+            showTransient("Copied")
+        case .inserted:
+            showTransient("Inserted")
+        }
     }
 
     private func isBenignEmptyTranscript(_ error: Error) -> Bool {

@@ -568,7 +568,9 @@ private struct HeroRecordCard: View {
         switch state.phase {
         case .sending: return "Transcribing…"
         case .restyling: return "Re-styling with the new mode."
-        case .success(.copied), .success(.inserted): return "Result copied to the clipboard."
+        case .success(.ready): return "Result ready."
+        case .success(.copied): return "Result copied to the clipboard."
+        case .success(.inserted): return "Result inserted."
         case .failure, .idle, .preparing, .recording:
             return state.inputMode.idleDetail
         }

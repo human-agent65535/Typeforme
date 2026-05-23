@@ -151,7 +151,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .store(in: &cancellables)
 
         if !AccessibilityPermissions.isTrusted {
-            Log.app.notice("AX trust not granted; paste insertion will fail until granted")
+            Log.app.notice("AX trust not granted; automatic text insertion will fail until granted")
         }
         applyProcessingMode(AppSettings.processingMode)
         clientSettingsSync.syncIfNeeded(force: true)
