@@ -1,17 +1,16 @@
 import AppKit
-import Carbon
+import ApplicationServices
 
 /// Spec §21 flow:
-///   save input source → switch CJK→ASCII if needed → write text to
-///   pasteboard → refocus target → Cmd+V → restore input source.
+///   refocus target → synthesize Unicode text input directly into the focused
+///   control.
 ///
-/// Successful synthetic pastes restore the previous pasteboard afterwards so
-/// dictated private text does not linger in Universal Clipboard. If paste
-/// cannot even be attempted, the corrected text remains available for manual
-/// Cmd+V fallback.
+/// The pasteboard is not used as the automatic transport. It is only populated
+/// after direct input cannot be attempted or fails, so the user still has a
+/// manual paste fallback without overwriting their Clipboard on every success.
 @MainActor
 final class PasteboardTextCommitter: TextCommitter {
-    private static let vKeyCode: CGKeyCode = 9  // kVK_ANSI_V
+    private static let unicodeInputChunkUTF16Limit = 32
     private static let transientPasteboardType = NSPasteboard.PasteboardType("org.nspasteboard.TransientType")
 
     static func copyForManualPaste(_ text: String) {
@@ -28,36 +27,32 @@ final class PasteboardTextCommitter: TextCommitter {
     ) async throws {
         try await checkCancelled(cancelToken)
 
-        let savedSource = InputSourceManager.current()
-        let switched = InputSourceManager.switchToASCIIIfNeeded()
-        let pasteboardSnapshot = PasteboardSnapshot.capture()
-        var didPaste = false
-
-        defer {
-            if switched != nil, let savedSource {
-                _ = InputSourceManager.select(savedSource)
-            }
-            if didPaste {
-                pasteboardSnapshot.restore()
-            }
-        }
-
-        Self.copyForManualPaste(text)
-        try await checkCancelled(cancelToken)
-
         guard AccessibilityPermissions.isTrusted else {
+            Self.copyForManualPaste(text)
             throw TextCommitterError.accessibilityNotTrusted
         }
 
         if let snapshot {
             await MainActor.run { FrontmostAppCapture.refocus(snapshot) }
             try? await Task.sleep(nanoseconds: 50_000_000)
+            let isTargetFrontmost = await MainActor.run {
+                FrontmostAppCapture.isFrontmost(snapshot)
+            }
+            guard isTargetFrontmost else {
+                Self.copyForManualPaste(text)
+                throw TextCommitterError.targetFocusLost
+            }
         }
         try await checkCancelled(cancelToken)
 
-        try sendCommandV()
-        try? await Task.sleep(nanoseconds: 120_000_000)
-        didPaste = true
+        do {
+            try await sendUnicodeText(text, cancelToken: cancelToken)
+        } catch TextCommitterError.cancelled {
+            throw TextCommitterError.cancelled
+        } catch {
+            Self.copyForManualPaste(text)
+            throw error
+        }
     }
 
     func commitTextEdit(
@@ -67,22 +62,22 @@ final class PasteboardTextCommitter: TextCommitter {
         cancelToken: CommitCancellationToken?
     ) async throws {
         try await checkCancelled(cancelToken)
-        let pasteboardSnapshot = PasteboardSnapshot.capture()
-        var didPaste = false
-        defer {
-            if didPaste {
-                pasteboardSnapshot.restore()
-            }
-        }
-        Self.copyForManualPaste(text)
 
         guard AccessibilityPermissions.isTrusted else {
+            Self.copyForManualPaste(text)
             throw TextCommitterError.accessibilityNotTrusted
         }
 
         if let appSnapshot {
             await MainActor.run { FrontmostAppCapture.refocus(appSnapshot) }
             try? await Task.sleep(nanoseconds: 50_000_000)
+            let isTargetFrontmost = await MainActor.run {
+                FrontmostAppCapture.isFrontmost(appSnapshot)
+            }
+            guard isTargetFrontmost else {
+                Self.copyForManualPaste(text)
+                throw TextCommitterError.targetFocusLost
+            }
         }
         try await checkCancelled(cancelToken)
 
@@ -90,38 +85,80 @@ final class PasteboardTextCommitter: TextCommitter {
         case .selection:
             let current = TextEditTargetCapture.currentSelectedText(in: appSnapshot) ?? ""
             guard current == target.targetText else {
+                Self.copyForManualPaste(text)
                 throw TextCommitterError.selectionChanged
             }
-            try sendCommandV()
-            try? await Task.sleep(nanoseconds: 120_000_000)
-            didPaste = true
+            do {
+                try await sendUnicodeText(text, cancelToken: cancelToken)
+            } catch TextCommitterError.cancelled {
+                throw TextCommitterError.cancelled
+            } catch {
+                Self.copyForManualPaste(text)
+                throw error
+            }
         case .focusedValue:
             let current = TextEditTargetCapture.currentValue(of: target) ?? ""
             guard current == target.targetText else {
+                Self.copyForManualPaste(text)
                 throw TextCommitterError.selectionChanged
             }
             guard TextEditTargetCapture.setFocusedValue(text, target: target) else {
+                Self.copyForManualPaste(text)
                 throw TextCommitterError.eventPostFailed
             }
-            didPaste = true
         }
     }
 
-    // MARK: - Synthetic Cmd+V
+    // MARK: - Synthetic text input
 
-    private func sendCommandV() throws {
+    private func sendUnicodeText(_ text: String, cancelToken: CommitCancellationToken?) async throws {
         guard let source = CGEventSource(stateID: .combinedSessionState) else {
             throw TextCommitterError.eventSourceFailed
         }
-        guard let down = CGEvent(keyboardEventSource: source, virtualKey: Self.vKeyCode, keyDown: true),
-              let up   = CGEvent(keyboardEventSource: source, virtualKey: Self.vKeyCode, keyDown: false)
-        else {
-            throw TextCommitterError.eventPostFailed
+
+        for chunk in Self.unicodeInputChunks(for: text) {
+            try await checkCancelled(cancelToken)
+            let units = Array(chunk.utf16)
+            try units.withUnsafeBufferPointer { buffer in
+                guard let down = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true),
+                      let up = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false)
+                else {
+                    throw TextCommitterError.eventPostFailed
+                }
+                down.keyboardSetUnicodeString(
+                    stringLength: buffer.count,
+                    unicodeString: buffer.baseAddress
+                )
+                down.post(tap: .cghidEventTap)
+                up.post(tap: .cghidEventTap)
+            }
+            await Task.yield()
         }
-        down.flags = .maskCommand
-        up.flags   = .maskCommand
-        down.post(tap: .cghidEventTap)
-        up.post(tap: .cghidEventTap)
+        try await checkCancelled(cancelToken)
+    }
+
+    private static func unicodeInputChunks(for text: String) -> [String] {
+        var chunks: [String] = []
+        var current = ""
+        var currentUTF16Count = 0
+
+        for character in text {
+            let characterText = String(character)
+            let characterUTF16Count = characterText.utf16.count
+            if !current.isEmpty,
+               currentUTF16Count + characterUTF16Count > unicodeInputChunkUTF16Limit {
+                chunks.append(current)
+                current = ""
+                currentUTF16Count = 0
+            }
+            current += characterText
+            currentUTF16Count += characterUTF16Count
+        }
+
+        if !current.isEmpty {
+            chunks.append(current)
+        }
+        return chunks
     }
 
     private func checkCancelled(_ token: CommitCancellationToken?) async throws {
@@ -131,32 +168,5 @@ final class PasteboardTextCommitter: TextCommitter {
         if let token, await token.isCancelled() {
             throw TextCommitterError.cancelled
         }
-    }
-}
-
-private struct PasteboardSnapshot {
-    private let items: [NSPasteboardItem]
-
-    static func capture() -> PasteboardSnapshot {
-        let copiedItems = NSPasteboard.general.pasteboardItems?.map { item -> NSPasteboardItem in
-            let copy = NSPasteboardItem()
-            for type in item.types {
-                if let data = item.data(forType: type) {
-                    copy.setData(data, forType: type)
-                } else if let string = item.string(forType: type) {
-                    copy.setString(string, forType: type)
-                }
-            }
-            return copy
-        } ?? []
-        return PasteboardSnapshot(items: copiedItems)
-    }
-
-    @MainActor
-    func restore() {
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        guard !items.isEmpty else { return }
-        pasteboard.writeObjects(items)
     }
 }

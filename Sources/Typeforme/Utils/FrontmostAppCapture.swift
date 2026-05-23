@@ -28,4 +28,9 @@ enum FrontmostAppCapture {
             app.activate(options: [.activateIgnoringOtherApps])
         }
     }
+
+    @MainActor
+    static func isFrontmost(_ snapshot: FrontmostAppSnapshot) -> Bool {
+        NSWorkspace.shared.frontmostApplication?.processIdentifier == snapshot.pid
+    }
 }

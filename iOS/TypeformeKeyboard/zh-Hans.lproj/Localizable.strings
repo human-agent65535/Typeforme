@@ -55,7 +55,7 @@
 "Enable Full Access" = "允许完全访问";
 "Command selected text" = "对选中文本下达指令";
 "Cancel recording" = "取消录音";
-"Paste last result" = "粘贴上次结果";
+"Paste from Clipboard" = "从剪贴板粘贴";
 "Voice level" = "音量";
 "Correction mode: %@" = "纠正模式: %@";
 "Double tap to choose another mode" = "双击切换模式";

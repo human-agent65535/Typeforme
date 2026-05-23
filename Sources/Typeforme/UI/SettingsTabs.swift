@@ -134,7 +134,7 @@ struct GeneralSettingsView: View {
                     .fixedSize()
                 }
                 Text(axTrusted
-                     ? "Typeforme can paste corrected text via synthesized ⌘V."
+                     ? "Typeforme can insert corrected text via synthesized input."
                      : "Toggle Typeforme on in System Settings → Privacy → Accessibility. This row refreshes automatically once you grant access.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
