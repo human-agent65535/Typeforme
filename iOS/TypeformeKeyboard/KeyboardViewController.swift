@@ -5846,7 +5846,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
         for index in state.candidates.indices {
             let candidate = state.candidates[index]
-            let cellWidth = candidateGridNaturalCellWidth(for: candidate)
+            let cellWidth = min(candidateGridNaturalCellWidth(for: candidate), availableWidth)
             if currentRow != nil,
                currentRowButtons.count >= maxColumnCount || usedWidth + cellWidth > availableWidth + 0.5 {
                 finishCurrentRow()
@@ -5913,8 +5913,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     ) {
         guard !buttons.isEmpty else { return }
         let evenWidth = availableWidth / CGFloat(buttons.count)
-        if buttons.count < candidateGridColumnCount(for: availableWidth)
-            || naturalWidths.allSatisfy({ $0 <= evenWidth + 0.5 }) {
+        if naturalWidths.allSatisfy({ $0 <= evenWidth + 0.5 }) {
             for button in buttons {
                 button.constraints
                     .filter { $0.firstAttribute == .width && $0.firstItem === button }
@@ -5980,6 +5979,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         button.layer.borderColor = UIColor.clear.cgColor
         button.titleLabel?.numberOfLines = 1
         button.titleLabel?.lineBreakMode = .byTruncatingTail
+        button.titleLabel?.adjustsFontSizeToFitWidth = true
+        button.titleLabel?.minimumScaleFactor = 0.6
         return button
     }
 
