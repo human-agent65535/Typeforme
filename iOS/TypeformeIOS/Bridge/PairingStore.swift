@@ -44,11 +44,11 @@ struct PairingStore {
 
 struct PairingTokenStore {
     static let bridgePairing = PairingTokenStore(
-        service: "com.typeforme.ios.bridge",
+        service: "com.example.typeforme",
         account: "pairing-token"
     )
     static let keyboardBridge = PairingTokenStore(
-        service: "com.typeforme.ios.keyboard",
+        service: "com.example.typeforme.keyboard",
         account: "keyboard-bridge-token"
     )
 

@@ -5,7 +5,6 @@
 # Swift / SPM
 .build/
 .swiftpm/
-Package.resolved
 
 # Xcode
 DerivedData/

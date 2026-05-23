@@ -4,7 +4,7 @@ import ObjectiveC
 import OSLog
 import QuartzCore
 
-private let kbLog = Logger(subsystem: "com.typeforme.keyboard", category: "ui")
+private let kbLog = Logger(subsystem: "com.example.typeforme.keyboard", category: "ui")
 
 private typealias CorrectionModePreset = CorrectionMode
 
@@ -4138,7 +4138,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         guard !trimmed.isEmpty, trimmed != "<null>" else { return false }
         guard isBundleIdentifierShape(trimmed) else { return false }
         guard trimmed != Bundle.main.bundleIdentifier else { return false }
-        guard !trimmed.hasPrefix("com.typeforme.") else { return false }
         guard !trimmed.hasPrefix("com.example.typeforme") else { return false }
         return true
     }

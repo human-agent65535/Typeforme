@@ -313,10 +313,12 @@ struct PairingView: View {
             return
         }
         do {
-            var decoded = try JSONDecoder().decode(PairingConfig.self, from: data)
-            decoded.languageIDs = config.languageIDs
-            decoded.supportedLanguages = config.supportedLanguages
-            decoded.correctionMode = config.correctionMode
+            let payload = try JSONDecoder().decode(PairingPayload.self, from: data)
+            var decoded = payload.config(
+                languageIDs: config.languageIDs,
+                supportedLanguages: config.supportedLanguages,
+                correctionMode: config.correctionMode
+            )
             decoded.normalizeLanguageIDs()
             config = decoded
             parsedSuccessfully = true

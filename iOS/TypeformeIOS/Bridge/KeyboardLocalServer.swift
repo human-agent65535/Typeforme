@@ -9,7 +9,7 @@ final class KeyboardLocalServer {
     var statusProvider: (() async -> KeyboardBridgeStatus)?
     var expectedTokenProvider: (() async -> String?)?
 
-    private let queue = DispatchQueue(label: "com.typeforme.keyboard-server")
+    private let queue = DispatchQueue(label: "com.example.typeforme.keyboard-server")
     private let stateLock = NSLock()
     private var listener: NWListener?
     private var activeConnections: [ObjectIdentifier: NWConnection] = [:]

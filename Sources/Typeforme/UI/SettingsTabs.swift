@@ -3190,7 +3190,7 @@ struct DiagnosticsSettingsView: View {
                 HStack {
                     Text("Subsystem")
                     Spacer()
-                    Text("com.typeforme.mac").foregroundStyle(.secondary).textSelection(.enabled)
+                    Text("com.example.typeforme.mac").foregroundStyle(.secondary).textSelection(.enabled)
                 }
                 Text("Open Console.app and filter by Subsystem to see categorized live logs (audio, asr, llm, hotkey, coordinator, …).")
                     .font(.footnote).foregroundStyle(.secondary)

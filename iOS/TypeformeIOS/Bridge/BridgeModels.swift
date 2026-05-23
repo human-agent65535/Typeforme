@@ -119,6 +119,49 @@ struct UserPreferences: Codable, Equatable {
     }
 }
 
+struct PairingPayload: Decodable, Equatable {
+    let lanBridgeURL: String
+    let lanBridgeURLs: [String]
+    let publicBridgeURL: String
+    let token: String
+
+    enum CodingKeys: String, CodingKey {
+        case lanBridgeURL = "lan_bridge_url"
+        case lanBridgeURLs = "lan_bridge_urls"
+        case publicBridgeURL = "public_bridge_url"
+        case token
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        lanBridgeURL = (try container.decodeIfPresent(String.self, forKey: .lanBridgeURL) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        lanBridgeURLs = try container.decodeIfPresent([String].self, forKey: .lanBridgeURLs) ?? []
+        publicBridgeURL = (try container.decodeIfPresent(String.self, forKey: .publicBridgeURL) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        token = (try container.decodeIfPresent(String.self, forKey: .token) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    func config(
+        languageIDs: [String] = ["zh-CN", "en-US"],
+        supportedLanguages: [PairingLanguageOption] = PairingLanguageOption.allWhisperLanguages,
+        correctionMode: CorrectionModeID = .polish
+    ) -> PairingConfig {
+        let localCandidates = PairingConfig.uniqueBridgeURLs([lanBridgeURL] + lanBridgeURLs)
+        let primaryLocalURL = lanBridgeURL.isEmpty ? (localCandidates.first ?? "") : lanBridgeURL
+        return PairingConfig(
+            lanBridgeURL: primaryLocalURL,
+            lanBridgeURLs: localCandidates,
+            publicBridgeURL: publicBridgeURL,
+            token: token,
+            languageIDs: languageIDs,
+            supportedLanguages: supportedLanguages,
+            correctionMode: correctionMode
+        )
+    }
+}
+
 struct PairingConfig: Codable, Equatable {
     var bridgeEndpoints: BridgeEndpoints
     var userPreferences: UserPreferences
@@ -171,13 +214,6 @@ struct PairingConfig: Codable, Equatable {
     enum CodingKeys: String, CodingKey {
         case bridgeEndpoints = "bridge_endpoints"
         case userPreferences = "user_preferences"
-        case lanBridgeURL = "lan_bridge_url"
-        case lanBridgeURLs = "lan_bridge_urls"
-        case publicBridgeURL = "public_bridge_url"
-        case token
-        case languageIDs = "language_ids"
-        case supportedLanguages = "supported_languages"
-        case correctionMode = "correction_mode"
     }
 
     init(
@@ -204,46 +240,9 @@ struct PairingConfig: Codable, Equatable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        if let endpoints = try container.decodeIfPresent(BridgeEndpoints.self, forKey: .bridgeEndpoints),
-           let preferences = try container.decodeIfPresent(UserPreferences.self, forKey: .userPreferences) {
-            self.bridgeEndpoints = endpoints
-            self.userPreferences = preferences
-            normalizeLanguageIDs()
-            return
-        }
-
-        // One-time migration for pairing.config.v1 and pasted pairing JSON.
-        // Input shape through 2026-05-21:
-        // { lan_bridge_url, lan_bridge_urls, public_bridge_url, token,
-        //   language_ids, supported_languages, correction_mode }
-        // Output shape after first save:
-        // { bridge_endpoints: { lan_bridge_url, lan_bridge_urls,
-        //   public_bridge_url, token },
-        //   user_preferences: { language_ids, supported_languages,
-        //   correction_mode } }
-        // Code location: PairingConfig.init(from:) and encode(to:) here.
-        // Removal date: 2026-08-31, after active testers have moved past
-        // builds that wrote the combined shape.
-        let decodedLANBridgeURL = try container.decodeIfPresent(String.self, forKey: .lanBridgeURL) ?? ""
-        let decodedLANBridgeURLs = try container.decodeIfPresent([String].self, forKey: .lanBridgeURLs) ?? []
-        let localCandidates = PairingConfig.uniqueBridgeURLs([decodedLANBridgeURL] + decodedLANBridgeURLs)
-        let normalizedLANBridgeURL = decodedLANBridgeURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? (localCandidates.first ?? "")
-            : decodedLANBridgeURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        let decodedSupportedLanguages = try container.decodeIfPresent([PairingLanguageOption].self, forKey: .supportedLanguages)
-            ?? PairingLanguageOption.allWhisperLanguages
-        let decodedLanguageIDs = try container.decodeIfPresent([String].self, forKey: .languageIDs) ?? ["zh-CN", "en-US"]
-        self.bridgeEndpoints = BridgeEndpoints(
-            lanBridgeURL: normalizedLANBridgeURL,
-            lanBridgeURLs: localCandidates,
-            publicBridgeURL: try container.decodeIfPresent(String.self, forKey: .publicBridgeURL) ?? "",
-            token: try container.decodeIfPresent(String.self, forKey: .token) ?? ""
-        )
-        self.userPreferences = UserPreferences(
-            languageIDs: decodedLanguageIDs,
-            supportedLanguages: decodedSupportedLanguages,
-            correctionMode: try container.decodeIfPresent(CorrectionModeID.self, forKey: .correctionMode) ?? .polish
-        )
+        self.bridgeEndpoints = try container.decode(BridgeEndpoints.self, forKey: .bridgeEndpoints)
+        self.userPreferences = try container.decode(UserPreferences.self, forKey: .userPreferences)
+        normalizeLanguageIDs()
     }
 
     func encode(to encoder: Encoder) throws {

@@ -284,23 +284,20 @@ if [ -x "$LLAMA_SRC" ]; then
     bundle_non_system_deps "$LLAMA_DIR" "llama-server-arm64"
     # Sign the helper FIRST (deepest first), then the app bundle below.
     codesign --force --options runtime --entitlements "$LLAMA_ENT" \
-             --sign "$SIGN_IDENTITY" "$LLAMA_DIR/llama-server-arm64" \
-        || echo "warn: llama-server codesign failed" >&2
+             --sign "$SIGN_IDENTITY" "$LLAMA_DIR/llama-server-arm64"
     for sib in "$LLAMA_DIR"/*.dylib "$LLAMA_DIR"/*.metallib; do
         [ -e "$sib" ] || continue
-        codesign --force --options runtime --sign "$SIGN_IDENTITY" "$sib" \
-            || echo "warn: codesign $(basename "$sib") failed" >&2
+        codesign --force --options runtime --sign "$SIGN_IDENTITY" "$sib"
     done
 fi
 
 # Sign the app bundle. --deep so anything inside Resources/ is verified too.
 APP_ENT="$ROOT/Resources/Typeforme.entitlements"
 codesign --force --options runtime --entitlements "$APP_ENT" \
-         --sign "$SIGN_IDENTITY" --deep "$APP_DIR" \
-    || echo "warn: app codesign failed" >&2
+         --sign "$SIGN_IDENTITY" --deep "$APP_DIR"
 
 # Sanity check
-codesign --verify --deep --strict --verbose=1 "$APP_DIR" 2>&1 | sed 's/^/verify: /' || true
+codesign --verify --deep --strict --verbose=1 "$APP_DIR" 2>&1 | sed 's/^/verify: /'
 
 echo "built: $APP_DIR"
 if [ -x "$LLAMA_DIR/llama-server-arm64" ]; then

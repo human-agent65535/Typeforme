@@ -67,16 +67,16 @@ enum KeyboardSharedDefaults {
 }
 
 enum KeyboardDarwinNotificationName {
-    static let transcriptionReady = "com.typeforme.keyboard.transcriptionReady"
-    static let dictationStarted = "com.typeforme.keyboard.dictationStarted"
-    static let dictationStopped = "com.typeforme.keyboard.dictationStopped"
-    static let sessionStarted = "com.typeforme.keyboard.sessionStarted"
-    static let sessionEnded = "com.typeforme.keyboard.sessionEnded"
-    static let requestSessionStatus = "com.typeforme.keyboard.requestSessionStatus"
-    static let requestStartDictation = "com.typeforme.keyboard.requestStartDictation"
-    static let requestStopDictation = "com.typeforme.keyboard.requestStopDictation"
-    static let requestCancelDictation = "com.typeforme.keyboard.requestCancelDictation"
-    static let keyboardDefaultsChanged = "com.typeforme.keyboard.defaultsChanged"
+    static let transcriptionReady = "com.example.typeforme.keyboard.transcriptionReady"
+    static let dictationStarted = "com.example.typeforme.keyboard.dictationStarted"
+    static let dictationStopped = "com.example.typeforme.keyboard.dictationStopped"
+    static let sessionStarted = "com.example.typeforme.keyboard.sessionStarted"
+    static let sessionEnded = "com.example.typeforme.keyboard.sessionEnded"
+    static let requestSessionStatus = "com.example.typeforme.keyboard.requestSessionStatus"
+    static let requestStartDictation = "com.example.typeforme.keyboard.requestStartDictation"
+    static let requestStopDictation = "com.example.typeforme.keyboard.requestStopDictation"
+    static let requestCancelDictation = "com.example.typeforme.keyboard.requestCancelDictation"
+    static let keyboardDefaultsChanged = "com.example.typeforme.keyboard.defaultsChanged"
 
     static func authenticatedRequest(_ name: String, token: String?) -> String? {
         guard let token,

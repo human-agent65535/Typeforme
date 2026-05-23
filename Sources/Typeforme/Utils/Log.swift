@@ -4,7 +4,7 @@ import os
 /// Per spec §25: never log full user text. Use these categories from services;
 /// log provider, latency, text length, hash, error code only.
 enum Log {
-    private static let subsystem = "com.typeforme.mac"
+    private static let subsystem = "com.example.typeforme.mac"
     static let app          = Logger(subsystem: subsystem, category: "app")
     static let coordinator  = Logger(subsystem: subsystem, category: "coordinator")
     static let audio        = Logger(subsystem: subsystem, category: "audio")

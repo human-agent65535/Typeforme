@@ -3,7 +3,6 @@ import Foundation
 final class KeyboardCoordinator {
     let bridgeToken: String
 
-    private static let legacyKeyboardBridgeTokenKey = "keyboard.bridgeToken"
     private var lastDefaultsSignature = ""
 
     init() {
@@ -53,17 +52,14 @@ final class KeyboardCoordinator {
         let store = PairingTokenStore.keyboardBridge
         if let sharedToken = KeyboardSharedDefaults.bridgeToken(from: KeyboardSharedDefaults.loadPayload()) {
             store.save(sharedToken)
-            UserDefaults.standard.removeObject(forKey: legacyKeyboardBridgeTokenKey)
             return sharedToken
         }
         if let token = store.load(),
            !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            UserDefaults.standard.removeObject(forKey: legacyKeyboardBridgeTokenKey)
             return token
         }
         let token = KeyboardSharedDefaults.makeBridgeToken()
         store.save(token)
-        UserDefaults.standard.removeObject(forKey: legacyKeyboardBridgeTokenKey)
         return token
     }
 }

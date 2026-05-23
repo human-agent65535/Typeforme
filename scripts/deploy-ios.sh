@@ -21,6 +21,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PROJECT="$ROOT/iOS/TypeformeIOS.xcodeproj"
 SCHEME="TypeformeIOS"
 BUNDLE_ID="com.example.typeforme"
+KEYBOARD_BUNDLE_ID="com.example.typeforme.keyboard"
 CONFIG="${CONFIG:-Release}"
 DERIVED="${DERIVED:-/tmp/TypeformeIOS-DD-${CONFIG}}"
 TEAM="${TEAM:-}"
@@ -147,9 +148,121 @@ if [ ! -d "$APP_PATH" ]; then
     echo "Built app not found at $APP_PATH" >&2
     exit 1
 fi
+KEYBOARD_APPEX_PATH="$APP_PATH/PlugIns/TypeformeKeyboard.appex"
+if [ ! -d "$KEYBOARD_APPEX_PATH" ]; then
+    echo "Built keyboard extension not found at $KEYBOARD_APPEX_PATH" >&2
+    exit 1
+fi
+HOST_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_PATH/Info.plist")"
+HOST_BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PATH/Info.plist")"
+KEYBOARD_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$KEYBOARD_APPEX_PATH/Info.plist")"
+KEYBOARD_BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$KEYBOARD_APPEX_PATH/Info.plist")"
+KEYBOARD_BUILT_BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$KEYBOARD_APPEX_PATH/Info.plist")"
+if [ "$KEYBOARD_BUILT_BUNDLE_ID" != "$KEYBOARD_BUNDLE_ID" ]; then
+    echo "Built keyboard extension bundle id mismatch: $KEYBOARD_BUILT_BUNDLE_ID" >&2
+    exit 1
+fi
 
 echo "→ Installing $APP_PATH"
 xcrun devicectl device install app --device "$DEVICE_ID" "$APP_PATH"
+
+echo "→ Verifying installed host app and keyboard extension"
+APP_INFO_JSON="$(mktemp -t typeforme-installed-apps)"
+APP_INFO_TEXT="$(mktemp -t typeforme-installed-apps-text)"
+VERIFY_OK=0
+for attempt in 1 2 3 4 5; do
+    if xcrun devicectl device info apps \
+        --device "$DEVICE_ID" \
+        --bundle-id "$BUNDLE_ID" \
+        --include-removable-apps \
+        --json-output "$APP_INFO_JSON" >"$APP_INFO_TEXT" 2>&1 &&
+       /usr/bin/python3 - "$APP_INFO_JSON" "$BUNDLE_ID" "$KEYBOARD_BUNDLE_ID" "$HOST_VERSION" "$HOST_BUILD" "$KEYBOARD_VERSION" "$KEYBOARD_BUILD" <<'PY'
+import json
+import sys
+
+path, host_id, keyboard_id, host_version, host_build, keyboard_version, keyboard_build = sys.argv[1:]
+with open(path, "r", encoding="utf-8") as handle:
+    payload = json.load(handle)
+
+def walk(value):
+    if isinstance(value, dict):
+        yield value
+        for child in value.values():
+            yield from walk(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from walk(child)
+
+def contains_string(value, expected):
+    if isinstance(value, str):
+        return value == expected
+    if isinstance(value, dict):
+        return any(contains_string(child, expected) for child in value.values())
+    if isinstance(value, list):
+        return any(contains_string(child, expected) for child in value)
+    return False
+
+def find_record(bundle_id):
+    for item in walk(payload):
+        if contains_string(item, bundle_id):
+            return item
+    return None
+
+def find_value(value, names):
+    lowered = {name.lower() for name in names}
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if key.lower() in lowered and isinstance(child, (str, int)):
+                return str(child)
+        for child in value.values():
+            found = find_value(child, names)
+            if found is not None:
+                return found
+    elif isinstance(value, list):
+        for child in value:
+            found = find_value(child, names)
+            if found is not None:
+                return found
+    return None
+
+def require_record(bundle_id, expected_version, expected_build):
+    record = find_record(bundle_id)
+    if record is None:
+        raise SystemExit(f"missing installed bundle record for {bundle_id}")
+    version = find_value(record, [
+        "CFBundleShortVersionString",
+        "bundleShortVersionString",
+        "shortVersionString",
+        "marketingVersion",
+    ])
+    build = find_value(record, [
+        "CFBundleVersion",
+        "bundleVersion",
+        "buildVersion",
+        "build",
+    ])
+    if version != expected_version or build != expected_build:
+        raise SystemExit(
+            f"{bundle_id} installed version mismatch: "
+            f"version={version!r} build={build!r}, expected version={expected_version!r} build={expected_build!r}"
+        )
+
+require_record(host_id, host_version, host_build)
+require_record(keyboard_id, keyboard_version, keyboard_build)
+PY
+    then
+        VERIFY_OK=1
+        break
+    fi
+    sleep 1
+done
+if [ "$VERIFY_OK" != "1" ]; then
+    cat "$APP_INFO_TEXT" >&2
+    echo "Installed app verification failed. Expected host $HOST_VERSION ($HOST_BUILD) and keyboard $KEYBOARD_VERSION ($KEYBOARD_BUILD)." >&2
+    rm -f "$APP_INFO_JSON" "$APP_INFO_TEXT"
+    exit 1
+fi
+rm -f "$APP_INFO_JSON" "$APP_INFO_TEXT"
 
 if [ "$ACTION" = "launch" ]; then
     echo "→ Launching $BUNDLE_ID"

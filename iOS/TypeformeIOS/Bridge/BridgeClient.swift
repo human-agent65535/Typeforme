@@ -59,12 +59,13 @@ struct BridgeClient {
     }
 
     func pairing(timeout: TimeInterval = 10) async throws -> PairingConfig {
-        try await request(
+        let payload: PairingPayload = try await request(
             path: "/v1/pairing",
             method: "GET",
             body: Optional<Data>.none,
             timeout: timeout
         )
+        return payload.config()
     }
 
     func macSettings(timeout: TimeInterval = 10) async throws -> BridgeMacSettingsPayload {
