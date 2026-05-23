@@ -18,6 +18,9 @@ final class KeyboardCoordinator {
         autoCapitalizationEnabled: Bool,
         characterPreviewEnabled: Bool,
         chinesePunctuationStyle: KeyboardChinesePunctuationStyle,
+        rimeDictionaryTier: KeyboardRimeDictionaryTier,
+        defaultTextInputLanguage: KeyboardDefaultTextInputLanguage,
+        rimeLearningResetGeneration: Int,
         force: Bool = false
     ) {
         let stablePayload: [String: Any] = [
@@ -27,6 +30,9 @@ final class KeyboardCoordinator {
             "auto_capitalization_enabled": autoCapitalizationEnabled,
             "character_preview_enabled": characterPreviewEnabled,
             "chinese_punctuation_style": chinesePunctuationStyle.rawValue,
+            "rime_dictionary_tier": rimeDictionaryTier.rawValue,
+            "default_text_input_language": defaultTextInputLanguage.rawValue,
+            "rime_learning_reset_generation": rimeLearningResetGeneration,
         ]
         let signature = stableKeyboardDefaultsSignature(stablePayload)
         guard force || signature != lastDefaultsSignature else { return }

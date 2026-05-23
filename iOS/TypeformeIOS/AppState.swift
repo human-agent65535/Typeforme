@@ -102,6 +102,44 @@ enum KeyboardChinesePunctuationStyle: String, CaseIterable, Identifiable {
     }
 }
 
+enum KeyboardRimeDictionaryTier: String, CaseIterable, Identifiable {
+    case standard
+    case extended
+    case large
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .standard:
+            return NSLocalizedString("Standard", comment: "Rime dictionary tier")
+        case .extended:
+            return NSLocalizedString("Extended", comment: "Rime dictionary tier")
+        case .large:
+            return NSLocalizedString("Large", comment: "Rime dictionary tier")
+        }
+    }
+}
+
+enum KeyboardDefaultTextInputLanguage: String, CaseIterable, Identifiable {
+    case lastUsed = "last_used"
+    case chinese
+    case english
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .lastUsed:
+            return NSLocalizedString("Last Used", comment: "Default keyboard text input language")
+        case .chinese:
+            return NSLocalizedString("Chinese", comment: "Default keyboard text input language")
+        case .english:
+            return NSLocalizedString("English", comment: "Default keyboard text input language")
+        }
+    }
+}
+
 struct ServerTimingSummary: Equatable {
     var transcriptionLatencyMs: Int?
     var correctionLatencyMs: Int?
@@ -140,6 +178,9 @@ final class AppState: ObservableObject {
     @Published var keyboardAutoCapitalizationEnabled: Bool
     @Published var keyboardCharacterPreviewEnabled: Bool
     @Published var keyboardChinesePunctuationStyle: KeyboardChinesePunctuationStyle
+    @Published var keyboardRimeDictionaryTier: KeyboardRimeDictionaryTier
+    @Published var keyboardDefaultTextInputLanguage: KeyboardDefaultTextInputLanguage
+    @Published private(set) var keyboardRimeLearningResetGeneration: Int
     @Published var keyboardBridgeStatus = KeyboardBridgeStatus.idle
     /// True once the keyboard extension has successfully contacted the host
     /// (via the local bridge server or a Darwin notification). A successful
@@ -173,6 +214,9 @@ final class AppState: ObservableObject {
     private static let keyboardAutoCapitalizationKey = "keyboard.autoCapitalizationEnabled"
     private static let keyboardCharacterPreviewKey = "keyboard.characterPreviewEnabled"
     private static let keyboardChinesePunctuationStyleKey = "keyboard.chinesePunctuationStyle"
+    private static let keyboardRimeDictionaryTierKey = "keyboard.rimeDictionaryTier"
+    private static let keyboardDefaultTextInputLanguageKey = "keyboard.defaultTextInputLanguage"
+    private static let keyboardRimeLearningResetGenerationKey = "keyboard.rimeLearningResetGeneration"
     private static let keyboardEverContactedKey = "keyboard.everContacted"
     private static let recordingTailBufferNanoseconds: UInt64 = 200_000_000
     private var hostHoldReleasePending = false
@@ -304,6 +348,11 @@ final class AppState: ObservableObject {
             .map { _ in UserDefaults.standard.bool(forKey: Self.keyboardCharacterPreviewKey) } ?? false
         self.keyboardChinesePunctuationStyle = UserDefaults.standard.string(forKey: Self.keyboardChinesePunctuationStyleKey)
             .flatMap(KeyboardChinesePunctuationStyle.init(rawValue:)) ?? .chinese
+        self.keyboardRimeDictionaryTier = UserDefaults.standard.string(forKey: Self.keyboardRimeDictionaryTierKey)
+            .flatMap(KeyboardRimeDictionaryTier.init(rawValue:)) ?? .standard
+        self.keyboardDefaultTextInputLanguage = UserDefaults.standard.string(forKey: Self.keyboardDefaultTextInputLanguageKey)
+            .flatMap(KeyboardDefaultTextInputLanguage.init(rawValue:)) ?? .lastUsed
+        self.keyboardRimeLearningResetGeneration = UserDefaults.standard.integer(forKey: Self.keyboardRimeLearningResetGenerationKey)
         self.keyboardEverContacted = UserDefaults.standard.bool(forKey: Self.keyboardEverContactedKey)
         self.selectedLanguageIDs = Set(saved.validatedLanguageIDs)
         self.keyboardStandbyEnabled = true
@@ -416,6 +465,30 @@ final class AppState: ObservableObject {
         publishKeyboardDefaults()
     }
 
+    func setKeyboardRimeDictionaryTier(_ tier: KeyboardRimeDictionaryTier) {
+        guard tier != keyboardRimeDictionaryTier else { return }
+        keyboardRimeDictionaryTier = tier
+        UserDefaults.standard.set(tier.rawValue, forKey: Self.keyboardRimeDictionaryTierKey)
+        publishKeyboardDefaults()
+    }
+
+    func setKeyboardDefaultTextInputLanguage(_ language: KeyboardDefaultTextInputLanguage) {
+        guard language != keyboardDefaultTextInputLanguage else { return }
+        keyboardDefaultTextInputLanguage = language
+        UserDefaults.standard.set(language.rawValue, forKey: Self.keyboardDefaultTextInputLanguageKey)
+        publishKeyboardDefaults()
+    }
+
+    func resetKeyboardRimeLearning() {
+        keyboardRimeLearningResetGeneration += 1
+        UserDefaults.standard.set(
+            keyboardRimeLearningResetGeneration,
+            forKey: Self.keyboardRimeLearningResetGenerationKey
+        )
+        publishKeyboardDefaults(force: true)
+        showTransient(NSLocalizedString("Learning reset requested", comment: "Rime learning reset toast"))
+    }
+
     func refreshRoute(force: Bool = false, probeAllEndpoints: Bool = true) async {
         let cacheTTL = routeStatus.activeKind == .local ? Self.localRouteCacheTTL : Self.routeCacheTTL
         if !force, let routeFetchedAt,
@@ -526,6 +599,9 @@ final class AppState: ObservableObject {
             autoCapitalizationEnabled: keyboardAutoCapitalizationEnabled,
             characterPreviewEnabled: keyboardCharacterPreviewEnabled,
             chinesePunctuationStyle: keyboardChinesePunctuationStyle,
+            rimeDictionaryTier: keyboardRimeDictionaryTier,
+            defaultTextInputLanguage: keyboardDefaultTextInputLanguage,
+            rimeLearningResetGeneration: keyboardRimeLearningResetGeneration,
             force: force
         )
     }

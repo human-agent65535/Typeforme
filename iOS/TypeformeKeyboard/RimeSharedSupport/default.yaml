@@ -5,6 +5,8 @@ config_version: '0.1'
 
 schema_list:
   - schema: typeforme_pinyin
+  - schema: typeforme_pinyin_ext
+  - schema: typeforme_pinyin_large
 
 menu:
   page_size: 8

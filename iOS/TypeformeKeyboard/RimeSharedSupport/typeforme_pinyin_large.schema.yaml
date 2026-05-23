@@ -2,9 +2,9 @@
 # encoding: utf-8
 
 schema:
-  schema_id: typeforme_pinyin
-  name: Typeforme 拼音
-  version: '0.3'
+  schema_id: typeforme_pinyin_large
+  name: Typeforme 拼音大词库
+  version: '0.4'
   author:
     - Typeforme
   description: |
@@ -58,7 +58,7 @@ speller:
     - abbrev/^([zcs]h).+$/$1/
 
 translator:
-  dictionary: typeforme_pinyin
+  dictionary: typeforme_pinyin_large
   enable_completion: true
   enable_encoder: true
   enable_sentence: true

@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RIME_DIR="$ROOT/iOS/TypeformeKeyboard/RimeSharedSupport"
 BUILD_DIR="$RIME_DIR/build"
-SCHEMA_ID="typeforme_pinyin"
+SCHEMA_ID="${RIME_SCHEMA_ID:-typeforme_pinyin}"
 
 if [[ ! -f "$BUILD_DIR/default.yaml" ]]; then
     cat >&2 <<EOF
