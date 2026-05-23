@@ -75,6 +75,7 @@ enum AppSettings {
         static let clientBridgeToken   = "processing.client.bridgeToken"
         static let clientLanguageIDs   = "processing.client.languages"
         static let clientIdentityID    = "processing.client.identityID"
+        static let clientSettingsRevision = "processing.client.settingsRevision"
         static let serverSettingsSnapshot = "processing.server.settingsSnapshot"
         static let clientSettingsSnapshot = "processing.client.settingsSnapshot"
 
@@ -443,6 +444,17 @@ enum AppSettings {
     }
     static var clientBridgeToken: String {
         ud.string(forKey: Keys.clientBridgeToken)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+    static var clientSettingsRevision: String {
+        ud.string(forKey: Keys.clientSettingsRevision)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+    static func setClientSettingsRevision(_ revision: String?) {
+        let trimmed = revision?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if trimmed.isEmpty {
+            ud.removeObject(forKey: Keys.clientSettingsRevision)
+        } else {
+            ud.set(trimmed, forKey: Keys.clientSettingsRevision)
+        }
     }
     static var clientIdentityID: String {
         ensureClientIdentityID()

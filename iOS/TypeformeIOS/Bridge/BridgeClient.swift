@@ -46,16 +46,20 @@ struct BridgeClient {
 
     func health(timeout: TimeInterval = 2.5) async -> Bool {
         do {
-            let response: BridgeHealthResponse = try await request(
-                path: "/v1/health",
-                method: "GET",
-                body: Optional<Data>.none,
-                timeout: timeout
-            )
+            let response = try await healthResponse(timeout: timeout)
             return response.ok
         } catch {
             return false
         }
+    }
+
+    func healthResponse(timeout: TimeInterval = 2.5) async throws -> BridgeHealthResponse {
+        try await request(
+            path: "/v1/health",
+            method: "GET",
+            body: Optional<Data>.none,
+            timeout: timeout
+        )
     }
 
     func pairing(timeout: TimeInterval = 10) async throws -> PairingConfig {

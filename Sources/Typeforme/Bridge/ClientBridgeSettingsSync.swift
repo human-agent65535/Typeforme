@@ -18,7 +18,7 @@ final class ClientBridgeSettingsSync {
         guard syncTask == nil else { return }
 
         syncTask = Task { [weak self] in
-            await self?.sync()
+            await self?.sync(force: force)
         }
     }
 
@@ -31,6 +31,7 @@ final class ClientBridgeSettingsSync {
         if CorrectionMode(rawValue: settings.correctionMode) != nil {
             UserDefaults.standard.set(settings.correctionMode, forKey: AppSettings.Keys.correctionMode)
         }
+        AppSettings.setClientSettingsRevision(settings.settingsRevision)
 
         let supported = settings.supportedLanguageOptions(for: settings.asrProvider)
         let validated = ASRLanguageSelection.validatedIDs(AppSettings.clientLanguageIDs, supportedOptions: supported)
@@ -40,11 +41,21 @@ final class ClientBridgeSettingsSync {
         )
     }
 
-    private func sync() async {
+    private func sync(force: Bool) async {
         defer { syncTask = nil }
 
         do {
             let resolved = try await RemoteBridgeClient.resolvedFromSettings(probeAllEndpoints: true)
+            if !force {
+                let health = try await resolved.client.health(timeout: 4)
+                if let settingsRevision = health.settingsRevision?.trimmingCharacters(in: .whitespacesAndNewlines),
+                   !settingsRevision.isEmpty,
+                   settingsRevision == AppSettings.clientSettingsRevision {
+                    lastSyncAt = Date()
+                    Log.bridge.debug("Client bridge settings unchanged via \(resolved.routeStatus.activeKind.rawValue, privacy: .public)")
+                    return
+                }
+            }
             var settings = try await resolved.client.settings(timeout: 6)
             settings.normalize()
             Self.applyServerDefaults(settings)
