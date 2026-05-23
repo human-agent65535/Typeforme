@@ -218,6 +218,7 @@ final class AppState: ObservableObject {
     private static let keyboardDefaultTextInputLanguageKey = "keyboard.defaultTextInputLanguage"
     private static let keyboardRimeLearningResetGenerationKey = "keyboard.rimeLearningResetGeneration"
     private static let keyboardEverContactedKey = "keyboard.everContacted"
+    private static let serverRimeUserPhrasesKey = "server.rimeUserPhrases"
     private static let recordingTailBufferNanoseconds: UInt64 = 200_000_000
     private var hostHoldReleasePending = false
     private var hostRecordingUsesKeyboardAudioSession = false
@@ -230,6 +231,7 @@ final class AppState: ObservableObject {
     private var lastNetworkPathRefreshAt: Date?
     private var macSettingsFetchedAt: Date?
     private var macSettingsRevision: String?
+    private var cachedServerRimeUserPhrases: [String]
     private var returnBundleID: String?
     private var phaseResetTask: Task<Void, Never>?
     private var transientMessageTask: Task<Void, Never>?
@@ -354,6 +356,7 @@ final class AppState: ObservableObject {
             .flatMap(KeyboardDefaultTextInputLanguage.init(rawValue:)) ?? .lastUsed
         self.keyboardRimeLearningResetGeneration = UserDefaults.standard.integer(forKey: Self.keyboardRimeLearningResetGenerationKey)
         self.keyboardEverContacted = UserDefaults.standard.bool(forKey: Self.keyboardEverContactedKey)
+        self.cachedServerRimeUserPhrases = Self.loadCachedServerRimeUserPhrases()
         self.selectedLanguageIDs = Set(saved.validatedLanguageIDs)
         self.keyboardStandbyEnabled = true
         configureKeyboardServer()
@@ -417,6 +420,8 @@ final class AppState: ObservableObject {
         macSettings = nil
         macSettingsFetchedAt = nil
         macSettingsRevision = nil
+        cachedServerRimeUserPhrases = []
+        UserDefaults.standard.removeObject(forKey: Self.serverRimeUserPhrasesKey)
         errorMessage = nil
         setPhase(.idle)
         publishKeyboardDefaults(force: true)
@@ -575,6 +580,8 @@ final class AppState: ObservableObject {
         macSettings = settings
         macSettingsFetchedAt = Date()
         macSettingsRevision = settings.settingsRevision?.trimmingCharacters(in: .whitespacesAndNewlines)
+        cachedServerRimeUserPhrases = settings.rimeUserPhrases
+        UserDefaults.standard.set(settings.rimeUserPhrases, forKey: Self.serverRimeUserPhrasesKey)
         config.supportedLanguages = settings.supportedLanguages
         config.correctionMode = settings.correctionMode
         config.languageIDs = ASRLanguageSelection.validatedIDs(
@@ -632,10 +639,21 @@ final class AppState: ObservableObject {
             characterPreviewEnabled: keyboardCharacterPreviewEnabled,
             chinesePunctuationStyle: keyboardChinesePunctuationStyle,
             rimeDictionaryTier: keyboardRimeDictionaryTier,
+            rimeUserPhrases: macSettings?.rimeUserPhrases ?? cachedServerRimeUserPhrases,
             defaultTextInputLanguage: keyboardDefaultTextInputLanguage,
             rimeLearningResetGeneration: keyboardRimeLearningResetGeneration,
             force: force
         )
+    }
+
+    private static func loadCachedServerRimeUserPhrases() -> [String] {
+        if let phrases = UserDefaults.standard.stringArray(forKey: Self.serverRimeUserPhrasesKey) {
+            return phrases
+        }
+        if let phrases = KeyboardSharedDefaults.loadPayload()?["rime_user_phrases"] as? [String] {
+            return phrases
+        }
+        return []
     }
 
     private func persistActiveLocalRouteIfNeeded(_ status: BridgeRouteStatus) {

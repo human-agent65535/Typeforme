@@ -107,10 +107,28 @@ struct VocabularyCandidateSelectorTests {
         #expect(payload.count == 1)
         #expect(payload[0].type == "person")
         #expect(payload[0].surface == "样例甲")
+        #expect(payload[0].speechHint == "yanglijia")
         let json = PromptPayloadEncoder.jsonString(payload) ?? ""
+        #expect(json.contains("\"speech_hint\":\"yanglijia\""))
         #expect(!json.contains("spoken_forms"))
         #expect(!json.contains("common_confusions"))
         #expect(!json.contains("priority"))
+    }
+
+    @Test func promptPayloadIncludesSyntheticChineseTermForSamePronunciationCommonWord() {
+        let entries = [
+            DictionaryEntry(type: "person", surface: "样例乙"),
+        ]
+
+        let payload = VocabularyCandidateSelector.promptPayload(
+            from: entries,
+            rawText: "这个安排需要样例一吗？看到新闻了吗？"
+        )
+
+        #expect(payload.count == 1)
+        #expect(payload[0].surface == "样例乙")
+        #expect(payload[0].type == "person")
+        #expect(payload[0].speechHint == "yangliyi")
     }
 
     @Test func doesNotReturnUnrelatedLargeVocabularyItems() {

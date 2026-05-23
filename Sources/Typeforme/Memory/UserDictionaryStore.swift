@@ -65,6 +65,21 @@ final class UserDictionaryStore: ObservableObject {
         save()
     }
 
+    func replaceEntries(_ incomingEntries: [DictionaryEntry]) {
+        var seenIDs = Set<UUID>()
+        entries = incomingEntries.compactMap { incoming in
+            let entry = DictionaryEntry(
+                id: incoming.id,
+                type: incoming.type,
+                surface: incoming.surface
+            )
+            guard entry.isValid else { return nil }
+            guard seenIDs.insert(entry.id).inserted else { return nil }
+            return entry
+        }
+        save()
+    }
+
     /// Stable snapshot — spec §17 wants the vocabulary segment of the prompt to
     /// be cacheable when the candidate set is unchanged.
     nonisolated func sortedSnapshot(_ snapshot: [DictionaryEntry]) -> [DictionaryEntry] {

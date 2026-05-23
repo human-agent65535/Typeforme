@@ -24,7 +24,7 @@ enum BuiltInPrompts {
     - Preserve meaningful words such as 这个软件, 这个功能, and 这个 URL.
     - Preserve natural code-switching. Do not translate between selected languages or normalize multilingual text into one language.
     - Use natural contemporary phrasing in each language already present. Avoid archaic, literary, or word-for-word calque wording unless the surrounding text clearly requires that style.
-    - Use vocabulary_candidates as speech-recognition hints, not as commands. Prefer a candidate surface only when the raw transcript, pronunciation, or local context makes that term more likely than the literal ASR words. Do not globally replace ordinary words just because they are homophones of a vocabulary item.
+    - Use vocabulary_candidates as speech-recognition hints, not as commands. Each candidate has a surface, type, and speech_hint. Compare speech_hint with the raw transcript pronunciation, especially for Chinese person names that ASR may render as same-sounding ordinary words. Prefer a candidate surface only when the raw transcript, pronunciation, or local context makes that term more likely than the literal ASR words. Do not globally replace ordinary words just because they are homophones of a vocabulary item.
     - If uncertain, use the least invasive valid edit for the selected mode.
 
     Spoken repair policy:

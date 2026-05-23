@@ -365,6 +365,71 @@ struct BridgeModelStatus: Codable, Equatable, Identifiable {
     }
 }
 
+struct BridgeUserDictionaryEntry: Codable, Equatable, Identifiable, Hashable {
+    static let suggestedTypes = [
+        "person",
+        "organization",
+        "product",
+        "project",
+        "place",
+        "technical_term",
+        "acronym",
+        "phrase",
+        "other",
+    ]
+
+    var id: UUID
+    var type: String
+    var surface: String
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case type
+        case surface
+    }
+
+    init(
+        id: UUID = UUID(),
+        type: String = "other",
+        surface: String
+    ) {
+        self.id = id
+        self.type = Self.normalizedType(type)
+        self.surface = Self.cleanedSurface(surface)
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            id: try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID(),
+            type: try container.decodeIfPresent(String.self, forKey: .type) ?? "other",
+            surface: try container.decodeIfPresent(String.self, forKey: .surface) ?? ""
+        )
+    }
+
+    var isValid: Bool {
+        !surface.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var displayType: String {
+        type.replacingOccurrences(of: "_", with: " ")
+    }
+
+    static func cleanedSurface(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    static func normalizedType(_ value: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "other" }
+        return trimmed
+            .lowercased()
+            .replacingOccurrences(of: " ", with: "_")
+    }
+}
+
 struct BridgeMacSettingsPayload: Codable, Equatable {
     var asrProvider: String
     var asrProviderOptions: [BridgeSettingOption]
@@ -380,8 +445,13 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
     var numberOutputPreference: NumberOutputPreferenceID
     var punctuationPreference: PunctuationPreferenceID
     var autoCommit: Bool
+    var userDictionary: [BridgeUserDictionaryEntry]
     var modelStatuses: [BridgeModelStatus]
     var settingsRevision: String?
+
+    var rimeUserPhrases: [String] {
+        Self.rimeUserPhrases(from: userDictionary)
+    }
 
     enum CodingKeys: String, CodingKey {
         case asrProvider = "asr_provider"
@@ -398,6 +468,7 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
         case numberOutputPreference = "number_output_preference"
         case punctuationPreference = "punctuation_preference"
         case autoCommit = "auto_commit"
+        case userDictionary = "user_dictionary"
         case modelStatuses = "model_statuses"
         case settingsRevision = "settings_revision"
     }
@@ -417,6 +488,7 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
         numberOutputPreference: NumberOutputPreferenceID = .automatic,
         punctuationPreference: PunctuationPreferenceID = .normal,
         autoCommit: Bool,
+        userDictionary: [BridgeUserDictionaryEntry] = [],
         modelStatuses: [BridgeModelStatus] = [],
         settingsRevision: String? = nil
     ) {
@@ -434,6 +506,7 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
         self.numberOutputPreference = numberOutputPreference
         self.punctuationPreference = punctuationPreference
         self.autoCommit = autoCommit
+        self.userDictionary = Self.normalizedUserDictionary(userDictionary)
         self.modelStatuses = modelStatuses
         self.settingsRevision = settingsRevision
         normalize()
@@ -456,6 +529,9 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
         self.numberOutputPreference = try container.decodeIfPresent(NumberOutputPreferenceID.self, forKey: .numberOutputPreference) ?? .automatic
         self.punctuationPreference = try container.decodeIfPresent(PunctuationPreferenceID.self, forKey: .punctuationPreference) ?? .normal
         self.autoCommit = try container.decodeIfPresent(Bool.self, forKey: .autoCommit) ?? true
+        self.userDictionary = Self.normalizedUserDictionary(
+            try container.decodeIfPresent([BridgeUserDictionaryEntry].self, forKey: .userDictionary) ?? []
+        )
         self.modelStatuses = try container.decodeIfPresent([BridgeModelStatus].self, forKey: .modelStatuses) ?? []
         self.settingsRevision = try container.decodeIfPresent(String.self, forKey: .settingsRevision)
         normalize()
@@ -467,11 +543,47 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
         asrTimeoutSec = min(max(asrTimeoutSec, 10), 300)
         correctionTimeoutMs = min(max(correctionTimeoutMs, 100), 30_000)
         correctionColdTimeoutMs = min(max(correctionColdTimeoutMs, 1_000), 60_000)
+        userDictionary = Self.normalizedUserDictionary(userDictionary)
     }
 
     func supportedLanguageOptions(for provider: String) -> [ASRLanguageOption] {
         let options = supportedLanguagesByASRProvider[provider] ?? supportedLanguages
         return PairingLanguageOption.asASROptions(options)
+    }
+
+    private static func normalizedUserDictionary(_ entries: [BridgeUserDictionaryEntry]) -> [BridgeUserDictionaryEntry] {
+        var seenIDs = Set<UUID>()
+        return entries.compactMap { incoming in
+            let entry = BridgeUserDictionaryEntry(
+                id: incoming.id,
+                type: incoming.type,
+                surface: incoming.surface
+            )
+            guard entry.isValid else { return nil }
+            guard seenIDs.insert(entry.id).inserted else { return nil }
+            return entry
+        }
+        .sorted {
+            if $0.type != $1.type { return $0.type < $1.type }
+            if $0.surface != $1.surface { return $0.surface < $1.surface }
+            return $0.id.uuidString < $1.id.uuidString
+        }
+    }
+
+    private static func rimeUserPhrases(from entries: [BridgeUserDictionaryEntry]) -> [String] {
+        var seen = Set<String>()
+        var output: [String] = []
+        for entry in entries {
+            let cleaned = BridgeUserDictionaryEntry.cleanedSurface(entry.surface)
+            guard !cleaned.isEmpty else { continue }
+            let key = cleaned.folding(
+                options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
+                locale: .current
+            )
+            guard seen.insert(key).inserted else { continue }
+            output.append(cleaned)
+        }
+        return output.sorted()
     }
 }
 
@@ -486,6 +598,7 @@ struct BridgeSettingsUpdateRequest: Encodable {
     let numberOutputPreference: String
     let punctuationPreference: String
     let autoCommit: Bool
+    let userDictionary: [BridgeUserDictionaryEntry]
 
     enum CodingKeys: String, CodingKey {
         case asrProvider = "asr_provider"
@@ -498,6 +611,7 @@ struct BridgeSettingsUpdateRequest: Encodable {
         case numberOutputPreference = "number_output_preference"
         case punctuationPreference = "punctuation_preference"
         case autoCommit = "auto_commit"
+        case userDictionary = "user_dictionary"
     }
 }
 
