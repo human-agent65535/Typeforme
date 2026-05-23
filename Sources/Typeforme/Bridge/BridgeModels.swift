@@ -231,6 +231,8 @@ struct BridgeSettingsPayload: Codable, Sendable {
     var punctuationPreference: String
     var autoCommit: Bool
     var debugMode: Bool
+    var userDictionary: [DictionaryEntry]
+    var rimeUserPhrases: [String]?
     var modelStatuses: [BridgeModelStatus]
     var settingsRevision: String?
 
@@ -252,6 +254,8 @@ struct BridgeSettingsPayload: Codable, Sendable {
         case punctuationPreference = "punctuation_preference"
         case autoCommit = "auto_commit"
         case debugMode = "debug_mode"
+        case userDictionary = "user_dictionary"
+        case rimeUserPhrases = "rime_user_phrases"
         case modelStatuses = "model_statuses"
         case settingsRevision = "settings_revision"
     }
@@ -268,9 +272,13 @@ struct BridgeSettingsPayload: Codable, Sendable {
         .externalLMStudio,
     ]
 
-    static func current() -> BridgeSettingsPayload {
+    static func current(userDictionary: [DictionaryEntry] = []) -> BridgeSettingsPayload {
         let resolved = currentResolvedSettings()
-        let settingsRevision = settingsRevision(for: resolved.revisionPayload)
+        let sortedUserDictionary = normalizedUserDictionary(userDictionary)
+        let rimeUserPhrases = rimeUserPhrases(from: sortedUserDictionary)
+        let settingsRevision = settingsRevision(
+            for: resolved.revisionPayload(userDictionary: sortedUserDictionary)
+        )
         return BridgeSettingsPayload(
             asrProvider: resolved.provider,
             asrProviderOptions: controllableASRProviders,
@@ -291,6 +299,8 @@ struct BridgeSettingsPayload: Codable, Sendable {
             punctuationPreference: AppSettings.punctuationPreference.rawValue,
             autoCommit: AppSettings.autoCommit,
             debugMode: AppSettings.diagnosticsDebugMode,
+            userDictionary: sortedUserDictionary,
+            rimeUserPhrases: rimeUserPhrases,
             modelStatuses: selectedModelStatuses(
                 asrProvider: resolved.provider,
                 correctionBackend: resolved.correctionBackend
@@ -299,8 +309,12 @@ struct BridgeSettingsPayload: Codable, Sendable {
         )
     }
 
-    static func currentSettingsRevision() -> String {
-        settingsRevision(for: currentResolvedSettings().revisionPayload)
+    static func currentSettingsRevision(userDictionary: [DictionaryEntry] = []) -> String {
+        settingsRevision(
+            for: currentResolvedSettings().revisionPayload(
+                userDictionary: normalizedUserDictionary(userDictionary)
+            )
+        )
     }
 
     static func settingsRevision(for payload: BridgeSettingsPayload) -> String {
@@ -335,6 +349,43 @@ struct BridgeSettingsPayload: Codable, Sendable {
         let data = (try? BridgeJSON.encodeSorted(payload)) ?? Data()
         let digest = SHA256.hash(data: data)
         return digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func normalizedUserDictionary(_ entries: [DictionaryEntry]) -> [DictionaryEntry] {
+        var seenIDs = Set<UUID>()
+        return entries.compactMap { entry in
+            let normalized = DictionaryEntry(
+                id: entry.id,
+                type: entry.type,
+                surface: entry.surface
+            )
+            guard normalized.isValid else { return nil }
+            guard seenIDs.insert(normalized.id).inserted else { return nil }
+            return normalized
+        }
+        .sorted {
+            if $0.type != $1.type { return $0.type < $1.type }
+            if $0.surface != $1.surface { return $0.surface < $1.surface }
+            return $0.id.uuidString < $1.id.uuidString
+        }
+    }
+
+    private static func rimeUserPhrases(from entries: [DictionaryEntry]) -> [String] {
+        var seen = Set<String>()
+        var phrases: [String] = []
+        for entry in entries {
+            let phrase = entry.surface
+                .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !phrase.isEmpty else { continue }
+            let key = phrase.folding(
+                options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
+                locale: .current
+            )
+            guard seen.insert(key).inserted else { continue }
+            phrases.append(phrase)
+        }
+        return phrases.sorted()
     }
 
     private static func selectedModelStatuses(
@@ -496,7 +547,7 @@ private struct BridgeResolvedSettings {
         self.correctionBackend = correctionBackend
     }
 
-    var revisionPayload: BridgeSettingsRevisionPayload {
+    func revisionPayload(userDictionary: [DictionaryEntry]) -> BridgeSettingsRevisionPayload {
         BridgeSettingsRevisionPayload(
             asrProvider: provider,
             asrProviderOptions: BridgeSettingsPayload.controllableASRProviders,
@@ -516,7 +567,8 @@ private struct BridgeResolvedSettings {
             numberOutputPreference: AppSettings.numberOutputPreference.rawValue,
             punctuationPreference: AppSettings.punctuationPreference.rawValue,
             autoCommit: AppSettings.autoCommit,
-            debugMode: AppSettings.diagnosticsDebugMode
+            debugMode: AppSettings.diagnosticsDebugMode,
+            userDictionary: userDictionary
         )
     }
 }
@@ -539,6 +591,7 @@ private struct BridgeSettingsRevisionPayload: Encodable {
     let punctuationPreference: String
     let autoCommit: Bool
     let debugMode: Bool
+    let userDictionary: [DictionaryEntry]
 
     enum CodingKeys: String, CodingKey {
         case asrProvider = "asr_provider"
@@ -558,6 +611,7 @@ private struct BridgeSettingsRevisionPayload: Encodable {
         case punctuationPreference = "punctuation_preference"
         case autoCommit = "auto_commit"
         case debugMode = "debug_mode"
+        case userDictionary = "user_dictionary"
     }
 
     init(
@@ -577,7 +631,8 @@ private struct BridgeSettingsRevisionPayload: Encodable {
         numberOutputPreference: String,
         punctuationPreference: String,
         autoCommit: Bool,
-        debugMode: Bool
+        debugMode: Bool,
+        userDictionary: [DictionaryEntry]
     ) {
         self.asrProvider = asrProvider
         self.asrProviderOptions = asrProviderOptions
@@ -596,6 +651,7 @@ private struct BridgeSettingsRevisionPayload: Encodable {
         self.punctuationPreference = punctuationPreference
         self.autoCommit = autoCommit
         self.debugMode = debugMode
+        self.userDictionary = userDictionary
     }
 
     init(_ payload: BridgeSettingsPayload) {
@@ -616,7 +672,8 @@ private struct BridgeSettingsRevisionPayload: Encodable {
             numberOutputPreference: payload.numberOutputPreference,
             punctuationPreference: payload.punctuationPreference,
             autoCommit: payload.autoCommit,
-            debugMode: payload.debugMode
+            debugMode: payload.debugMode,
+            userDictionary: payload.userDictionary
         )
     }
 }
@@ -635,6 +692,7 @@ struct BridgeSettingsUpdateRequest: Decodable {
     var punctuationPreference: String?
     var autoCommit: Bool?
     var debugMode: Bool?
+    var userDictionary: [DictionaryEntry]?
 
     enum CodingKeys: String, CodingKey {
         case asrProvider = "asr_provider"
@@ -650,6 +708,7 @@ struct BridgeSettingsUpdateRequest: Decodable {
         case punctuationPreference = "punctuation_preference"
         case autoCommit = "auto_commit"
         case debugMode = "debug_mode"
+        case userDictionary = "user_dictionary"
     }
 }
 

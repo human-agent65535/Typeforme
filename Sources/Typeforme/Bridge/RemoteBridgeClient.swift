@@ -103,6 +103,7 @@ private struct RemoteBridgeSettingsUpdateRequest: Encodable {
     let punctuationPreference: String
     let autoCommit: Bool
     let debugMode: Bool
+    let userDictionary: [DictionaryEntry]
 
     enum CodingKeys: String, CodingKey {
         case asrProvider = "asr_provider"
@@ -118,6 +119,7 @@ private struct RemoteBridgeSettingsUpdateRequest: Encodable {
         case punctuationPreference = "punctuation_preference"
         case autoCommit = "auto_commit"
         case debugMode = "debug_mode"
+        case userDictionary = "user_dictionary"
     }
 }
 
@@ -198,7 +200,8 @@ struct RemoteBridgeClient {
             numberOutputPreference: settings.numberOutputPreference,
             punctuationPreference: settings.punctuationPreference,
             autoCommit: settings.autoCommit,
-            debugMode: settings.debugMode
+            debugMode: settings.debugMode,
+            userDictionary: settings.userDictionary
         )
         var response: BridgeSettingsPayload = try await request(
             path: "/v1/settings",

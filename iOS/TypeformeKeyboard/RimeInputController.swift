@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import LibrimeKit
 import OSLog
@@ -55,6 +56,7 @@ final class RimeInputController {
     private static let distributionName = "Typeforme"
     private static let distributionCodeName = "typeforme"
     private static let dataVersion = "typeforme-pinyin-v2"
+    private static let customPhraseFileName = "typeforme_custom_phrase.txt"
     // 60 candidates × 5-column grid = up to 12 rows of 42pt = 504pt of
     // content versus ~226pt of grid scroll-view height. That's ~280pt of
     // meaningful vertical scroll when the user taps the expand chevron.
@@ -77,6 +79,9 @@ final class RimeInputController {
     private var desiredProfile = RimeKeyboardProfile()
     private var desiredAsciiMode = false
     private var desiredAsciiPunctuation = false
+    private var desiredUserPhraseContent = RimeInputController.customPhraseFileContent(from: [])
+    private var desiredUserPhraseSignature = RimeInputController.customPhraseSignature(RimeInputController.customPhraseFileContent(from: []))
+    private var appliedUserPhraseSignature: String?
 
     var onStateChange: ((RimeKeyboardState) -> Void)?
 
@@ -128,7 +133,9 @@ final class RimeInputController {
     }
 
     private func startOnQueue(bundle: Bundle = .main) -> Bool {
-        if isReadyOnQueue { return true }
+        if isReadyOnQueue && appliedUserPhraseSignature == desiredUserPhraseSignatureOnQueue {
+            return true
+        }
         guard let sharedSupportURL = bundle.resourceURL?.appendingPathComponent("RimeSharedSupport", isDirectory: true),
               FileManager.default.fileExists(atPath: sharedSupportURL.path)
         else {
@@ -149,6 +156,17 @@ final class RimeInputController {
             // run librime maintenance or deployment synchronously here: first
             // launch has to stay inside the extension watchdog budget.
             let userDataURL = try ensureUserDataDirectory()
+            let (customPhraseContent, customPhraseSignature) = desiredUserPhraseSnapshotOnQueue
+            if session != 0, appliedUserPhraseSignature != customPhraseSignature {
+                api.cleanAllSession()
+                session = 0
+                selectedSchemaID = nil
+            }
+            try applyCustomPhrasesOnQueue(
+                content: customPhraseContent,
+                signature: customPhraseSignature,
+                userDataURL: userDataURL
+            )
             let traits = IRimeTraits()
             traits.sharedDataDir = sharedSupportURL.path
             traits.userDataDir = userDataURL.path
@@ -236,6 +254,42 @@ final class RimeInputController {
         }
     }
 
+    func setUserPhrases(
+        _ phrases: [String],
+        revision: String?,
+        reloadIfNeeded: Bool = true
+    ) -> RimeKeyboardState {
+        let content = Self.customPhraseFileContent(from: phrases)
+        let signature = Self.customPhraseSignature(content, revision: revision)
+        stateLock.lock()
+        let changed = desiredUserPhraseSignature != signature
+        desiredUserPhraseContent = content
+        desiredUserPhraseSignature = signature
+        stateLock.unlock()
+
+        guard reloadIfNeeded else {
+            return notReadyState()
+        }
+        guard changed else {
+            return state()
+        }
+
+        let resetState = rimeQueue.sync {
+            if session != 0 {
+                api.cleanAllSession()
+                session = 0
+            }
+            selectedSchemaID = nil
+            stateLock.lock()
+            startupState = .idle
+            lastErrorMessage = nil
+            stateLock.unlock()
+            return notReadyState()
+        }
+        _ = startIfNeeded()
+        return resetState
+    }
+
     func resetUserData() -> RimeKeyboardState {
         let resetState = rimeQueue.sync {
             if session != 0 {
@@ -249,6 +303,7 @@ final class RimeInputController {
             stateLock.unlock()
             do {
                 let userDataURL = try ensureUserDataDirectory()
+                appliedUserPhraseSignature = nil
                 let contents = try FileManager.default.contentsOfDirectory(
                     at: userDataURL,
                     includingPropertiesForKeys: nil
@@ -334,6 +389,18 @@ final class RimeInputController {
         stateLock.lock()
         defer { stateLock.unlock() }
         return desiredProfile
+    }
+
+    private var desiredUserPhraseSignatureOnQueue: String {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return desiredUserPhraseSignature
+    }
+
+    private var desiredUserPhraseSnapshotOnQueue: (content: String, signature: String) {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return (desiredUserPhraseContent, desiredUserPhraseSignature)
     }
 
     private func stateOnQueue(commitText: String = "") -> RimeKeyboardState {
@@ -432,15 +499,28 @@ final class RimeInputController {
         _ = api.setOption(session, andOption: "ascii_punct", andValue: asciiPunctuation)
     }
 
+    private func applyCustomPhrasesOnQueue(
+        content: String,
+        signature: String,
+        userDataURL: URL
+    ) throws {
+        guard appliedUserPhraseSignature != signature else { return }
+        let url = userDataURL.appendingPathComponent(Self.customPhraseFileName)
+        let existing = try? String(contentsOf: url, encoding: .utf8)
+        if existing != content {
+            try content.write(to: url, atomically: true, encoding: .utf8)
+        }
+        appliedUserPhraseSignature = signature
+    }
+
     private func drainCommit() -> String {
         api.getCommit(session) ?? ""
     }
 
     private func ensureUserDataDirectory() throws -> URL {
-        // This target currently has no App Group entitlement. A guessed group
-        // identifier will silently fail on real provisioning profiles, so keep
-        // Rime user data in the extension sandbox until host+keyboard entitlements
-        // define an explicit shared container.
+        // Keep Rime's own mutable files in the extension sandbox. Host-owned
+        // settings and vocabulary arrive through App Group defaults, then the
+        // keyboard materializes them into this Rime user data directory.
         let baseURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
         let userDataURL = baseURL
@@ -448,5 +528,96 @@ final class RimeInputController {
             .appendingPathComponent(Self.dataVersion, isDirectory: true)
         try FileManager.default.createDirectory(at: userDataURL, withIntermediateDirectories: true)
         return userDataURL
+    }
+
+    private static func customPhraseFileContent(from phrases: [String]) -> String {
+        var rows: [String] = []
+        var seenRows = Set<String>()
+        for phrase in normalizedUserPhrases(phrases) {
+            let codes = customPhraseCodes(for: phrase)
+            for (index, code) in codes.enumerated() {
+                let rowKey = "\(code)\t\(phrase)"
+                guard seenRows.insert(rowKey).inserted else { continue }
+                let weight = index == 0 ? 100_000 : 90_000
+                rows.append("\(phrase)\t\(code)\t\(weight)")
+            }
+        }
+
+        var content = "# Rime table\n# encoding: utf-8\n\n"
+        if !rows.isEmpty {
+            content += rows.joined(separator: "\n")
+            content += "\n"
+        }
+        return content
+    }
+
+    private static func customPhraseSignature(_ content: String, revision: String? = nil) -> String {
+        let trimmedRevision = revision?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard trimmedRevision.isEmpty else { return trimmedRevision }
+        let digest = SHA256.hash(data: Data(content.utf8))
+        return digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func normalizedUserPhrases(_ phrases: [String]) -> [String] {
+        var seen = Set<String>()
+        var output: [String] = []
+        for phrase in phrases {
+            let cleaned = phrase
+                .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !cleaned.isEmpty else { continue }
+            let key = cleaned.folding(
+                options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
+                locale: .current
+            )
+            guard seen.insert(key).inserted else { continue }
+            output.append(cleaned)
+        }
+        return output
+    }
+
+    private static func customPhraseCodes(for phrase: String) -> [String] {
+        let tokens = pinyinTokens(for: phrase)
+        guard !tokens.isEmpty else { return [] }
+        var codes: [String] = []
+        let fullCode = tokens.joined()
+        if fullCode.count >= 2 {
+            codes.append(fullCode)
+        }
+        if tokens.count >= 2 {
+            let initials = tokens.compactMap(\.first).map(String.init).joined()
+            if initials.count >= 2, initials != fullCode {
+                codes.append(initials)
+            }
+        }
+        return codes
+    }
+
+    private static func pinyinTokens(for text: String) -> [String] {
+        let mutable = NSMutableString(string: text) as CFMutableString
+        CFStringTransform(mutable, nil, kCFStringTransformMandarinLatin, false)
+        var transformed = mutable as String
+        for value in ["ü", "ǖ", "ǘ", "ǚ", "ǜ", "Ü", "Ǖ", "Ǘ", "Ǚ", "Ǜ"] {
+            transformed = transformed.replacingOccurrences(of: value, with: "v")
+        }
+        let normalized = transformed
+            .folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: .current)
+            .lowercased()
+
+        var tokens: [String] = []
+        var current = ""
+        for scalar in normalized.unicodeScalars {
+            let value = scalar.value
+            if (97...122).contains(value) {
+                current.unicodeScalars.append(scalar)
+            } else if !current.isEmpty {
+                tokens.append(current)
+                current.removeAll(keepingCapacity: true)
+            }
+        }
+        if !current.isEmpty {
+            tokens.append(current)
+        }
+        return tokens
     }
 }

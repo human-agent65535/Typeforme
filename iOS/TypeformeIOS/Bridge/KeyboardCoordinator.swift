@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 final class KeyboardCoordinator {
@@ -19,10 +20,12 @@ final class KeyboardCoordinator {
         characterPreviewEnabled: Bool,
         chinesePunctuationStyle: KeyboardChinesePunctuationStyle,
         rimeDictionaryTier: KeyboardRimeDictionaryTier,
+        rimeUserPhrases: [String],
         defaultTextInputLanguage: KeyboardDefaultTextInputLanguage,
         rimeLearningResetGeneration: Int,
         force: Bool = false
     ) {
+        let normalizedRimeUserPhrases = Self.normalizedRimeUserPhrases(rimeUserPhrases)
         let stablePayload: [String: Any] = [
             "version": 1,
             "bridge_token": bridgeToken,
@@ -31,6 +34,8 @@ final class KeyboardCoordinator {
             "character_preview_enabled": characterPreviewEnabled,
             "chinese_punctuation_style": chinesePunctuationStyle.rawValue,
             "rime_dictionary_tier": rimeDictionaryTier.rawValue,
+            "rime_user_phrases": normalizedRimeUserPhrases,
+            "rime_user_phrases_revision": rimeUserPhrasesRevision(normalizedRimeUserPhrases),
             "default_text_input_language": defaultTextInputLanguage.rawValue,
             "rime_learning_reset_generation": rimeLearningResetGeneration,
         ]
@@ -52,6 +57,32 @@ final class KeyboardCoordinator {
             return UUID().uuidString
         }
         return text
+    }
+
+    private func rimeUserPhrasesRevision(_ phrases: [String]) -> String {
+        guard let data = try? JSONSerialization.data(withJSONObject: phrases, options: [.sortedKeys]) else {
+            return ""
+        }
+        let digest = SHA256.hash(data: data)
+        return digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func normalizedRimeUserPhrases(_ phrases: [String]) -> [String] {
+        var seen = Set<String>()
+        var output: [String] = []
+        for phrase in phrases {
+            let cleaned = phrase
+                .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !cleaned.isEmpty else { continue }
+            let key = cleaned.folding(
+                options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
+                locale: .current
+            )
+            guard seen.insert(key).inserted else { continue }
+            output.append(cleaned)
+        }
+        return output.sorted()
     }
 
     private static func loadKeyboardBridgeToken() -> String {

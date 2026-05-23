@@ -95,7 +95,8 @@ struct BridgeClient {
             correctionMode: settings.correctionMode.rawValue,
             numberOutputPreference: settings.numberOutputPreference.rawValue,
             punctuationPreference: settings.punctuationPreference.rawValue,
-            autoCommit: settings.autoCommit
+            autoCommit: settings.autoCommit,
+            userDictionary: settings.userDictionary
         )
         return try await request(path: "/v1/settings", method: "POST", json: payload, timeout: timeout)
     }

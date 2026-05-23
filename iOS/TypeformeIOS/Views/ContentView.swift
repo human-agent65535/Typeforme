@@ -1367,6 +1367,20 @@ private struct MacSettingsView: View {
 
                 }
 
+                Section("Vocabulary") {
+                    NavigationLink {
+                        ServerVocabularyView(entries: userDictionaryBinding)
+                    } label: {
+                        HStack {
+                            Text("Server Vocabulary")
+                            Spacer()
+                            Text(vocabularySummary(for: draft.userDictionary))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                    }
+                }
+
             } else {
                 Section {
                     HStack {
@@ -1552,6 +1566,15 @@ private struct MacSettingsView: View {
         }
     }
 
+    private var userDictionaryBinding: Binding<[BridgeUserDictionaryEntry]> {
+        Binding {
+            draft?.userDictionary ?? []
+        } set: { value in
+            draft?.userDictionary = value
+            normalizeDraft()
+        }
+    }
+
     private func normalizeDraft() {
         guard var current = draft else { return }
         current.normalize()
@@ -1584,5 +1607,251 @@ private struct MacSettingsView: View {
             errorMessage = error.localizedDescription
         }
         isSaving = false
+    }
+
+    private func vocabularySummary(for entries: [BridgeUserDictionaryEntry]) -> String {
+        entries.count == 1 ? "1 entry" : "\(entries.count) entries"
+    }
+}
+
+private struct ServerVocabularyView: View {
+    @Binding var entries: [BridgeUserDictionaryEntry]
+    @State private var newSurface = ""
+    @State private var selectedType = "person"
+    @State private var customType = ""
+    @FocusState private var isNewSurfaceFocused: Bool
+
+    var body: some View {
+        List {
+            Section {
+                VStack(alignment: .leading, spacing: 10) {
+                    TextField("New word or phrase", text: $newSurface)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .focused($isNewSurfaceFocused)
+
+                    HStack(spacing: 10) {
+                        Picker("Type", selection: $selectedType) {
+                            ForEach(BridgeUserDictionaryEntry.suggestedTypes, id: \.self) { type in
+                                Text(displayType(type)).tag(type)
+                            }
+                            Text("custom").tag("custom")
+                        }
+                        .pickerStyle(.menu)
+
+                        if selectedType == "custom" {
+                            TextField("Custom type", text: $customType)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
+                        }
+
+                        Button {
+                            addEntry()
+                        } label: {
+                            Image(systemName: "plus.circle.fill")
+                                .font(.title3)
+                        }
+                        .buttonStyle(.borderless)
+                        .disabled(!canAddEntry)
+                    }
+                }
+            }
+
+            Section(entriesHeader) {
+                if entries.isEmpty {
+                    Text("No vocabulary entries")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(entries) { entry in
+                        NavigationLink {
+                            ServerVocabularyEntryEditorView(entry: entry) { updated in
+                                updateEntry(updated)
+                            }
+                        } label: {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(entry.surface)
+                                    .foregroundStyle(.primary)
+                                Text(entry.displayType)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    .onDelete(perform: deleteEntries)
+                }
+            }
+        }
+        .navigationTitle("Server Vocabulary")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                EditButton()
+            }
+        }
+        .onChange(of: entries) { _, value in
+            let normalized = normalizedEntries(value)
+            if normalized != value {
+                entries = normalized
+            }
+        }
+    }
+
+    private var entriesHeader: String {
+        entries.count == 1 ? "1 Entry" : "\(entries.count) Entries"
+    }
+
+    private var resolvedType: String {
+        selectedType == "custom" ? customType : selectedType
+    }
+
+    private var canAddEntry: Bool {
+        !BridgeUserDictionaryEntry.cleanedSurface(newSurface).isEmpty &&
+            (selectedType != "custom" || !customType.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+    }
+
+    private func addEntry() {
+        let surface = BridgeUserDictionaryEntry.cleanedSurface(newSurface)
+        guard !surface.isEmpty else { return }
+        let entry = BridgeUserDictionaryEntry(
+            type: resolvedType,
+            surface: surface
+        )
+        entries = normalizedEntries(entries + [entry])
+        newSurface = ""
+        isNewSurfaceFocused = true
+    }
+
+    private func deleteEntries(at offsets: IndexSet) {
+        entries.remove(atOffsets: offsets)
+    }
+
+    private func updateEntry(_ updated: BridgeUserDictionaryEntry) {
+        guard let index = entries.firstIndex(where: { $0.id == updated.id }) else { return }
+        entries[index] = updated
+        entries = normalizedEntries(entries)
+    }
+
+    private func normalizedEntries(_ values: [BridgeUserDictionaryEntry]) -> [BridgeUserDictionaryEntry] {
+        var seenIDs = Set<UUID>()
+        return values.compactMap { value in
+            let entry = BridgeUserDictionaryEntry(
+                id: value.id,
+                type: value.type,
+                surface: value.surface
+            )
+            guard entry.isValid else { return nil }
+            guard seenIDs.insert(entry.id).inserted else { return nil }
+            return entry
+        }
+        .sorted {
+            if $0.type != $1.type { return $0.type < $1.type }
+            if $0.surface != $1.surface { return $0.surface < $1.surface }
+            return $0.id.uuidString < $1.id.uuidString
+        }
+    }
+
+    private func displayType(_ type: String) -> String {
+        type.replacingOccurrences(of: "_", with: " ")
+    }
+}
+
+private struct ServerVocabularyEntryEditorView: View {
+    @Environment(\.dismiss) private var dismiss
+    let entry: BridgeUserDictionaryEntry
+    let onSave: (BridgeUserDictionaryEntry) -> Void
+    @State private var surface = ""
+    @State private var selectedType = "other"
+    @State private var customType = ""
+
+    var body: some View {
+        Form {
+            Section("Word") {
+                TextField("Word or phrase", text: $surface)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+            }
+
+            Section("Type") {
+                Picker("Type", selection: typeSelectionBinding) {
+                    ForEach(BridgeUserDictionaryEntry.suggestedTypes, id: \.self) { type in
+                        Text(displayType(type)).tag(type)
+                    }
+                    Text("custom").tag("custom")
+                }
+                .pickerStyle(.menu)
+
+                if selectedType == "custom" {
+                    TextField("Custom type", text: customTypeBinding)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                }
+            }
+        }
+        .navigationTitle("Vocabulary Entry")
+        .navigationBarTitleDisplayMode(.inline)
+        .onAppear(perform: syncTypeState)
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Save") {
+                    save()
+                }
+                .disabled(!canSave)
+            }
+        }
+    }
+
+    private var typeSelectionBinding: Binding<String> {
+        Binding {
+            selectedType
+        } set: { value in
+            selectedType = value
+            if value == "custom" {
+                customType = customType.isEmpty ? entry.type : customType
+            } else {
+                customType = ""
+            }
+        }
+    }
+
+    private var customTypeBinding: Binding<String> {
+        Binding {
+            customType
+        } set: { value in
+            customType = value
+        }
+    }
+
+    private var resolvedType: String {
+        selectedType == "custom" ? customType : selectedType
+    }
+
+    private var canSave: Bool {
+        !BridgeUserDictionaryEntry.cleanedSurface(surface).isEmpty &&
+            (selectedType != "custom" || !customType.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+    }
+
+    private func syncTypeState() {
+        surface = entry.surface
+        if BridgeUserDictionaryEntry.suggestedTypes.contains(entry.type) {
+            selectedType = entry.type
+            customType = ""
+        } else {
+            selectedType = "custom"
+            customType = entry.type
+        }
+    }
+
+    private func save() {
+        guard canSave else { return }
+        onSave(BridgeUserDictionaryEntry(
+            id: entry.id,
+            type: resolvedType,
+            surface: surface
+        ))
+        dismiss()
+    }
+
+    private func displayType(_ type: String) -> String {
+        type.replacingOccurrences(of: "_", with: " ")
     }
 }

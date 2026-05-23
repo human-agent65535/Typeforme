@@ -3,6 +3,13 @@ import Foundation
 struct VocabularyCandidatePayload: Codable, Sendable, Equatable {
     let type: String
     let surface: String
+    let speechHint: String
+
+    enum CodingKeys: String, CodingKey {
+        case type
+        case surface
+        case speechHint = "speech_hint"
+    }
 }
 
 enum VocabularyCandidateSelector {
@@ -91,7 +98,11 @@ enum VocabularyCandidateSelector {
         limit: Int = defaultLimit
     ) -> [VocabularyCandidatePayload] {
         select(from: entries, rawText: rawText, extraContext: extraContext, limit: limit).map { entry in
-            VocabularyCandidatePayload(type: entry.type, surface: entry.surface)
+            VocabularyCandidatePayload(
+                type: entry.type,
+                surface: entry.surface,
+                speechHint: phoneticKey(entry.surface)
+            )
         }
     }
 

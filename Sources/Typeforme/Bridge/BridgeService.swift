@@ -60,12 +60,14 @@ final class BridgeService {
             service: "Typeforme Bridge",
             version: appVersion(),
             bridgePort: AppSettings.bridgePort,
-            settingsRevision: BridgeSettingsPayload.currentSettingsRevision()
+            settingsRevision: BridgeSettingsPayload.currentSettingsRevision(
+                userDictionary: dictionary.sortedSnapshot()
+            )
         )
     }
 
     func settings() -> BridgeSettingsPayload {
-        BridgeSettingsPayload.current()
+        BridgeSettingsPayload.current(userDictionary: dictionary.sortedSnapshot())
     }
 
     func updateSettings(_ request: BridgeSettingsUpdateRequest) async throws -> BridgeSettingsPayload {
@@ -136,6 +138,9 @@ final class BridgeService {
         if let debugMode = request.debugMode {
             UserDefaults.standard.set(debugMode, forKey: AppSettings.Keys.diagnosticsDebugMode)
         }
+        if let userDictionary = request.userDictionary {
+            dictionary.replaceEntries(userDictionary)
+        }
 
         UserDefaults.standard.synchronize()
         let newASRProvider = BridgeSettingsPayload.normalizedASRProvider(AppSettings.asrProvider)
@@ -147,7 +152,7 @@ final class BridgeService {
             async let correctionPreload: CorrectorPreloadResult = CorrectorFactory.shared.preloadActiveModels()
             _ = await (asrPreload, correctionPreload)
         }
-        return BridgeSettingsPayload.current()
+        return BridgeSettingsPayload.current(userDictionary: dictionary.sortedSnapshot())
     }
 
     func dictate(_ request: BridgeDictateRequest) async throws -> BridgeDictateResponse {
