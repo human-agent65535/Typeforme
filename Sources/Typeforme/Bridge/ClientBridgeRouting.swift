@@ -61,15 +61,23 @@ struct ClientBridgeConfiguration: Sendable, Equatable {
         if trimmed.hasPrefix("http://") || trimmed.hasPrefix("https://") {
             return trimmed
         }
-        if trimmed.hasPrefix("localhost")
-            || trimmed.hasPrefix("127.")
-            || trimmed.hasPrefix("192.168.")
-            || trimmed.hasPrefix("10.")
-            || trimmed.range(of: #"^172\.(1[6-9]|2[0-9]|3[0-1])\."#, options: .regularExpression) != nil
-            || trimmed.contains(":") {
+        if isLocalBridgeHost(trimmed) {
             return "http://\(trimmed)"
         }
         return "https://\(trimmed)"
+    }
+
+    private static func isLocalBridgeHost(_ value: String) -> Bool {
+        if value.hasPrefix("[::1]") || value.hasPrefix("::1") {
+            return true
+        }
+        let host = URLComponents(string: "http://\(value)")?.host ?? value
+        return host == "localhost"
+            || host.hasPrefix("127.")
+            || host.hasPrefix("192.168.")
+            || host.hasPrefix("10.")
+            || host.range(of: #"^172\.(1[6-9]|2[0-9]|3[0-1])\."#, options: .regularExpression) != nil
+            || host == "::1"
     }
 
     static func fromPairingPayload(_ payload: BridgePairingPayload) -> ClientBridgeConfiguration {

@@ -257,6 +257,7 @@
 			buildPhases = (
 				B60000000000000000000001 /* Sources */,
 				B30000000000000000000001 /* Frameworks */,
+				C70000000000000000000001 /* Check Rime iOS Data */,
 				B70000000000000000000002 /* Resources */,
 			);
 			buildRules = (
@@ -338,6 +339,30 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		C70000000000000000000001 /* Check Rime iOS Data */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/../scripts/check-rime-ios-data.sh",
+				"$(SRCROOT)/TypeformeKeyboard/RimeSharedSupport",
+			);
+			name = "Check Rime iOS Data";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "\"$SRCROOT/../scripts/check-rime-ios-data.sh\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		A60000000000000000000001 /* Sources */ = {
@@ -542,7 +567,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = TypeformeIOS/TypeformeIOS.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 211;
+				CURRENT_PROJECT_VERSION = 212;
 				DEVELOPMENT_ASSET_PATHS = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = TypeformeIOS/Info.plist;
@@ -551,7 +576,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.1.204;
+				MARKETING_VERSION = 0.1.205;
 				PRODUCT_BUNDLE_IDENTIFIER = com.example.typeforme;
 				PRODUCT_NAME = Typeforme;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
@@ -570,7 +595,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = TypeformeIOS/TypeformeIOS.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 211;
+				CURRENT_PROJECT_VERSION = 212;
 				DEVELOPMENT_ASSET_PATHS = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = TypeformeIOS/Info.plist;
@@ -579,7 +604,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.1.204;
+				MARKETING_VERSION = 0.1.205;
 				PRODUCT_BUNDLE_IDENTIFIER = com.example.typeforme;
 				PRODUCT_NAME = Typeforme;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
@@ -597,7 +622,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = TypeformeKeyboard/TypeformeKeyboard.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 211;
+				CURRENT_PROJECT_VERSION = 212;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = TypeformeKeyboard/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
@@ -606,7 +631,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 0.1.204;
+				MARKETING_VERSION = 0.1.205;
 				PRODUCT_BUNDLE_IDENTIFIER = com.example.typeforme.keyboard;
 				PRODUCT_NAME = TypeformeKeyboard;
 				SKIP_INSTALL = YES;
@@ -625,7 +650,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = TypeformeKeyboard/TypeformeKeyboard.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 211;
+				CURRENT_PROJECT_VERSION = 212;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = TypeformeKeyboard/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
@@ -634,7 +659,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 0.1.204;
+				MARKETING_VERSION = 0.1.205;
 				PRODUCT_BUNDLE_IDENTIFIER = com.example.typeforme.keyboard;
 				PRODUCT_NAME = TypeformeKeyboard;
 				SKIP_INSTALL = YES;

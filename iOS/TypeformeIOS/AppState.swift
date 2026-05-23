@@ -1076,33 +1076,46 @@ final class AppState: ObservableObject {
         if let lastHandledOpenURL,
            lastHandledOpenURL.value == url.absoluteString,
            now - lastHandledOpenURL.time < 1.0 {
-            appLog.notice("handleOpenURL: skipped duplicate \(url.absoluteString, privacy: .public)")
+            appLog.notice("handleOpenURL: skipped duplicate typeforme URL")
             return
         }
         lastHandledOpenURL = (url.absoluteString, now)
-        appLog.notice("handleOpenURL: received \(url.absoluteString, privacy: .public)")
         await waitForInitialRenderOpportunity()
         let action = url.host ?? url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         var source: String?
+        var handoffID: String?
         var shouldReturnToKeyboard = false
         var returnBundleID: String?
         var returnProcessID: Int32?
+        var keyboardHandoff: KeyboardHostHandoff?
         if let components = URLComponents(url: url, resolvingAgainstBaseURL: false) {
             let items = components.queryItems ?? []
             source = items.first { $0.name == "source" }?
                 .value?
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            applyKeyboardParameters(items, allowCorrectionMode: action == "record" && source != "keyboard")
-            shouldReturnToKeyboard = items.contains { item in
-                item.name == "return" && item.value == "1"
-            }
-            returnBundleID = items.first { $0.name == "return_bundle" }?
+            handoffID = items.first { $0.name == "handoff_id" }?
                 .value?
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            returnProcessID = items.first { $0.name == "return_pid" }?
-                .value
-                .flatMap(Int32.init)
+
+            if source == "keyboard",
+               let handoffID,
+               let handoff = KeyboardSharedDefaults.consumeHostHandoff(id: handoffID, now: now),
+               handoff.action == action {
+                keyboardHandoff = handoff
+                shouldReturnToKeyboard = handoff.shouldReturnToKeyboard
+                returnBundleID = handoff.returnBundleID
+                returnProcessID = handoff.returnProcessID
+                if let nextMode = CorrectionModeID(rawValue: handoff.correctionMode) {
+                    correctionMode = nextMode
+                }
+            } else if source == "keyboard" {
+                appLog.notice("handleOpenURL: rejected unauthenticated keyboard handoff action=\(action, privacy: .public), has_handoff=\((handoffID?.isEmpty == false), privacy: .public)")
+                return
+            } else {
+                applyKeyboardParameters(items, allowCorrectionMode: action == "record")
+            }
         }
+        let isAuthenticatedKeyboardHandoff = keyboardHandoff != nil
         let resolvedReturnBundleID = resolvedReturnBundleID(
             explicitBundleID: returnBundleID,
             sourceApplication: sourceApplication,
@@ -1111,9 +1124,9 @@ final class AppState: ObservableObject {
         if shouldReturnToKeyboard || resolvedReturnBundleID != nil {
             rememberReturnTarget(bundleID: resolvedReturnBundleID)
         }
-        appLog.notice("handleOpenURL: action=\(action, privacy: .public), source=\(source ?? "nil", privacy: .public)")
+        appLog.notice("handleOpenURL: action=\(action, privacy: .public), source=\(isAuthenticatedKeyboardHandoff ? "keyboard" : (source ?? "nil"), privacy: .public), handoff=\(isAuthenticatedKeyboardHandoff, privacy: .public)")
         if action == "record" {
-            if source == "keyboard" {
+            if isAuthenticatedKeyboardHandoff {
                 // Older keyboard builds used `record` for the microphone handoff,
                 // which could start host recording before the extension returned.
                 // The extension must own start/stop after it is visible again, so
@@ -1126,16 +1139,24 @@ final class AppState: ObservableObject {
                 await toggleRecording()
             }
         } else if action == "microphone" {
+            guard isAuthenticatedKeyboardHandoff else {
+                appLog.notice("handleOpenURL: rejected unauthenticated microphone action")
+                return
+            }
             let didPrepareKeyboardSession = await prepareKeyboardMicrophoneFromHostOpen()
             if !didPrepareKeyboardSession {
                 shouldReturnToKeyboard = false
             }
         } else if action == "standby" {
+            guard isAuthenticatedKeyboardHandoff else {
+                appLog.notice("handleOpenURL: rejected unauthenticated standby action")
+                return
+            }
             let didPrepareKeyboardSession = await setKeyboardStandby(
                 true,
-                requestMicrophoneIfNeeded: source == "keyboard"
+                requestMicrophoneIfNeeded: true
             )
-            if source == "keyboard", !didPrepareKeyboardSession {
+            if !didPrepareKeyboardSession {
                 shouldReturnToKeyboard = false
                 showKeyboardMicrophoneDeniedFeedbackIfNeeded()
             }

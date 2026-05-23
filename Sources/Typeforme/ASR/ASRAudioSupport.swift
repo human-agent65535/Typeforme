@@ -78,10 +78,8 @@ enum ASRAudioSupport {
     static func validateHTTPResponse(_ response: URLResponse, data: Data) throws {
         guard let http = response as? HTTPURLResponse else { return }
         guard (200..<300).contains(http.statusCode) else {
-            let body = String(data: data, encoding: .utf8)?
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-                .prefix(500) ?? ""
-            throw ASRAudioSupportError.httpStatus(http.statusCode, String(body))
+            let detail = data.isEmpty ? "empty response body" : "response body omitted (\(data.count) bytes)"
+            throw ASRAudioSupportError.httpStatus(http.statusCode, detail)
         }
     }
 

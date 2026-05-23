@@ -24,6 +24,8 @@ BUNDLE_ID="com.example.typeforme"
 CONFIG="${CONFIG:-Release}"
 DERIVED="${DERIVED:-/tmp/TypeformeIOS-DD-${CONFIG}}"
 TEAM="${TEAM:-}"
+RIME_DIR="$ROOT/iOS/TypeformeKeyboard/RimeSharedSupport"
+RIME_BUILD_DIR="$RIME_DIR/build"
 
 export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
 if [ ! -d "$DEVELOPER_DIR" ]; then
@@ -112,6 +114,13 @@ if [ -z "$DEVICE_ID" ]; then
 fi
 
 echo "→ Building Typeforme iOS ($CONFIG) for device $DEVICE_ID"
+if [ ! -f "$RIME_BUILD_DIR/default.yaml" ]; then
+    echo "→ Rime iOS data missing; building precompiled keyboard data"
+    "$ROOT/scripts/build-rime-ios-data.sh"
+fi
+rm -f "$RIME_DIR/user.yaml"
+"$ROOT/scripts/check-rime-ios-data.sh"
+
 BUILD_ARGS=()
 if [ -n "$TEAM" ]; then
     echo "→ Overriding project DEVELOPMENT_TEAM with TEAM=$TEAM"

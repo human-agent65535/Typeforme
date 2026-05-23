@@ -18,5 +18,6 @@ fi
 rm -rf "$BUILD_DIR"
 mkdir -p "$BUILD_DIR"
 rime_deployer --build "$RIME_DIR" "$RIME_DIR" "$BUILD_DIR"
+rm -f "$RIME_DIR/user.yaml"
 
 echo "built Rime iOS data: $BUILD_DIR"
