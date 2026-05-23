@@ -86,16 +86,22 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private struct TextKeyboardTouchModel {
-        // A fingertip usually contacts slightly right/below the visual key the
-        // user meant to press. Route with an intent point, then draw feedback
-        // on the resolved key. This mirrors mature keyboard hit models where
-        // the touch layer is independent from the keycap layer.
-        static let characterIntentXCorrection: CGFloat = 2.5
+        // Route with an intent point, then draw feedback on the resolved key.
+        // Keep horizontal routing aligned to the visible key centers; a fixed
+        // horizontal bias makes adjacent pairs like i/o and n/m feel random.
+        // The vertical correction keeps low fingertip contact inside the
+        // intended character row without stealing bottom controls.
+        static let characterIntentXCorrection: CGFloat = 0
         static let characterIntentYCorrection: CGFloat = 7
         // Guard strips keep near-row misses useful without letting candidate or
         // bottom controls become accidental character keys.
         static let rowTopOverflow: CGFloat = 14
         static let rowBottomOverflow: CGFloat = 13
+    }
+
+    private struct TextKeyboardLayoutModel {
+        static let keyHorizontalGap: CGFloat = 6
+        static let keyVerticalGap: CGFloat = 7
     }
 
     private enum TextInputLanguage: String {
@@ -2132,7 +2138,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         ])
 
         keyRowsStack.axis = .vertical
-        keyRowsStack.spacing = 9
+        keyRowsStack.spacing = TextKeyboardLayoutModel.keyVerticalGap
         keyRowsStack.alignment = .fill
         keyRowsStack.distribution = .fillEqually
         textTrackpadPanRecognizer.isEnabled = false
@@ -2228,7 +2234,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             addTextKeyRow(rows[2], includeAlternateSymbols: true, includeDelete: true)
         } else {
             addTextKeyRow(["q", "w", "e", "r", "t", "y", "u", "i", "o", "p"])
-            addTextKeyRow(["a", "s", "d", "f", "g", "h", "j", "k", "l"], leadingInset: 18, trailingInset: 18)
+            addTextKeyRow(["a", "s", "d", "f", "g", "h", "j", "k", "l"], usesHalfKeyHorizontalOffset: true)
             addTextKeyRow(["z", "x", "c", "v", "b", "n", "m"], includeShift: true, includeDelete: true)
         }
         addTextBottomRow()
@@ -2236,46 +2242,35 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func symbolRowsForCurrentLanguage() -> [[String]] {
-        // Style-swap design (Chinese language):
-        //   - 123 page = the user's current punctuation-style set
-        //     (Chinese or English depending on chinesePunctuationStyle)
-        //   - #+= page = the OTHER style. Toggling lets users grab either
-        //     set without leaving the symbol keyboard. Reversing the style
-        //     setting swaps which set lives on which page.
-        // English language: keep iOS-style 123 + #+= (numbers/punct +
-        // alternate specials with brackets, math, currency).
-        let chinesePunctPage: [[String]] = [
-            ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"],
-            ["-", "/", ":", ";", "(", ")", "¥", "&", "@", "\""],
-            ["。", "，", "、", "？", "！"],
-        ]
-        let englishPunctPage: [[String]] = [
+        let englishPunctuationPage: [[String]] = [
             ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"],
             ["-", "/", ":", ";", "(", ")", "$", "&", "@", "\""],
             [".", ",", "?", "!", "'"],
         ]
-
-        if textInputLanguage == .chinese {
-            let primaryIsChinese = chinesePunctuationStyle == .chinese
-            let pageIsChinese = isAlternateSymbolKeyboard ? !primaryIsChinese : primaryIsChinese
-            return pageIsChinese ? chinesePunctPage : englishPunctPage
-        }
-
+        let chinesePunctuationPage: [[String]] = [
+            ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"],
+            ["-", "/", ":", ";", "(", ")", "¥", "&", "@", "\""],
+            ["。", "，", "、", "？", "！"],
+        ]
         if isAlternateSymbolKeyboard {
-            // iOS English "#+=" page — brackets / math / currency.
             return [
                 ["[", "]", "{", "}", "#", "%", "^", "*", "+", "="],
                 ["_", "\\", "|", "~", "<", ">", "€", "£", "¥", "•"],
                 [".", ",", "?", "!", "'"],
             ]
         }
-        return englishPunctPage
+        if textInputLanguage == .chinese,
+           chinesePunctuationStyle == .chinese {
+            return chinesePunctuationPage
+        }
+        return englishPunctuationPage
     }
 
     private func addTextKeyRow(
         _ keys: [String],
         leadingInset: CGFloat = 0,
         trailingInset: CGFloat = 0,
+        usesHalfKeyHorizontalOffset: Bool = false,
         leadingTextKey: String? = nil,
         includeAlternateSymbols: Bool = false,
         includeShift: Bool = false,
@@ -2287,9 +2282,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         var directButtons: [UIButton] = []
         var leadingUtilityButton: UIButton?
         var trailingUtilityButton: UIButton?
+        var leadingHalfKeySpacer: UIView?
+        var trailingHalfKeySpacer: UIView?
 
         if leadingInset > 0 {
             addFixedTextRowSpacer(to: row, width: leadingInset)
+        } else if usesHalfKeyHorizontalOffset {
+            leadingHalfKeySpacer = addConstrainedTextRowSpacer(to: row)
         }
         if includeAlternateSymbols {
             row.addArrangedSubview(textAlternateSymbolButton)
@@ -2335,11 +2334,15 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
         if trailingInset > 0 {
             addFixedTextRowSpacer(to: row, width: trailingInset)
+        } else if usesHalfKeyHorizontalOffset {
+            trailingHalfKeySpacer = addConstrainedTextRowSpacer(to: row)
         }
         constrainTextKeyRow(
             keyButtons: keyButtons,
             leadingUtilityButton: leadingUtilityButton,
-            trailingUtilityButton: trailingUtilityButton
+            trailingUtilityButton: trailingUtilityButton,
+            leadingHalfKeySpacer: leadingHalfKeySpacer,
+            trailingHalfKeySpacer: trailingHalfKeySpacer
         )
         keyRowsStack.addArrangedSubview(row)
 
@@ -2366,18 +2369,26 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func addFixedTextRowSpacer(to row: UIStackView, width: CGFloat) {
-        let spacer = UIView()
-        spacer.isUserInteractionEnabled = false
+        let spacer = addConstrainedTextRowSpacer(to: row)
         let constraint = spacer.widthAnchor.constraint(equalToConstant: width)
         constraint.isActive = true
         keyboardRowConstraints.append(constraint)
+    }
+
+    private func addConstrainedTextRowSpacer(to row: UIStackView) -> UIView {
+        let spacer = UIView()
+        spacer.isUserInteractionEnabled = false
+        spacer.translatesAutoresizingMaskIntoConstraints = false
         row.addArrangedSubview(spacer)
+        return spacer
     }
 
     private func constrainTextKeyRow(
         keyButtons: [UIButton],
         leadingUtilityButton: UIButton?,
-        trailingUtilityButton: UIButton?
+        trailingUtilityButton: UIButton?,
+        leadingHalfKeySpacer: UIView? = nil,
+        trailingHalfKeySpacer: UIView? = nil
     ) {
         guard let referenceButton = keyButtons.first else { return }
         var constraints: [NSLayoutConstraint] = [
@@ -2391,6 +2402,28 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
         if let trailingUtilityButton {
             constraints.append(trailingUtilityButton.widthAnchor.constraint(equalTo: referenceButton.widthAnchor, multiplier: 1.5))
+        }
+        if let leadingHalfKeySpacer {
+            constraints.append(NSLayoutConstraint(
+                item: leadingHalfKeySpacer,
+                attribute: .width,
+                relatedBy: .equal,
+                toItem: referenceButton,
+                attribute: .width,
+                multiplier: 0.5,
+                constant: -TextKeyboardLayoutModel.keyHorizontalGap / 2
+            ))
+        }
+        if let trailingHalfKeySpacer {
+            constraints.append(NSLayoutConstraint(
+                item: trailingHalfKeySpacer,
+                attribute: .width,
+                relatedBy: .equal,
+                toItem: referenceButton,
+                attribute: .width,
+                multiplier: 0.5,
+                constant: -TextKeyboardLayoutModel.keyHorizontalGap / 2
+            ))
         }
         NSLayoutConstraint.activate(constraints)
         keyboardRowConstraints.append(contentsOf: constraints)
@@ -2409,15 +2442,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func displayTitle(forTextKey key: String, autoCap: Bool? = nil) -> String {
-        // The 123 / #+= symbol pages stay literal-English even in Chinese
-        // mode — matches iOS Simplified Chinese keyboard. Reason: users need
-        // real "." "/" "@" for URLs / emails / file paths. Chinese
-        // punctuation comes from the punctuation row of LETTER mode (via
-        // Rime's punctuator) or the bottom-row period key when added.
-        //
-        // Also skip the conversion entirely when the host field's
-        // keyboardType signals URL / email / numeric input — matches iOS
-        // system Simplified Chinese's context-aware behavior.
         if textInputLanguage == .chinese,
            !isAlphabeticTextKey(key),
            chinesePunctuationStyle == .chinese,
@@ -2552,7 +2576,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private func makeTextKeyRow() -> UIStackView {
         let row = UIStackView()
         row.axis = .horizontal
-        row.spacing = 8
+        row.spacing = TextKeyboardLayoutModel.keyHorizontalGap
         row.alignment = .fill
         row.distribution = .fill
         return row
@@ -5869,12 +5893,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func chineseDirectText(for character: String) -> String {
-        // Symbol pages always insert literal English chars in Chinese mode
-        // (so URLs / emails / file paths can be typed). Mirrors iOS system
-        // Simplified Chinese keyboard. URL / email / numeric host fields
-        // also skip conversion via isChinesePunctuationContext.
+        guard !isSymbolKeyboard else { return character }
         guard chinesePunctuationStyle == .chinese,
-              !isSymbolKeyboard,
               isChinesePunctuationContext
         else { return character }
         switch character {
@@ -5898,8 +5918,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     private func shouldInsertDirectChinesePunctuation(_ character: String) -> Bool {
         guard textInputLanguage == .chinese,
-              chinesePunctuationStyle == .chinese,
-              !isAlphabeticTextKey(character),
+              !isAlphabeticTextKey(character)
+        else { return false }
+        if isSymbolKeyboard { return true }
+        guard chinesePunctuationStyle == .chinese,
               isChinesePunctuationContext
         else { return false }
         return ",.?!:;()\"'/\\|`~$^_<>-[]{}#%&*+=@€£¥•".contains(character)
@@ -7030,9 +7052,12 @@ final class KeyboardRootInputView: UIInputView {
     private struct ActiveKeyboardTouch {
         let target: KeyboardTouchTarget
         let startPoint: CGPoint
+        let textKeySequence: UInt64?
     }
 
     private var activeTouches: [UITouch: ActiveKeyboardTouch] = [:]
+    private var pendingEndedTextKeyPoints: [UITouch: CGPoint] = [:]
+    private var nextTextKeySequence: UInt64 = 0
     private var pendingActivationTarget: KeyboardTouchTarget?
     private var pendingActivationPoint: CGPoint?
     private var lastTouchCommitTime: CFTimeInterval = 0
@@ -7093,7 +7118,18 @@ final class KeyboardRootInputView: UIInputView {
             releaseExistingTouchIfNeeded(for: target)
             pendingActivationTarget = nil
             pendingActivationPoint = nil
-            activeTouches[touch] = ActiveKeyboardTouch(target: target, startPoint: rootPoint)
+            let sequence: UInt64?
+            if case .textKey = target {
+                sequence = nextTextKeySequence
+                nextTextKeySequence += 1
+            } else {
+                sequence = nil
+            }
+            activeTouches[touch] = ActiveKeyboardTouch(
+                target: target,
+                startPoint: rootPoint,
+                textKeySequence: sequence
+            )
             hitController.beginKeyboardTouchTarget(target, point: rootPoint)
             handledAnyTouch = true
         }
@@ -7128,7 +7164,9 @@ final class KeyboardRootInputView: UIInputView {
                 intent: horizontalIntent
             )
             hitController.switchKeyboardFocusFromFallbackSwipe(deltaX: horizontalIntent)
+            pendingEndedTextKeyPoints.removeValue(forKey: touch)
             activeTouches.removeValue(forKey: touch)
+            flushEndedTextKeyTouches()
         }
         if !handledAnyTouch {
             super.touchesMoved(touches, with: event)
@@ -7144,11 +7182,17 @@ final class KeyboardRootInputView: UIInputView {
         var handledAnyTouch = false
         for touch in touches {
             guard let active = activeTouches[touch] else { continue }
-            hitController.commitKeyboardTouchTarget(active.target, point: touch.location(in: self))
-            activeTouches.removeValue(forKey: touch)
-            lastTouchCommitTime = CACurrentMediaTime()
+            let point = touch.location(in: self)
+            if active.textKeySequence != nil {
+                pendingEndedTextKeyPoints[touch] = point
+            } else {
+                hitController.commitKeyboardTouchTarget(active.target, point: point)
+                activeTouches.removeValue(forKey: touch)
+                lastTouchCommitTime = CACurrentMediaTime()
+            }
             handledAnyTouch = true
         }
+        flushEndedTextKeyTouches()
         if !handledAnyTouch {
             super.touchesEnded(touches, with: event)
         }
@@ -7157,6 +7201,7 @@ final class KeyboardRootInputView: UIInputView {
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
         guard let hitController else {
             activeTouches.removeAll()
+            pendingEndedTextKeyPoints.removeAll()
             super.touchesCancelled(touches, with: event)
             return
         }
@@ -7165,9 +7210,11 @@ final class KeyboardRootInputView: UIInputView {
         for touch in touches {
             guard let active = activeTouches[touch] else { continue }
             hitController.cancelKeyboardTouchTarget(active.target, point: touch.location(in: self))
+            pendingEndedTextKeyPoints.removeValue(forKey: touch)
             activeTouches.removeValue(forKey: touch)
             handledAnyTouch = true
         }
+        flushEndedTextKeyTouches()
         if !handledAnyTouch {
             super.touchesCancelled(touches, with: event)
         }
@@ -7193,6 +7240,38 @@ final class KeyboardRootInputView: UIInputView {
         pendingActivationPoint = nil
     }
 
+    private func flushEndedTextKeyTouches() {
+        guard let hitController else { return }
+
+        while let next = nextEndedTextKeyReadyToCommit() {
+            hitController.commitKeyboardTouchTarget(next.active.target, point: next.point)
+            pendingEndedTextKeyPoints.removeValue(forKey: next.touch)
+            activeTouches.removeValue(forKey: next.touch)
+            lastTouchCommitTime = CACurrentMediaTime()
+        }
+    }
+
+    private func nextEndedTextKeyReadyToCommit() -> (touch: UITouch, active: ActiveKeyboardTouch, point: CGPoint)? {
+        let endedTouches = activeTouches.compactMap { touch, active -> (touch: UITouch, active: ActiveKeyboardTouch, point: CGPoint)? in
+            guard active.textKeySequence != nil,
+                  let point = pendingEndedTextKeyPoints[touch]
+            else { return nil }
+            return (touch, active, point)
+        }
+        guard let next = endedTouches.min(by: { lhs, rhs in
+            (lhs.active.textKeySequence ?? 0) < (rhs.active.textKeySequence ?? 0)
+        }) else { return nil }
+        guard let nextSequence = next.active.textKeySequence else { return nil }
+
+        let hasOlderUnendedTextKey = activeTouches.contains { touch, active in
+            guard let sequence = active.textKeySequence,
+                  sequence < nextSequence
+            else { return false }
+            return pendingEndedTextKeyPoints[touch] == nil
+        }
+        return hasOlderUnendedTextKey ? nil : next
+    }
+
     private func releaseExistingTouchIfNeeded(for target: KeyboardTouchTarget) {
         guard let hitController,
               case .textKey(let button) = target,
@@ -7205,6 +7284,8 @@ final class KeyboardRootInputView: UIInputView {
         else { return }
 
         hitController.cancelKeyboardTouchTarget(existing.value.target, point: existing.key.location(in: self))
+        pendingEndedTextKeyPoints.removeValue(forKey: existing.key)
         activeTouches.removeValue(forKey: existing.key)
+        flushEndedTextKeyTouches()
     }
 }
