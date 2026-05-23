@@ -1,8 +1,10 @@
+import CryptoKit
 import Foundation
 
 enum KeyboardSharedDefaults {
     static let appGroupIdentifier = "group.com.example.typeforme"
     static let keyboardDefaultsKey = "keyboard.defaults.v1"
+    private static let hostHandoffKey = "keyboard.host-handoff.v1"
 
     static func suite() -> UserDefaults? {
         UserDefaults(suiteName: appGroupIdentifier)
@@ -37,6 +39,30 @@ enum KeyboardSharedDefaults {
 
     static func makeBridgeToken() -> String {
         "\(UUID().uuidString).\(UUID().uuidString)"
+    }
+
+    @discardableResult
+    static func saveHostHandoff(_ handoff: KeyboardHostHandoff) -> Bool {
+        guard let data = try? JSONEncoder().encode(handoff),
+              let text = String(data: data, encoding: .utf8),
+              let defaults = suite()
+        else { return false }
+        defaults.set(text, forKey: hostHandoffKey)
+        defaults.synchronize()
+        return true
+    }
+
+    static func consumeHostHandoff(id: String, now: TimeInterval = Date().timeIntervalSince1970) -> KeyboardHostHandoff? {
+        guard let defaults = suite(),
+              let text = defaults.string(forKey: hostHandoffKey),
+              let data = text.data(using: .utf8),
+              let handoff = try? JSONDecoder().decode(KeyboardHostHandoff.self, from: data),
+              handoff.id == id,
+              handoff.isFresh(now: now)
+        else { return nil }
+        defaults.removeObject(forKey: hostHandoffKey)
+        defaults.synchronize()
+        return handoff
     }
 }
 
@@ -222,6 +248,127 @@ struct KeyboardBridgeCommand: Codable, Equatable {
     }
 }
 
+struct KeyboardHostHandoff: Codable, Equatable {
+    static let maxAge: TimeInterval = 30
+
+    let id: String
+    let action: String
+    let shouldReturnToKeyboard: Bool
+    let correctionMode: String
+    let returnBundleID: String?
+    let returnProcessID: Int32?
+    let createdAt: TimeInterval
+
+    init(
+        id: String = UUID().uuidString,
+        action: String,
+        shouldReturnToKeyboard: Bool,
+        correctionMode: String,
+        returnBundleID: String?,
+        returnProcessID: Int32?,
+        createdAt: TimeInterval = Date().timeIntervalSince1970
+    ) {
+        self.id = id
+        self.action = action
+        self.shouldReturnToKeyboard = shouldReturnToKeyboard
+        self.correctionMode = correctionMode
+        self.returnBundleID = returnBundleID
+        self.returnProcessID = returnProcessID
+        self.createdAt = createdAt
+    }
+
+    func isFresh(now: TimeInterval) -> Bool {
+        createdAt <= now && now - createdAt <= Self.maxAge
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case action
+        case shouldReturnToKeyboard = "return_to_keyboard"
+        case correctionMode = "correction_mode"
+        case returnBundleID = "return_bundle"
+        case returnProcessID = "return_pid"
+        case createdAt = "created_at"
+    }
+}
+
+struct KeyboardLocalBridgeHello: Codable, Equatable {
+    let version: Int
+    let nonce: String
+    let proof: String
+}
+
+struct KeyboardLocalBridgeProof: Codable, Equatable {
+    let nonce: String
+    let proof: String
+}
+
+enum KeyboardLocalBridgeAuth {
+    private static let version = 1
+    private static let serverPurpose = "server"
+    private static let clientPurpose = "client"
+
+    static func makeServerHello(bridgeToken: String) -> KeyboardLocalBridgeHello? {
+        let nonce = makeNonce()
+        guard let proof = proof(bridgeToken: bridgeToken, purpose: serverPurpose, nonce: nonce) else { return nil }
+        return KeyboardLocalBridgeHello(version: version, nonce: nonce, proof: proof)
+    }
+
+    static func verifyServerHello(_ hello: KeyboardLocalBridgeHello, bridgeToken: String) -> Bool {
+        guard hello.version == version else { return false }
+        return verify(proof: hello.proof, bridgeToken: bridgeToken, purpose: serverPurpose, nonce: hello.nonce)
+    }
+
+    static func makeClientProof(bridgeToken: String) -> KeyboardLocalBridgeProof? {
+        let nonce = makeNonce()
+        guard let proof = proof(bridgeToken: bridgeToken, purpose: clientPurpose, nonce: nonce) else { return nil }
+        return KeyboardLocalBridgeProof(nonce: nonce, proof: proof)
+    }
+
+    static func verifyClientProof(_ authentication: KeyboardLocalBridgeProof?, bridgeToken: String) -> Bool {
+        guard let authentication else { return false }
+        return verify(
+            proof: authentication.proof,
+            bridgeToken: bridgeToken,
+            purpose: clientPurpose,
+            nonce: authentication.nonce
+        )
+    }
+
+    private static func makeNonce() -> String {
+        "\(UUID().uuidString).\(UUID().uuidString)"
+    }
+
+    private static func proof(bridgeToken: String, purpose: String, nonce: String) -> String? {
+        let token = bridgeToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !token.isEmpty,
+              !nonce.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else { return nil }
+        let message = "typeforme.keyboard.local.\(purpose).v\(version).\(nonce)"
+        let key = SymmetricKey(data: Data(token.utf8))
+        let mac = HMAC<SHA256>.authenticationCode(for: Data(message.utf8), using: key)
+        return mac.map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func verify(proof suppliedProof: String, bridgeToken: String, purpose: String, nonce: String) -> Bool {
+        guard let expectedProof = proof(bridgeToken: bridgeToken, purpose: purpose, nonce: nonce) else { return false }
+        return constantTimeEquals(suppliedProof, expectedProof)
+    }
+
+    private static func constantTimeEquals(_ supplied: String, _ expected: String) -> Bool {
+        let suppliedBytes = Array(supplied.utf8)
+        let expectedBytes = Array(expected.utf8)
+        var diff = suppliedBytes.count ^ expectedBytes.count
+        let count = max(suppliedBytes.count, expectedBytes.count)
+        for index in 0..<count {
+            let suppliedByte = index < suppliedBytes.count ? suppliedBytes[index] : 0
+            let expectedByte = index < expectedBytes.count ? expectedBytes[index] : 0
+            diff |= Int(suppliedByte ^ expectedByte)
+        }
+        return diff == 0
+    }
+}
+
 struct KeyboardLocalBridgeRequest: Codable, Equatable {
     enum Action: String, Codable {
         case status
@@ -229,20 +376,28 @@ struct KeyboardLocalBridgeRequest: Codable, Equatable {
     }
 
     let action: Action
-    let bridgeToken: String?
+    let authentication: KeyboardLocalBridgeProof?
     let command: KeyboardBridgeCommand?
 
     static func status(bridgeToken: String?) -> KeyboardLocalBridgeRequest {
-        KeyboardLocalBridgeRequest(action: .status, bridgeToken: bridgeToken, command: nil)
+        KeyboardLocalBridgeRequest(
+            action: .status,
+            authentication: bridgeToken.flatMap { KeyboardLocalBridgeAuth.makeClientProof(bridgeToken: $0) },
+            command: nil
+        )
     }
 
     static func command(_ command: KeyboardBridgeCommand, bridgeToken: String?) -> KeyboardLocalBridgeRequest {
-        KeyboardLocalBridgeRequest(action: .command, bridgeToken: bridgeToken, command: command)
+        KeyboardLocalBridgeRequest(
+            action: .command,
+            authentication: bridgeToken.flatMap { KeyboardLocalBridgeAuth.makeClientProof(bridgeToken: $0) },
+            command: command
+        )
     }
 
     enum CodingKeys: String, CodingKey {
         case action
-        case bridgeToken = "bridge_token"
+        case authentication = "authentication"
         case command
     }
 }

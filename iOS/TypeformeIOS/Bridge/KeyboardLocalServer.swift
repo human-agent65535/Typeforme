@@ -84,10 +84,50 @@ final class KeyboardLocalServer {
             self?.removeConnection(id)
         }
         connection.start(queue: queue)
-        receiveMessage(from: connection, generation: generation)
+        sendHelloThenReceive(from: connection, generation: generation)
     }
 
-    private func receiveMessage(from connection: NWConnection, generation: UInt) {
+    private func sendHelloThenReceive(from connection: NWConnection, generation: UInt) {
+        let taskID = UUID()
+        let task = Task { [weak self] in
+            await Task.yield()
+            guard let self else { return }
+            guard self.isCurrentGeneration(generation) else {
+                connection.cancel()
+                self.removeTask(taskID)
+                return
+            }
+            guard let expectedToken = await self.expectedTokenProvider?(),
+                  !expectedToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  let hello = KeyboardLocalBridgeAuth.makeServerHello(bridgeToken: expectedToken)
+            else {
+                self.send(
+                    KeyboardBridgeStatus(state: .error, message: "Keyboard bridge unavailable"),
+                    connection: connection
+                )
+                self.removeTask(taskID)
+                return
+            }
+            guard !Task.isCancelled, self.isCurrentGeneration(generation) else {
+                connection.cancel()
+                self.removeTask(taskID)
+                return
+            }
+            self.sendHello(hello, connection: connection) { [weak self] sent in
+                guard let self else { return }
+                guard sent, self.isCurrentGeneration(generation) else {
+                    connection.cancel()
+                    self.removeTask(taskID)
+                    return
+                }
+                self.receiveMessage(from: connection, generation: generation, expectedToken: expectedToken)
+                self.removeTask(taskID)
+            }
+        }
+        storeTask(task, id: taskID, generation: generation)
+    }
+
+    private func receiveMessage(from connection: NWConnection, generation: UInt, expectedToken: String) {
         connection.receiveMessage { [weak self] data, _, _, error in
             guard let self else {
                 connection.cancel()
@@ -125,7 +165,7 @@ final class KeyboardLocalServer {
                     self.removeTask(taskID)
                     return
                 }
-                let status = await self.status(for: request)
+                let status = await self.status(for: request, expectedToken: expectedToken)
                 guard !Task.isCancelled, self.isCurrentGeneration(generation) else {
                     connection.cancel()
                     self.removeTask(taskID)
@@ -138,8 +178,8 @@ final class KeyboardLocalServer {
         }
     }
 
-    private func status(for request: KeyboardLocalBridgeRequest) async -> KeyboardBridgeStatus {
-        guard await isAuthorized(request) else {
+    private func status(for request: KeyboardLocalBridgeRequest, expectedToken: String) async -> KeyboardBridgeStatus {
+        guard isAuthorized(request, expectedToken: expectedToken) else {
             return KeyboardBridgeStatus(state: .error, message: "Keyboard bridge unauthorized")
         }
         switch request.action {
@@ -154,11 +194,25 @@ final class KeyboardLocalServer {
         }
     }
 
-    private func isAuthorized(_ request: KeyboardLocalBridgeRequest) async -> Bool {
-        guard let expectedToken = await expectedTokenProvider?(),
-              !expectedToken.isEmpty
-        else { return false }
-        return request.bridgeToken == expectedToken
+    private func isAuthorized(_ request: KeyboardLocalBridgeRequest, expectedToken: String) -> Bool {
+        KeyboardLocalBridgeAuth.verifyClientProof(request.authentication, bridgeToken: expectedToken)
+    }
+
+    private func sendHello(
+        _ hello: KeyboardLocalBridgeHello,
+        connection: NWConnection,
+        completion: @escaping (Bool) -> Void
+    ) {
+        guard let data = try? JSONEncoder().encode(hello) else {
+            connection.cancel()
+            completion(false)
+            return
+        }
+        let metadata = NWProtocolWebSocket.Metadata(opcode: .binary)
+        let context = NWConnection.ContentContext(identifier: "keyboard-bridge-hello", metadata: [metadata])
+        connection.send(content: data, contentContext: context, isComplete: true, completion: .contentProcessed { error in
+            completion(error == nil)
+        })
     }
 
     private func send(_ status: KeyboardBridgeStatus, connection: NWConnection) {

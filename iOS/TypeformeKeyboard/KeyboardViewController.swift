@@ -177,6 +177,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private var isCharacterPreviewEnabled = false
     private var chinesePunctuationStyle: ChinesePunctuationStyle = .chinese
     private let rimeInput = RimeInputController()
+    private var pendingRimeCharacters: [String] = []
     private var activeMarkedText = ""
     private var heightConstraint: NSLayoutConstraint?
     private var orbContainerHeightConstraint: NSLayoutConstraint?
@@ -438,6 +439,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         weak var row: UIStackView?
         let routedButtons: [UIButton]
         let directButtons: [UIButton]
+        let boundaryButtons: [UIButton]
         let kind: TextKeyboardHitRowKind
     }
 
@@ -445,6 +447,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let row: UIStackView
         let frame: CGRect
         let buttons: [UIButton]
+        let boundaryButtons: [UIButton]
         let kind: TextKeyboardHitRowKind
     }
 
@@ -834,6 +837,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 row: row,
                 frame: row.convert(row.bounds, to: view),
                 buttons: buttons,
+                boundaryButtons: visibleHitButtons(in: hitRow.boundaryButtons),
                 kind: hitRow.kind
             )
         }
@@ -878,19 +882,53 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             .sorted { $0.frame.midX < $1.frame.midX }
         guard !buttons.isEmpty else { return nil }
 
+        let boundaryButtons = visibleHitButtons(in: row.boundaryButtons)
+            .map { button in
+                TextKeyboardHitButton(button: button, frame: button.convert(button.bounds, to: view))
+            }
+            .filter { !$0.frame.isEmpty }
+            .sorted { $0.frame.midX < $1.frame.midX }
+        let targetIDs = Set(buttons.map { ObjectIdentifier($0.button) })
+
         for index in buttons.indices {
             let frame = buttons[index].frame
+            let previousBoundary = boundaryButtons.last {
+                $0.frame.maxX <= frame.minX && ObjectIdentifier($0.button) != ObjectIdentifier(buttons[index].button)
+            }
+            let nextBoundary = boundaryButtons.first {
+                $0.frame.minX >= frame.maxX && ObjectIdentifier($0.button) != ObjectIdentifier(buttons[index].button)
+            }
             let leftBoundary: CGFloat
             let rightBoundary: CGFloat
             if index == buttons.startIndex {
-                leftBoundary = view.bounds.minX
+                if let previousBoundary {
+                    leftBoundary = (previousBoundary.frame.maxX + frame.minX) * 0.5
+                } else {
+                    leftBoundary = view.bounds.minX
+                }
             } else {
                 leftBoundary = (buttons[index - 1].frame.maxX + frame.minX) * 0.5
             }
             if index == buttons.index(before: buttons.endIndex) {
-                rightBoundary = view.bounds.maxX
+                if let nextBoundary {
+                    rightBoundary = (frame.maxX + nextBoundary.frame.minX) * 0.5
+                } else {
+                    rightBoundary = view.bounds.maxX
+                }
             } else {
                 rightBoundary = (frame.maxX + buttons[index + 1].frame.minX) * 0.5
+            }
+            if let previousBoundary,
+               index == buttons.startIndex,
+               !targetIDs.contains(ObjectIdentifier(previousBoundary.button)),
+               point.x < leftBoundary {
+                return nil
+            }
+            if let nextBoundary,
+               index == buttons.index(before: buttons.endIndex),
+               !targetIDs.contains(ObjectIdentifier(nextBoundary.button)),
+               point.x > rightBoundary {
+                return nil
             }
             let isLastButton = index == buttons.index(before: buttons.endIndex)
             if point.x >= leftBoundary && (point.x < rightBoundary || (isLastButton && point.x <= rightBoundary)) {
@@ -1074,6 +1112,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         super.viewWillDisappear(animated)
         resetAllPressedControlStates(animated: false)
         if keyboardFocus == .text {
+            pendingRimeCharacters.removeAll()
             applyRimeState(rimeInput.commitComposition())
         }
         stopDeleteRepeat()
@@ -1376,7 +1415,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private func configureRimeStateCallback() {
         rimeInput.onStateChange = { [weak self] state in
             guard let self else { return }
-            self.applyRimeState(state)
+            self.applyReadyRimeStateOrRender(state)
         }
     }
 
@@ -2440,6 +2479,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             row,
             routedButtons: routedEdgeButtons + keyButtons,
             directButtons: directButtons,
+            boundaryButtons: directButtons + routedEdgeButtons + keyButtons,
             kind: .character
         )
     }
@@ -2448,12 +2488,14 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         _ row: UIStackView,
         routedButtons: [UIButton],
         directButtons: [UIButton],
+        boundaryButtons: [UIButton],
         kind: TextKeyboardHitRowKind
     ) {
         textKeyboardHitRows.append(TextKeyboardHitRow(
             row: row,
             routedButtons: routedButtons,
             directButtons: directButtons,
+            boundaryButtons: boundaryButtons,
             kind: kind
         ))
     }
@@ -2587,6 +2629,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             row,
             routedButtons: [],
             directButtons: [textModeButton, textGlobeButton, textLanguageButton, spaceKey, returnKey],
+            boundaryButtons: [textModeButton, textGlobeButton, textLanguageButton, spaceKey, returnKey],
             kind: .bottom
         )
     }
@@ -3823,22 +3866,29 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         openingMessage: String,
         allowBundleFallback: Bool = true
     ) {
+        let requestedCorrectionMode = action == "record" ? currentDefaultCorrectionMode() : correctionMode
+        let handoff = KeyboardHostHandoff(
+            action: action,
+            shouldReturnToKeyboard: returnToKeyboard,
+            correctionMode: requestedCorrectionMode.rawValue,
+            returnBundleID: returnToKeyboard ? currentHostBundleID : nil,
+            returnProcessID: returnToKeyboard ? currentHostProcessID : nil
+        )
+        guard KeyboardSharedDefaults.saveHostHandoff(handoff) else {
+            kbLog.error("openHostAppForKeyboardAction: failed to save keyboard handoff")
+            bridgeStatus = KeyboardBridgeStatus(state: .error, message: "Open Typeforme to prepare dictation.")
+            lastBridgeContactAt = Date().timeIntervalSince1970
+            updateUI()
+            return
+        }
+
         var components = URLComponents()
         components.scheme = "typeforme"
         components.host = action
-        let requestedCorrectionMode = action == "record" ? currentDefaultCorrectionMode() : correctionMode
-        var queryItems = [
+        components.queryItems = [
             URLQueryItem(name: "source", value: "keyboard"),
-            URLQueryItem(name: "return", value: returnToKeyboard ? "1" : "0"),
-            URLQueryItem(name: "correction_mode", value: requestedCorrectionMode.rawValue),
+            URLQueryItem(name: "handoff_id", value: handoff.id),
         ]
-        if returnToKeyboard, let returnBundleID = currentHostBundleID {
-            queryItems.append(URLQueryItem(name: "return_bundle", value: returnBundleID))
-        }
-        if returnToKeyboard, let returnProcessID = currentHostProcessID {
-            queryItems.append(URLQueryItem(name: "return_pid", value: String(returnProcessID)))
-        }
-        components.queryItems = queryItems
         guard let url = components.url else { return }
         openingHostUntil = Date().timeIntervalSince1970 + 8
         bridgeStatus = KeyboardBridgeStatus(state: .standby, message: openingMessage)
@@ -5285,10 +5335,15 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let currentRimeState = rimeInput.state()
         if !currentRimeState.isReady,
            currentRimeState.errorMessage != nil {
+            pendingRimeCharacters.removeAll()
             applyRimeState(currentRimeState)
             textDocumentProxy.insertText(character)
             resetShiftIfSticky()
             renderRestyleSuggestionsIfIdle()
+            return
+        }
+        if !currentRimeState.isReady {
+            queuePendingRimeCharacter(character, state: currentRimeState)
             return
         }
 
@@ -5298,12 +5353,47 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         applyRimeState(state)
     }
 
+    private func queuePendingRimeCharacter(_ character: String, state: RimeKeyboardState) {
+        pendingRimeCharacters.append(character)
+        if pendingRimeCharacters.count > 64 {
+            pendingRimeCharacters.removeFirst(pendingRimeCharacters.count - 64)
+        }
+        applyRimeState(state)
+    }
+
+    private func applyReadyRimeStateOrRender(_ state: RimeKeyboardState) {
+        guard state.isReady, !pendingRimeCharacters.isEmpty else {
+            applyRimeState(state)
+            return
+        }
+
+        let queuedCharacters = pendingRimeCharacters
+        pendingRimeCharacters.removeAll()
+        _ = rimeInput.setAsciiPunctuation(chinesePunctuationStyle == .english)
+        _ = rimeInput.setAsciiMode(false)
+
+        var replayState = state
+        for character in queuedCharacters {
+            replayState = rimeInput.processCharacter(character)
+            if !replayState.isReady || replayState.errorMessage != nil {
+                break
+            }
+        }
+        applyRimeState(replayState)
+    }
+
     private func handleTextBackspace() {
         guard keyboardFocus == .text else {
             textDocumentProxy.deleteBackward()
             return
         }
         clearRestyleSuggestions()
+
+        if !pendingRimeCharacters.isEmpty {
+            pendingRimeCharacters.removeLast()
+            applyRimeState(rimeInput.state())
+            return
+        }
 
         let currentState = rimeInput.state()
         if currentState.isComposing {
@@ -7402,7 +7492,7 @@ final class KeyboardRootInputView: UIInputView {
         }
 
         var handledAnyTouch = false
-        for touch in touches {
+        for touch in orderedTouches(touches) {
             let rootPoint = touch.location(in: self)
             guard let target = hitController.keyboardOverlayTouchTarget(at: rootPoint) else { continue }
             releaseExistingTouchIfNeeded(for: target)
@@ -7435,7 +7525,7 @@ final class KeyboardRootInputView: UIInputView {
         }
 
         var handledAnyTouch = false
-        for touch in touches {
+        for touch in orderedTouches(touches) {
             guard let active = activeTouches[touch] else { continue }
             handledAnyTouch = true
             let rootPoint = touch.location(in: self)
@@ -7470,7 +7560,7 @@ final class KeyboardRootInputView: UIInputView {
         }
 
         var handledAnyTouch = false
-        for touch in touches {
+        for touch in orderedTouches(touches) {
             guard let active = activeTouches[touch] else { continue }
             let point = touch.location(in: self)
             if active.textKeySequence != nil {
@@ -7497,7 +7587,7 @@ final class KeyboardRootInputView: UIInputView {
         }
 
         var handledAnyTouch = false
-        for touch in touches {
+        for touch in orderedTouches(touches) {
             guard let active = activeTouches[touch] else { continue }
             hitController.cancelKeyboardTouchTarget(active.target, point: touch.location(in: self))
             pendingEndedTextKeyPoints.removeValue(forKey: touch)
@@ -7577,5 +7667,22 @@ final class KeyboardRootInputView: UIInputView {
         pendingEndedTextKeyPoints.removeValue(forKey: existing.key)
         activeTouches.removeValue(forKey: existing.key)
         flushEndedTextKeyTouches()
+    }
+
+    private func orderedTouches(_ touches: Set<UITouch>) -> [UITouch] {
+        touches.sorted { lhs, rhs in
+            if lhs.timestamp != rhs.timestamp {
+                return lhs.timestamp < rhs.timestamp
+            }
+            let leftPoint = lhs.location(in: self)
+            let rightPoint = rhs.location(in: self)
+            if leftPoint.y != rightPoint.y {
+                return leftPoint.y < rightPoint.y
+            }
+            if leftPoint.x != rightPoint.x {
+                return leftPoint.x < rightPoint.x
+            }
+            return ObjectIdentifier(lhs).hashValue < ObjectIdentifier(rhs).hashValue
+        }
     }
 }

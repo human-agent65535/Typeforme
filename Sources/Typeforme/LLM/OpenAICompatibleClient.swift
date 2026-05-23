@@ -218,11 +218,10 @@ enum OpenAICompatibleClient {
     private static func errorMessage(data: Data) -> String {
         if let response = try? BridgeJSON.decode(ErrorResponse.self, from: data) {
             let message = response.error.message.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !message.isEmpty { return String(message.prefix(500)) }
+            if !message.isEmpty { return "server error message omitted (\(message.count) chars)" }
         }
-        let text = String(data: data, encoding: .utf8)?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return String(text.prefix(500))
+        guard !data.isEmpty else { return "" }
+        return "response body omitted (\(data.count) bytes)"
     }
 }
 
