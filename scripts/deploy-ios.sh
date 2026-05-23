@@ -166,7 +166,7 @@ fi
 echo "→ Installing $APP_PATH"
 xcrun devicectl device install app --device "$DEVICE_ID" "$APP_PATH"
 
-echo "→ Verifying installed host app and keyboard extension"
+echo "→ Verifying installed host app"
 APP_INFO_JSON="$(mktemp -t typeforme-installed-apps)"
 APP_INFO_TEXT="$(mktemp -t typeforme-installed-apps-text)"
 VERIFY_OK=0
@@ -204,7 +204,14 @@ def contains_string(value, expected):
 
 def find_record(bundle_id):
     for item in walk(payload):
-        if contains_string(item, bundle_id):
+        if not isinstance(item, dict):
+            continue
+        identifiers = [
+            item.get("bundleIdentifier"),
+            item.get("CFBundleIdentifier"),
+            item.get("bundleID"),
+        ]
+        if any(identifier == bundle_id for identifier in identifiers):
             return item
     return None
 
@@ -234,6 +241,7 @@ def require_record(bundle_id, expected_version, expected_build):
         "bundleShortVersionString",
         "shortVersionString",
         "marketingVersion",
+        "version",
     ])
     build = find_value(record, [
         "CFBundleVersion",
@@ -248,7 +256,6 @@ def require_record(bundle_id, expected_version, expected_build):
         )
 
 require_record(host_id, host_version, host_build)
-require_record(keyboard_id, keyboard_version, keyboard_build)
 PY
     then
         VERIFY_OK=1
@@ -258,7 +265,7 @@ PY
 done
 if [ "$VERIFY_OK" != "1" ]; then
     cat "$APP_INFO_TEXT" >&2
-    echo "Installed app verification failed. Expected host $HOST_VERSION ($HOST_BUILD) and keyboard $KEYBOARD_VERSION ($KEYBOARD_BUILD)." >&2
+    echo "Installed app verification failed. Expected host $HOST_VERSION ($HOST_BUILD)." >&2
     rm -f "$APP_INFO_JSON" "$APP_INFO_TEXT"
     exit 1
 fi

@@ -12,6 +12,7 @@ import KeyboardShortcuts
 struct HUDView: View {
     @ObservedObject var coordinator: DictationCoordinator
     @State private var recordingStartedAt: Date?
+    @AppStorage(AppSettings.Keys.voiceUXMode) private var voiceUXModeRaw: String = VoiceUXMode.classic.rawValue
 
     private static let cornerRadius: CGFloat = 24
 
@@ -82,7 +83,16 @@ struct HUDView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    @ViewBuilder
     private var expandedPreviewBody: some View {
+        if isVoiceDraftMode {
+            voiceDraftPreviewBody
+        } else {
+            classicPreviewBody
+        }
+    }
+
+    private var classicPreviewBody: some View {
         // Natural sizing only — no .frame(maxHeight: .infinity) here. With
         // `maxHeight: .infinity`, SwiftUI advertises infinity as its desired
         // height, which NSHostingView then propagated back to the panel as
@@ -114,16 +124,36 @@ struct HUDView: View {
         .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
+    private var voiceDraftPreviewBody: some View {
+        HStack(spacing: 0) {
+            VoiceDraftActionBar(
+                coordinator: coordinator,
+                disabled: coordinator.state == .correcting
+            )
+            Spacer(minLength: 0)
+        }
+        .padding(6)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+
     private var previewText: String {
         let trimmed = coordinator.lastCorrected.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? "Preview" : trimmed
     }
 
+    private var isVoiceDraftMode: Bool {
+        VoiceUXMode(rawValue: voiceUXModeRaw) == .voiceDraft
+    }
+
     // MARK: - Surface
 
+    @ViewBuilder
     private var surface: some View {
+        if isVoiceDraftMode && isExpandedPreview {
+            Color.clear
+        } else {
         let shape = RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
-        return shape
+        shape
             .fill(.ultraThinMaterial)
             .overlay(
                 // State-coloured glow along the top edge, fades into the body.
@@ -145,6 +175,7 @@ struct HUDView: View {
                 // hardcoded white-opacity, which was invisible in light mode.
                 shape.strokeBorder(Color(nsColor: .separatorColor), lineWidth: 0.5)
             )
+        }
     }
 
     // MARK: - Leading (icon / waveform / recording dot)
@@ -399,17 +430,122 @@ private struct ChipStyle: ViewModifier {
     }
 }
 
+// MARK: - Voice Draft action bar
+
+private struct VoiceDraftActionBar: View {
+    @ObservedObject var coordinator: DictationCoordinator
+    let disabled: Bool
+
+    var body: some View {
+        HStack(spacing: 4) {
+            VoiceDraftBarButton(
+                title: "Insert",
+                systemImage: "checkmark",
+                isPrimary: true
+            ) {
+                Task { await coordinator.commitPreview() }
+            }
+            .disabled(disabled)
+
+            VoiceDraftBarButton(
+                title: "Wand",
+                systemImage: "wand.and.stars",
+                isPrimary: false
+            ) {
+                Task { await coordinator.toggleDraftCommand() }
+            }
+            .disabled(disabled)
+
+            Divider()
+                .frame(height: 18)
+
+            Image(systemName: "paintbrush.pointed")
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(.secondary)
+                .frame(width: 16, height: 26)
+                .help("Style")
+
+            ModeChipRow(coordinator: coordinator, disabled: disabled)
+
+            Divider()
+                .frame(height: 18)
+
+            Button {
+                Task { await coordinator.cancelDictation() }
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 10, weight: .bold))
+                    .frame(width: 26, height: 26)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .help("Cancel draft (Esc)")
+        }
+        .padding(5)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(.ultraThinMaterial)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 0.5)
+        )
+        .shadow(color: Color.black.opacity(0.14), radius: 14, x: 0, y: 8)
+        .opacity(disabled ? 0.62 : 1.0)
+        .animation(.easeInOut(duration: 0.16), value: disabled)
+    }
+}
+
+private struct VoiceDraftBarButton: View {
+    let title: String
+    let systemImage: String
+    let isPrimary: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VoiceDraftBarLabel(title: title, systemImage: systemImage)
+                .foregroundStyle(isPrimary ? Color.white : Color.primary)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(isPrimary ? Color.accentColor : Color.clear)
+                )
+        }
+        .buttonStyle(.plain)
+        .help(title == "Insert" ? "Insert draft" : "Speak a command for this draft")
+    }
+}
+
+private struct VoiceDraftBarLabel: View {
+    let title: String
+    let systemImage: String
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Image(systemName: systemImage)
+                .font(.system(size: 10, weight: .bold))
+            Text(title)
+                .font(.system(size: 11, weight: .semibold, design: .rounded))
+                .lineLimit(1)
+        }
+        .fixedSize()
+        .padding(.horizontal, 9)
+        .frame(height: 26)
+        .contentShape(Rectangle())
+    }
+}
+
 // MARK: - Insert button
 
 /// Primary action pill: commits the previewed text at the current cursor.
-/// The keycap glyph doubles as a hint that Enter does the same thing.
 private struct InsertButton: View {
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
             HStack(spacing: 5) {
-                Image(systemName: "return")
+                Image(systemName: "checkmark")
                     .font(.system(size: 10, weight: .bold))
                 Text("Insert")
                     .font(.system(size: 11, weight: .semibold, design: .rounded))
@@ -422,6 +558,6 @@ private struct InsertButton: View {
             .background(Capsule(style: .continuous).fill(Color.accentColor))
         }
         .buttonStyle(.plain)
-        .help("Insert at current cursor (⏎)")
+        .help("Insert at current cursor")
     }
 }

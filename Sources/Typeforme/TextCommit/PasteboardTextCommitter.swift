@@ -109,7 +109,128 @@ final class PasteboardTextCommitter: TextCommitter {
         }
     }
 
+    func insertVoiceDraft(
+        _ text: String,
+        target: VoiceDraftInsertionTarget,
+        appSnapshot: FrontmostAppSnapshot?,
+        cancelToken: CommitCancellationToken?
+    ) async throws -> VoiceDraftTextSnapshot {
+        try await prepareTarget(appSnapshot: appSnapshot, cancelToken: cancelToken)
+        TextEditTargetCapture.setSelectedRange(target.originalSelectedRange, in: target.element)
+        try await sendUnicodeText(text, cancelToken: cancelToken)
+
+        let draftRange = CFRange(
+            location: target.originalSelectedRange.location,
+            length: (text as NSString).length
+        )
+        _ = TextEditTargetCapture.setSelectedRange(draftRange, in: target.element)
+        return VoiceDraftTextSnapshot(
+            element: target.element,
+            originalSelectedRange: target.originalSelectedRange,
+            originalSelectedText: target.originalSelectedText,
+            originalValue: target.originalValue,
+            draftRange: draftRange,
+            draftText: text,
+            anchorRect: TextEditTargetCapture.bounds(for: draftRange, in: target.element)
+        )
+    }
+
+    func replaceVoiceDraft(
+        _ text: String,
+        draft: VoiceDraftTextSnapshot,
+        appSnapshot: FrontmostAppSnapshot?,
+        cancelToken: CommitCancellationToken?
+    ) async throws -> VoiceDraftTextSnapshot {
+        try await prepareTarget(appSnapshot: appSnapshot, cancelToken: cancelToken)
+        try verifyDraftStillCurrent(draft)
+        _ = TextEditTargetCapture.setSelectedRange(draft.draftRange, in: draft.element)
+        try await sendUnicodeText(text, cancelToken: cancelToken)
+
+        var updated = draft
+        updated.draftText = text
+        updated.draftRange = CFRange(
+            location: draft.draftRange.location,
+            length: (text as NSString).length
+        )
+        _ = TextEditTargetCapture.setSelectedRange(updated.draftRange, in: updated.element)
+        updated.anchorRect = TextEditTargetCapture.bounds(for: updated.draftRange, in: updated.element)
+        return updated
+    }
+
+    func acceptVoiceDraft(
+        _ draft: VoiceDraftTextSnapshot,
+        appSnapshot: FrontmostAppSnapshot?,
+        cancelToken: CommitCancellationToken?
+    ) async throws {
+        try await prepareTarget(appSnapshot: appSnapshot, cancelToken: cancelToken)
+        try verifyDraftStillCurrent(draft)
+        let cursor = CFRange(location: draft.draftRange.location + draft.draftRange.length, length: 0)
+        _ = TextEditTargetCapture.setSelectedRange(cursor, in: draft.element)
+    }
+
+    func removeVoiceDraft(
+        _ draft: VoiceDraftTextSnapshot,
+        appSnapshot: FrontmostAppSnapshot?,
+        cancelToken: CommitCancellationToken?
+    ) async throws {
+        try await prepareTarget(appSnapshot: appSnapshot, cancelToken: cancelToken)
+
+        if let originalValue = draft.originalValue,
+           TextEditTargetCapture.setValue(originalValue, in: draft.element) {
+            _ = TextEditTargetCapture.setSelectedRange(draft.originalSelectedRange, in: draft.element)
+            return
+        }
+
+        _ = TextEditTargetCapture.setSelectedRange(draft.draftRange, in: draft.element)
+        if draft.originalSelectedText.isEmpty {
+            try await sendDelete(cancelToken: cancelToken)
+        } else {
+            try await sendUnicodeText(draft.originalSelectedText, cancelToken: cancelToken)
+            _ = TextEditTargetCapture.setSelectedRange(draft.originalSelectedRange, in: draft.element)
+        }
+    }
+
     // MARK: - Synthetic text input
+
+    private func prepareTarget(
+        appSnapshot: FrontmostAppSnapshot?,
+        cancelToken: CommitCancellationToken?
+    ) async throws {
+        try await checkCancelled(cancelToken)
+
+        guard AccessibilityPermissions.isTrusted else {
+            throw TextCommitterError.accessibilityNotTrusted
+        }
+
+        if let appSnapshot {
+            await MainActor.run { FrontmostAppCapture.refocus(appSnapshot) }
+            try? await Task.sleep(nanoseconds: 50_000_000)
+            let isTargetFrontmost = await MainActor.run {
+                FrontmostAppCapture.isFrontmost(appSnapshot)
+            }
+            guard isTargetFrontmost else {
+                throw TextCommitterError.targetFocusLost
+            }
+        }
+        try await checkCancelled(cancelToken)
+    }
+
+    private func verifyDraftStillCurrent(_ draft: VoiceDraftTextSnapshot) throws {
+        guard let value = TextEditTargetCapture.currentValue(of: draft.element) else { return }
+        let ns = value as NSString
+        guard draft.draftRange.location >= 0,
+              draft.draftRange.length >= 0,
+              draft.draftRange.location + draft.draftRange.length <= ns.length
+        else {
+            throw TextCommitterError.selectionChanged
+        }
+        let current = ns.substring(
+            with: NSRange(location: draft.draftRange.location, length: draft.draftRange.length)
+        )
+        guard current == draft.draftText else {
+            throw TextCommitterError.selectionChanged
+        }
+    }
 
     private func sendUnicodeText(_ text: String, cancelToken: CommitCancellationToken?) async throws {
         guard let source = CGEventSource(stateID: .combinedSessionState) else {
@@ -134,6 +255,19 @@ final class PasteboardTextCommitter: TextCommitter {
             }
             await Task.yield()
         }
+        try await checkCancelled(cancelToken)
+    }
+
+    private func sendDelete(cancelToken: CommitCancellationToken?) async throws {
+        try await checkCancelled(cancelToken)
+        guard let source = CGEventSource(stateID: .combinedSessionState),
+              let down = CGEvent(keyboardEventSource: source, virtualKey: 51, keyDown: true),
+              let up = CGEvent(keyboardEventSource: source, virtualKey: 51, keyDown: false)
+        else {
+            throw TextCommitterError.eventSourceFailed
+        }
+        down.post(tap: .cghidEventTap)
+        up.post(tap: .cghidEventTap)
         try await checkCancelled(cancelToken)
     }
 

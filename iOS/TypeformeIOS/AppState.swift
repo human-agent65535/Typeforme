@@ -222,6 +222,7 @@ final class AppState: ObservableObject {
     private var hostHoldReleasePending = false
     private var hostRecordingUsesKeyboardAudioSession = false
     private var keyboardCaptureStartedFromKeyboard = false
+    private var activeKeyboardRecordingCommandID: String?
     private var hostAudioSessionExpiryTask: Task<Void, Never>?
     private var keyboardStandbyRefreshTask: Task<Void, Never>?
     private var routeFetchedAt: Date?
@@ -311,8 +312,6 @@ final class AppState: ObservableObject {
     var canInteractWithHostDictation: Bool {
         guard isConfigured else { return false }
         if recorder.isRecording || keyboardAudioSession.isRecording || phase == .preparing { return true }
-        guard !isRefreshingRoute else { return false }
-        guard routeStatus.activeURL != nil else { return false }
         return phase.allowsRecordingStart
     }
 
@@ -386,7 +385,7 @@ final class AppState: ObservableObject {
     func bootstrap() async {
         await waitForInitialRenderOpportunity()
         await setKeyboardStandby(true, surfaceAudioSessionErrors: false)
-        await refreshRoute(force: true)
+        await refreshRoute(force: true, showIndicator: false)
         _ = try? await refreshMacSettingsIfChanged()
         scheduleHostRecorderPreWarm()
     }
@@ -491,7 +490,11 @@ final class AppState: ObservableObject {
         showTransient(NSLocalizedString("Learning reset requested", comment: "Rime learning reset toast"))
     }
 
-    func refreshRoute(force: Bool = false, probeAllEndpoints: Bool = true) async {
+    func refreshRoute(
+        force: Bool = false,
+        probeAllEndpoints: Bool = true,
+        showIndicator: Bool = true
+    ) async {
         let cacheTTL = routeStatus.activeKind == .local ? Self.localRouteCacheTTL : Self.routeCacheTTL
         if !force, let routeFetchedAt,
            Date().timeIntervalSince(routeFetchedAt) < cacheTTL,
@@ -499,8 +502,14 @@ final class AppState: ObservableObject {
            routeStatusSatisfiesProbeMode(probeAllEndpoints) {
             return
         }
-        beginRouteRefreshIndicator()
-        defer { endRouteRefreshIndicator() }
+        if showIndicator {
+            beginRouteRefreshIndicator()
+        }
+        defer {
+            if showIndicator {
+                endRouteRefreshIndicator()
+            }
+        }
         routeStatus = await routeResolver.resolve(config: config, probeAllEndpoints: probeAllEndpoints)
         persistActiveLocalRouteIfNeeded(routeStatus)
         routeFetchedAt = Date()
@@ -671,7 +680,7 @@ final class AppState: ObservableObject {
 
     private func activeBridgeClient() async throws -> BridgeClient {
         if routeStatus.activeURL == nil {
-            await refreshRoute(force: true, probeAllEndpoints: false)
+            await refreshRoute(force: true, probeAllEndpoints: false, showIndicator: false)
         }
         guard let baseURL = routeStatus.activeURL else {
             throw BridgeClientError.unauthorizedOrUnavailable
@@ -679,13 +688,73 @@ final class AppState: ObservableObject {
         return BridgeClient(baseURL: baseURL, token: config.token)
     }
 
-    private func ensureRouteReadyForHostRecording() async -> Bool {
-        await refreshRoute(force: true, probeAllEndpoints: false)
-        guard routeStatus.activeURL != nil else {
-            setFailure("Mac Bridge is offline. Start the Mac app or Server, then refresh.")
+    private func shouldRetryBridgeRequest(after error: Error) -> Bool {
+        if let bridgeError = error as? BridgeClientError {
+            if case .unauthorizedOrUnavailable = bridgeError {
+                return true
+            }
             return false
         }
-        return true
+
+        guard let urlError = error as? URLError else { return false }
+        switch urlError.code {
+        case .timedOut,
+             .cannotFindHost,
+             .cannotConnectToHost,
+             .networkConnectionLost,
+             .notConnectedToInternet,
+             .dnsLookupFailed,
+             .cannotLoadFromNetwork,
+             .secureConnectionFailed:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func dictateWithRouteRetry(
+        initialBaseURL: URL,
+        audioURL: URL,
+        audioExtension: String,
+        languageIDs: [String],
+        correctionMode: CorrectionModeID,
+        contextBefore: String,
+        contextAfter: String,
+        includeRawTranscript: Bool,
+        keyboardCommandID: String?,
+        recordingInfo: RecordingFileInfo
+    ) async throws -> BridgeDictateResponse {
+        func dictate(to baseURL: URL) async throws -> BridgeDictateResponse {
+            let client = BridgeClient(baseURL: baseURL, token: config.token)
+            return try await client.dictate(
+                audioURL: audioURL,
+                audioExtension: audioExtension,
+                languageIDs: languageIDs,
+                correctionMode: correctionMode,
+                contextBefore: contextBefore,
+                contextAfter: contextAfter,
+                includeRawTranscript: includeRawTranscript
+            )
+        }
+
+        do {
+            return try await dictate(to: initialBaseURL)
+        } catch {
+            guard shouldRetryBridgeRequest(after: error) else { throw error }
+            routeFetchedAt = nil
+            if let keyboardCommandID {
+                publishKeyboardStatus(
+                    .sending,
+                    commandID: keyboardCommandID,
+                    message: "Reconnecting Bridge",
+                    audioDurationSeconds: recordingInfo.durationSeconds,
+                    audioByteCount: recordingInfo.byteCount
+                )
+            }
+            await refreshRoute(force: true, probeAllEndpoints: false, showIndicator: false)
+            guard let retryBaseURL = routeStatus.activeURL else { throw error }
+            return try await dictate(to: retryBaseURL)
+        }
     }
 
     // MARK: - Recording (host UI)
@@ -717,11 +786,6 @@ final class AppState: ObservableObject {
         hostHoldReleasePending = false
         setPhase(.preparing)
         errorMessage = nil
-
-        guard await ensureRouteReadyForHostRecording() else {
-            hostHoldReleasePending = false
-            return
-        }
 
         guard await ensureMicrophonePermissionForUserAction() else {
             hostHoldReleasePending = false
@@ -768,10 +832,6 @@ final class AppState: ObservableObject {
         }
         guard phase.allowsRecordingStart else { return }
         setPhase(.preparing)
-
-        guard await ensureRouteReadyForHostRecording() else {
-            return
-        }
 
         guard await ensureMicrophonePermissionForUserAction() else {
             if phase == .preparing {
@@ -853,13 +913,20 @@ final class AppState: ObservableObject {
         let requestedCorrectionMode = correctionMode
         let keyboardCaptureWasStartedFromKeyboard = keyboardCaptureStartedFromKeyboard
         keyboardCaptureStartedFromKeyboard = false
+        let effectiveKeyboardCommandID = keyboardCommandID ?? activeKeyboardRecordingCommandID
         let isHostStandbyCapture = keyboardCommandID == nil
             && hostRecordingUsesKeyboardAudioSession
             && !keyboardCaptureWasStartedFromKeyboard
         let isKeyboardCapture = keyboardAudioSession.isRecording
         let shouldPublishKeyboardProgress = keyboardCommandID != nil
+            || effectiveKeyboardCommandID != nil
             || keyboardCaptureWasStartedFromKeyboard
             || (isKeyboardCapture && !isHostStandbyCapture)
+        defer {
+            if shouldPublishKeyboardProgress || isKeyboardCapture {
+                activeKeyboardRecordingCommandID = nil
+            }
+        }
         guard isKeyboardCapture || recorder.isRecording else {
             hostRecordingUsesKeyboardAudioSession = false
             releaseIdleTimer()
@@ -871,7 +938,7 @@ final class AppState: ObservableObject {
         // already behave as stopped/sending.
         setPhase(.sending)
         if shouldPublishKeyboardProgress {
-            publishKeyboardStatus(.sending, commandID: keyboardCommandID, message: "Sending")
+            publishKeyboardStatus(.sending, commandID: effectiveKeyboardCommandID, message: "Sending")
         }
         KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.dictationStopped)
         try? await Task.sleep(nanoseconds: Self.recordingTailBufferNanoseconds)
@@ -886,8 +953,8 @@ final class AppState: ObservableObject {
         releaseIdleTimer()
         guard let fileURL else {
             setPhase(.idle)
-            if let keyboardCommandID {
-                publishKeyboardStatus(.standby, commandID: keyboardCommandID, message: "Nothing recorded")
+            if let effectiveKeyboardCommandID {
+                publishKeyboardStatus(.standby, commandID: effectiveKeyboardCommandID, message: "Nothing recorded")
             }
             KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.dictationStopped)
             await resumeKeyboardStandbyAfterCommand()
@@ -899,10 +966,10 @@ final class AppState: ObservableObject {
         lastRecordingSummary = recordingInfo.summary
         if recordingInfo.isTooShort {
             setPhase(.idle)
-            if let keyboardCommandID {
+            if let effectiveKeyboardCommandID {
                 publishKeyboardStatus(
                     .standby,
-                    commandID: keyboardCommandID,
+                    commandID: effectiveKeyboardCommandID,
                     message: "Too short; hold while speaking",
                     audioDurationSeconds: recordingInfo.durationSeconds,
                     audioByteCount: recordingInfo.byteCount
@@ -916,43 +983,50 @@ final class AppState: ObservableObject {
         acquireIdleTimer()
         defer { releaseIdleTimer() }
 
-        if let keyboardCommandID {
-            publishKeyboardStatus(.sending, commandID: keyboardCommandID, message: "Resolving Bridge")
+        var baseURL = routeStatus.activeURL
+        if baseURL == nil {
+            if let effectiveKeyboardCommandID {
+                publishKeyboardStatus(.sending, commandID: effectiveKeyboardCommandID, message: "Resolving Bridge")
+            }
+            await refreshRoute(force: true, probeAllEndpoints: false, showIndicator: false)
+            baseURL = routeStatus.activeURL
         }
-        await refreshRoute(force: true, probeAllEndpoints: false)
-        guard let baseURL = routeStatus.activeURL else {
+        guard let baseURL else {
             setFailure("Bridge unavailable. Check pairing, Local URL, or Cloud URL.")
-            if let keyboardCommandID {
-                publishKeyboardStatus(.error, commandID: keyboardCommandID, message: errorMessage ?? "Bridge unavailable")
+            if let effectiveKeyboardCommandID {
+                publishKeyboardStatus(.error, commandID: effectiveKeyboardCommandID, message: errorMessage ?? "Bridge unavailable")
             }
             KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.dictationStopped)
             await resumeKeyboardStandbyAfterCommand()
             return
         }
 
-        if let keyboardCommandID {
+        if let effectiveKeyboardCommandID {
             publishKeyboardStatus(
                 .sending,
-                commandID: keyboardCommandID,
+                commandID: effectiveKeyboardCommandID,
                 message: "Transcribing \(recordingInfo.durationLabel) audio",
                 audioDurationSeconds: recordingInfo.durationSeconds,
                 audioByteCount: recordingInfo.byteCount
             )
         }
         do {
-            let client = BridgeClient(baseURL: baseURL, token: config.token)
             startModelStatusPolling()
             defer { stopModelStatusPolling() }
             let dictationContext = keyboardTextEditContext == nil ? keyboardDictationContext : nil
-            let response = try await client.dictate(
+            let response = try await dictateWithRouteRetry(
+                initialBaseURL: baseURL,
                 audioURL: fileURL,
                 audioExtension: fileURL.pathExtension.isEmpty ? "m4a" : fileURL.pathExtension,
                 languageIDs: activeLanguageIDs,
                 correctionMode: requestedCorrectionMode,
                 contextBefore: dictationContext?.contextBefore ?? "",
                 contextAfter: dictationContext?.contextAfter ?? "",
-                includeRawTranscript: true
+                includeRawTranscript: true,
+                keyboardCommandID: effectiveKeyboardCommandID,
+                recordingInfo: recordingInfo
             )
+            let client = BridgeClient(baseURL: routeStatus.activeURL ?? baseURL, token: config.token)
             _ = try? await refreshMacModelStatuses()
             let spokenTranscript = response.rawTranscript?
                 .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -965,17 +1039,17 @@ final class AppState: ObservableObject {
             if let editContext = keyboardTextEditContext {
                 guard !spokenTranscript.isEmpty else {
                     setFailure("Mac returned an empty transcript.")
-                    if let keyboardCommandID {
-                        publishKeyboardStatus(.error, commandID: keyboardCommandID, message: errorMessage ?? "Empty transcript")
+                    if let effectiveKeyboardCommandID {
+                        publishKeyboardStatus(.error, commandID: effectiveKeyboardCommandID, message: errorMessage ?? "Empty transcript")
                     }
                     KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.dictationStopped)
                     await resumeKeyboardStandbyAfterCommand()
                     return
                 }
-                if let keyboardCommandID {
+                if let effectiveKeyboardCommandID {
                     publishKeyboardStatus(
                         .sending,
-                        commandID: keyboardCommandID,
+                        commandID: effectiveKeyboardCommandID,
                         message: editContext.intent == .command ? "Editing selection" : "Repairing selection",
                         audioDurationSeconds: recordingInfo.durationSeconds,
                         audioByteCount: recordingInfo.byteCount
@@ -1001,8 +1075,8 @@ final class AppState: ObservableObject {
             }
             guard !text.isEmpty else {
                 setFailure("Mac returned an empty result.")
-                if let keyboardCommandID {
-                    publishKeyboardStatus(.error, commandID: keyboardCommandID, message: errorMessage ?? "Empty result")
+                if let effectiveKeyboardCommandID {
+                    publishKeyboardStatus(.error, commandID: effectiveKeyboardCommandID, message: errorMessage ?? "Empty result")
                 }
                 KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.dictationStopped)
                 await resumeKeyboardStandbyAfterCommand()
@@ -1023,9 +1097,10 @@ final class AppState: ObservableObject {
                 totalLatencyMs: totalLatencyMs
             )
             let shouldPublishKeyboardResult = keyboardCommandID != nil
+                || effectiveKeyboardCommandID != nil
                 || keyboardCaptureWasStartedFromKeyboard
                 || (isKeyboardCapture && !isHostStandbyCapture)
-            let resultCommandID = keyboardCommandID ?? (shouldPublishKeyboardResult ? "keyboard-\(UUID().uuidString)" : nil)
+            let resultCommandID = effectiveKeyboardCommandID ?? (shouldPublishKeyboardResult ? "keyboard-\(UUID().uuidString)" : nil)
             errorMessage = nil
             applyCorrectionMetadata(
                 status: response.correctionStatus,
@@ -1055,8 +1130,8 @@ final class AppState: ObservableObject {
             }
             if isBenignEmptyTranscript(error) {
                 setPhase(.idle)
-                if let keyboardCommandID {
-                    publishKeyboardStatus(.standby, commandID: keyboardCommandID, message: "Nothing recorded")
+                if let effectiveKeyboardCommandID {
+                    publishKeyboardStatus(.standby, commandID: effectiveKeyboardCommandID, message: "Nothing recorded")
                 }
                 KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.dictationStopped)
                 await resumeKeyboardStandbyAfterCommand()
@@ -1070,8 +1145,8 @@ final class AppState: ObservableObject {
                 routeFetchedAt = nil
             }
             setFailure(error.localizedDescription)
-            if let keyboardCommandID {
-                publishKeyboardStatus(.error, commandID: keyboardCommandID, message: error.localizedDescription)
+            if let effectiveKeyboardCommandID {
+                publishKeyboardStatus(.error, commandID: effectiveKeyboardCommandID, message: error.localizedDescription)
             }
             KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.dictationStopped)
         }
@@ -1091,7 +1166,7 @@ final class AppState: ObservableObject {
             return
         }
         correctionMode = newMode
-        await refreshRoute(force: true, probeAllEndpoints: false)
+        await refreshRoute(force: true, probeAllEndpoints: false, showIndicator: false)
         guard let baseURL = routeStatus.activeURL else {
             setFailure("Bridge unavailable. Check pairing, Local URL, or Cloud URL.")
             return
@@ -1684,6 +1759,7 @@ final class AppState: ObservableObject {
         activeKeyboardTextEditContext = nil
         activeKeyboardDictationContext = nil
         keyboardCaptureStartedFromKeyboard = false
+        activeKeyboardRecordingCommandID = nil
     }
 
     private func rememberCanceledKeyboardCommand(_ commandID: String) {
@@ -1794,6 +1870,7 @@ final class AppState: ObservableObject {
             activeKeyboardTextEditContext = command.textEditContext
             activeKeyboardDictationContext = command.dictationContext
             keyboardCaptureStartedFromKeyboard = true
+            activeKeyboardRecordingCommandID = command.id
             await startKeyboardRecording(commandID: command.id, allowSessionStart: true)
         case .stop:
             await stopAndSend(keyboardCommandID: command.id)
@@ -1836,10 +1913,15 @@ final class AppState: ObservableObject {
             publishKeyboardStatus(.error, commandID: command.id, message: "Nothing to rewrite")
             return
         }
+        let existingResultText = resultText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let existingGeneratedText = lastGeneratedResultText?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let isRestylingCurrentDictationResult = source == existingResultText
+            || source == existingGeneratedText
+        let preservedRawTranscript = rawTranscript
         correctionMode = requestedCorrectionMode
 
         publishKeyboardStatus(.sending, commandID: command.id, message: "Rewriting text")
-        await refreshRoute(force: true, probeAllEndpoints: false)
+        await refreshRoute(force: true, probeAllEndpoints: false, showIndicator: false)
         guard let baseURL = routeStatus.activeURL else {
             setFailure("Bridge unavailable. Check pairing, Local URL, or Cloud URL.")
             publishKeyboardStatus(.error, commandID: command.id, message: errorMessage ?? "Bridge unavailable")
@@ -1864,7 +1946,7 @@ final class AppState: ObservableObject {
 
             resultText = text
             lastGeneratedResultText = text
-            rawTranscript = source
+            rawTranscript = isRestylingCurrentDictationResult ? preservedRawTranscript : ""
             sessionID = response.sessionID
             latestServerTiming = ServerTimingSummary(
                 transcriptionLatencyMs: nil,
@@ -1882,7 +1964,9 @@ final class AppState: ObservableObject {
                 commandID: command.id,
                 message: "Rewritten",
                 resultText: text,
-                rawTranscriptLength: source.count
+                rawTranscriptLength: isRestylingCurrentDictationResult
+                    ? preservedRawTranscript.trimmingCharacters(in: .whitespacesAndNewlines).count
+                    : nil
             )
         } catch {
             if let bridgeError = error as? BridgeClientError,
@@ -1898,6 +1982,9 @@ final class AppState: ObservableObject {
         commandID: String?,
         allowSessionStart: Bool
     ) async {
+        if let commandID {
+            activeKeyboardRecordingCommandID = commandID
+        }
         if keyboardAudioSession.isRecording {
             keyboardCaptureStartedFromKeyboard = true
             publishKeyboardStatus(.recording, commandID: commandID, message: "Recording")
@@ -2181,7 +2268,7 @@ final class AppState: ObservableObject {
                 self.routeFetchedAt = nil
                 self.routeStatus = BridgeRouteStatus()
                 if self.isConfigured {
-                    await self.refreshRoute(force: true)
+                    await self.refreshRoute(force: true, showIndicator: false)
                 }
             }
         }
@@ -2229,7 +2316,7 @@ final class AppState: ObservableObject {
         // fast route separately so Cloud diagnostics never block input.
         routeFetchedAt = nil
         Task {
-            await refreshRoute(force: true)
+            await refreshRoute(force: true, showIndicator: false)
             _ = try? await refreshMacSettingsIfChanged()
             scheduleHostRecorderPreWarm()
         }

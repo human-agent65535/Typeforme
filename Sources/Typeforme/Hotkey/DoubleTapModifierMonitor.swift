@@ -41,6 +41,14 @@ enum HoldModifier: String, CaseIterable, Identifiable, Codable, Sendable {
         case .fn:           return 0x800000 // NX_SECONDARYFNMASK / cgEventFlagMaskSecondaryFn
         }
     }
+
+    static func detected(from event: NSEvent) -> HoldModifier? {
+        let rawFlags = event.modifierFlags.rawValue
+        let pressed = allCases.filter { modifier in
+            modifier != .none && (rawFlags & modifier.deviceFlagMask) != 0
+        }
+        return pressed.count == 1 ? pressed[0] : nil
+    }
 }
 
 /// Watches one modifier key globally and detects "double-tap-and-hold" — the
@@ -74,7 +82,7 @@ final class DoubleTapModifierMonitor {
         guard modifier != self.modifier || globalMonitor == nil || localMonitor == nil else { return }
         if wasPressed || isHolding || pendingHoldTask != nil {
             pendingModifier = modifier
-            Log.hotkey.info("double-tap monitor deferring modifier change to \(modifier.rawValue, privacy: .public)")
+            Log.hotkey.info("hold monitor deferring modifier change to \(modifier.rawValue, privacy: .public)")
             return
         }
         installImmediately(modifier: modifier)
@@ -93,7 +101,7 @@ final class DoubleTapModifierMonitor {
             Task { @MainActor in self?.handle(event) }
             return event
         }
-        Log.hotkey.info("double-tap monitor installed for \(modifier.rawValue, privacy: .public)")
+        Log.hotkey.info("hold monitor installed for \(modifier.rawValue, privacy: .public)")
     }
 
     func uninstall() {

@@ -974,17 +974,33 @@ struct RecordingSettingsView: View {
     @AppStorage(AppSettings.Keys.maxRecordingDuration) private var maxDuration: Double = 30
     @AppStorage(AppSettings.Keys.alwaysShowHUD)        private var alwaysShowHUD: Bool = false
     @AppStorage(AppSettings.Keys.holdModifier)         private var holdModifierRaw: String = HoldModifier.rightOption.rawValue
+    @AppStorage(AppSettings.Keys.voiceUXMode)          private var voiceUXModeRaw: String = VoiceUXMode.classic.rawValue
 
     var body: some View {
         Form {
-            Section("Hold to talk (double-tap)") {
-                Picker("Hold modifier", selection: $holdModifierRaw) {
-                    ForEach(HoldModifier.allCases) { m in
-                        Text(m.displayName).tag(m.rawValue)
+            Section("Voice UX") {
+                Picker("Mode", selection: $voiceUXModeRaw) {
+                    ForEach(VoiceUXMode.allCases) { mode in
+                        Text(mode.displayName).tag(mode.rawValue)
                     }
                 }
                 .pickerStyle(.menu)
-                Text("Double-tap the chosen key and HOLD on the second press to record. Release to stop. Matches macOS Dictation / Wispr Flow / SuperWhisper conventions. Set to Off to disable.")
+                Text(selectedVoiceUXMode.helpText)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            Section("Hold to talk (double-tap)") {
+                HStack(spacing: 12) {
+                    Text("Modifier")
+                        .frame(minWidth: 90, alignment: .leading)
+                    HoldModifierRecorder(selectionRaw: $holdModifierRaw)
+                    Spacer()
+                    Button("Off") {
+                        holdModifierRaw = HoldModifier.none.rawValue
+                    }
+                    .disabled(selectedHoldModifier == .none)
+                }
+                Text("Click the recorder, press one modifier key, then use double-tap and HOLD on that key to record. Fn/Globe depends on keyboard hardware; if it cannot be captured, use another modifier or a combo shortcut.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
@@ -1029,6 +1045,103 @@ struct RecordingSettingsView: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    private var selectedVoiceUXMode: VoiceUXMode {
+        VoiceUXMode(rawValue: voiceUXModeRaw) ?? .classic
+    }
+
+    private var selectedHoldModifier: HoldModifier {
+        HoldModifier(rawValue: holdModifierRaw) ?? .rightOption
+    }
+}
+
+private struct HoldModifierRecorder: View {
+    @Binding var selectionRaw: String
+    @State private var isRecording = false
+    @State private var statusText: String?
+    @State private var globalMonitor: Any?
+    @State private var localMonitor: Any?
+
+    private var selectedModifier: HoldModifier {
+        HoldModifier(rawValue: selectionRaw) ?? .rightOption
+    }
+
+    var body: some View {
+        Button(action: toggleRecording) {
+            HStack(spacing: 8) {
+                Image(systemName: isRecording ? "record.circle" : "keyboard")
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(isRecording ? Color.accentColor : .secondary)
+                    .frame(width: 18)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(isRecording ? "Press modifier" : selectedModifier.displayName)
+                        .font(.system(size: 13, weight: .medium))
+                    if let statusText {
+                        Text(statusText)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+                Spacer(minLength: 8)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .frame(width: 240, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(isRecording ? Color.accentColor.opacity(0.12) : Color(nsColor: .textBackgroundColor))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .strokeBorder(isRecording ? Color.accentColor.opacity(0.55) : Color(nsColor: .separatorColor), lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+        .help(isRecording ? "Press one supported modifier key" : "Click to record a modifier key")
+        .accessibilityLabel("Hold modifier recorder")
+        .onDisappear(perform: stopRecording)
+    }
+
+    private func toggleRecording() {
+        isRecording ? stopRecording() : startRecording()
+    }
+
+    private func startRecording() {
+        stopRecording()
+        isRecording = true
+        statusText = "Waiting for key..."
+        globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) { event in
+            Task { @MainActor in capture(event) }
+        }
+        localMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { event in
+            Task { @MainActor in capture(event) }
+            return event
+        }
+    }
+
+    private func stopRecording() {
+        if let monitor = globalMonitor {
+            NSEvent.removeMonitor(monitor)
+            globalMonitor = nil
+        }
+        if let monitor = localMonitor {
+            NSEvent.removeMonitor(monitor)
+            localMonitor = nil
+        }
+        isRecording = false
+    }
+
+    private func capture(_ event: NSEvent) {
+        guard isRecording else { return }
+        guard let modifier = HoldModifier.detected(from: event) else {
+            statusText = "Press one supported modifier"
+            return
+        }
+        selectionRaw = modifier.rawValue
+        statusText = "Captured"
+        stopRecording()
     }
 }
 
@@ -1787,7 +1900,11 @@ struct CorrectionSettingsView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
 
-                Toggle("Auto-commit (skip preview)", isOn: $autoCommit)
+                Toggle("Auto-commit in Classic", isOn: $autoCommit)
+
+                Text("Voice Draft always pauses on the draft so you can restyle or run text actions before insertion.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
 
                 Text("Pick an explicit engine so latency and quality tests are honest.")
                     .font(.footnote)

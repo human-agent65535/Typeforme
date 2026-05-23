@@ -371,7 +371,7 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
     var languageIDs: [String]
     var supportedLanguages: [PairingLanguageOption]
     var supportedLanguagesByASRProvider: [String: [PairingLanguageOption]]
-    var asrTimeoutSec: Int
+    var asrTimeoutSec: Double
     var correctionBackend: String
     var correctionBackendOptions: [BridgeSettingOption]
     var correctionTimeoutMs: Int
@@ -408,7 +408,7 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
         languageIDs: [String],
         supportedLanguages: [PairingLanguageOption],
         supportedLanguagesByASRProvider: [String: [PairingLanguageOption]],
-        asrTimeoutSec: Int = 120,
+        asrTimeoutSec: Double = 120,
         correctionBackend: String,
         correctionBackendOptions: [BridgeSettingOption],
         correctionTimeoutMs: Int = 1500,
@@ -447,7 +447,7 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
             ?? PairingLanguageOption.allWhisperLanguages
         self.supportedLanguagesByASRProvider = try container.decodeIfPresent([String: [PairingLanguageOption]].self, forKey: .supportedLanguagesByASRProvider) ?? [:]
         self.languageIDs = try container.decodeIfPresent([String].self, forKey: .languageIDs) ?? ["zh-CN", "en-US"]
-        self.asrTimeoutSec = try container.decodeIfPresent(Int.self, forKey: .asrTimeoutSec) ?? 120
+        self.asrTimeoutSec = try container.decodeIfPresent(Double.self, forKey: .asrTimeoutSec) ?? 120
         self.correctionBackend = try container.decodeIfPresent(String.self, forKey: .correctionBackend) ?? "qwen35_2b"
         self.correctionBackendOptions = try container.decodeIfPresent([BridgeSettingOption].self, forKey: .correctionBackendOptions) ?? []
         self.correctionTimeoutMs = try container.decodeIfPresent(Int.self, forKey: .correctionTimeoutMs) ?? 1500
@@ -478,7 +478,7 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
 struct BridgeSettingsUpdateRequest: Encodable {
     let asrProvider: String
     let languageIDs: [String]
-    let asrTimeoutSec: Int
+    let asrTimeoutSec: Double
     let correctionBackend: String
     let correctionTimeoutMs: Int
     let correctionColdTimeoutMs: Int

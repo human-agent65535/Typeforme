@@ -12,6 +12,7 @@ enum AppSettings {
         static let maxRecordingDuration = "recording.maxDuration"   // seconds
         static let alwaysShowHUD        = "recording.alwaysShowHUD"
         static let holdModifier         = "recording.holdModifier"  // HoldModifier raw
+        static let voiceUXMode          = "recording.voiceUXMode"   // VoiceUXMode raw
 
         // ASR
         static let asrProvider          = "asr.provider"            // "whisperkit" | "qwen3-asr-llama"
@@ -98,6 +99,7 @@ enum AppSettings {
             Keys.maxRecordingDuration: 30.0,
             Keys.alwaysShowHUD:        false,
             Keys.holdModifier:         HoldModifier.rightOption.rawValue,
+            Keys.voiceUXMode:          VoiceUXMode.classic.rawValue,
 
             Keys.asrProvider:       "qwen3-asr-llama",
             Keys.asrModel:          "large-v3-v20240930_626MB",
@@ -187,6 +189,10 @@ enum AppSettings {
            ProcessingMode(rawValue: raw) == nil {
             UserDefaults.standard.set(ProcessingMode.client.rawValue, forKey: Keys.processingMode)
         }
+        if let raw = UserDefaults.standard.string(forKey: Keys.voiceUXMode),
+           VoiceUXMode(rawValue: raw) == nil {
+            UserDefaults.standard.set(VoiceUXMode.classic.rawValue, forKey: Keys.voiceUXMode)
+        }
         _ = ensureBridgeAuthToken()
     }
 
@@ -257,6 +263,13 @@ enum AppSettings {
 
     static var maxRecordingDuration: TimeInterval     { ud.double(forKey: Keys.maxRecordingDuration) }
     static var alwaysShowHUD: Bool                    { ud.bool(forKey: Keys.alwaysShowHUD) }
+    static var voiceUXMode: VoiceUXMode {
+        if let raw = ud.string(forKey: Keys.voiceUXMode),
+           let value = VoiceUXMode(rawValue: raw) {
+            return value
+        }
+        return .classic
+    }
     static var holdModifier: HoldModifier {
         if let raw = ud.string(forKey: Keys.holdModifier),
            let m = HoldModifier(rawValue: raw) { return m }

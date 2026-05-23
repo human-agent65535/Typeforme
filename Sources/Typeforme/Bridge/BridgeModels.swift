@@ -219,7 +219,7 @@ struct BridgeSettingsPayload: Codable, Sendable {
     var languageIDs: [String]
     var supportedLanguages: [BridgeLanguageOption]
     var supportedLanguagesByASRProvider: [String: [BridgeLanguageOption]]
-    var asrTimeoutSec: Int
+    var asrTimeoutSec: Double
     var correctionBackend: String
     var correctionBackendOptions: [BridgeSettingOption]
     var correctionTimeoutMs: Int
@@ -347,11 +347,11 @@ struct BridgeSettingsPayload: Codable, Sendable {
         ]
     }
 
-    fileprivate static func currentASRTimeoutSec(provider: String) -> Int {
+    fileprivate static func currentASRTimeoutSec(provider: String) -> Double {
         if provider == "whisperkit" {
-            return Int(AppSettings.asrWhisperKitTimeoutSeconds)
+            return AppSettings.asrWhisperKitTimeoutSeconds
         }
-        return Int(AppSettings.asrQwenLlamaTimeoutSeconds)
+        return AppSettings.asrQwenLlamaTimeoutSeconds
     }
 
     private static func selectedASRModelStatus(asrProvider: String) -> BridgeModelStatus {
@@ -527,7 +527,7 @@ private struct BridgeSettingsRevisionPayload: Encodable {
     let languageIDs: [String]
     let supportedLanguages: [BridgeLanguageOption]
     let supportedLanguagesByASRProvider: [String: [BridgeLanguageOption]]
-    let asrTimeoutSec: Int
+    let asrTimeoutSec: Double
     let correctionBackend: String
     let correctionBackendOptions: [BridgeSettingOption]
     let correctionTimeoutMs: Int
@@ -566,7 +566,7 @@ private struct BridgeSettingsRevisionPayload: Encodable {
         languageIDs: [String],
         supportedLanguages: [BridgeLanguageOption],
         supportedLanguagesByASRProvider: [String: [BridgeLanguageOption]],
-        asrTimeoutSec: Int,
+        asrTimeoutSec: Double,
         correctionBackend: String,
         correctionBackendOptions: [BridgeSettingOption],
         correctionTimeoutMs: Int,
@@ -624,7 +624,7 @@ private struct BridgeSettingsRevisionPayload: Encodable {
 struct BridgeSettingsUpdateRequest: Decodable {
     var asrProvider: String?
     var languageIDs: [String]?
-    var asrTimeoutSec: Int?
+    var asrTimeoutSec: Double?
     var correctionBackend: String?
     var correctionTimeoutMs: Int?
     var correctionColdTimeoutMs: Int?

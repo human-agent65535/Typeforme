@@ -528,23 +528,18 @@ private struct HeroRecordCard: View {
     /// status. Status goes to `detail`, errors go to `ErrorBanner`.
     private var title: String {
         if state.phase == .preparing {
-            return state.isRefreshingRoute
-                ? NSLocalizedString("Checking Bridge…", comment: "Host recording route check title")
-                : NSLocalizedString("Preparing…", comment: "Host recording preparing title")
+            return NSLocalizedString("Preparing…", comment: "Host recording preparing title")
         }
         if isRecording { return state.inputMode.recordingTitle }
-        if state.isRefreshingRoute {
-            return NSLocalizedString("Checking Bridge…", comment: "Host route refresh title")
-        }
-        if state.isConfigured && state.routeStatus.activeURL == nil {
-            return NSLocalizedString("Mac Bridge Offline", comment: "Host record button unavailable title")
-        }
         switch state.phase {
         case .sending:
             return NSLocalizedString("Sending…", comment: "Host dictation sending title")
         case .restyling:
             return NSLocalizedString("Restyling…", comment: "Host dictation restyling title")
-        default: return state.inputMode.idleTitle
+        default:
+            return state.isRefreshingRoute
+                ? NSLocalizedString("Checking Bridge…", comment: "Host route refresh title")
+                : state.inputMode.idleTitle
         }
     }
 
@@ -552,14 +547,8 @@ private struct HeroRecordCard: View {
         if !state.isConfigured {
             return "Pair the Mac Bridge first."
         }
-        if state.isRefreshingRoute {
-            return "Checking whether your paired Mac is reachable."
-        }
         if isRecording {
             return state.inputMode == .tap ? "Tap again when you're done." : "Keep holding while you speak."
-        }
-        if state.routeStatus.activeURL == nil {
-            return "Start the Mac app or Server, then refresh."
         }
         if let installing = state.activeModelInstallText,
            state.phase == .sending || state.phase == .restyling {
@@ -572,14 +561,17 @@ private struct HeroRecordCard: View {
         case .success(.copied): return "Result copied to the clipboard."
         case .success(.inserted): return "Result inserted."
         case .failure, .idle, .preparing, .recording:
+            if state.routeStatus.activeURL == nil {
+                return "Recording is local. Bridge will be resolved when you send."
+            }
+            if state.isRefreshingRoute {
+                return "Checking whether your paired Mac is reachable."
+            }
             return state.inputMode.idleDetail
         }
     }
 
     private var iconName: String {
-        if state.isConfigured && state.routeStatus.activeURL == nil {
-            return "exclamationmark.triangle.fill"
-        }
         switch state.phase {
         case .success: return "checkmark"
         default: return "mic.fill"
@@ -610,7 +602,6 @@ private struct HeroRecordCard: View {
     private var gradient: OrbGradient {
         if isPressed || isRecording { return .recording }
         if state.isRefreshingRoute { return .sending }
-        if state.isConfigured && state.routeStatus.activeURL == nil { return .blocked }
         switch state.phase {
         case .sending, .restyling: return .sending
         case .success:             return .success
@@ -1211,7 +1202,75 @@ private struct ToastView: View {
     }
 }
 
-// MARK: - Server Settings (unchanged behavior, lightly polished)
+// MARK: - Server Settings
+
+private struct TimeoutSecondsRow: View {
+    let title: String
+    @Binding var seconds: Double
+    let range: ClosedRange<Double>
+
+    private let step = 0.5
+
+    var body: some View {
+        LabeledContent(title) {
+            HStack(spacing: 6) {
+                Button {
+                    adjust(by: -step)
+                } label: {
+                    Image(systemName: "minus")
+                        .frame(width: 28, height: 28)
+                }
+                .buttonStyle(.borderless)
+                .disabled(seconds <= range.lowerBound)
+                .accessibilityLabel("Decrease \(title)")
+
+                TextField(
+                    "0.0",
+                    value: clampedSeconds,
+                    format: .number
+                        .precision(.fractionLength(0...1))
+                        .grouping(.never)
+                )
+                .keyboardType(.decimalPad)
+                .multilineTextAlignment(.trailing)
+                .frame(width: 64)
+
+                Text("s")
+                    .foregroundStyle(.secondary)
+
+                Button {
+                    adjust(by: step)
+                } label: {
+                    Image(systemName: "plus")
+                        .frame(width: 28, height: 28)
+                }
+                .buttonStyle(.borderless)
+                .disabled(seconds >= range.upperBound)
+                .accessibilityLabel("Increase \(title)")
+            }
+        }
+    }
+
+    private var clampedSeconds: Binding<Double> {
+        Binding {
+            seconds
+        } set: { value in
+            seconds = clamped(value)
+        }
+    }
+
+    private func adjust(by delta: Double) {
+        seconds = clamped(roundToStep(seconds + delta))
+    }
+
+    private func clamped(_ value: Double) -> Double {
+        min(max(value, range.lowerBound), range.upperBound)
+    }
+
+    private func roundToStep(_ value: Double) -> Double {
+        (value / step).rounded() * step
+    }
+}
 
 private struct MacSettingsView: View {
     @EnvironmentObject private var state: AppState
@@ -1240,14 +1299,11 @@ private struct MacSettingsView: View {
                     }
                     .pickerStyle(.menu)
 
-                    Stepper(value: asrTimeoutBinding, in: 10...300, step: 5) {
-                        HStack {
-                            Text("ASR Timeout")
-                            Spacer()
-                            Text("\(draft.asrTimeoutSec)s")
-                                .foregroundStyle(.secondary)
-                        }
-                    }
+                    TimeoutSecondsRow(
+                        title: "ASR Timeout",
+                        seconds: asrTimeoutSecondsBinding,
+                        range: 10...300
+                    )
 
                     NavigationLink {
                         LanguageSelectionView(
@@ -1276,23 +1332,17 @@ private struct MacSettingsView: View {
                     }
                     .pickerStyle(.menu)
 
-                    Stepper(value: correctionTimeoutBinding, in: 100...30_000, step: 100) {
-                        HStack {
-                            Text("Correction Timeout")
-                            Spacer()
-                            Text("\(draft.correctionTimeoutMs)ms")
-                                .foregroundStyle(.secondary)
-                        }
-                    }
+                    TimeoutSecondsRow(
+                        title: "Correction Timeout",
+                        seconds: correctionTimeoutSecondsBinding,
+                        range: 0.1...30
+                    )
 
-                    Stepper(value: correctionColdTimeoutBinding, in: 1_000...60_000, step: 1_000) {
-                        HStack {
-                            Text("Model Startup Timeout")
-                            Spacer()
-                            Text("\(draft.correctionColdTimeoutMs)ms")
-                                .foregroundStyle(.secondary)
-                        }
-                    }
+                    TimeoutSecondsRow(
+                        title: "Model Startup Timeout",
+                        seconds: correctionColdTimeoutSecondsBinding,
+                        range: 1...60
+                    )
 
                     Picker("Mode", selection: correctionModeBinding) {
                         ForEach(CorrectionModeID.allCases) { mode in
@@ -1315,7 +1365,6 @@ private struct MacSettingsView: View {
                     }
                     .pickerStyle(.menu)
 
-                    Toggle("Auto Commit", isOn: autoCommitBinding)
                 }
 
             } else {
@@ -1440,7 +1489,7 @@ private struct MacSettingsView: View {
         }
     }
 
-    private var asrTimeoutBinding: Binding<Int> {
+    private var asrTimeoutSecondsBinding: Binding<Double> {
         Binding {
             draft?.asrTimeoutSec ?? 120
         } set: { value in
@@ -1448,19 +1497,21 @@ private struct MacSettingsView: View {
         }
     }
 
-    private var correctionTimeoutBinding: Binding<Int> {
+    private var correctionTimeoutSecondsBinding: Binding<Double> {
         Binding {
-            draft?.correctionTimeoutMs ?? 1500
+            Double(draft?.correctionTimeoutMs ?? 1500) / 1000
         } set: { value in
-            draft?.correctionTimeoutMs = min(max(value, 100), 30_000)
+            let clamped = min(max(value, 0.1), 30)
+            draft?.correctionTimeoutMs = Int((clamped * 1000).rounded())
         }
     }
 
-    private var correctionColdTimeoutBinding: Binding<Int> {
+    private var correctionColdTimeoutSecondsBinding: Binding<Double> {
         Binding {
-            draft?.correctionColdTimeoutMs ?? 8000
+            Double(draft?.correctionColdTimeoutMs ?? 8000) / 1000
         } set: { value in
-            draft?.correctionColdTimeoutMs = min(max(value, 1_000), 60_000)
+            let clamped = min(max(value, 1), 60)
+            draft?.correctionColdTimeoutMs = Int((clamped * 1000).rounded())
         }
     }
 
@@ -1485,14 +1536,6 @@ private struct MacSettingsView: View {
             draft?.punctuationPreference ?? .normal
         } set: { value in
             draft?.punctuationPreference = value
-        }
-    }
-
-    private var autoCommitBinding: Binding<Bool> {
-        Binding {
-            draft?.autoCommit ?? true
-        } set: { value in
-            draft?.autoCommit = value
         }
     }
 

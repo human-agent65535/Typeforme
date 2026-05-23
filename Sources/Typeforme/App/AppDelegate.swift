@@ -29,8 +29,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var cancellables: Set<AnyCancellable> = []
     private var escMonitor: Any?
     private var localEscMonitor: Any?
-    private var enterMonitor: Any?
-    private var localEnterMonitor: Any?
     private var comboHotkeyIsDown = false
     private var commandTextEditHotkeyIsDown = false
     private var comboHotkeyReleaseWatchdog: Task<Void, Never>?
@@ -135,21 +133,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         installEscMonitor()
 
-        // Enter in .preview state → commit the previewed text at the current
-        // cursor. Monitor is installed only while the HUD shows preview so
-        // we don't observe every Enter keypress on the system.
-        coordinator.$state
-            .removeDuplicates()
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] state in
-                if state == .preview {
-                    self?.installEnterMonitor()
-                } else {
-                    self?.removeEnterMonitor()
-                }
-            }
-            .store(in: &cancellables)
-
         if !AccessibilityPermissions.isTrusted {
             Log.app.notice("AX trust not granted; automatic text insertion will fail until granted")
         }
@@ -202,7 +185,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         terminationTask?.cancel()
         if let m = escMonitor { NSEvent.removeMonitor(m); escMonitor = nil }
         if let m = localEscMonitor { NSEvent.removeMonitor(m); localEscMonitor = nil }
-        removeEnterMonitor()
     }
 
     /// Exposed for the SwiftUI MenuBarMenu's Settings button.
@@ -313,46 +295,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
             return event
-        }
-    }
-
-    private func installEnterMonitor() {
-        guard enterMonitor == nil, localEnterMonitor == nil else { return }
-        enterMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            // Plain Return / numpad Enter only; Cmd/Shift/Opt+Enter stays
-            // with the foreground app (newline, send, etc.).
-            guard event.keyCode == 36 || event.keyCode == 76 else { return }
-            let mods = event.modifierFlags.intersection([.shift, .control, .option, .command])
-            guard mods.isEmpty else { return }
-            guard let self else { return }
-            Task { @MainActor in
-                guard self.coordinator.state == .preview else { return }
-                Log.app.debug("Enter — committing preview")
-                await self.coordinator.commitPreview()
-            }
-        }
-        localEnterMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard event.keyCode == 36 || event.keyCode == 76 else { return event }
-            let mods = event.modifierFlags.intersection([.shift, .control, .option, .command])
-            guard mods.isEmpty else { return event }
-            guard let self else { return event }
-            Task { @MainActor in
-                guard self.coordinator.state == .preview else { return }
-                Log.app.debug("Enter — committing preview")
-                await self.coordinator.commitPreview()
-            }
-            return nil
-        }
-    }
-
-    private func removeEnterMonitor() {
-        if let m = enterMonitor {
-            NSEvent.removeMonitor(m)
-            enterMonitor = nil
-        }
-        if let m = localEnterMonitor {
-            NSEvent.removeMonitor(m)
-            localEnterMonitor = nil
         }
     }
 

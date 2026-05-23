@@ -92,7 +92,7 @@ private struct RemoteBridgeTextEditRequest: Encodable {
 private struct RemoteBridgeSettingsUpdateRequest: Encodable {
     let asrProvider: String
     let languageIDs: [String]
-    let asrTimeoutSec: Int
+    let asrTimeoutSec: Double
     let correctionBackend: String
     let correctionTimeoutMs: Int
     let correctionColdTimeoutMs: Int

@@ -327,14 +327,16 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     /// app's own send button so it's easier to hit one-handed.
     private let voiceSendButton = HitInsetButton(frame: .zero)
     private static let orbDiameter: CGFloat = 132
-    private static let portraitKeyboardContentHeight: CGFloat = 273
-    private static let compactKeyboardContentHeight: CGFloat = 259
+    private static let portraitKeyboardContentHeight: CGFloat = 255
+    private static let compactKeyboardContentHeight: CGFloat = 241
     private static let rootHorizontalInset: CGFloat = 20.0 / 3.0
     private static let rootVerticalInset: CGFloat = 4
     private static let stackSpacing: CGFloat = 4
     private static let keyboardTouchableBackgroundColor = UIColor.white.withAlphaComponent(0.01)
     private static let candidateExpandButtonWidth: CGFloat = 45
-    private static let candidateToolbarHeight: CGFloat = 45
+    private static let candidateToolbarHeight: CGFloat = 25
+    private static let textKeyboardToolbarKeyGap: CGFloat = 8
+    private static let textToolbarIconVerticalOffset: CGFloat = -5
     private static let candidateInlineMinimumCellWidth: CGFloat = 41
     private static let candidateInlineCellHorizontalPadding: CGFloat = 20
     private static let candidateTextFontSize: CGFloat = 20
@@ -502,6 +504,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             inputViewStyle: .keyboard
         )
         rootView.hitController = self
+        rootView.visibleKeyboardHeight = initialHeight
         rootView.allowsSelfSizing = false
         let initialHeightConstraint = rootView.heightAnchor.constraint(equalToConstant: initialHeight)
         initialHeightConstraint.priority = .required
@@ -1363,6 +1366,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
         if let rootInputView = view as? KeyboardRootInputView {
             rootInputView.hitController = self
+            rootInputView.visibleKeyboardHeight = currentContentHeight + Self.topChromeCoverHeight
         }
         view.addSubview(keyboardContentView)
         keyboardContentView.addSubview(rootStack)
@@ -1459,6 +1463,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private func applyKeyboardHeightForCurrentTraits() {
         let contentHeight = currentKeyboardContentHeight
         let totalHeight = contentHeight + Self.topChromeCoverHeight
+        (view as? KeyboardRootInputView)?.visibleKeyboardHeight = totalHeight
         heightConstraint?.constant = totalHeight
         layoutKeyboardContentViewForCurrentBounds()
         textKeyboardContainerHeightConstraint?.constant = Self.textKeyboardBodyHeight(for: contentHeight)
@@ -2111,9 +2116,30 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
         updateCandidateScrollViewport()
         updateCandidateGridCollapseButtonFrame()
+        applyTextToolbarIconOffsets()
         updateKeyboardOverlayOrdering()
         logKeyboardTouchSurfaceLayoutIfNeeded()
         CATransaction.commit()
+    }
+
+    private func applyTextToolbarIconOffsets() {
+        [
+            textWandButton,
+            textStylePickerButton,
+            textPasteButton,
+            textToolsButton,
+            textKeyboardSwitchButton,
+            textHostSettingsButton,
+            textCandidateGridButton,
+        ].forEach { button in
+            button.imageView?.transform = CGAffineTransform(
+                translationX: 0,
+                y: Self.textToolbarIconVerticalOffset
+            )
+        }
+        candidateGridCollapseButton.imageView?.transform = isCandidateGridExpanded
+            ? .identity
+            : CGAffineTransform(translationX: 0, y: Self.textToolbarIconVerticalOffset)
     }
 
     private func logKeyboardTouchSurfaceLayoutIfNeeded() {
@@ -2180,7 +2206,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     private func configureTextKeyboard() {
         textKeyboardContainer.axis = .vertical
-        textKeyboardContainer.spacing = 8
+        textKeyboardContainer.spacing = Self.textKeyboardToolbarKeyGap
         textKeyboardContainer.alignment = .fill
         textKeyboardContainer.distribution = .fill
         textKeyboardContainerHeightConstraint = textKeyboardContainer.heightAnchor.constraint(
@@ -2821,7 +2847,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         var configuration = UIButton.Configuration.plain()
         configuration.image = UIImage(systemName: image)
         configuration.cornerStyle = .fixed
-        configuration.contentInsets = NSDirectionalEdgeInsets(top: 4, leading: 4, bottom: 4, trailing: 4)
+        configuration.contentInsets = NSDirectionalEdgeInsets(top: 1, leading: 4, bottom: 7, trailing: 4)
         configuration.baseForegroundColor = .label
         configuration.background.backgroundColor = .clear
         configuration.background.strokeWidth = 0
@@ -2843,7 +2869,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         var configuration = UIButton.Configuration.plain()
         configuration.image = UIImage(systemName: isExpanded ? "chevron.up" : "chevron.down")
         configuration.cornerStyle = .fixed
-        configuration.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0)
+        configuration.contentInsets = isExpanded
+            ? NSDirectionalEdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0)
+            : NSDirectionalEdgeInsets(top: 1, leading: 0, bottom: 6, trailing: 0)
         configuration.baseForegroundColor = .label
         // The expanded-grid collapse chevron floats alone at top-right with no
         // toolbar context, so it gets a faint pill background to read as a
@@ -2856,7 +2884,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             configuration.background.backgroundColor = .clear
             configuration.background.cornerRadius = 0
         }
-        configuration.preferredSymbolConfigurationForImage = UIImage.SymbolConfiguration(pointSize: 22, weight: .medium)
+        configuration.preferredSymbolConfigurationForImage = UIImage.SymbolConfiguration(
+            pointSize: isExpanded ? 22 : 18,
+            weight: .medium
+        )
         button.configuration = configuration
     }
 
@@ -7468,6 +7499,15 @@ final class HitInsetButton: UIButton {
 /// a routed key/focus touch or should fall through to a native UIControl.
 final class KeyboardRootInputView: UIInputView {
     weak var hitController: KeyboardViewController?
+    // During input-mode switches UIKit briefly gives the input view a much
+    // taller transition height; mask to the final bottom band so the
+    // inputViewStyle keyboard backdrop cannot flash over the host app.
+    var visibleKeyboardHeight: CGFloat = 0 {
+        didSet {
+            guard abs(visibleKeyboardHeight - oldValue) > 0.5 else { return }
+            updateVisibleKeyboardMask()
+        }
+    }
 
     private struct ActiveKeyboardTouch {
         let target: KeyboardTouchTarget
@@ -7481,6 +7521,7 @@ final class KeyboardRootInputView: UIInputView {
     private var pendingActivationTarget: KeyboardTouchTarget?
     private var pendingActivationPoint: CGPoint?
     private var lastTouchCommitTime: CFTimeInterval = 0
+    private let visibleKeyboardMaskLayer = CAShapeLayer()
 
     override init(frame: CGRect, inputViewStyle: UIInputView.Style) {
         super.init(frame: frame, inputViewStyle: inputViewStyle)
@@ -7500,7 +7541,42 @@ final class KeyboardRootInputView: UIInputView {
 
     override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
         guard isUserInteractionEnabled, !isHidden, alpha > 0.01 else { return false }
-        return bounds.contains(point)
+        return visibleKeyboardRegion.contains(point)
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        updateVisibleKeyboardMask()
+    }
+
+    private var visibleKeyboardRegion: CGRect {
+        guard visibleKeyboardHeight > 0,
+              bounds.height > visibleKeyboardHeight + 0.5
+        else { return bounds }
+        return CGRect(
+            x: bounds.minX,
+            y: bounds.maxY - visibleKeyboardHeight,
+            width: bounds.width,
+            height: visibleKeyboardHeight
+        )
+    }
+
+    private func updateVisibleKeyboardMask() {
+        let region = visibleKeyboardRegion
+        guard region != bounds else {
+            if layer.mask != nil {
+                layer.mask = nil
+            }
+            return
+        }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        visibleKeyboardMaskLayer.frame = bounds
+        visibleKeyboardMaskLayer.path = UIBezierPath(rect: region).cgPath
+        if layer.mask !== visibleKeyboardMaskLayer {
+            layer.mask = visibleKeyboardMaskLayer
+        }
+        CATransaction.commit()
     }
 
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {

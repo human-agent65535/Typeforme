@@ -8,7 +8,7 @@ import SwiftUI
 final class HUDWindowController {
     private let panel: HUDPanel
     private let coordinator: DictationCoordinator
-    private var stateSub: AnyCancellable?
+    private var cancellables: Set<AnyCancellable> = []
     private var moveObserver: NSObjectProtocol?
     /// Locks the panel at preview width across the preview→correcting→preview
     /// round-trip that a chip click triggers — otherwise the HUD shrinks to
@@ -37,6 +37,7 @@ final class HUDWindowController {
     private static let idleSize: CGFloat = 40
     private static let previewMaxHeight: CGFloat = 420
     private static let previewWidth: CGFloat = 620
+    private static let voiceDraftBarSize = NSSize(width: 552, height: 48)
     private static let bottomMargin: CGFloat = 80
     private static let entranceLift: CGFloat = 14
     private static let edgePadding: CGFloat = 8
@@ -84,7 +85,7 @@ final class HUDWindowController {
         // Re-apply the frame whenever state OR the previewed text changes —
         // the latter so a re-correct that produces a longer/shorter result
         // grows or shrinks the panel to fit.
-        stateSub = Publishers.CombineLatest(
+        Publishers.CombineLatest(
             coordinator.$state.removeDuplicates(),
             coordinator.$lastCorrected.removeDuplicates()
         )
@@ -92,6 +93,15 @@ final class HUDWindowController {
         .sink { [weak self] state, _ in
             self?.applyWidth(for: state, animated: true)
         }
+        .store(in: &cancellables)
+
+        coordinator.$previewAnchorRect
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                guard let self else { return }
+                self.applyWidth(for: self.coordinator.state, animated: true)
+            }
+            .store(in: &cancellables)
 
         // The user dragged the HUD — persist the new center so it sticks
         // across width changes and across app launches.
@@ -118,7 +128,7 @@ final class HUDWindowController {
         guard !isShown else { return }
         isShown = true
         let size = self.size(for: coordinator.state)
-        let finalOrigin = originForAnchor(anchorOrDefault(), size: size)
+        let finalOrigin = origin(for: coordinator.state, size: size)
         // Slide-up entrance: start a few points below the target and fade in.
         let startOrigin = NSPoint(x: finalOrigin.x, y: finalOrigin.y - Self.entranceLift)
         isProgrammaticallyMoving = true
@@ -176,7 +186,7 @@ final class HUDWindowController {
         }
 
         let size = self.size(for: state)
-        let frame = NSRect(origin: originForAnchor(anchorOrDefault(), size: size), size: size)
+        let frame = NSRect(origin: origin(for: state, size: size), size: size)
         isProgrammaticallyMoving = true
         let release: @Sendable () -> Void = { [weak self] in
             Task { @MainActor in
@@ -199,6 +209,72 @@ final class HUDWindowController {
 
     private func anchorOrDefault() -> NSPoint {
         anchorBottomCenter ?? Self.defaultAnchor()
+    }
+
+    private func origin(for state: DictationState, size: NSSize) -> NSPoint {
+        if isVoiceDraftBarVisible(for: state),
+           let rect = coordinator.previewAnchorRect,
+           Self.isUsableRect(rect) {
+            return originNearAXRect(rect, size: size)
+        }
+        return originForAnchor(anchorOrDefault(), size: size)
+    }
+
+    private func originNearAXRect(_ axRect: CGRect, size: NSSize) -> NSPoint {
+        guard let screen = screen(containingAXRect: axRect) ?? NSScreen.main else {
+            return originForAnchor(anchorOrDefault(), size: size)
+        }
+
+        let rect = appKitRect(fromAXRect: axRect, on: screen)
+        let visible = screen.visibleFrame
+        let minX = visible.minX + Self.edgePadding
+        let maxX = visible.maxX - size.width - Self.edgePadding
+        let minY = visible.minY + Self.edgePadding
+        let maxY = visible.maxY - size.height - Self.edgePadding
+
+        var x = rect.maxX - size.width
+        if minX <= maxX {
+            x = max(minX, min(maxX, x))
+        }
+
+        let below = rect.minY - size.height - 8
+        let above = rect.maxY + 8
+        var y = below >= minY ? below : above
+        if minY <= maxY {
+            y = max(minY, min(maxY, y))
+        }
+        return NSPoint(x: x, y: y)
+    }
+
+    private func appKitRect(fromAXRect rect: CGRect, on screen: NSScreen) -> NSRect {
+        let candidate = NSRect(
+            x: rect.minX,
+            y: screen.frame.maxY - rect.maxY,
+            width: rect.width,
+            height: rect.height
+        )
+        if screen.frame.intersects(candidate) || screen.visibleFrame.intersects(candidate) {
+            return candidate
+        }
+        return NSRect(x: rect.minX, y: rect.minY, width: rect.width, height: rect.height)
+    }
+
+    private func screen(containingAXRect rect: CGRect) -> NSScreen? {
+        guard Self.isUsableRect(rect) else { return nil }
+        return NSScreen.screens.first { screen in
+            let converted = appKitRect(fromAXRect: rect, on: screen)
+            let raw = NSRect(x: rect.minX, y: rect.minY, width: rect.width, height: rect.height)
+            return screen.frame.intersects(converted) || screen.frame.intersects(raw)
+        }
+    }
+
+    private static func isUsableRect(_ rect: CGRect) -> Bool {
+        rect.minX.isFinite &&
+            rect.minY.isFinite &&
+            rect.width.isFinite &&
+            rect.height.isFinite &&
+            rect.width > 1 &&
+            rect.height > 1
     }
 
     /// Compute the panel origin so the panel's BOTTOM edge sits on `anchor.y`
@@ -273,12 +349,23 @@ final class HUDWindowController {
         case .idle:
             return NSSize(width: Self.idleSize, height: Self.idleSize)
         case .preview:
+            if isVoiceDraftBarVisible(for: state) {
+                return Self.voiceDraftBarSize
+            }
             return previewSize()
         case .correcting where !coordinator.lastCorrected.isEmpty:
+            if isVoiceDraftBarVisible(for: state) {
+                return Self.voiceDraftBarSize
+            }
             return previewSize()
         default:
             return NSSize(width: Self.width(for: state), height: Self.compactHeight)
         }
+    }
+
+    private func isVoiceDraftBarVisible(for state: DictationState) -> Bool {
+        guard AppSettings.voiceUXMode == .voiceDraft else { return false }
+        return state == .preview || (state == .correcting && !coordinator.lastCorrected.isEmpty)
     }
 
     private func previewSize() -> NSSize {

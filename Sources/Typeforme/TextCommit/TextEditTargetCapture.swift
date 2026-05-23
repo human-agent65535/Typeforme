@@ -12,6 +12,24 @@ struct TextEditTargetSnapshot {
     let targetText: String
     let contextBefore: String
     let contextAfter: String
+    let targetRange: CFRange?
+}
+
+struct VoiceDraftInsertionTarget {
+    let element: AXUIElement
+    let originalSelectedRange: CFRange
+    let originalSelectedText: String
+    let originalValue: String?
+}
+
+struct VoiceDraftTextSnapshot {
+    let element: AXUIElement
+    let originalSelectedRange: CFRange
+    let originalSelectedText: String
+    let originalValue: String?
+    var draftRange: CFRange
+    var draftText: String
+    var anchorRect: CGRect?
 }
 
 enum TextEditTargetCapture {
@@ -30,6 +48,7 @@ enum TextEditTargetCapture {
         AXUIElementSetMessagingTimeout(focused, 0.25)
         guard !isSecureTextElement(focused) else { return nil }
 
+        let selectedRange = selectedRange(in: focused)
         if let selected = stringAttribute(kAXSelectedTextAttribute, from: focused),
            !selected.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             let context = contextAroundSelection(in: focused)
@@ -38,7 +57,8 @@ enum TextEditTargetCapture {
                 element: focused,
                 targetText: selected,
                 contextBefore: context.before,
-                contextAfter: context.after
+                contextAfter: context.after,
+                targetRange: selectedRange
             )
         }
 
@@ -52,7 +72,38 @@ enum TextEditTargetCapture {
             element: focused,
             targetText: value,
             contextBefore: "",
-            contextAfter: ""
+            contextAfter: "",
+            targetRange: CFRange(location: 0, length: (value as NSString).length)
+        )
+    }
+
+    @MainActor
+    static func draftInsertionTarget(in appSnapshot: FrontmostAppSnapshot?) -> VoiceDraftInsertionTarget? {
+        guard AccessibilityPermissions.isTrusted else { return nil }
+        guard let appSnapshot else { return nil }
+        let app = AXUIElementCreateApplication(appSnapshot.pid)
+        AXUIElementSetMessagingTimeout(app, 0.25)
+        guard let focused = focusedElement(in: app) else { return nil }
+        AXUIElementSetMessagingTimeout(focused, 0.25)
+        guard !isSecureTextElement(focused),
+              let range = selectedRange(in: focused)
+        else { return nil }
+
+        return VoiceDraftInsertionTarget(
+            element: focused,
+            originalSelectedRange: range,
+            originalSelectedText: stringAttribute(kAXSelectedTextAttribute, from: focused) ?? "",
+            originalValue: stringAttribute(kAXValueAttribute, from: focused)
+        )
+    }
+
+    static func draftInsertionTarget(from target: TextEditTargetSnapshot) -> VoiceDraftInsertionTarget? {
+        guard let range = target.targetRange else { return nil }
+        return VoiceDraftInsertionTarget(
+            element: target.element,
+            originalSelectedRange: range,
+            originalSelectedText: target.targetText,
+            originalValue: stringAttribute(kAXValueAttribute, from: target.element)
         )
     }
 
@@ -83,11 +134,94 @@ enum TextEditTargetCapture {
         stringAttribute(kAXValueAttribute, from: target.element)
     }
 
+    static func currentValue(of element: AXUIElement) -> String? {
+        stringAttribute(kAXValueAttribute, from: element)
+    }
+
     static func setFocusedValue(_ text: String, target: TextEditTargetSnapshot) -> Bool {
+        setValue(text, in: target.element)
+    }
+
+    static func setValue(_ text: String, in element: AXUIElement) -> Bool {
         var settable = DarwinBoolean(false)
-        let check = AXUIElementIsAttributeSettable(target.element, kAXValueAttribute as CFString, &settable)
+        let check = AXUIElementIsAttributeSettable(element, kAXValueAttribute as CFString, &settable)
         guard check == .success, settable.boolValue else { return false }
-        return AXUIElementSetAttributeValue(target.element, kAXValueAttribute as CFString, text as CFTypeRef) == .success
+        return AXUIElementSetAttributeValue(element, kAXValueAttribute as CFString, text as CFTypeRef) == .success
+    }
+
+    static func selectedRange(in element: AXUIElement) -> CFRange? {
+        var rangeRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, &rangeRef) == .success,
+              let rangeRef,
+              CFGetTypeID(rangeRef) == AXValueGetTypeID()
+        else { return nil }
+        let axValue = rangeRef as! AXValue
+        var range = CFRange()
+        guard AXValueGetValue(axValue, .cfRange, &range), range.location >= 0, range.length >= 0 else {
+            return nil
+        }
+        return range
+    }
+
+    static func setSelectedRange(_ range: CFRange, in element: AXUIElement) -> Bool {
+        var mutableRange = range
+        guard let value = AXValueCreate(.cfRange, &mutableRange) else { return false }
+        return AXUIElementSetAttributeValue(
+            element,
+            kAXSelectedTextRangeAttribute as CFString,
+            value
+        ) == .success
+    }
+
+    static func bounds(for range: CFRange, in element: AXUIElement) -> CGRect? {
+        var mutableRange = range
+        guard let rangeValue = AXValueCreate(.cfRange, &mutableRange) else { return nil }
+        var boundsRef: CFTypeRef?
+        guard AXUIElementCopyParameterizedAttributeValue(
+            element,
+            kAXBoundsForRangeParameterizedAttribute as CFString,
+            rangeValue,
+            &boundsRef
+        ) == .success,
+              let boundsRef,
+              CFGetTypeID(boundsRef) == AXValueGetTypeID()
+        else {
+            return elementBounds(element)
+        }
+        let axValue = boundsRef as! AXValue
+        var rect = CGRect.zero
+        guard AXValueGetValue(axValue, .cgRect, &rect),
+              isUsableBounds(rect)
+        else { return elementBounds(element) }
+        return rect
+    }
+
+    static func elementBounds(_ element: AXUIElement) -> CGRect? {
+        var positionRef: CFTypeRef?
+        var sizeRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &positionRef) == .success,
+              AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString, &sizeRef) == .success,
+              let positionRef,
+              let sizeRef,
+              CFGetTypeID(positionRef) == AXValueGetTypeID(),
+              CFGetTypeID(sizeRef) == AXValueGetTypeID()
+        else { return nil }
+        var point = CGPoint.zero
+        var size = CGSize.zero
+        guard AXValueGetValue(positionRef as! AXValue, .cgPoint, &point),
+              AXValueGetValue(sizeRef as! AXValue, .cgSize, &size)
+        else { return nil }
+        let rect = CGRect(origin: point, size: size)
+        return isUsableBounds(rect) ? rect : nil
+    }
+
+    private static func isUsableBounds(_ rect: CGRect) -> Bool {
+        rect.minX.isFinite &&
+            rect.minY.isFinite &&
+            rect.width.isFinite &&
+            rect.height.isFinite &&
+            rect.width > 1 &&
+            rect.height > 1
     }
 
     private static func focusedElement(in app: AXUIElement) -> AXUIElement? {
@@ -125,19 +259,7 @@ enum TextEditTargetCapture {
         guard let fullValue = stringAttribute(kAXValueAttribute, from: element) else {
             return ("", "")
         }
-        var rangeRef: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, &rangeRef) == .success,
-              let rangeRef,
-              CFGetTypeID(rangeRef) == AXValueGetTypeID()
-        else {
-            return ("", "")
-        }
-        let axValue = rangeRef as! AXValue
-
-        var range = CFRange()
-        guard AXValueGetValue(axValue, .cfRange, &range), range.location >= 0, range.length >= 0 else {
-            return ("", "")
-        }
+        guard let range = selectedRange(in: element) else { return ("", "") }
         let ns = fullValue as NSString
         guard range.location <= ns.length else { return ("", "") }
         let start = max(0, range.location - contextLimit)
