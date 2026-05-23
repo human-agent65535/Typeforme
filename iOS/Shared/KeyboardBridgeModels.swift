@@ -7,6 +7,37 @@ enum KeyboardSharedDefaults {
     static func suite() -> UserDefaults? {
         UserDefaults(suiteName: appGroupIdentifier)
     }
+
+    static func loadPayload() -> [String: Any]? {
+        guard let defaults = suite(),
+              let text = defaults.string(forKey: keyboardDefaultsKey),
+              let data = text.data(using: .utf8),
+              let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+        return payload
+    }
+
+    @discardableResult
+    static func savePayload(_ payload: [String: Any]) -> Bool {
+        guard JSONSerialization.isValidJSONObject(payload),
+              let data = try? JSONSerialization.data(withJSONObject: payload, options: []),
+              let text = String(data: data, encoding: .utf8),
+              let defaults = suite()
+        else { return false }
+        defaults.set(text, forKey: keyboardDefaultsKey)
+        defaults.synchronize()
+        return true
+    }
+
+    static func bridgeToken(from payload: [String: Any]?) -> String? {
+        guard let token = payload?["bridge_token"] as? String else { return nil }
+        let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    static func makeBridgeToken() -> String {
+        "\(UUID().uuidString).\(UUID().uuidString)"
+    }
 }
 
 enum KeyboardDarwinNotificationName {

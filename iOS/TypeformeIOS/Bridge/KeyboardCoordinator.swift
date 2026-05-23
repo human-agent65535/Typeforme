@@ -35,13 +35,7 @@ final class KeyboardCoordinator {
 
         var payload = stablePayload
         payload["updated_at"] = Date().timeIntervalSince1970
-        guard JSONSerialization.isValidJSONObject(payload),
-              let data = try? JSONSerialization.data(withJSONObject: payload, options: []),
-              let text = String(data: data, encoding: .utf8),
-              let defaults = KeyboardSharedDefaults.suite()
-        else { return }
-        defaults.set(text, forKey: KeyboardSharedDefaults.keyboardDefaultsKey)
-        defaults.synchronize()
+        guard KeyboardSharedDefaults.savePayload(payload) else { return }
         KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.keyboardDefaultsChanged)
     }
 
@@ -57,12 +51,17 @@ final class KeyboardCoordinator {
 
     private static func loadKeyboardBridgeToken() -> String {
         let store = PairingTokenStore.keyboardBridge
+        if let sharedToken = KeyboardSharedDefaults.bridgeToken(from: KeyboardSharedDefaults.loadPayload()) {
+            store.save(sharedToken)
+            UserDefaults.standard.removeObject(forKey: legacyKeyboardBridgeTokenKey)
+            return sharedToken
+        }
         if let token = store.load(),
            !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             UserDefaults.standard.removeObject(forKey: legacyKeyboardBridgeTokenKey)
             return token
         }
-        let token = "\(UUID().uuidString).\(UUID().uuidString)"
+        let token = KeyboardSharedDefaults.makeBridgeToken()
         store.save(token)
         UserDefaults.standard.removeObject(forKey: legacyKeyboardBridgeTokenKey)
         return token

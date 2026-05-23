@@ -211,6 +211,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private var scheduledHostOpenTask: Task<Void, Never>?
     private var scheduledStopTask: Task<Void, Never>?
     private var hostWakeResetTask: Task<Void, Never>?
+    private var hostBundleWakeFallbackTask: Task<Void, Never>?
+    private var startupHostWakeTask: Task<Void, Never>?
     private var deleteRepeatTask: Task<Void, Never>?
     private var bridgeProbeTask: Task<Void, Never>?
     private var statusRefreshTask: Task<Void, Never>?
@@ -231,6 +233,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private static let textRewriteContextExpansionLimit = 2_000
     private static let textRewriteContextExpansionMaxSteps = 40
     private static let textSpaceCursorPointsPerCharacter: CGFloat = 9
+    private static let containingAppBundleIdentifier = "com.example.typeforme"
     private let deleteRepeatInitialDelay: UInt64 = 450_000_000
     private let deleteRepeatInterval: UInt64 = 70_000_000
 
@@ -1032,6 +1035,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         scheduledHostOpenTask?.cancel()
         scheduledStopTask?.cancel()
         hostWakeResetTask?.cancel()
+        hostBundleWakeFallbackTask?.cancel()
+        startupHostWakeTask?.cancel()
         stopStatusPolling()
         rimeInput.onStateChange = nil
         keyboardDarwinObservers.forEach { $0.stopObserving() }
@@ -1051,6 +1056,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         stopDeleteRepeat()
         clearTextShiftState()
         cancelHostWakeResetTask()
+        cancelHostBundleWakeFallback()
+        cancelStartupHostWake()
         rimeInput.onStateChange = nil
         deferredStartupWorkItem?.cancel()
         deferredStartupWorkItem = nil
@@ -1184,12 +1191,24 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func hostKeyboardDefaultsPayload() -> [String: Any]? {
-        guard hasFullAccess,
-              let defaults = KeyboardSharedDefaults.suite(),
-              let text = defaults.string(forKey: KeyboardSharedDefaults.keyboardDefaultsKey),
-              let data = text.data(using: .utf8),
-              let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return nil }
+        guard hasFullAccess else { return nil }
+        if let payload = KeyboardSharedDefaults.loadPayload() {
+            return payload
+        }
+        return bootstrapKeyboardDefaultsPayload()
+    }
+
+    private func bootstrapKeyboardDefaultsPayload() -> [String: Any]? {
+        let payload: [String: Any] = [
+            "version": 1,
+            "bridge_token": KeyboardSharedDefaults.makeBridgeToken(),
+            "correction_mode": correctionMode.rawValue,
+            "auto_capitalization_enabled": isAutoCapitalizationEnabled,
+            "character_preview_enabled": isCharacterPreviewEnabled,
+            "chinese_punctuation_style": chinesePunctuationStyle.rawValue,
+            "updated_at": Date().timeIntervalSince1970,
+        ]
+        guard KeyboardSharedDefaults.savePayload(payload) else { return nil }
         return payload
     }
 
@@ -1407,6 +1426,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 DispatchQueue.main.async {
                     guard let self else { return }
                     self.cancelHostWakeResetTask()
+                    self.cancelHostBundleWakeFallback()
                     self.lastDarwinAwakeAt = Date().timeIntervalSince1970
                     if self.currentBridgeStatus?.state != .recording,
                        self.currentBridgeStatus?.state != .sending {
@@ -1423,6 +1443,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                     guard let self else { return }
                     self.cancelScheduledHostOpen()
                     self.cancelHostWakeResetTask()
+                    self.cancelHostBundleWakeFallback()
                     self.openingHostUntil = 0
                     self.isStartRequestInFlight = false
                     self.tapRecordingActive = false
@@ -1438,6 +1459,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                     let status = KeyboardBridgeStatus(state: .recording, message: "Recording")
                     self.cancelScheduledHostOpen()
                     self.cancelHostWakeResetTask()
+                    self.cancelHostBundleWakeFallback()
                     self.lastDarwinAwakeAt = Date().timeIntervalSince1970
                     self.applyBridgeStatus(status)
                     self.finishStartRequestIfNeeded(status: status)
@@ -3757,14 +3779,46 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         hostWakeResetTask = nil
     }
 
+    private func cancelHostBundleWakeFallback() {
+        hostBundleWakeFallbackTask?.cancel()
+        hostBundleWakeFallbackTask = nil
+    }
+
     private func openHostApp(_ url: URL, completion: @escaping (Bool) -> Void) {
         // Non-public but deliberate: custom keyboards do not get a supported
         // "open containing app" API for this microphone handoff. Keep all
         // host-wake reflection in this method so an App Store build can replace
         // it with a manual "open Typeforme" fallback without touching the
         // dictation state machine.
-        kbLog.notice("openHostApp: opening via LSApplicationWorkspace")
-        completion(openHostAppViaApplicationWorkspace(url))
+        kbLog.notice("openHostApp: opening URL via LSApplicationWorkspace")
+        let didRequestURL = openHostAppViaApplicationWorkspace(url)
+        if didRequestURL {
+            completion(true)
+            scheduleHostBundleWakeFallback()
+            return
+        }
+
+        kbLog.notice("openHostApp: URL open unavailable; opening bundle id fallback")
+        completion(openHostAppViaBundleIdentifier())
+    }
+
+    private func scheduleHostBundleWakeFallback() {
+        cancelHostBundleWakeFallback()
+        hostBundleWakeFallbackTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 1_200_000_000)
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                guard let self else { return }
+                guard !Task.isCancelled else { return }
+                self.hostBundleWakeFallbackTask = nil
+                guard self.isOpeningHostApp,
+                      self.lastDarwinAwakeAt == 0,
+                      self.currentBridgeStatus?.state == .standby
+                else { return }
+                kbLog.notice("openHostApp: URL wake did not signal; opening bundle id fallback")
+                _ = self.openHostAppViaBundleIdentifier()
+            }
+        }
     }
 
     private func openHostAppViaApplicationWorkspace(_ url: URL) -> Bool {
@@ -3791,6 +3845,36 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let openSensitiveURL = unsafeBitCast(imp, to: OpenSensitiveURL.self)
         openSensitiveURL(workspace, openSensitiveSelector, url as NSURL, NSDictionary())
         return true
+    }
+
+    private func openHostAppViaBundleIdentifier() -> Bool {
+        guard let workspaceClass = objc_getClass("LSApplicationWorkspace") as? AnyObject else {
+            kbLog.notice("openHostAppViaBundleIdentifier: LSApplicationWorkspace unavailable")
+            return false
+        }
+        let defaultSelector = NSSelectorFromString("defaultWorkspace")
+        guard let workspace = workspaceClass.perform(defaultSelector)?.takeUnretainedValue() as? NSObject else {
+            kbLog.notice("openHostAppViaBundleIdentifier: defaultWorkspace unavailable")
+            return false
+        }
+
+        let openSelector = NSSelectorFromString("openApplicationWithBundleID:")
+        guard workspace.responds(to: openSelector),
+              let imp = workspace.method(for: openSelector)
+        else {
+            kbLog.notice("openHostAppViaBundleIdentifier: openApplicationWithBundleID unavailable")
+            return false
+        }
+
+        typealias OpenApplication = @convention(c) (AnyObject, Selector, NSString) -> Bool
+        let openApplication = unsafeBitCast(imp, to: OpenApplication.self)
+        let didOpen = openApplication(
+            workspace,
+            openSelector,
+            Self.containingAppBundleIdentifier as NSString
+        )
+        kbLog.notice("openHostAppViaBundleIdentifier: result=\(didOpen, privacy: .public)")
+        return didOpen
     }
 
     private var currentHostBundleID: String? {
@@ -6508,6 +6592,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private func cancelScheduledHostOpen() {
         scheduledHostOpenTask?.cancel()
         scheduledHostOpenTask = nil
+        cancelHostBundleWakeFallback()
+    }
+
+    private func cancelStartupHostWake() {
+        startupHostWakeTask?.cancel()
+        startupHostWakeTask = nil
     }
 
     private func cancelBridgeCommandTasks() {
@@ -6537,9 +6627,14 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         hasPresentedInitialFrame = false
         let workItem = DispatchWorkItem { [weak self] in
             guard let self, self.view.window != nil else { return }
+            let needsHostBootstrap = self.hasFullAccess && KeyboardSharedDefaults.loadPayload() == nil
             self.startStatusPolling()
             self.refreshBridgeStatus(captureSelection: false)
             self.postAuthenticatedKeyboardRequest(KeyboardDarwinNotificationName.requestSessionStatus)
+            self.scheduleStartupHostWakeIfNeeded(
+                reason: needsHostBootstrap ? "missing defaults" : "no startup bridge response",
+                delay: needsHostBootstrap ? 0.25 : 1.0
+            )
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.20) { [weak self] in
                 guard let self, self.view.window != nil else { return }
                 self.hasPresentedInitialFrame = true
@@ -6550,6 +6645,31 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         // Let iOS draw the first keyboard frame before touching localhost,
         // Darwin notifications, or textDocumentProxy selection APIs.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.18, execute: workItem)
+    }
+
+    private func scheduleStartupHostWakeIfNeeded(reason: String, delay: TimeInterval) {
+        guard hasFullAccess else { return }
+        guard !isBridgeAwake, !isOpeningHostApp else { return }
+        cancelStartupHostWake()
+        startupHostWakeTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(max(delay, 0) * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                guard let self else { return }
+                guard !Task.isCancelled else { return }
+                self.startupHostWakeTask = nil
+                guard self.view.window != nil,
+                      self.hasFullAccess,
+                      !self.isBridgeAwake,
+                      !self.isOpeningHostApp,
+                      !self.isStartRequestInFlight,
+                      self.currentBridgeStatus?.state != .recording,
+                      self.currentBridgeStatus?.state != .sending
+                else { return }
+                kbLog.notice("startup wake: opening host for standby reason=\(reason, privacy: .public)")
+                self.openStandbyInHostApp(returnToKeyboard: true)
+            }
+        }
     }
 
     private func refreshBridgeStatus(captureSelection: Bool = true) {
