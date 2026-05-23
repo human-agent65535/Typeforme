@@ -327,6 +327,14 @@ struct BridgeHealthResponse: Decodable {
     let ok: Bool
     let service: String?
     let version: String?
+    let settingsRevision: String?
+
+    enum CodingKeys: String, CodingKey {
+        case ok
+        case service
+        case version
+        case settingsRevision = "settings_revision"
+    }
 }
 
 struct BridgeSettingOption: Codable, Equatable, Identifiable {
@@ -373,6 +381,7 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
     var punctuationPreference: PunctuationPreferenceID
     var autoCommit: Bool
     var modelStatuses: [BridgeModelStatus]
+    var settingsRevision: String?
 
     enum CodingKeys: String, CodingKey {
         case asrProvider = "asr_provider"
@@ -390,6 +399,7 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
         case punctuationPreference = "punctuation_preference"
         case autoCommit = "auto_commit"
         case modelStatuses = "model_statuses"
+        case settingsRevision = "settings_revision"
     }
 
     init(
@@ -407,7 +417,8 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
         numberOutputPreference: NumberOutputPreferenceID = .automatic,
         punctuationPreference: PunctuationPreferenceID = .normal,
         autoCommit: Bool,
-        modelStatuses: [BridgeModelStatus] = []
+        modelStatuses: [BridgeModelStatus] = [],
+        settingsRevision: String? = nil
     ) {
         self.asrProvider = asrProvider
         self.asrProviderOptions = asrProviderOptions
@@ -424,6 +435,7 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
         self.punctuationPreference = punctuationPreference
         self.autoCommit = autoCommit
         self.modelStatuses = modelStatuses
+        self.settingsRevision = settingsRevision
         normalize()
     }
 
@@ -445,6 +457,7 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
         self.punctuationPreference = try container.decodeIfPresent(PunctuationPreferenceID.self, forKey: .punctuationPreference) ?? .normal
         self.autoCommit = try container.decodeIfPresent(Bool.self, forKey: .autoCommit) ?? true
         self.modelStatuses = try container.decodeIfPresent([BridgeModelStatus].self, forKey: .modelStatuses) ?? []
+        self.settingsRevision = try container.decodeIfPresent(String.self, forKey: .settingsRevision)
         normalize()
     }
 

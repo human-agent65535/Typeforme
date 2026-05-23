@@ -1,3 +1,4 @@
+import CryptoKit
 import Darwin
 import Foundation
 
@@ -6,12 +7,14 @@ struct BridgeHealthResponse: Codable, Sendable {
     let service: String
     let version: String
     let bridgePort: Int
+    let settingsRevision: String?
 
     enum CodingKeys: String, CodingKey {
         case ok
         case service
         case version
         case bridgePort = "bridge_port"
+        case settingsRevision = "settings_revision"
     }
 }
 
@@ -229,6 +232,7 @@ struct BridgeSettingsPayload: Codable, Sendable {
     var autoCommit: Bool
     var debugMode: Bool
     var modelStatuses: [BridgeModelStatus]
+    var settingsRevision: String?
 
     enum CodingKeys: String, CodingKey {
         case asrProvider = "asr_provider"
@@ -249,6 +253,7 @@ struct BridgeSettingsPayload: Codable, Sendable {
         case autoCommit = "auto_commit"
         case debugMode = "debug_mode"
         case modelStatuses = "model_statuses"
+        case settingsRevision = "settings_revision"
     }
 
     static let controllableASRProviders: [BridgeSettingOption] = [
@@ -264,6 +269,45 @@ struct BridgeSettingsPayload: Codable, Sendable {
     ]
 
     static func current() -> BridgeSettingsPayload {
+        let resolved = currentResolvedSettings()
+        let settingsRevision = settingsRevision(for: resolved.revisionPayload)
+        return BridgeSettingsPayload(
+            asrProvider: resolved.provider,
+            asrProviderOptions: controllableASRProviders,
+            languageIDs: resolved.languageIDs,
+            supportedLanguages: resolved.supportedLanguages,
+            supportedLanguagesByASRProvider: resolved.supportedByProvider,
+            asrTimeoutSec: currentASRTimeoutSec(provider: resolved.provider),
+            correctionBackend: resolved.correctionBackend.rawValue,
+            correctionBackendOptions: controllableCorrectionBackends.map {
+                BridgeSettingOption(id: $0.rawValue, displayName: $0.displayName)
+            },
+            correctionTimeoutMs: AppSettings.correctionTimeoutMs,
+            correctionColdTimeoutMs: AppSettings.correctionColdTimeoutMs,
+            lmStudioBaseURL: AppSettings.lmStudioBaseURL,
+            lmStudioModel: AppSettings.lmStudioModel,
+            correctionMode: resolved.correctionMode.rawValue,
+            numberOutputPreference: AppSettings.numberOutputPreference.rawValue,
+            punctuationPreference: AppSettings.punctuationPreference.rawValue,
+            autoCommit: AppSettings.autoCommit,
+            debugMode: AppSettings.diagnosticsDebugMode,
+            modelStatuses: selectedModelStatuses(
+                asrProvider: resolved.provider,
+                correctionBackend: resolved.correctionBackend
+            ),
+            settingsRevision: settingsRevision
+        )
+    }
+
+    static func currentSettingsRevision() -> String {
+        settingsRevision(for: currentResolvedSettings().revisionPayload)
+    }
+
+    static func settingsRevision(for payload: BridgeSettingsPayload) -> String {
+        settingsRevision(for: BridgeSettingsRevisionPayload(payload))
+    }
+
+    private static func currentResolvedSettings() -> BridgeResolvedSettings {
         let provider = normalizedASRProvider(AppSettings.asrProvider)
         let supportedByProvider = Dictionary(
             uniqueKeysWithValues: controllableASRProviders.map { option in
@@ -277,31 +321,20 @@ struct BridgeSettingsPayload: Codable, Sendable {
         )
         let correctionMode = AppSettings.correctionMode
         let correctionBackend = normalizedCorrectionBackend(AppSettings.correctionBackend)
-        return BridgeSettingsPayload(
+        return BridgeResolvedSettings(
             asrProvider: provider,
-            asrProviderOptions: controllableASRProviders,
+            supportedByProvider: supportedByProvider,
             languageIDs: languageIDs,
             supportedLanguages: supportedLanguages,
-            supportedLanguagesByASRProvider: supportedByProvider,
-            asrTimeoutSec: currentASRTimeoutSec(provider: provider),
-            correctionBackend: correctionBackend.rawValue,
-            correctionBackendOptions: controllableCorrectionBackends.map {
-                BridgeSettingOption(id: $0.rawValue, displayName: $0.displayName)
-            },
-            correctionTimeoutMs: AppSettings.correctionTimeoutMs,
-            correctionColdTimeoutMs: AppSettings.correctionColdTimeoutMs,
-            lmStudioBaseURL: AppSettings.lmStudioBaseURL,
-            lmStudioModel: AppSettings.lmStudioModel,
-            correctionMode: correctionMode.rawValue,
-            numberOutputPreference: AppSettings.numberOutputPreference.rawValue,
-            punctuationPreference: AppSettings.punctuationPreference.rawValue,
-            autoCommit: AppSettings.autoCommit,
-            debugMode: AppSettings.diagnosticsDebugMode,
-            modelStatuses: selectedModelStatuses(
-                asrProvider: provider,
-                correctionBackend: correctionBackend
-            )
+            correctionMode: correctionMode,
+            correctionBackend: correctionBackend
         )
+    }
+
+    private static func settingsRevision(for payload: BridgeSettingsRevisionPayload) -> String {
+        let data = (try? BridgeJSON.encodeSorted(payload)) ?? Data()
+        let digest = SHA256.hash(data: data)
+        return digest.map { String(format: "%02x", $0) }.joined()
     }
 
     private static func selectedModelStatuses(
@@ -314,7 +347,7 @@ struct BridgeSettingsPayload: Codable, Sendable {
         ]
     }
 
-    private static func currentASRTimeoutSec(provider: String) -> Int {
+    fileprivate static func currentASRTimeoutSec(provider: String) -> Int {
         if provider == "whisperkit" {
             return Int(AppSettings.asrWhisperKitTimeoutSeconds)
         }
@@ -436,6 +469,155 @@ struct BridgeSettingsPayload: Codable, Sendable {
     func supportedLanguageOptions(for provider: String) -> [ASRLanguageOption] {
         let options = supportedLanguagesByASRProvider[provider] ?? supportedLanguages
         return BridgeLanguageOption.asASROptions(options)
+    }
+}
+
+private struct BridgeResolvedSettings {
+    let provider: String
+    let supportedByProvider: [String: [BridgeLanguageOption]]
+    let languageIDs: [String]
+    let supportedLanguages: [BridgeLanguageOption]
+    let correctionMode: CorrectionMode
+    let correctionBackend: CorrectionBackendKind
+
+    init(
+        asrProvider: String,
+        supportedByProvider: [String: [BridgeLanguageOption]],
+        languageIDs: [String],
+        supportedLanguages: [BridgeLanguageOption],
+        correctionMode: CorrectionMode,
+        correctionBackend: CorrectionBackendKind
+    ) {
+        self.provider = asrProvider
+        self.supportedByProvider = supportedByProvider
+        self.languageIDs = languageIDs
+        self.supportedLanguages = supportedLanguages
+        self.correctionMode = correctionMode
+        self.correctionBackend = correctionBackend
+    }
+
+    var revisionPayload: BridgeSettingsRevisionPayload {
+        BridgeSettingsRevisionPayload(
+            asrProvider: provider,
+            asrProviderOptions: BridgeSettingsPayload.controllableASRProviders,
+            languageIDs: languageIDs,
+            supportedLanguages: supportedLanguages,
+            supportedLanguagesByASRProvider: supportedByProvider,
+            asrTimeoutSec: BridgeSettingsPayload.currentASRTimeoutSec(provider: provider),
+            correctionBackend: correctionBackend.rawValue,
+            correctionBackendOptions: BridgeSettingsPayload.controllableCorrectionBackends.map {
+                BridgeSettingOption(id: $0.rawValue, displayName: $0.displayName)
+            },
+            correctionTimeoutMs: AppSettings.correctionTimeoutMs,
+            correctionColdTimeoutMs: AppSettings.correctionColdTimeoutMs,
+            lmStudioBaseURL: AppSettings.lmStudioBaseURL,
+            lmStudioModel: AppSettings.lmStudioModel,
+            correctionMode: correctionMode.rawValue,
+            numberOutputPreference: AppSettings.numberOutputPreference.rawValue,
+            punctuationPreference: AppSettings.punctuationPreference.rawValue,
+            autoCommit: AppSettings.autoCommit,
+            debugMode: AppSettings.diagnosticsDebugMode
+        )
+    }
+}
+
+private struct BridgeSettingsRevisionPayload: Encodable {
+    let asrProvider: String
+    let asrProviderOptions: [BridgeSettingOption]
+    let languageIDs: [String]
+    let supportedLanguages: [BridgeLanguageOption]
+    let supportedLanguagesByASRProvider: [String: [BridgeLanguageOption]]
+    let asrTimeoutSec: Int
+    let correctionBackend: String
+    let correctionBackendOptions: [BridgeSettingOption]
+    let correctionTimeoutMs: Int
+    let correctionColdTimeoutMs: Int
+    let lmStudioBaseURL: String?
+    let lmStudioModel: String?
+    let correctionMode: String
+    let numberOutputPreference: String
+    let punctuationPreference: String
+    let autoCommit: Bool
+    let debugMode: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case asrProvider = "asr_provider"
+        case asrProviderOptions = "asr_provider_options"
+        case languageIDs = "language_ids"
+        case supportedLanguages = "supported_languages"
+        case supportedLanguagesByASRProvider = "supported_languages_by_asr_provider"
+        case asrTimeoutSec = "asr_timeout_sec"
+        case correctionBackend = "correction_backend"
+        case correctionBackendOptions = "correction_backend_options"
+        case correctionTimeoutMs = "correction_timeout_ms"
+        case correctionColdTimeoutMs = "correction_cold_timeout_ms"
+        case lmStudioBaseURL = "lm_studio_base_url"
+        case lmStudioModel = "lm_studio_model"
+        case correctionMode = "correction_mode"
+        case numberOutputPreference = "number_output_preference"
+        case punctuationPreference = "punctuation_preference"
+        case autoCommit = "auto_commit"
+        case debugMode = "debug_mode"
+    }
+
+    init(
+        asrProvider: String,
+        asrProviderOptions: [BridgeSettingOption],
+        languageIDs: [String],
+        supportedLanguages: [BridgeLanguageOption],
+        supportedLanguagesByASRProvider: [String: [BridgeLanguageOption]],
+        asrTimeoutSec: Int,
+        correctionBackend: String,
+        correctionBackendOptions: [BridgeSettingOption],
+        correctionTimeoutMs: Int,
+        correctionColdTimeoutMs: Int,
+        lmStudioBaseURL: String?,
+        lmStudioModel: String?,
+        correctionMode: String,
+        numberOutputPreference: String,
+        punctuationPreference: String,
+        autoCommit: Bool,
+        debugMode: Bool
+    ) {
+        self.asrProvider = asrProvider
+        self.asrProviderOptions = asrProviderOptions
+        self.languageIDs = languageIDs
+        self.supportedLanguages = supportedLanguages
+        self.supportedLanguagesByASRProvider = supportedLanguagesByASRProvider
+        self.asrTimeoutSec = asrTimeoutSec
+        self.correctionBackend = correctionBackend
+        self.correctionBackendOptions = correctionBackendOptions
+        self.correctionTimeoutMs = correctionTimeoutMs
+        self.correctionColdTimeoutMs = correctionColdTimeoutMs
+        self.lmStudioBaseURL = lmStudioBaseURL
+        self.lmStudioModel = lmStudioModel
+        self.correctionMode = correctionMode
+        self.numberOutputPreference = numberOutputPreference
+        self.punctuationPreference = punctuationPreference
+        self.autoCommit = autoCommit
+        self.debugMode = debugMode
+    }
+
+    init(_ payload: BridgeSettingsPayload) {
+        self.init(
+            asrProvider: payload.asrProvider,
+            asrProviderOptions: payload.asrProviderOptions,
+            languageIDs: payload.languageIDs,
+            supportedLanguages: payload.supportedLanguages,
+            supportedLanguagesByASRProvider: payload.supportedLanguagesByASRProvider,
+            asrTimeoutSec: payload.asrTimeoutSec,
+            correctionBackend: payload.correctionBackend,
+            correctionBackendOptions: payload.correctionBackendOptions,
+            correctionTimeoutMs: payload.correctionTimeoutMs,
+            correctionColdTimeoutMs: payload.correctionColdTimeoutMs,
+            lmStudioBaseURL: payload.lmStudioBaseURL,
+            lmStudioModel: payload.lmStudioModel,
+            correctionMode: payload.correctionMode,
+            numberOutputPreference: payload.numberOutputPreference,
+            punctuationPreference: payload.punctuationPreference,
+            autoCommit: payload.autoCommit,
+            debugMode: payload.debugMode
+        )
     }
 }
 

@@ -59,7 +59,8 @@ final class BridgeService {
             ok: true,
             service: "Typeforme Bridge",
             version: appVersion(),
-            bridgePort: AppSettings.bridgePort
+            bridgePort: AppSettings.bridgePort,
+            settingsRevision: BridgeSettingsPayload.currentSettingsRevision()
         )
     }
 

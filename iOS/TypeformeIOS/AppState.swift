@@ -228,6 +228,7 @@ final class AppState: ObservableObject {
     private var networkPathSignature: String?
     private var lastNetworkPathRefreshAt: Date?
     private var macSettingsFetchedAt: Date?
+    private var macSettingsRevision: String?
     private var returnBundleID: String?
     private var phaseResetTask: Task<Void, Never>?
     private var transientMessageTask: Task<Void, Never>?
@@ -386,7 +387,7 @@ final class AppState: ObservableObject {
         await waitForInitialRenderOpportunity()
         await setKeyboardStandby(true, surfaceAudioSessionErrors: false)
         await refreshRoute(force: true)
-        _ = try? await refreshMacSettings()
+        _ = try? await refreshMacSettingsIfChanged()
         scheduleHostRecorderPreWarm()
     }
 
@@ -416,6 +417,7 @@ final class AppState: ObservableObject {
         routeFetchedAt = nil
         macSettings = nil
         macSettingsFetchedAt = nil
+        macSettingsRevision = nil
         errorMessage = nil
         setPhase(.idle)
         publishKeyboardDefaults(force: true)
@@ -530,6 +532,26 @@ final class AppState: ObservableObject {
         return settings
     }
 
+    @discardableResult
+    private func refreshMacSettingsIfChanged(timeout: TimeInterval = 10) async throws -> BridgeMacSettingsPayload? {
+        let client = try await activeBridgeClient()
+        let localRevision = macSettingsRevision ?? macSettings?.settingsRevision
+        if let localRevision,
+           !localRevision.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let health = try await client.healthResponse(timeout: min(timeout, 3))
+            if let remoteRevision = health.settingsRevision?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !remoteRevision.isEmpty,
+               remoteRevision == localRevision {
+                macSettingsFetchedAt = Date()
+                return macSettings
+            }
+        }
+        var settings = try await client.macSettings(timeout: timeout)
+        settings.normalize()
+        applyMacSettings(settings)
+        return settings
+    }
+
     func updateMacSettings(_ settings: BridgeMacSettingsPayload) async throws -> BridgeMacSettingsPayload {
         var normalized = settings
         normalized.normalize()
@@ -543,6 +565,7 @@ final class AppState: ObservableObject {
     private func applyMacSettings(_ settings: BridgeMacSettingsPayload) {
         macSettings = settings
         macSettingsFetchedAt = Date()
+        macSettingsRevision = settings.settingsRevision?.trimmingCharacters(in: .whitespacesAndNewlines)
         config.supportedLanguages = settings.supportedLanguages
         config.correctionMode = settings.correctionMode
         config.languageIDs = ASRLanguageSelection.validatedIDs(
@@ -2207,7 +2230,7 @@ final class AppState: ObservableObject {
         routeFetchedAt = nil
         Task {
             await refreshRoute(force: true)
-            _ = try? await refreshMacSettings()
+            _ = try? await refreshMacSettingsIfChanged()
             scheduleHostRecorderPreWarm()
         }
     }
