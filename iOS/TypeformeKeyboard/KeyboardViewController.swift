@@ -127,6 +127,23 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
     }
 
+    private enum HostDefaultTextInputLanguage: String {
+        case lastUsed = "last_used"
+        case chinese
+        case english
+
+        var textInputLanguage: TextInputLanguage? {
+            switch self {
+            case .lastUsed:
+                return nil
+            case .chinese:
+                return .chinese
+            case .english:
+                return .english
+            }
+        }
+    }
+
     private enum ChinesePunctuationStyle: String {
         case chinese
         case english
@@ -162,6 +179,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private let inputModeKey = "keyboard.inputMode"
     private let keyboardFocusKey = "keyboard.focus"
     private let textInputLanguageKey = "keyboard.textInputLanguage"
+    private let hostDefaultTextInputLanguageKey = "keyboard.hostDefaultTextInputLanguage"
+    private let rimeLearningResetGenerationKey = "keyboard.rimeLearningResetGeneration"
     private let lastInsertedTextKey = "keyboard.lastInsertedText"
     private let lastInsertedCommandIDKey = "keyboard.lastInsertedCommandID"
     private let keyPressOverlayTag = 0x74797065
@@ -171,6 +190,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private var inputMode: VoiceInputMode = .hold
     private var keyboardFocus: KeyboardFocus = .voice
     private var textInputLanguage: TextInputLanguage = .chinese
+    private var rimeProfile = RimeKeyboardProfile()
     private var isSymbolKeyboard = false
     private var isAlternateSymbolKeyboard = false
     private var isAutoCapitalizationEnabled = true
@@ -1173,11 +1193,16 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
            let saved = KeyboardFocus(rawValue: raw) {
             keyboardFocus = saved
         }
+        let hasSavedTextInputLanguage = defaults.string(forKey: textInputLanguageKey) != nil
         if let raw = defaults.string(forKey: textInputLanguageKey),
            let saved = TextInputLanguage(rawValue: raw) {
             textInputLanguage = saved
         }
-        refreshKeyboardPreferencesFromHost(rebuildIfNeeded: false)
+        refreshKeyboardPreferencesFromHost(
+            rebuildIfNeeded: false,
+            applyDefaultTextInputLanguageIfNeeded: !hasSavedTextInputLanguage,
+            applyRimeChanges: false
+        )
         defaults.removeObject(forKey: "keyboard.pendingAutoStartUntil")
     }
 
@@ -1186,6 +1211,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func applyTextInputOptionsToRime() {
+        _ = rimeInput.setProfile(rimeProfile)
         _ = rimeInput.setAsciiPunctuation(chinesePunctuationStyle == .english)
         applyRimeState(rimeInput.setAsciiMode(textInputLanguage == .english))
     }
@@ -1220,11 +1246,17 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         return CorrectionModePreset(rawValue: raw)
     }
 
-    private func refreshKeyboardPreferencesFromHost(rebuildIfNeeded: Bool) {
+    private func refreshKeyboardPreferencesFromHost(
+        rebuildIfNeeded: Bool,
+        applyDefaultTextInputLanguageIfNeeded: Bool = false,
+        applyRimeChanges: Bool = true
+    ) {
         guard let payload = hostKeyboardDefaultsPayload() else { return }
         let previousAutoCapitalization = isAutoCapitalizationEnabled
         let previousCharacterPreview = isCharacterPreviewEnabled
         let previousPunctuationStyle = chinesePunctuationStyle
+        let previousRimeProfile = rimeProfile
+        let previousTextInputLanguage = textInputLanguage
 
         if let enabled = payload["auto_capitalization_enabled"] as? Bool {
             isAutoCapitalizationEnabled = enabled
@@ -1236,15 +1268,46 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
            let style = ChinesePunctuationStyle(rawValue: raw) {
             chinesePunctuationStyle = style
         }
+        if let raw = payload["rime_dictionary_tier"] as? String,
+           let tier = RimeKeyboardDictionaryTier(rawValue: raw) {
+            rimeProfile.dictionaryTier = tier
+        }
+        if let raw = payload["default_text_input_language"] as? String,
+           let hostDefaultLanguage = HostDefaultTextInputLanguage(rawValue: raw) {
+            let previousHostDefault = defaults.string(forKey: hostDefaultTextInputLanguageKey)
+            let shouldApplyDefault = applyDefaultTextInputLanguageIfNeeded || previousHostDefault != raw
+            defaults.set(raw, forKey: hostDefaultTextInputLanguageKey)
+            if shouldApplyDefault,
+               let defaultLanguage = hostDefaultLanguage.textInputLanguage {
+                if textInputLanguage == .chinese, defaultLanguage == .english {
+                    applyRimeState(rimeInput.commitComposition())
+                }
+                textInputLanguage = defaultLanguage
+                defaults.set(defaultLanguage.rawValue, forKey: textInputLanguageKey)
+                syncPrimaryLanguage()
+                clearTextShiftState()
+            }
+        }
 
-        if previousPunctuationStyle != chinesePunctuationStyle {
+        if applyRimeChanges,
+           previousPunctuationStyle != chinesePunctuationStyle
+            || previousRimeProfile != rimeProfile
+            || previousTextInputLanguage != textInputLanguage {
             resetQuoteParity()
             applyTextInputOptionsToRime()
+        }
+        if applyRimeChanges,
+           let generation = payload["rime_learning_reset_generation"] as? Int,
+           generation > defaults.integer(forKey: rimeLearningResetGenerationKey) {
+            defaults.set(generation, forKey: rimeLearningResetGenerationKey)
+            applyRimeState(rimeInput.resetUserData())
         }
         guard rebuildIfNeeded else { return }
         let changed = previousAutoCapitalization != isAutoCapitalizationEnabled
             || previousCharacterPreview != isCharacterPreviewEnabled
             || previousPunctuationStyle != chinesePunctuationStyle
+            || previousRimeProfile != rimeProfile
+            || previousTextInputLanguage != textInputLanguage
         guard changed else { return }
 
         if keyboardFocus == .text {
@@ -1261,6 +1324,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func bootstrapKeyboardDefaultsPayload() -> [String: Any]? {
+        let hostDefaultLanguage = defaults.string(forKey: hostDefaultTextInputLanguageKey)
+            .flatMap(HostDefaultTextInputLanguage.init(rawValue:)) ?? .lastUsed
         let payload: [String: Any] = [
             "version": 1,
             "bridge_token": KeyboardSharedDefaults.makeBridgeToken(),
@@ -1268,6 +1333,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             "auto_capitalization_enabled": isAutoCapitalizationEnabled,
             "character_preview_enabled": isCharacterPreviewEnabled,
             "chinese_punctuation_style": chinesePunctuationStyle.rawValue,
+            "rime_dictionary_tier": rimeProfile.dictionaryTier.rawValue,
+            "default_text_input_language": hostDefaultLanguage.rawValue,
+            "rime_learning_reset_generation": defaults.integer(forKey: rimeLearningResetGenerationKey),
             "updated_at": Date().timeIntervalSince1970,
         ]
         guard KeyboardSharedDefaults.savePayload(payload) else { return nil }

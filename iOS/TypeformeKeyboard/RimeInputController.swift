@@ -22,6 +22,27 @@ struct RimeKeyboardState {
     let errorMessage: String?
 }
 
+enum RimeKeyboardDictionaryTier: String {
+    case standard
+    case extended
+    case large
+}
+
+struct RimeKeyboardProfile: Equatable {
+    var dictionaryTier: RimeKeyboardDictionaryTier = .standard
+
+    var schemaID: String {
+        switch dictionaryTier {
+        case .standard:
+            return "typeforme_pinyin"
+        case .extended:
+            return "typeforme_pinyin_ext"
+        case .large:
+            return "typeforme_pinyin_large"
+        }
+    }
+}
+
 final class RimeInputController {
     private enum StartupState {
         case idle
@@ -30,7 +51,6 @@ final class RimeInputController {
         case failed
     }
 
-    private static let schemaID = "typeforme_pinyin"
     private static let appName = "rime.typeforme"
     private static let distributionName = "Typeforme"
     private static let distributionCodeName = "typeforme"
@@ -50,10 +70,11 @@ final class RimeInputController {
     private let rimeQueue = DispatchQueue(label: "com.example.typeforme.keyboard.rime", qos: .userInitiated)
     private let stateLock = NSLock()
     private var startupState: StartupState = .idle
-    private var didSelectSchema = false
+    private var selectedSchemaID: String?
     private var session: RimeSessionId = 0
     private var lastErrorMessage: String?
     private var lastStartupAttemptAt: TimeInterval = 0
+    private var desiredProfile = RimeKeyboardProfile()
     private var desiredAsciiMode = false
     private var desiredAsciiPunctuation = false
 
@@ -62,7 +83,10 @@ final class RimeInputController {
     var isReady: Bool {
         stateLock.lock()
         defer { stateLock.unlock() }
-        return startupState == .ready && session != 0 && didSelectSchema && lastErrorMessage == nil
+        return startupState == .ready
+            && session != 0
+            && selectedSchemaID == desiredProfile.schemaID
+            && lastErrorMessage == nil
     }
 
     @discardableResult
@@ -150,12 +174,14 @@ final class RimeInputController {
                     return false
                 }
             }
-            if !didSelectSchema {
-                didSelectSchema = api.selectSchema(session, andSchameId: Self.schemaID)
+            let schemaID = desiredProfileOnQueue.schemaID
+            if selectedSchemaID != schemaID {
+                let didSelectSchema = api.selectSchema(session, andSchameId: schemaID)
                 if !didSelectSchema {
                     finishStartupOnQueue(.failed, errorMessage: "中文数据不可用")
                     return false
                 }
+                selectedSchemaID = schemaID
             }
 
             applyDesiredOptionsOnQueue()
@@ -188,6 +214,57 @@ final class RimeInputController {
             _ = api.setOption(session, andOption: "ascii_punct", andValue: enabled)
             return stateOnQueue()
         }
+    }
+
+    func setProfile(_ profile: RimeKeyboardProfile) -> RimeKeyboardState {
+        stateLock.lock()
+        desiredProfile = profile
+        stateLock.unlock()
+        guard startIfNeeded() else { return notReadyState() }
+        return rimeQueue.sync {
+            if selectedSchemaID != profile.schemaID {
+                api.cleanComposition(session)
+                let didSelectSchema = api.selectSchema(session, andSchameId: profile.schemaID)
+                guard didSelectSchema else {
+                    finishStartupOnQueue(.failed, errorMessage: "中文数据不可用")
+                    return notReadyState()
+                }
+                selectedSchemaID = profile.schemaID
+                applyDesiredOptionsOnQueue()
+            }
+            return stateOnQueue()
+        }
+    }
+
+    func resetUserData() -> RimeKeyboardState {
+        let resetState = rimeQueue.sync {
+            if session != 0 {
+                api.cleanAllSession()
+                session = 0
+            }
+            selectedSchemaID = nil
+            stateLock.lock()
+            startupState = .idle
+            lastErrorMessage = nil
+            stateLock.unlock()
+            do {
+                let userDataURL = try ensureUserDataDirectory()
+                let contents = try FileManager.default.contentsOfDirectory(
+                    at: userDataURL,
+                    includingPropertiesForKeys: nil
+                )
+                for url in contents {
+                    try FileManager.default.removeItem(at: url)
+                }
+                try FileManager.default.createDirectory(at: userDataURL, withIntermediateDirectories: true)
+            } catch {
+                finishStartupOnQueue(.failed, errorMessage: "中文学习数据无法重置")
+                rimeLog.error("Failed to reset Rime user data: \(error.localizedDescription, privacy: .public)")
+            }
+            return notReadyState()
+        }
+        _ = startIfNeeded()
+        return resetState
     }
 
     func processCharacter(_ character: String) -> RimeKeyboardState {
@@ -250,7 +327,13 @@ final class RimeInputController {
     }
 
     private var isReadyOnQueue: Bool {
-        session != 0 && didSelectSchema && lastErrorMessage == nil
+        session != 0 && selectedSchemaID == desiredProfileOnQueue.schemaID && lastErrorMessage == nil
+    }
+
+    private var desiredProfileOnQueue: RimeKeyboardProfile {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return desiredProfile
     }
 
     private func stateOnQueue(commitText: String = "") -> RimeKeyboardState {
@@ -332,7 +415,7 @@ final class RimeInputController {
                 api.cleanAllSession()
                 session = 0
             }
-            didSelectSchema = false
+            selectedSchemaID = nil
         }
         stateLock.lock()
         startupState = nextState

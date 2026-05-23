@@ -22,12 +22,24 @@
 // 键盘输入设置
 "Keyboard Input" = "键盘输入";
 "Keyboard Settings" = "键盘设置";
+"Chinese Input" = "中文输入";
 "Typing" = "输入";
+"Learning" = "学习";
 "Audio" = "音频";
 "Host audio session" = "宿主音频会话";
 "Auto-Capitalization" = "句首自动大写";
 "Character Preview" = "按键预览";
+"Dictionary" = "词库";
+"Standard" = "标准";
+"Extended" = "扩展";
+"Large" = "大词库";
+"Default text input" = "默认文本输入";
 "Chinese punctuation" = "中文标点";
+"Self-learning" = "自学习";
+"On" = "开启";
+"Reset Learning" = "重置学习";
+"Learning reset requested" = "已请求重置学习";
+"Last Used" = "保持上次";
 "Chinese" = "中文";
 "English" = "英文";
 "These settings apply to the Typeforme keyboard after Full Access is enabled." = "开启完全访问后,这些设置会同步到 Typeforme 键盘。";

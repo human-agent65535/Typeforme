@@ -834,15 +834,43 @@ private struct KeyboardSettingsView: View {
     var body: some View {
         List {
             Section {
-                Toggle("Auto-Capitalization", isOn: autoCapitalizationBinding)
-                Toggle("Character Preview", isOn: characterPreviewBinding)
+                Picker("Dictionary", selection: rimeDictionaryTierBinding) {
+                    ForEach(KeyboardRimeDictionaryTier.allCases) { tier in
+                        Text(tier.title).tag(tier)
+                    }
+                }
+                Picker("Default text input", selection: defaultTextInputLanguageBinding) {
+                    ForEach(KeyboardDefaultTextInputLanguage.allCases) { language in
+                        Text(language.title).tag(language)
+                    }
+                }
                 Picker("Chinese punctuation", selection: chinesePunctuationBinding) {
                     ForEach(KeyboardChinesePunctuationStyle.allCases) { style in
                         Text(style.title).tag(style)
                     }
                 }
             } header: {
+                Text("Chinese Input")
+            } footer: {
+                Text("Changes apply immediately after Full Access is enabled.")
+            }
+            Section {
+                Toggle("Auto-Capitalization", isOn: autoCapitalizationBinding)
+                Toggle("Character Preview", isOn: characterPreviewBinding)
+            } header: {
                 Text("Typing")
+            }
+            Section {
+                LabeledContent("Self-learning") {
+                    Text("On")
+                }
+                Button(role: .destructive) {
+                    state.resetKeyboardRimeLearning()
+                } label: {
+                    Text("Reset Learning")
+                }
+            } header: {
+                Text("Learning")
             } footer: {
                 Text("Changes apply immediately after Full Access is enabled.")
             }
@@ -881,6 +909,22 @@ private struct KeyboardSettingsView: View {
             state.keyboardCharacterPreviewEnabled
         } set: { enabled in
             state.setKeyboardCharacterPreviewEnabled(enabled)
+        }
+    }
+
+    private var rimeDictionaryTierBinding: Binding<KeyboardRimeDictionaryTier> {
+        Binding {
+            state.keyboardRimeDictionaryTier
+        } set: { tier in
+            state.setKeyboardRimeDictionaryTier(tier)
+        }
+    }
+
+    private var defaultTextInputLanguageBinding: Binding<KeyboardDefaultTextInputLanguage> {
+        Binding {
+            state.keyboardDefaultTextInputLanguage
+        } set: { language in
+            state.setKeyboardDefaultTextInputLanguage(language)
         }
     }
 

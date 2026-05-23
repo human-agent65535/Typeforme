@@ -3,10 +3,11 @@
 This directory contains the minimal Rime runtime data used by the Typeforme
 iOS keyboard extension.
 
-- `typeforme_pinyin.schema.yaml`, `typeforme_pinyin.dict.yaml`, and
-  `default.yaml` are Typeforme integration files that configure librime for the
-  screen keyboard.
-- `cn_dicts/8105.dict.yaml`, `cn_dicts/base.dict.yaml`, and
+- `typeforme_pinyin*.schema.yaml`, `typeforme_pinyin*.dict.yaml`,
+  `typeforme_overrides.dict.yaml`, and `default.yaml` are Typeforme integration
+  files that configure librime for the screen keyboard.
+- `cn_dicts/8105.dict.yaml`, `cn_dicts/base.dict.yaml`,
+  `cn_dicts/ext.dict.yaml`, `cn_dicts/tencent.dict.yaml`, and
   `LICENSE.rime-ice.txt` are copied from `iDvel/rime-ice` and are distributed
   under GPL-3.0 only.
 

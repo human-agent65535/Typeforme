@@ -6,6 +6,7 @@ name: typeforme_pinyin
 version: "0.3"
 sort: by_weight
 import_tables:
+  - typeforme_overrides
   - cn_dicts/8105
   - cn_dicts/base
 ...

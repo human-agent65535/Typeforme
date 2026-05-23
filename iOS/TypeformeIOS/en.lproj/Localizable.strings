@@ -22,12 +22,24 @@
 // Keyboard input settings
 "Keyboard Input" = "Keyboard Input";
 "Keyboard Settings" = "Keyboard Settings";
+"Chinese Input" = "Chinese Input";
 "Typing" = "Typing";
+"Learning" = "Learning";
 "Audio" = "Audio";
 "Host audio session" = "Host audio session";
 "Auto-Capitalization" = "Auto-Capitalization";
 "Character Preview" = "Character Preview";
+"Dictionary" = "Dictionary";
+"Standard" = "Standard";
+"Extended" = "Extended";
+"Large" = "Large";
+"Default text input" = "Default text input";
 "Chinese punctuation" = "Chinese punctuation";
+"Self-learning" = "Self-learning";
+"On" = "On";
+"Reset Learning" = "Reset Learning";
+"Learning reset requested" = "Learning reset requested";
+"Last Used" = "Last Used";
 "Chinese" = "Chinese";
 "English" = "English";
 "These settings apply to the Typeforme keyboard after Full Access is enabled." = "These settings apply to the Typeforme keyboard after Full Access is enabled.";
