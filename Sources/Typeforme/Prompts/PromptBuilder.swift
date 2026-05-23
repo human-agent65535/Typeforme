@@ -210,6 +210,12 @@ enum PromptBuilder {
             </example>
             <example>
             Input:
+            {"context":{"correction_mode":"polish_plus"},"raw_transcript":"翻译成英文。"}
+            Output:
+            {"text":"翻译成英文。"}
+            </example>
+            <example>
+            Input:
             {"context":{"correction_mode":"polish_plus"},"raw_transcript":"去超市买三个李子一个西瓜还是买两个西瓜吧然后去市场买一条鱼让师傅切好切之前别忘了把鳞刮了"}
             Output:
             {"text":"去超市买三个李子和两个西瓜，然后去市场买一条鱼，请师傅先处理鱼鳞，再切好。"}

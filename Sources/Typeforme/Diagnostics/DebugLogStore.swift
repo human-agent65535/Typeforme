@@ -83,6 +83,70 @@ private struct DebugLogCorrectionInput: Codable {
     }
 }
 
+private struct DebugLogTextEdit: Codable {
+    var intent: String
+    var backend: String
+    var model: String
+    var maxTokens: Int
+    var timeoutMs: Int?
+    var status: String
+    var text: String?
+    var error: String?
+    var latencyMs: Int?
+    var input: DebugLogTextEditInput?
+
+    enum CodingKeys: String, CodingKey {
+        case intent
+        case backend
+        case model
+        case maxTokens = "max_tokens"
+        case timeoutMs = "timeout_ms"
+        case status
+        case text
+        case error
+        case latencyMs = "latency_ms"
+        case input
+    }
+}
+
+private struct DebugLogTextEditInput: Codable {
+    var intent: String
+    var contextBefore: String
+    var targetText: String
+    var contextAfter: String
+    var spokenInstruction: String
+    var frontmostAppName: String?
+    var frontmostBundleID: String?
+    var appCategory: String
+    var languageIDs: [String]
+    var numberOutputPreference: String
+    var punctuationPreference: String
+    var userDictionaryCount: Int
+    var contextBeforeChars: Int
+    var targetTextChars: Int
+    var contextAfterChars: Int
+    var spokenInstructionChars: Int
+
+    enum CodingKeys: String, CodingKey {
+        case intent
+        case contextBefore = "context_before"
+        case targetText = "target_text"
+        case contextAfter = "context_after"
+        case spokenInstruction = "spoken_instruction"
+        case frontmostAppName = "frontmost_app_name"
+        case frontmostBundleID = "frontmost_bundle_id"
+        case appCategory = "app_category"
+        case languageIDs = "language_ids"
+        case numberOutputPreference = "number_output_preference"
+        case punctuationPreference = "punctuation_preference"
+        case userDictionaryCount = "user_dictionary_count"
+        case contextBeforeChars = "context_before_chars"
+        case targetTextChars = "target_text_chars"
+        case contextAfterChars = "context_after_chars"
+        case spokenInstructionChars = "spoken_instruction_chars"
+    }
+}
+
 private struct DebugLogRecord: Codable {
     var id: String
     var createdAt: String
@@ -99,6 +163,7 @@ private struct DebugLogRecord: Codable {
     var languageIDs: [String]
     var transcript: DebugLogTranscript?
     var correction: DebugLogCorrection?
+    var textEdit: DebugLogTextEdit?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -116,12 +181,14 @@ private struct DebugLogRecord: Codable {
         case languageIDs = "language_ids"
         case transcript
         case correction
+        case textEdit = "text_edit"
     }
 }
 
 @MainActor
 enum DebugLogStore {
     private static let recordFileName = "record.json"
+    private static let isoFormatter = ISO8601DateFormatter()
 
     static var isEnabled: Bool {
         AppSettings.diagnosticsDebugMode
@@ -136,10 +203,40 @@ enum DebugLogStore {
         bundleID _: String?,
         appCategory _: AppCategory
     ) -> DebugLogHandle? {
+        createCapture(
+            source: source,
+            audioURL: audioURL,
+            selectedCorrectionMode: selectedCorrectionMode.rawValue,
+            languageIDs: languageIDs,
+            logLabel: "debug capture"
+        )
+    }
+
+    static func beginTextEdit(
+        source: String,
+        intent: TextEditIntent,
+        languageIDs: [String]
+    ) -> DebugLogHandle? {
+        createCapture(
+            source: source,
+            audioURL: nil,
+            selectedCorrectionMode: "text_edit:\(intent.rawValue)",
+            languageIDs: languageIDs,
+            logLabel: "debug text edit capture"
+        )
+    }
+
+    private static func createCapture(
+        source: String,
+        audioURL: URL?,
+        selectedCorrectionMode: String,
+        languageIDs: [String],
+        logLabel: String
+    ) -> DebugLogHandle? {
         guard isEnabled else { return nil }
         do {
             try AppPaths.ensureDirectories()
-            let createdAt = ISO8601DateFormatter().string(from: Date())
+            let createdAt = isoFormatter.string(from: Date())
             let id = safeID(createdAt)
             let directory = AppPaths.debugCapturesDir.appendingPathComponent(id, isDirectory: true)
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -166,17 +263,18 @@ enum DebugLogStore {
                 correctionBackend: AppSettings.correctionBackend.rawValue,
                 correctionModel: activeCorrectionModelDescription(),
                 correctionMaxTokens: AppSettings.correctionMaxTokens,
-                selectedCorrectionMode: selectedCorrectionMode.rawValue,
+                selectedCorrectionMode: selectedCorrectionMode,
                 languageIDs: languageIDs,
                 transcript: nil,
-                correction: nil
+                correction: nil,
+                textEdit: nil
             )
             try write(record, in: directory)
             prune()
-            Log.store.info("debug capture started: \(id, privacy: .public)")
+            Log.store.info("\(logLabel) started: \(id, privacy: .public)")
             return DebugLogHandle(id: id, directory: directory)
         } catch {
-            Log.store.error("debug capture start failed: \(error.localizedDescription, privacy: .public)")
+            Log.store.error("\(logLabel) start failed: \(error.localizedDescription, privacy: .public)")
             return nil
         }
     }
@@ -223,6 +321,32 @@ enum DebugLogStore {
                 error: error,
                 latencyMs: latencyMs,
                 input: request.map(correctionInput)
+            )
+        }
+    }
+
+    static func recordTextEdit(
+        _ handle: DebugLogHandle?,
+        intent: TextEditIntent,
+        text: String?,
+        status: String,
+        error: String? = nil,
+        latencyMs: Int? = nil,
+        request: TextEditRequest? = nil,
+        timeoutMs: Int? = nil
+    ) {
+        mutate(handle) { record in
+            record.textEdit = DebugLogTextEdit(
+                intent: intent.rawValue,
+                backend: AppSettings.correctionBackend.rawValue,
+                model: activeCorrectionModelDescription(),
+                maxTokens: AppSettings.correctionMaxTokens,
+                timeoutMs: timeoutMs,
+                status: status,
+                text: text,
+                error: error,
+                latencyMs: latencyMs,
+                input: request.map(textEditInput)
             )
         }
     }
@@ -283,6 +407,27 @@ enum DebugLogStore {
             rawTranscriptChars: request.rawTranscript.count,
             contextBeforeChars: request.contextBefore.count,
             contextAfterChars: request.contextAfter.count
+        )
+    }
+
+    private static func textEditInput(_ request: TextEditRequest) -> DebugLogTextEditInput {
+        DebugLogTextEditInput(
+            intent: request.intent.rawValue,
+            contextBefore: request.contextBefore,
+            targetText: request.targetText,
+            contextAfter: request.contextAfter,
+            spokenInstruction: request.spokenInstruction,
+            frontmostAppName: request.frontmostAppName,
+            frontmostBundleID: request.frontmostBundleID,
+            appCategory: request.appCategory.rawValue,
+            languageIDs: request.languageIDs,
+            numberOutputPreference: request.numberOutputPreference.rawValue,
+            punctuationPreference: request.punctuationPreference.rawValue,
+            userDictionaryCount: request.userDictionary.count,
+            contextBeforeChars: request.contextBefore.count,
+            targetTextChars: request.targetText.count,
+            contextAfterChars: request.contextAfter.count,
+            spokenInstructionChars: request.spokenInstruction.count
         )
     }
 

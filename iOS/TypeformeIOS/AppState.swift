@@ -2092,6 +2092,26 @@ final class AppState: ObservableObject {
         audioByteCount: Int? = nil,
             rawTranscriptLength: Int? = nil
     ) {
+        if keyboardAudioSession.isRecording,
+           state == .standby || state == .idle,
+           commandID == nil || commandID == activeKeyboardRecordingCommandID {
+            let preservedCommandID = activeKeyboardRecordingCommandID
+                ?? keyboardBridgeStatus.commandID
+                ?? commandID
+            if keyboardBridgeStatus.state == .recording,
+               keyboardBridgeStatus.commandID == preservedCommandID,
+               keyboardBridgeStatus.message == "Recording" {
+                return
+            }
+            keyboardBridgeStatus = KeyboardBridgeStatus(
+                commandID: preservedCommandID,
+                state: .recording,
+                message: "Recording",
+                defaultCorrectionMode: config.correctionMode.rawValue
+            )
+            return
+        }
+
         let status = KeyboardBridgeStatus(
             commandID: commandID,
             state: state,

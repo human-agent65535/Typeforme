@@ -151,6 +151,8 @@ struct PromptBuilderTests {
         #expect(BuiltInPrompts.modePrompt(.polishPlus).contains("fixes awkward logic"))
         #expect(BuiltInPrompts.modePrompt(.polishPlus).contains("weak transitions"))
         #expect(BuiltInPrompts.modePrompt(.polishPlus).contains("must do more than punctuation"))
+        #expect(BuiltInPrompts.modePrompt(.polishPlus).contains("Preserve colloquial wording"))
+        #expect(BuiltInPrompts.modePrompt(.polishPlus).contains("specialized domain concept"))
         #expect(BuiltInPrompts.modePrompt(.polishPlus).contains("Do not summarize, translate"))
         #expect(BuiltInPrompts.modePrompt(.structurePlus).contains("multiple facts, items, steps"))
         #expect(BuiltInPrompts.modePrompt(.structurePlus).contains("deploy/release/merge status"))
@@ -286,6 +288,8 @@ struct PromptBuilderTests {
         #expect(polishPlusPrompt.contains("Polish+ 应该把因果关系整理清楚"))
         #expect(polishPlusPrompt.contains("去超市买一个鸡腿和两个萝卜。"))
         #expect(polishPlusPrompt.contains("先跑测试，再 deploy 到 iOS，然后看 debug log"))
+        #expect(polishPlusPrompt.contains("\"raw_transcript\":\"翻译成英文。\""))
+        #expect(polishPlusPrompt.contains("\"text\":\"翻译成英文。\""))
         #expect(polishPlusPrompt.contains("去超市买三个李子和两个西瓜，然后去市场买一条鱼"))
         #expect(polishPlusPrompt.contains("请师傅先处理鱼鳞，再切好"))
 

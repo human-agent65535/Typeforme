@@ -439,18 +439,8 @@ private struct VoiceDraftActionBar: View {
     var body: some View {
         HStack(spacing: 4) {
             VoiceDraftBarButton(
-                title: "Insert",
-                systemImage: "checkmark",
-                isPrimary: true
-            ) {
-                Task { await coordinator.commitPreview() }
-            }
-            .disabled(disabled)
-
-            VoiceDraftBarButton(
                 title: "Wand",
-                systemImage: "wand.and.stars",
-                isPrimary: false
+                systemImage: "wand.and.stars"
             ) {
                 Task { await coordinator.toggleDraftCommand() }
             }
@@ -500,20 +490,15 @@ private struct VoiceDraftActionBar: View {
 private struct VoiceDraftBarButton: View {
     let title: String
     let systemImage: String
-    let isPrimary: Bool
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
             VoiceDraftBarLabel(title: title, systemImage: systemImage)
-                .foregroundStyle(isPrimary ? Color.white : Color.primary)
-                .background(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(isPrimary ? Color.accentColor : Color.clear)
-                )
+                .foregroundStyle(Color.primary)
         }
         .buttonStyle(.plain)
-        .help(title == "Insert" ? "Insert draft" : "Speak a command for this draft")
+        .help("Speak a command for this draft")
     }
 }
 

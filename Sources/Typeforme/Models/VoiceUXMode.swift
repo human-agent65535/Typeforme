@@ -20,7 +20,7 @@ enum VoiceUXMode: String, Codable, CaseIterable, Identifiable, Sendable {
         case .classic:
             return "Preserves the current hotkey-first behavior for compatibility."
         case .voiceDraft:
-            return "Places recognized text in the focused input as a selected draft. Use Insert to accept, or run Style/Wand to replace the draft in place."
+            return "Places recognized text directly in the focused input as a selected draft. Use Style/Wand to replace it in place, or Esc to cancel."
         }
     }
 }

@@ -195,7 +195,7 @@ final class BridgeService {
         guard !trimmed.isEmpty else { throw BridgeServiceError.emptyTranscript }
         let contextBefore = request.contextBefore ?? ""
         let contextAfter = request.contextAfter ?? ""
-        let debugRequest = correctionRequest(
+        let editRequest = correctionRequest(
             rawTranscript: trimmed,
             languageIDs: languageIDs,
             correctionMode: correctionMode,
@@ -231,7 +231,7 @@ final class BridgeService {
                     status: "error",
                     error: error.localizedDescription,
                     latencyMs: latencyMs,
-                    request: debugRequest,
+                    request: editRequest,
                     timeoutMs: AppSettings.correctionTimeoutMs
                 )
                 throw error
@@ -258,7 +258,7 @@ final class BridgeService {
             status: correction.status,
             error: correction.error,
             latencyMs: correctionLatencyMs,
-            request: debugRequest,
+            request: editRequest,
             timeoutMs: AppSettings.correctionTimeoutMs
         )
 
@@ -422,8 +422,12 @@ final class BridgeService {
 
         let languageIDs = resolveLanguageIDs(ids: request.languageIDs, mode: request.languageMode)
         let appCategory = resolveAppCategory(rawValue: request.appCategory, bundleID: request.bundleID)
-        let editStarted = Date()
-        let result = try await textEditService.edit(
+        let debugLog = DebugLogStore.beginTextEdit(
+            source: "bridge-edit-text",
+            intent: intent,
+            languageIDs: languageIDs
+        )
+        let editRequest = textEditService.makeRequest(
             intent: intent,
             contextBefore: contextBefore,
             targetText: targetText,
@@ -434,7 +438,35 @@ final class BridgeService {
             bundleID: request.bundleID,
             appCategory: appCategory
         )
-        let editLatencyMs = elapsedMs(since: editStarted)
+        let editStarted = Date()
+        let result: TextEditResult
+        let editLatencyMs: Int
+        do {
+            result = try await textEditService.edit(editRequest)
+            editLatencyMs = elapsedMs(since: editStarted)
+            DebugLogStore.recordTextEdit(
+                debugLog,
+                intent: intent,
+                text: result.text,
+                status: "ok",
+                latencyMs: editLatencyMs,
+                request: editRequest,
+                timeoutMs: AppSettings.correctionTimeoutMs
+            )
+        } catch {
+            let latencyMs = elapsedMs(since: editStarted)
+            DebugLogStore.recordTextEdit(
+                debugLog,
+                intent: intent,
+                text: nil,
+                status: "error",
+                error: error.localizedDescription,
+                latencyMs: latencyMs,
+                request: editRequest,
+                timeoutMs: AppSettings.correctionTimeoutMs
+            )
+            throw error
+        }
         return BridgeTextEditResponse(
             text: result.text,
             action: result.action.rawValue,

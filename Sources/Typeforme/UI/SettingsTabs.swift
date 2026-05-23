@@ -1902,7 +1902,7 @@ struct CorrectionSettingsView: View {
 
                 Toggle("Auto-commit in Classic", isOn: $autoCommit)
 
-                Text("Voice Draft always pauses on the draft so you can restyle or run text actions before insertion.")
+                Text("Voice Draft writes into the focused input first, then keeps the action bar available for restyle or text actions.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
 

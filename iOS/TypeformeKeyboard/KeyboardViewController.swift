@@ -218,6 +218,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private var openingHostUntil: TimeInterval = 0
     private var appliedKeyboardInterfaceStyle: UIUserInterfaceStyle?
     private var lastCorrectionModeButtonSignature = ""
+    private var lastTextRecordingButtonsSignature = ""
     private var hasPresentedInitialFrame = false
     private var isVoicePressActive = false
     /// Hold-mode "release-to-cancel" zone: set when the user drags the
@@ -1498,6 +1499,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         guard force || appliedKeyboardInterfaceStyle != style else { return false }
         appliedKeyboardInterfaceStyle = style
         lastCorrectionModeButtonSignature = ""
+        lastTextRecordingButtonsSignature = ""
         let views: [UIView] = [
             rootStack,
             topRow,
@@ -1594,7 +1596,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                     self.cancelHostWakeResetTask()
                     self.cancelHostBundleWakeFallback()
                     self.lastDarwinAwakeAt = Date().timeIntervalSince1970
-                    if self.currentBridgeStatus?.state != .recording,
+                    if !self.hasActiveKeyboardRecordingOrStopIntent,
+                       self.currentBridgeStatus?.state != .recording,
                        self.currentBridgeStatus?.state != .sending {
                         self.applyBridgeStatus(KeyboardBridgeStatus(state: .standby, message: "Ready"))
                     } else {
@@ -1607,6 +1610,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             KeyboardDarwinBridge.observe(KeyboardDarwinNotificationName.sessionEnded) { [weak self] in
                 DispatchQueue.main.async {
                     guard let self else { return }
+                    if self.currentBridgeStatus?.state == .sending || self.pendingStopCommandID != nil {
+                        self.lastDarwinAwakeAt = Date().timeIntervalSince1970
+                        self.updateUI()
+                        return
+                    }
                     self.cancelScheduledHostOpen()
                     self.cancelHostWakeResetTask()
                     self.cancelHostBundleWakeFallback()
@@ -3032,6 +3040,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         // rebuild via the same path updateCorrectionModeButtons uses so the
         // signature debounce there can't suppress a dark-mode refresh.
         lastCorrectionModeButtonSignature = ""
+        lastTextRecordingButtonsSignature = ""
         updateCorrectionModeButtons()
     }
 
@@ -3191,6 +3200,18 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     private func refreshTextRecordingButtons(isRecording: Bool, isSending: Bool) {
         let wandShowsStop = keyboardFocus == .text && isRecording && isCommandPressActive
+        let toolsShowsStop = isRecording && !wandShowsStop
+        let signature = [
+            keyboardFocus.rawValue,
+            isRecording ? "recording" : "not-recording",
+            isSending ? "sending" : "not-sending",
+            wandShowsStop ? "wand-stop" : "wand-idle",
+            toolsShowsStop ? "tools-stop" : "tools-idle",
+            isKeyboardDark ? "dark" : "light",
+        ].joined(separator: ":")
+        guard signature != lastTextRecordingButtonsSignature else { return }
+        lastTextRecordingButtonsSignature = signature
+
         configureToolbarIconButton(textWandButton, image: wandShowsStop ? "stop.fill" : "wand.and.stars")
         if wandShowsStop {
             textWandButton.configuration?.baseForegroundColor = UIColor.systemRed
@@ -3201,7 +3222,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         textWandButton.isEnabled = wandShowsStop || (!isRecording && !isSending)
         textWandButton.alpha = textWandButton.isEnabled ? 1 : 0.45
 
-        let toolsShowsStop = isRecording && !wandShowsStop
         configureToolbarIconButton(textToolsButton, image: toolsShowsStop ? "stop.fill" : "mic.fill")
         if toolsShowsStop {
             textToolsButton.configuration?.baseForegroundColor = UIColor.systemRed
@@ -6567,6 +6587,15 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         bridgeStatus
     }
 
+    private var hasActiveKeyboardRecordingOrStopIntent: Bool {
+        isVoicePressActive
+            || isCommandPressActive
+            || tapRecordingActive
+            || activeRecordingCommandID != nil
+            || activeRecordingTextTarget != nil
+            || pendingStopCommandID != nil
+    }
+
     private var isOpeningHostApp: Bool {
         openingHostUntil > Date().timeIntervalSince1970
     }
@@ -7015,6 +7044,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func applyBridgeStatus(_ status: KeyboardBridgeStatus) {
+        if shouldIgnoreStaleIdleStatus(status) {
+            return
+        }
+        if shouldIgnoreStaleResultStatus(status) {
+            return
+        }
         if shouldIgnoreRecordingStatusAfterStop(status) {
             return
         }
@@ -7120,6 +7155,56 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             return false
         }
         return true
+    }
+
+    private func shouldIgnoreStaleIdleStatus(_ status: KeyboardBridgeStatus) -> Bool {
+        guard status.state == .standby || status.state == .idle else { return false }
+
+        if let pendingStopCommandID {
+            return status.commandID != pendingStopCommandID
+        }
+
+        guard currentBridgeStatus?.state == .recording else { return false }
+        return status.commandID == nil
+            || status.commandID == activeRecordingCommandID
+            || status.commandID == activeRecordingTextTarget?.commandID
+    }
+
+    private func shouldIgnoreStaleResultStatus(_ status: KeyboardBridgeStatus) -> Bool {
+        guard status.state == .result,
+              let commandID = status.commandID
+        else { return false }
+        guard commandID != styleRewriteCommandID else { return false }
+
+        let expectedIDs = expectedRecordingResultCommandIDs()
+        guard !expectedIDs.isEmpty else {
+            kbLog.notice("ignoring result without active command id=\(commandID, privacy: .public)")
+            return true
+        }
+        guard !expectedIDs.contains(commandID) else { return false }
+
+        kbLog.notice(
+            "ignoring stale result id=\(commandID, privacy: .public) expected=\(expectedIDs.joined(separator: ","), privacy: .public)"
+        )
+        return true
+    }
+
+    private func expectedRecordingResultCommandIDs() -> Set<String> {
+        var ids = Set<String>()
+        if let pendingStopCommandID {
+            ids.insert(pendingStopCommandID)
+        }
+        if let activeRecordingCommandID {
+            ids.insert(activeRecordingCommandID)
+        }
+        if let commandID = activeRecordingTextTarget?.commandID {
+            ids.insert(commandID)
+        }
+        if currentBridgeStatus?.state == .sending,
+           let commandID = currentBridgeStatus?.commandID {
+            ids.insert(commandID)
+        }
+        return ids
     }
 }
 

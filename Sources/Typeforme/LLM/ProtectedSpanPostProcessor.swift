@@ -93,7 +93,17 @@ enum ProtectedSpanPostProcessor {
         let outputLatin = output.unicodeScalars.filter(isLatinLetter).count
         let outputCJK = output.unicodeScalars.filter(isCJK).count
 
-        guard rawLatin >= 3, outputCJK >= 2 else { return false }
+        // CJK-dominant input rewritten as predominantly Latin output: raw is
+        // ≥2× more CJK than Latin yet output keeps <25% of the CJK content.
+        let rawDominantlyCJK = rawCJK >= 2 && rawCJK >= max(2, rawLatin * 2)
+        let outputDroppedMostCJK = outputCJK < max(1, rawCJK / 4)
+        if rawDominantlyCJK, outputLatin >= 4, outputDroppedMostCJK {
+            return true
+        }
+
+        guard rawLatin >= 3, outputCJK >= 2 else {
+            return false
+        }
         if rawCJK == 0 {
             return outputLatin < max(2, rawLatin / 4)
         }

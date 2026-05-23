@@ -158,10 +158,23 @@ HOST_BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PATH/Inf
 KEYBOARD_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$KEYBOARD_APPEX_PATH/Info.plist")"
 KEYBOARD_BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$KEYBOARD_APPEX_PATH/Info.plist")"
 KEYBOARD_BUILT_BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$KEYBOARD_APPEX_PATH/Info.plist")"
+KEYBOARD_EXTENSION_POINT="$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$KEYBOARD_APPEX_PATH/Info.plist")"
 if [ "$KEYBOARD_BUILT_BUNDLE_ID" != "$KEYBOARD_BUNDLE_ID" ]; then
     echo "Built keyboard extension bundle id mismatch: $KEYBOARD_BUILT_BUNDLE_ID" >&2
     exit 1
 fi
+if [ "$KEYBOARD_EXTENSION_POINT" != "com.apple.keyboard-service" ]; then
+    echo "Built keyboard extension point mismatch: $KEYBOARD_EXTENSION_POINT" >&2
+    exit 1
+fi
+if [ "$KEYBOARD_VERSION" != "$HOST_VERSION" ] || [ "$KEYBOARD_BUILD" != "$HOST_BUILD" ]; then
+    echo "Built host and keyboard versions diverged: host $HOST_VERSION ($HOST_BUILD), keyboard $KEYBOARD_VERSION ($KEYBOARD_BUILD)" >&2
+    exit 1
+fi
+
+echo "→ Verifying packaged host app and keyboard extension"
+/usr/bin/codesign --verify --deep --strict --verbose=1 "$APP_PATH"
+/usr/bin/codesign --verify --strict --verbose=1 "$KEYBOARD_APPEX_PATH"
 
 echo "→ Installing $APP_PATH"
 xcrun devicectl device install app --device "$DEVICE_ID" "$APP_PATH"
@@ -173,14 +186,13 @@ VERIFY_OK=0
 for attempt in 1 2 3 4 5; do
     if xcrun devicectl device info apps \
         --device "$DEVICE_ID" \
-        --bundle-id "$BUNDLE_ID" \
         --include-removable-apps \
         --json-output "$APP_INFO_JSON" >"$APP_INFO_TEXT" 2>&1 &&
-       /usr/bin/python3 - "$APP_INFO_JSON" "$BUNDLE_ID" "$KEYBOARD_BUNDLE_ID" "$HOST_VERSION" "$HOST_BUILD" "$KEYBOARD_VERSION" "$KEYBOARD_BUILD" <<'PY'
+       /usr/bin/python3 - "$APP_INFO_JSON" "$BUNDLE_ID" "$HOST_VERSION" "$HOST_BUILD" <<'PY'
 import json
 import sys
 
-path, host_id, keyboard_id, host_version, host_build, keyboard_version, keyboard_build = sys.argv[1:]
+path, host_id, host_version, host_build = sys.argv[1:]
 with open(path, "r", encoding="utf-8") as handle:
     payload = json.load(handle)
 
@@ -192,15 +204,6 @@ def walk(value):
     elif isinstance(value, list):
         for child in value:
             yield from walk(child)
-
-def contains_string(value, expected):
-    if isinstance(value, str):
-        return value == expected
-    if isinstance(value, dict):
-        return any(contains_string(child, expected) for child in value.values())
-    if isinstance(value, list):
-        return any(contains_string(child, expected) for child in value)
-    return False
 
 def find_record(bundle_id):
     for item in walk(payload):

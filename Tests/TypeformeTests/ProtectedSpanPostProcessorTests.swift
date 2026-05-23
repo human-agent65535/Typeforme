@@ -35,6 +35,22 @@ struct ProtectedSpanPostProcessorTests {
         #expect(output == "bộ phát thanh là cây kéo gì?")
     }
 
+    @Test func rejectsChineseSentenceTranslatedToEnglish() {
+        let output = ProtectedSpanPostProcessor.apply(
+            "Can connecting flights be exited midway?",
+            rawTranscript: "联程航班可以中间出来吗？"
+        )
+        #expect(output == "联程航班可以中间出来吗？")
+    }
+
+    @Test func rejectsTranslationCommandTextTranslatedToEnglish() {
+        let output = ProtectedSpanPostProcessor.apply(
+            "Translate to English.",
+            rawTranscript: "翻译成英文。"
+        )
+        #expect(output == "翻译成英文。")
+    }
+
     @Test func restoresProtectedPathToken() {
         let output = ProtectedSpanPostProcessor.apply(
             "- URL: https://example.com/api/v1\n- 检查路径: /users。",
