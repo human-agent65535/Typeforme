@@ -3,42 +3,59 @@ import Security
 
 struct PairingStore {
     private let key = "pairing.config.v1"
-    private let tokenStore = PairingTokenStore.bridgePairing
+    // One-time migration for installs that still have the Mac pairing token in
+    // Keychain. Input: Generic Password services "com.example.typeforme" and
+    // "com.typeforme.ios.bridge", account "pairing-token". Output: write the
+    // token into UserDefaults key "pairing.config.v1" as
+    // bridge_endpoints.token, then delete the Keychain item. Code location:
+    // PairingStore.load(). Removal date: 2026-06-30.
+    private let keychainMigrationStores = [
+        PairingTokenStore.bridgePairing,
+        PairingTokenStore.legacyBridgePairing,
+    ]
 
     func load() -> PairingConfig {
-        if let data = UserDefaults.standard.data(forKey: key),
-           var config = try? JSONDecoder().decode(PairingConfig.self, from: data) {
-            if let token = tokenStore.load(), !token.isEmpty {
-                config.token = token
-            } else {
-                config.token = ""
-            }
-            persistConfigPayloadWithoutToken(config)
+        guard let data = UserDefaults.standard.data(forKey: key),
+              var config = try? JSONDecoder().decode(PairingConfig.self, from: data)
+        else {
+            return .empty
+        }
+
+        let persistedToken = config.token.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !persistedToken.isEmpty {
+            config.token = persistedToken
             return config
         }
-        return .empty
+
+        if let migratedToken = keychainMigrationStores.lazy.compactMap({ $0.load() }).first {
+            config.token = migratedToken
+            if persistConfig(config) { deleteKeychainMigrationTokens() }
+        }
+
+        return config
     }
 
     func save(_ config: PairingConfig) {
-        let token = config.token.trimmingCharacters(in: .whitespacesAndNewlines)
-        if token.isEmpty {
-            tokenStore.delete()
-        } else {
-            tokenStore.save(token)
-        }
-        persistConfigPayloadWithoutToken(config)
+        var persisted = config
+        persisted.token = persisted.token.trimmingCharacters(in: .whitespacesAndNewlines)
+        if persistConfig(persisted) { deleteKeychainMigrationTokens() }
     }
 
     func delete() {
-        tokenStore.delete()
+        deleteKeychainMigrationTokens()
         UserDefaults.standard.removeObject(forKey: key)
     }
 
-    private func persistConfigPayloadWithoutToken(_ config: PairingConfig) {
-        var persisted = config
-        persisted.token = ""
-        guard let data = try? JSONEncoder().encode(persisted) else { return }
+    private func persistConfig(_ config: PairingConfig) -> Bool {
+        guard let data = try? JSONEncoder().encode(config) else { return false }
         UserDefaults.standard.set(data, forKey: key)
+        return UserDefaults.standard.synchronize()
+    }
+
+    private func deleteKeychainMigrationTokens() {
+        for store in keychainMigrationStores {
+            store.delete()
+        }
     }
 }
 
@@ -50,6 +67,10 @@ struct PairingTokenStore {
     static let keyboardBridge = PairingTokenStore(
         service: "com.example.typeforme.keyboard",
         account: "keyboard-bridge-token"
+    )
+    fileprivate static let legacyBridgePairing = PairingTokenStore(
+        service: "com.typeforme.ios.bridge",
+        account: "pairing-token"
     )
 
     private let service: String
