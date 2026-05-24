@@ -517,6 +517,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         rootView.backgroundColor = Self.keyboardTouchableBackgroundColor
         rootView.clipsToBounds = false
         rootView.layer.masksToBounds = false
+        rootView.alpha = 0
         let initialHeightConstraint = rootView.heightAnchor.constraint(equalToConstant: initialHeight)
         initialHeightConstraint.priority = .required
         initialHeightConstraint.isActive = true
@@ -1437,6 +1438,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         UIView.performWithoutAnimation {
+            self.view.alpha = visible ? 1 : 0
             self.keyboardContentView.alpha = visible ? 1 : 0
             self.keyboardTouchOverlay.alpha = visible ? 1 : 0
         }
