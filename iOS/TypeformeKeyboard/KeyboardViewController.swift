@@ -201,6 +201,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private let rimeInput = RimeInputController()
     private var pendingRimeCharacters: [String] = []
     private var activeMarkedText = ""
+    private var heightConstraint: NSLayoutConstraint?
+    private var inputModeSwitchActivationAllowedAt: CFTimeInterval = 0
+    private var didSuppressInitialInputModeSwitchEvent = false
     private var orbContainerHeightConstraint: NSLayoutConstraint?
     private var textKeyboardContainerHeightConstraint: NSLayoutConstraint?
     private var statusTimer: Timer?
@@ -495,6 +498,28 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     override var preferredScreenEdgesDeferringSystemGestures: UIRectEdge {
         [.left, .right]
+    }
+
+    override func loadView() {
+        let initialHeight = currentKeyboardContentHeight + Self.topChromeCoverHeight
+        inputModeSwitchActivationAllowedAt = CACurrentMediaTime() + 0.45
+        didSuppressInitialInputModeSwitchEvent = false
+        let rootView = UIInputView(
+            frame: CGRect(x: 0, y: 0, width: UIScreen.main.bounds.width, height: initialHeight),
+            inputViewStyle: .keyboard
+        )
+        rootView.allowsSelfSizing = true
+        rootView.isOpaque = false
+        rootView.backgroundColor = Self.keyboardTouchableBackgroundColor
+        rootView.clipsToBounds = false
+        rootView.layer.masksToBounds = false
+        let initialHeightConstraint = rootView.heightAnchor.constraint(equalToConstant: initialHeight)
+        initialHeightConstraint.priority = .required
+        initialHeightConstraint.isActive = true
+        heightConstraint = initialHeightConstraint
+        inputView = rootView
+        view = rootView
+        logKeyboardPresentationLayout("loadView", force: true)
     }
 
     private func keyboardFocusSwipeSurfacePoint(_ point: CGPoint) -> Bool {
@@ -1020,6 +1045,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
+        inputModeSwitchActivationAllowedAt = CACurrentMediaTime() + 0.45
+        didSuppressInitialInputModeSwitchEvent = false
         configureSystemKeyboardAffordances()
         setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
         configureRimeStateCallback()
@@ -1045,6 +1072,18 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             self?.logKeyboardPresentationLayout("viewDidAppear+100ms", force: true)
         }
         scheduleDeferredStartupProbe()
+    }
+
+    override func handleInputModeList(from view: UIView, with event: UIEvent) {
+        let now = CACurrentMediaTime()
+        guard now >= inputModeSwitchActivationAllowedAt else {
+            if !didSuppressInitialInputModeSwitchEvent {
+                didSuppressInitialInputModeSwitchEvent = true
+                kbLog.notice("suppressed initial input-mode switch event during keyboard activation")
+            }
+            return
+        }
+        super.handleInputModeList(from: view, with: event)
     }
 
     private func disableGestureRecognizerDelays(in root: UIView? = nil) {
@@ -1467,6 +1506,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func applyKeyboardHeightForCurrentTraits() {
+        let targetContentHeight = currentKeyboardContentHeight
+        heightConstraint?.constant = targetContentHeight + Self.topChromeCoverHeight
         let contentHeight = max(1, effectiveKeyboardContentHeight)
         view.setNeedsLayout()
         layoutKeyboardContentViewForCurrentBounds()
