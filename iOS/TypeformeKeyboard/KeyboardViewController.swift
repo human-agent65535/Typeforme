@@ -206,6 +206,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private var didSuppressInitialInputModeSwitchEvent = false
     private var isHoldingKeyboardPresentationUntilStable = true
     private var didCompleteKeyboardViewAppearForPresentation = false
+    private var lastPresentationGateLogKey = ""
     private var orbContainerHeightConstraint: NSLayoutConstraint?
     private var textKeyboardContainerHeightConstraint: NSLayoutConstraint?
     private var statusTimer: Timer?
@@ -278,6 +279,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private let deleteRepeatInterval: UInt64 = 70_000_000
 
     private let rootStack = UIStackView()
+    private let keyboardSurfaceView = KeyboardSurfaceView()
     private let keyboardContentView = UIView()
     private let keyboardTouchOverlay = KeyboardTouchOverlayView()
     private let topRow = UIView()
@@ -330,14 +332,18 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     /// app's own send button so it's easier to hit one-handed.
     private let voiceSendButton = HitInsetButton(frame: .zero)
     private static let orbDiameter: CGFloat = 132
-    private static let portraitKeyboardContentHeight: CGFloat = 255
-    private static let compactKeyboardContentHeight: CGFloat = 241
+    private static let portraitKeyboardContentHeight: CGFloat = 258
+    private static let compactKeyboardContentHeight: CGFloat = 244
     private static let rootHorizontalInset: CGFloat = 20.0 / 3.0
     private static let rootVerticalInset: CGFloat = 4
     private static let stackSpacing: CGFloat = 4
+    /// 0.01-alpha is required: iOS custom-keyboard extensions probe pixel
+    /// alpha for hit-test eligibility, so `.clear` lets gap touches leak to
+    /// the host app even when `point(inside:)` returns true.
     private static let keyboardTouchableBackgroundColor = UIColor.white.withAlphaComponent(0.01)
     private static let candidateExpandButtonWidth: CGFloat = 45
     private static let candidateToolbarHeight: CGFloat = 25
+    private static let toolbarIconVerticalOffset: CGFloat = -2
     private static let textKeyboardTopProtectionInset: CGFloat = 2
     private static let textKeyboardToolbarKeyGap: CGFloat = 10
     private static let candidateInlineMinimumCellWidth: CGFloat = 41
@@ -510,16 +516,22 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         didCompleteKeyboardViewAppearForPresentation = false
         let rootView = UIInputView(
             frame: CGRect(x: 0, y: 0, width: UIScreen.main.bounds.width, height: initialHeight),
+            // `.keyboard` is required for full-keyboard replacements. `.default`
+            // is for accessory views laid on top of the system keyboard; using
+            // it for a full keyboard caused iOS to allocate extra accessory
+            // height and unstable presentation.
             inputViewStyle: .keyboard
         )
-        rootView.allowsSelfSizing = true
+        rootView.allowsSelfSizing = false
         rootView.isOpaque = false
-        rootView.backgroundColor = Self.keyboardTouchableBackgroundColor
+        rootView.backgroundColor = .clear
         rootView.clipsToBounds = false
         rootView.layer.masksToBounds = false
         rootView.alpha = 0
         let initialHeightConstraint = rootView.heightAnchor.constraint(equalToConstant: initialHeight)
-        initialHeightConstraint.priority = .required
+        // 999 (not .required): system inputView transition constraints win the
+        // first-frame race at .required, briefly clipping the toolbar top.
+        initialHeightConstraint.priority = UILayoutPriority(999)
         initialHeightConstraint.isActive = true
         heightConstraint = initialHeightConstraint
         inputView = rootView
@@ -1407,6 +1419,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private func configureRoot() {
         refreshKeyboardBackground()
 
+        keyboardSurfaceView.translatesAutoresizingMaskIntoConstraints = true
+        keyboardSurfaceView.isUserInteractionEnabled = false
+        keyboardSurfaceView.isOpaque = true
+        keyboardSurfaceView.backgroundColor = Self.keyboardTouchableBackgroundColor
+
         keyboardContentView.translatesAutoresizingMaskIntoConstraints = true
         keyboardContentView.backgroundColor = .clear
         keyboardContentView.clipsToBounds = false
@@ -1417,9 +1434,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
         keyboardTouchOverlay.translatesAutoresizingMaskIntoConstraints = true
         keyboardTouchOverlay.hitController = self
-        keyboardTouchOverlay.backgroundColor = Self.keyboardTouchableBackgroundColor
+        keyboardTouchOverlay.backgroundColor = .clear
         keyboardTouchOverlay.isOpaque = false
 
+        view.addSubview(keyboardSurfaceView)
         view.addSubview(keyboardContentView)
         keyboardContentView.addSubview(rootStack)
         view.addSubview(keyboardTouchOverlay)
@@ -1448,19 +1466,64 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private func revealKeyboardContentIfPresentationStable() {
         guard isHoldingKeyboardPresentationUntilStable else { return }
         guard didCompleteKeyboardViewAppearForPresentation else { return }
-        let targetHeight = currentKeyboardContentHeight + Self.topChromeCoverHeight
-        guard abs(view.bounds.height - targetHeight) <= 2 else { return }
+        let gate = keyboardPresentationGateState()
+        guard gate.isStable else {
+            if gate.logKey != lastPresentationGateLogKey {
+                lastPresentationGateLogKey = gate.logKey
+                kbLog.notice("waiting keyboard presentation gate: \(gate.reason, privacy: .public)")
+            }
+            return
+        }
         isHoldingKeyboardPresentationUntilStable = false
+        lastPresentationGateLogKey = ""
         setKeyboardContentVisible(true)
         kbLog.notice("revealed keyboard content after stable presentation height")
     }
 
+    private func keyboardPresentationGateState() -> (isStable: Bool, logKey: String, reason: String) {
+        let targetHeight = currentKeyboardContentHeight + Self.topChromeCoverHeight
+        let heightDelta = abs(view.bounds.height - targetHeight)
+        let keyboardFrame = view.convert(view.bounds, to: nil)
+        let windowFrame = view.window?.frame
+        let screenBottom = UIScreen.main.bounds.maxY
+        let bottomDelta = windowFrame.map { abs(keyboardFrame.maxY - $0.maxY) } ?? 0
+        let windowScreenDelta = windowFrame.map { abs($0.maxY - screenBottom) } ?? 0
+        let hasWindow = view.window != nil
+        let shouldCheckWindowScreenBottom = windowFrame.map { $0.maxY > targetHeight + 20 } ?? false
+        let isBottomAnchored = !hasWindow
+            || (bottomDelta <= 2 && (!shouldCheckWindowScreenBottom || windowScreenDelta <= 2))
+        let isStable = heightDelta <= 2 && isBottomAnchored
+        let logKey = [
+            String(format: "%.1f", Double(view.bounds.height)),
+            String(format: "%.1f", Double(targetHeight)),
+            String(format: "%.1f", Double(keyboardFrame.minY)),
+            String(format: "%.1f", Double(keyboardFrame.maxY)),
+            String(format: "%.1f", Double(windowFrame?.maxY ?? -1)),
+            String(format: "%.1f", Double(screenBottom)),
+        ].joined(separator: "|")
+        let reason = String(
+            format: "height=%.1f target=%.1f heightDelta=%.1f keyboardY=%.1f keyboardBottom=%.1f windowBottom=%.1f screenBottom=%.1f bottomDelta=%.1f windowScreenDelta=%.1f",
+            Double(view.bounds.height),
+            Double(targetHeight),
+            Double(heightDelta),
+            Double(keyboardFrame.minY),
+            Double(keyboardFrame.maxY),
+            Double(windowFrame?.maxY ?? -1),
+            Double(screenBottom),
+            Double(bottomDelta),
+            Double(windowScreenDelta)
+        )
+        return (isStable, logKey, reason)
+    }
+
     private func refreshKeyboardBackground() {
-        // Keep the system-provided input view rendered, while a normal overlay
-        // owns blank-area touch routing without affecting UIKit's keyboard size.
+        // Blank areas need to be real keyboard surface, not transparent host
+        // passthrough. The separate touch overlay stays clear because it sits
+        // above the keys; its custom hit-test owns anti-mistouch routing.
         view.isOpaque = false
-        view.backgroundColor = Self.keyboardTouchableBackgroundColor
-        keyboardTouchOverlay.backgroundColor = Self.keyboardTouchableBackgroundColor
+        view.backgroundColor = .clear
+        keyboardSurfaceView.backgroundColor = Self.keyboardTouchableBackgroundColor
+        keyboardTouchOverlay.backgroundColor = .clear
     }
 
     private func configureKeyPreview() {
@@ -1543,21 +1606,22 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     private func keyboardContentFrameForCurrentBounds() -> CGRect {
         let bounds = view.bounds
-        let totalHeight = currentKeyboardContentHeight + Self.topChromeCoverHeight
         let width = bounds.width > 0 ? bounds.width : UIScreen.main.bounds.width
-        let y = max(bounds.minY, bounds.maxY - totalHeight)
-        return CGRect(x: bounds.minX, y: y, width: width, height: totalHeight)
+        return CGRect(x: bounds.minX, y: bounds.minY, width: width, height: bounds.height)
     }
 
     private func layoutKeyboardContentViewForCurrentBounds() {
         let frame = keyboardContentFrameForCurrentBounds()
+        if keyboardSurfaceView.frame != frame {
+            keyboardSurfaceView.frame = frame
+        }
         if keyboardContentView.frame != frame {
             keyboardContentView.frame = frame
         }
         if keyboardTouchOverlay.frame != frame {
             keyboardTouchOverlay.frame = frame
         }
-        let contentHeight = max(1, currentKeyboardContentHeight)
+        let contentHeight = max(1, frame.height - Self.topChromeCoverHeight)
         textKeyboardContainerHeightConstraint?.constant = Self.textKeyboardBodyHeight(for: contentHeight)
         orbContainerHeightConstraint?.constant = Self.orbContainerHeight(for: contentHeight)
         keyboardContentView.setNeedsLayout()
@@ -1579,6 +1643,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         lastTextRecordingButtonsSignature = ""
         let views: [UIView] = [
             rootStack,
+            keyboardSurfaceView,
             topRow,
             statusGroup,
             statusLabel,
@@ -2201,7 +2266,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
         updateCandidateScrollViewport()
         updateCandidateGridCollapseButtonFrame()
-        resetToolbarIconTransforms()
+        applyToolbarIconLayoutTweaks()
         updateKeyboardOverlayOrdering()
         revealKeyboardContentIfPresentationStable()
         logKeyboardPresentationLayout("layout")
@@ -2209,7 +2274,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         CATransaction.commit()
     }
 
-    private func resetToolbarIconTransforms() {
+    private func applyToolbarIconLayoutTweaks() {
+        let toolbarIconTransform = CGAffineTransform(
+            translationX: 0,
+            y: Self.toolbarIconVerticalOffset
+        )
         [
             settingsButton,
             keyboardFocusButton,
@@ -2221,7 +2290,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             textHostSettingsButton,
             textCandidateGridButton,
         ].forEach { button in
-            button.imageView?.transform = .identity
+            button.imageView?.transform = toolbarIconTransform
         }
         candidateGridCollapseButton.imageView?.transform = .identity
     }
@@ -2253,6 +2322,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let superviewFrame = view.superview?.frame
         let windowFrame = view.convert(view.bounds, to: nil)
         let hostWindowFrame = view.window?.frame
+        let surfaceBackgroundFrame = frameInController(keyboardSurfaceView)
         let contentFrame = keyboardContentView.frame
         let touchOverlayFrame = keyboardTouchOverlay.frame
         let rootFrame = frameInController(rootStack)
@@ -2277,6 +2347,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             frameLogString(surfaceFrame),
             frameLogString(viewFrame),
             frameLogString(windowFrame),
+            frameLogString(surfaceBackgroundFrame),
             frameLogString(contentFrame),
             frameLogString(touchOverlayFrame),
             frameLogString(toolbarFrame),
@@ -2291,7 +2362,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         keyboardPresentationLayoutLogCount += 1
         let effectiveHeight = effectiveKeyboardContentHeight
 
-        kbLog.notice("present layout event=\(event, privacy: .public) focus=\(self.keyboardFocus.rawValue, privacy: .public) surface=\(self.frameLogString(surfaceFrame), privacy: .public) view=\(self.frameLogString(viewFrame), privacy: .public) super=\(self.frameLogString(superviewFrame), privacy: .public) window=\(self.frameLogString(windowFrame), privacy: .public) hostWindow=\(self.frameLogString(hostWindowFrame), privacy: .public) content=\(self.frameLogString(contentFrame), privacy: .public) touchOverlay=\(self.frameLogString(touchOverlayFrame), privacy: .public) root=\(self.frameLogString(rootFrame), privacy: .public) effectiveH=\(self.valueLogString(effectiveHeight), privacy: .public) safe=\(self.insetsLogString(self.view.safeAreaInsets), privacy: .public)")
+        kbLog.notice("present layout event=\(event, privacy: .public) focus=\(self.keyboardFocus.rawValue, privacy: .public) surface=\(self.frameLogString(surfaceFrame), privacy: .public) view=\(self.frameLogString(viewFrame), privacy: .public) super=\(self.frameLogString(superviewFrame), privacy: .public) window=\(self.frameLogString(windowFrame), privacy: .public) hostWindow=\(self.frameLogString(hostWindowFrame), privacy: .public) surfaceView=\(self.frameLogString(surfaceBackgroundFrame), privacy: .public) content=\(self.frameLogString(contentFrame), privacy: .public) touchOverlay=\(self.frameLogString(touchOverlayFrame), privacy: .public) root=\(self.frameLogString(rootFrame), privacy: .public) effectiveH=\(self.valueLogString(effectiveHeight), privacy: .public) safe=\(self.insetsLogString(self.view.safeAreaInsets), privacy: .public)")
         kbLog.notice("toolbar layout event=\(event, privacy: .public) toolbar=\(self.frameLogString(toolbarFrame), privacy: .public) keys=\(self.frameLogString(keyRowsFrame), privacy: .public) topGap=\(self.valueLogString(toolbarTopGap), privacy: .public) keyGap=\(self.valueLogString(toolbarKeyGap), privacy: .public) voiceSwitch=\(self.frameLogString(voiceSwitchFrame), privacy: .public) voiceSettings=\(self.frameLogString(voiceSettingsFrame), privacy: .public) textSwitch=\(self.frameLogString(textSwitchFrame), privacy: .public) textSettings=\(self.frameLogString(textSettingsFrame), privacy: .public) textSwitchIcon=\(self.frameLogString(textSwitchIconFrame), privacy: .public) textSettingsIcon=\(self.frameLogString(textSettingsIconFrame), privacy: .public)")
     }
 
@@ -3712,10 +3783,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
 
         guard hasFullAccess else {
-            bridgeStatus = KeyboardBridgeStatus(state: .error, message: "Enable Full Access in iOS keyboard settings.")
-            lastBridgeContactAt = Date().timeIntervalSince1970
-            showTextKeyboardNotice(NSLocalizedString("Enable Full Access", comment: "Inline status when keyboard full access is missing"))
-            updateUI()
+            showFullAccessRequiredStatus(showTextNotice: true)
             return
         }
 
@@ -3802,9 +3870,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         guard hasFullAccess else {
             kbLog.notice("beginDictationPress: no full access")
             isVoicePressActive = false
-            bridgeStatus = KeyboardBridgeStatus(state: .error, message: "Enable Full Access in iOS keyboard settings.")
-            lastBridgeContactAt = Date().timeIntervalSince1970
-            updateUI()
+            showFullAccessRequiredStatus()
             return
         }
         guard currentBridgeStatus?.state != .sending else {
@@ -3849,9 +3915,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         kbLog.notice("handleTapModePress: fullAccess=\(self.hasFullAccess, privacy: .public), bridgeState=\(self.currentBridgeStatus?.state.rawValue ?? "nil", privacy: .public), awake=\(self.isBridgeAwake, privacy: .public)")
         lightHaptic()
         guard hasFullAccess else {
-            bridgeStatus = KeyboardBridgeStatus(state: .error, message: "Enable Full Access in iOS keyboard settings.")
-            lastBridgeContactAt = Date().timeIntervalSince1970
-            updateUI()
+            showFullAccessRequiredStatus()
             return
         }
         if isStartRequestInFlight {
@@ -3880,9 +3944,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         lightHaptic()
         guard hasFullAccess else {
             isCommandPressActive = false
-            bridgeStatus = KeyboardBridgeStatus(state: .error, message: "Enable Full Access in iOS keyboard settings.")
-            lastBridgeContactAt = Date().timeIntervalSince1970
-            updateUI()
+            showFullAccessRequiredStatus()
             return
         }
         guard currentBridgeStatus?.state != .sending else {
@@ -3929,9 +3991,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private func handleCommandTapModePress() {
         lightHaptic()
         guard hasFullAccess else {
-            bridgeStatus = KeyboardBridgeStatus(state: .error, message: "Enable Full Access in iOS keyboard settings.")
-            lastBridgeContactAt = Date().timeIntervalSince1970
-            updateUI()
+            showFullAccessRequiredStatus()
             return
         }
         if isStartRequestInFlight { return }
@@ -4643,6 +4703,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     @objc private func openHostFromSettingsButton() {
         lightHaptic()
+        guard hasFullAccess else {
+            showFullAccessRequiredStatus()
+            return
+        }
         openStandbyInHostApp(returnToKeyboard: false)
     }
 
@@ -4789,9 +4853,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     private func rewriteCurrentInputOrPasteboard(using preset: CorrectionModePreset) {
         guard hasFullAccess else {
-            bridgeStatus = KeyboardBridgeStatus(state: .error, message: "Enable Full Access in iOS keyboard settings.")
-            lastBridgeContactAt = Date().timeIntervalSince1970
-            updateUI()
+            showFullAccessRequiredStatus()
             return
         }
         guard styleRewriteCommandID == nil,
@@ -5700,9 +5762,18 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         clearRestyleSuggestions()
 
         let currentState = rimeInput.state()
-        let state = currentState.isComposing && textInputLanguage == .chinese
-            ? rimeInput.commitRawInput()
-            : (currentState.isComposing ? rimeInput.commitComposition() : currentState)
+        if textInputLanguage == .english {
+            if currentState.isComposing {
+                applyRimeState(rimeInput.clearComposition())
+            }
+            textDocumentProxy.insertText("\n")
+            if !resetShiftIfSticky() {
+                refreshEnglishLetterCasingIfNeeded()
+            }
+            return
+        }
+
+        let state = currentState.isComposing ? rimeInput.commitRawInput() : currentState
         applyRimeState(state)
         if state.commitText.isEmpty {
             textDocumentProxy.insertText("\n")
@@ -5715,10 +5786,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private func applyRimeState(_ state: RimeKeyboardState) {
         if !state.commitText.isEmpty {
             resetQuoteParity()
-            if !activeMarkedText.isEmpty {
-                textDocumentProxy.setMarkedText("", selectedRange: NSRange(location: 0, length: 0))
-            }
-            textDocumentProxy.insertText(state.commitText)
+            commitTextReplacingMarkedText(state.commitText)
             activeMarkedText = ""
         }
 
@@ -6387,6 +6455,17 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         activeMarkedText = text
     }
 
+    private func commitTextReplacingMarkedText(_ text: String) {
+        guard !text.isEmpty else { return }
+        guard !activeMarkedText.isEmpty else {
+            textDocumentProxy.insertText(text)
+            return
+        }
+        let cursor = (text as NSString).length
+        textDocumentProxy.setMarkedText(text, selectedRange: NSRange(location: cursor, length: 0))
+        textDocumentProxy.unmarkText()
+    }
+
     private func isAlphabeticTextKey(_ character: String) -> Bool {
         guard character.count == 1,
               let scalar = character.unicodeScalars.first
@@ -6772,6 +6851,15 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         openingHostUntil > Date().timeIntervalSince1970
     }
 
+    private func showFullAccessRequiredStatus(showTextNotice: Bool = false) {
+        bridgeStatus = KeyboardBridgeStatus(state: .error, message: "Enable Full Access in iOS keyboard settings.")
+        lastBridgeContactAt = Date().timeIntervalSince1970
+        if showTextNotice {
+            showTextKeyboardNotice(NSLocalizedString("Enable Full Access", comment: "Inline status when keyboard full access is missing"))
+        }
+        updateUI()
+    }
+
     private var isBridgeAwake: Bool {
         // Strongest signal: a Darwin notification from the host process. Set
         // by sessionStarted/dictationStarted/dictationStopped, cleared by
@@ -6806,6 +6894,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     /// One short line, under the orb. Doubles as the only verbal hint — the
     /// orb's color and pulse rings carry the rest of the state.
     private var voiceTitle: String {
+        if !hasFullAccess { return NSLocalizedString("Enable Full Access", comment: "Voice title when keyboard full access is missing") }
         if isOpeningHostApp { return NSLocalizedString("Opening Typeforme…", comment: "Voice title when host is launching") }
         switch currentBridgeStatus?.state {
         case .recording: return inputMode.recordingTitle
@@ -6880,7 +6969,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     private var statusText: String {
         if !hasFullAccess {
-            return NSLocalizedString("Setup", comment: "Status when Full Access missing")
+            return NSLocalizedString("Full Access", comment: "Status when keyboard full access is missing")
         }
         if isOpeningHostApp {
             return NSLocalizedString("Opening", comment: "Status while host opens")
@@ -7736,6 +7825,17 @@ private final class VoiceInputModeSwitch: UIControl {
 
     @objc private func selectTap() {
         onSelection?("tap")
+    }
+}
+
+/// Full-bounds touch-swallow surface. Background can be `.clear` because
+/// `point(inside:)` always returns true within bounds — gap touches still
+/// resolve to this view instead of leaking to the host app, without needing
+/// the legacy 0.01-alpha background hack to satisfy iOS's hit-testing.
+final class KeyboardSurfaceView: UIView {
+    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+        guard isUserInteractionEnabled, !isHidden, alpha > 0.01 else { return false }
+        return bounds.contains(point)
     }
 }
 
