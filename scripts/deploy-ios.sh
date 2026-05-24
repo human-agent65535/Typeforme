@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Build the iOS host app + keyboard extension and install on a connected
-# iPhone via devicectl. Auto-picks the first usable paired iPhone unless
-# DEVICE_ID is set. DEVICE_NAME can be set to prefer a specific device name.
+# iPhone via devicectl. Auto-picks the first paired iPhone with an active
+# tunnel unless DEVICE_ID is set. If a paired iPhone is visible but its tunnel
+# is still unavailable/disconnected, the script still tries that id directly
+# because devicectl can often acquire the tunnel during build/install.
+# DEVICE_NAME can be set to prefer a specific device name.
 #
 # Defaults to Release because Debug builds in modern Xcode emit a stub
 # executable plus `.debug.dylib`, and iOS's keyboard daemon won't load the
@@ -53,33 +56,55 @@ preferred_name = sys.argv[2].casefold()
 with open(path, "r", encoding="utf-8") as handle:
     devices = json.load(handle).get("result", {}).get("devices", [])
 
-def is_usable_iphone(device):
+def is_paired_iphone(device):
     hardware = device.get("hardwareProperties", {})
     connection = device.get("connectionProperties", {})
     return (
         hardware.get("platform") == "iOS"
         and hardware.get("deviceType") == "iPhone"
         and connection.get("pairingState") == "paired"
-        and connection.get("tunnelState") not in {"unavailable", "disconnected"}
     )
 
-usable = [device for device in devices if is_usable_iphone(device)]
-if preferred_name:
-    for device in usable:
-        names = [
-            device.get("deviceProperties", {}).get("name", ""),
-            device.get("hardwareProperties", {}).get("marketingName", ""),
-        ]
-        if any(preferred_name in name.casefold() for name in names):
-            print(device.get("identifier", ""))
-            raise SystemExit
-else:
-    if usable:
-        print(usable[0].get("identifier", ""))
+def has_ready_tunnel(device):
+    connection = device.get("connectionProperties", {})
+    return connection.get("tunnelState") not in {"unavailable", "disconnected"}
+
+def names_match(device):
+    if not preferred_name:
+        return True
+    names = [
+        device.get("deviceProperties", {}).get("name", ""),
+        device.get("hardwareProperties", {}).get("marketingName", ""),
+    ]
+    return any(preferred_name in name.casefold() for name in names)
+
+def warn_tunnel_fallback(device):
+    props = device.get("deviceProperties", {})
+    connection = device.get("connectionProperties", {})
+    name = props.get("name", "<unnamed>")
+    identifier = device.get("identifier", "<unknown>")
+    tunnel = connection.get("tunnelState", "unknown")
+    print(
+        f"→ Paired iPhone {name} id={identifier} has tunnel={tunnel}; "
+        "trying direct id deployment anyway.",
+        file=sys.stderr,
+    )
+
+paired = [device for device in devices if is_paired_iphone(device) and names_match(device)]
+ready = [device for device in paired if has_ready_tunnel(device)]
+fallback = [device for device in paired if not has_ready_tunnel(device)]
+
+if ready:
+    print(ready[0].get("identifier", ""))
+    raise SystemExit
+if fallback:
+    warn_tunnel_fallback(fallback[0])
+    print(fallback[0].get("identifier", ""))
+    raise SystemExit
 PY
 )"
     if [ -z "$DEVICE_ID" ]; then
-        echo "No usable paired iPhone found. Connect/unlock the target device and finish any trust/pairing dialog." >&2
+        echo "No paired iPhone found. Connect/unlock the target device and finish any trust/pairing dialog." >&2
         if [ -n "${DEVICE_NAME:-}" ]; then
             echo "Requested DEVICE_NAME=$DEVICE_NAME" >&2
         fi
