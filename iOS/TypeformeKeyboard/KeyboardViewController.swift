@@ -202,6 +202,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private var pendingRimeCharacters: [String] = []
     private var activeMarkedText = ""
     private var heightConstraint: NSLayoutConstraint?
+    private var keyboardContentViewHeightConstraint: NSLayoutConstraint?
     private var orbContainerHeightConstraint: NSLayoutConstraint?
     private var textKeyboardContainerHeightConstraint: NSLayoutConstraint?
     private var statusTimer: Timer?
@@ -333,7 +334,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private static let keyboardTouchableBackgroundColor = UIColor.white.withAlphaComponent(0.01)
     private static let candidateExpandButtonWidth: CGFloat = 45
     private static let candidateToolbarHeight: CGFloat = 25
-    private static let textKeyboardToolbarKeyGap: CGFloat = 12
+    private static let textKeyboardTopProtectionInset: CGFloat = 6
+    private static let textKeyboardToolbarKeyGap: CGFloat = 6
     private static let candidateInlineMinimumCellWidth: CGFloat = 41
     private static let candidateInlineCellHorizontalPadding: CGFloat = 20
     private static let candidateTextFontSize: CGFloat = 20
@@ -639,9 +641,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         maskRegion: CGRect,
         hasMask: Bool
     ) {
-#if DEBUG
         kbLog.notice("root geometry event=\(event, privacy: .public) focus=\(self.keyboardFocus.rawValue, privacy: .public) bounds=\(self.frameLogString(rootBounds), privacy: .public) frame=\(self.frameLogString(rootFrame), privacy: .public) super=\(self.frameLogString(superviewFrame), privacy: .public) window=\(self.frameLogString(windowFrame), privacy: .public) visibleH=\(self.valueLogString(visibleHeight), privacy: .public) touch=\(self.frameLogString(touchRegion), privacy: .public) mask=\(self.frameLogString(maskRegion), privacy: .public) hasMask=\(hasMask, privacy: .public)")
-#endif
     }
 
     fileprivate func beginKeyboardTouchTarget(_ target: KeyboardTouchTarget, point: CGPoint) {
@@ -1394,10 +1394,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private func configureRoot() {
         refreshKeyboardBackground()
 
-        keyboardContentView.translatesAutoresizingMaskIntoConstraints = true
+        keyboardContentView.translatesAutoresizingMaskIntoConstraints = false
         keyboardContentView.backgroundColor = .clear
         keyboardContentView.clipsToBounds = false
-        keyboardContentView.frame = keyboardContentFrameForCurrentBounds()
 
         rootStack.axis = .vertical
         rootStack.spacing = Self.stackSpacing
@@ -1410,6 +1409,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         view.addSubview(keyboardContentView)
         keyboardContentView.addSubview(rootStack)
 
+        let contentHeightConstraint = keyboardContentView.heightAnchor.constraint(
+            equalToConstant: currentContentHeight + Self.topChromeCoverHeight
+        )
+        contentHeightConstraint.priority = .required
+        keyboardContentViewHeightConstraint = contentHeightConstraint
+
         if let heightConstraint {
             heightConstraint.constant = currentContentHeight + Self.topChromeCoverHeight
             heightConstraint.isActive = true
@@ -1421,6 +1426,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
 
         NSLayoutConstraint.activate([
+            keyboardContentView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            keyboardContentView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            keyboardContentView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            contentHeightConstraint,
+
             rootStack.leadingAnchor.constraint(equalTo: keyboardContentView.leadingAnchor, constant: Self.rootHorizontalInset),
             rootStack.trailingAnchor.constraint(equalTo: keyboardContentView.trailingAnchor, constant: -Self.rootHorizontalInset),
             rootStack.topAnchor.constraint(equalTo: keyboardContentView.topAnchor, constant: Self.rootVerticalInset + Self.topChromeCoverHeight),
@@ -1504,6 +1514,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let totalHeight = contentHeight + Self.topChromeCoverHeight
         (view as? KeyboardRootInputView)?.visibleKeyboardHeight = totalHeight
         heightConstraint?.constant = totalHeight
+        keyboardContentViewHeightConstraint?.constant = totalHeight
+        view.setNeedsLayout()
         layoutKeyboardContentViewForCurrentBounds()
         textKeyboardContainerHeightConstraint?.constant = Self.textKeyboardBodyHeight(for: contentHeight)
         orbContainerHeightConstraint?.constant = Self.orbContainerHeight(for: contentHeight)
@@ -1519,6 +1531,15 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func layoutKeyboardContentViewForCurrentBounds() {
+        if let keyboardContentViewHeightConstraint {
+            let totalHeight = currentContentHeight + Self.topChromeCoverHeight
+            if abs(keyboardContentViewHeightConstraint.constant - totalHeight) > 0.5 {
+                keyboardContentViewHeightConstraint.constant = totalHeight
+                view.setNeedsLayout()
+            }
+            keyboardContentView.setNeedsLayout()
+            return
+        }
         let frame = keyboardContentFrameForCurrentBounds()
         guard keyboardContentView.frame != frame else { return }
         keyboardContentView.frame = frame
@@ -1527,7 +1548,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     fileprivate func layoutKeyboardContentViewFromRootInputLayout() {
         guard keyboardContentView.superview === view else { return }
-        layoutKeyboardContentViewForCurrentBounds()
+        if let keyboardContentViewHeightConstraint {
+            let totalHeight = currentContentHeight + Self.topChromeCoverHeight
+            if abs(keyboardContentViewHeightConstraint.constant - totalHeight) > 0.5 {
+                keyboardContentViewHeightConstraint.constant = totalHeight
+            }
+        }
         keyboardContentView.layoutIfNeeded()
     }
 
@@ -2213,7 +2239,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func logKeyboardPresentationLayout(_ event: String, force: Bool = false) {
-#if DEBUG
         guard isViewLoaded else { return }
 
         let surfaceFrame = view.bounds
@@ -2261,9 +2286,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         lastKeyboardPresentationLayoutLogKey = key
         keyboardPresentationLayoutLogCount += 1
 
-        kbLog.notice("present layout event=\(event, privacy: .public) focus=\(self.keyboardFocus.rawValue, privacy: .public) surface=\(self.frameLogString(surfaceFrame), privacy: .public) view=\(self.frameLogString(viewFrame), privacy: .public) super=\(self.frameLogString(superviewFrame), privacy: .public) window=\(self.frameLogString(windowFrame), privacy: .public) hostWindow=\(self.frameLogString(hostWindowFrame), privacy: .public) content=\(self.frameLogString(contentFrame), privacy: .public) root=\(self.frameLogString(rootFrame), privacy: .public) preferredH=\(self.valueLogString(preferredHeight), privacy: .public) intrinsicH=\(self.valueLogString(intrinsicHeight), privacy: .public) constraint=\(self.valueLogString(heightConstant), privacy: .public)@\(self.valueLogString(CGFloat(heightPriority)), privacy: .public) safe=\(self.insetsLogString(self.view.safeAreaInsets), privacy: .public)")
+        let contentHeightConstant = keyboardContentViewHeightConstraint?.constant ?? -1
+        let contentHeightPriority = keyboardContentViewHeightConstraint?.priority.rawValue ?? 0
+
+        kbLog.notice("present layout event=\(event, privacy: .public) focus=\(self.keyboardFocus.rawValue, privacy: .public) surface=\(self.frameLogString(surfaceFrame), privacy: .public) view=\(self.frameLogString(viewFrame), privacy: .public) super=\(self.frameLogString(superviewFrame), privacy: .public) window=\(self.frameLogString(windowFrame), privacy: .public) hostWindow=\(self.frameLogString(hostWindowFrame), privacy: .public) content=\(self.frameLogString(contentFrame), privacy: .public) root=\(self.frameLogString(rootFrame), privacy: .public) preferredH=\(self.valueLogString(preferredHeight), privacy: .public) intrinsicH=\(self.valueLogString(intrinsicHeight), privacy: .public) constraint=\(self.valueLogString(heightConstant), privacy: .public)@\(self.valueLogString(CGFloat(heightPriority)), privacy: .public) contentConstraint=\(self.valueLogString(contentHeightConstant), privacy: .public)@\(self.valueLogString(CGFloat(contentHeightPriority)), privacy: .public) safe=\(self.insetsLogString(self.view.safeAreaInsets), privacy: .public)")
         kbLog.notice("toolbar layout event=\(event, privacy: .public) toolbar=\(self.frameLogString(toolbarFrame), privacy: .public) keys=\(self.frameLogString(keyRowsFrame), privacy: .public) topGap=\(self.valueLogString(toolbarTopGap), privacy: .public) keyGap=\(self.valueLogString(toolbarKeyGap), privacy: .public) voiceSwitch=\(self.frameLogString(voiceSwitchFrame), privacy: .public) voiceSettings=\(self.frameLogString(voiceSettingsFrame), privacy: .public) textSwitch=\(self.frameLogString(textSwitchFrame), privacy: .public) textSettings=\(self.frameLogString(textSettingsFrame), privacy: .public) textSwitchIcon=\(self.frameLogString(textSwitchIconFrame), privacy: .public) textSettingsIcon=\(self.frameLogString(textSettingsIconFrame), privacy: .public)")
-#endif
     }
 
     private func frameInController(_ targetView: UIView?) -> CGRect? {
@@ -2350,6 +2377,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         textKeyboardContainer.spacing = Self.textKeyboardToolbarKeyGap
         textKeyboardContainer.alignment = .fill
         textKeyboardContainer.distribution = .fill
+        textKeyboardContainer.isLayoutMarginsRelativeArrangement = true
+        textKeyboardContainer.directionalLayoutMargins = NSDirectionalEdgeInsets(
+            top: Self.textKeyboardTopProtectionInset,
+            leading: 0,
+            bottom: 0,
+            trailing: 0
+        )
         textKeyboardContainerHeightConstraint = textKeyboardContainer.heightAnchor.constraint(
             equalToConstant: Self.textKeyboardBodyHeight(for: currentKeyboardContentHeight)
         )
@@ -7789,8 +7823,8 @@ final class KeyboardRootInputView: UIInputView {
     }
 
     override func layoutSubviews() {
-        hitController?.layoutKeyboardContentViewFromRootInputLayout()
         super.layoutSubviews()
+        hitController?.layoutKeyboardContentViewFromRootInputLayout()
         updateVisibleKeyboardMask()
         logRootGeometry("layout")
     }
@@ -7854,7 +7888,6 @@ final class KeyboardRootInputView: UIInputView {
     }
 
     private func logRootGeometry(_ event: String, force: Bool = false) {
-#if DEBUG
         let touchRegion = visibleKeyboardRegion
         let maskRegion = visibleKeyboardMaskRegion
         let key = [
@@ -7880,10 +7913,8 @@ final class KeyboardRootInputView: UIInputView {
             maskRegion: maskRegion,
             hasMask: layer.mask != nil
         )
-#endif
     }
 
-#if DEBUG
     private func frameLogString(_ frame: CGRect?) -> String {
         guard let frame else { return "nil" }
         return frameLogString(frame)
@@ -7898,7 +7929,6 @@ final class KeyboardRootInputView: UIInputView {
             Double(frame.height)
         )
     }
-#endif
 
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
         guard self.point(inside: point, with: event) else {
