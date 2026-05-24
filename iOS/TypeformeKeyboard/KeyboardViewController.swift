@@ -628,6 +628,22 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         kbLog.notice("touch \(event, privacy: .public) target=\(name, privacy: .public) x=\(x, privacy: .public) y=\(y, privacy: .public) dx=\(dx, privacy: .public) focus=\(self.keyboardFocus.rawValue, privacy: .public)")
     }
 
+    fileprivate func logKeyboardRootGeometry(
+        _ event: String,
+        rootBounds: CGRect,
+        rootFrame: CGRect,
+        superviewFrame: CGRect?,
+        windowFrame: CGRect?,
+        visibleHeight: CGFloat,
+        touchRegion: CGRect,
+        maskRegion: CGRect,
+        hasMask: Bool
+    ) {
+#if DEBUG
+        kbLog.notice("root geometry event=\(event, privacy: .public) focus=\(self.keyboardFocus.rawValue, privacy: .public) bounds=\(self.frameLogString(rootBounds), privacy: .public) frame=\(self.frameLogString(rootFrame), privacy: .public) super=\(self.frameLogString(superviewFrame), privacy: .public) window=\(self.frameLogString(windowFrame), privacy: .public) visibleH=\(self.valueLogString(visibleHeight), privacy: .public) touch=\(self.frameLogString(touchRegion), privacy: .public) mask=\(self.frameLogString(maskRegion), privacy: .public) hasMask=\(hasMask, privacy: .public)")
+#endif
+    }
+
     fileprivate func beginKeyboardTouchTarget(_ target: KeyboardTouchTarget, point: CGPoint) {
         logKeyboardTouchEvent("begin", target: target, point: point)
         switch target {
@@ -1507,6 +1523,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         guard keyboardContentView.frame != frame else { return }
         keyboardContentView.frame = frame
         keyboardContentView.setNeedsLayout()
+    }
+
+    fileprivate func layoutKeyboardContentViewFromRootInputLayout() {
+        guard keyboardContentView.superview === view else { return }
+        layoutKeyboardContentViewForCurrentBounds()
+        keyboardContentView.layoutIfNeeded()
     }
 
     private func configureRimeStateCallback() {
@@ -7732,6 +7754,7 @@ final class KeyboardRootInputView: UIInputView {
     private var lastTouchCommitTime: CFTimeInterval = 0
     private let visibleKeyboardMaskLayer = CAShapeLayer()
     private let visibleKeyboardMaskTopOverflow: CGFloat = 16
+    private var lastRootGeometryLogKey = ""
 
     override init(frame: CGRect, inputViewStyle: UIInputView.Style) {
         super.init(frame: frame, inputViewStyle: inputViewStyle)
@@ -7755,9 +7778,21 @@ final class KeyboardRootInputView: UIInputView {
         return visibleKeyboardRegion.contains(point)
     }
 
+    override func didMoveToSuperview() {
+        super.didMoveToSuperview()
+        logRootGeometry("didMoveToSuperview", force: true)
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        logRootGeometry("didMoveToWindow", force: true)
+    }
+
     override func layoutSubviews() {
+        hitController?.layoutKeyboardContentViewFromRootInputLayout()
         super.layoutSubviews()
         updateVisibleKeyboardMask()
+        logRootGeometry("layout")
     }
 
     override func sizeThatFits(_ size: CGSize) -> CGSize {
@@ -7817,6 +7852,53 @@ final class KeyboardRootInputView: UIInputView {
         }
         CATransaction.commit()
     }
+
+    private func logRootGeometry(_ event: String, force: Bool = false) {
+#if DEBUG
+        let touchRegion = visibleKeyboardRegion
+        let maskRegion = visibleKeyboardMaskRegion
+        let key = [
+            event,
+            frameLogString(bounds),
+            frameLogString(frame),
+            frameLogString(superview?.frame),
+            frameLogString(convert(bounds, to: nil)),
+            frameLogString(touchRegion),
+            frameLogString(maskRegion),
+            layer.mask == nil ? "noMask" : "mask",
+        ].joined(separator: "|")
+        guard force || key != lastRootGeometryLogKey else { return }
+        lastRootGeometryLogKey = key
+        hitController?.logKeyboardRootGeometry(
+            event,
+            rootBounds: bounds,
+            rootFrame: frame,
+            superviewFrame: superview?.frame,
+            windowFrame: convert(bounds, to: nil),
+            visibleHeight: visibleKeyboardHeight,
+            touchRegion: touchRegion,
+            maskRegion: maskRegion,
+            hasMask: layer.mask != nil
+        )
+#endif
+    }
+
+#if DEBUG
+    private func frameLogString(_ frame: CGRect?) -> String {
+        guard let frame else { return "nil" }
+        return frameLogString(frame)
+    }
+
+    private func frameLogString(_ frame: CGRect) -> String {
+        String(
+            format: "%.1f,%.1f %.1fx%.1f",
+            Double(frame.minX),
+            Double(frame.minY),
+            Double(frame.width),
+            Double(frame.height)
+        )
+    }
+#endif
 
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
         guard self.point(inside: point, with: event) else {
