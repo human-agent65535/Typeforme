@@ -204,6 +204,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private var heightConstraint: NSLayoutConstraint?
     private var inputModeSwitchActivationAllowedAt: CFTimeInterval = 0
     private var didSuppressInitialInputModeSwitchEvent = false
+    private var isHoldingKeyboardPresentationUntilStable = true
+    private var didCompleteKeyboardViewAppearForPresentation = false
     private var orbContainerHeightConstraint: NSLayoutConstraint?
     private var textKeyboardContainerHeightConstraint: NSLayoutConstraint?
     private var statusTimer: Timer?
@@ -336,8 +338,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private static let keyboardTouchableBackgroundColor = UIColor.white.withAlphaComponent(0.01)
     private static let candidateExpandButtonWidth: CGFloat = 45
     private static let candidateToolbarHeight: CGFloat = 25
-    private static let textKeyboardTopProtectionInset: CGFloat = 6
-    private static let textKeyboardToolbarKeyGap: CGFloat = 6
+    private static let textKeyboardTopProtectionInset: CGFloat = 2
+    private static let textKeyboardToolbarKeyGap: CGFloat = 10
     private static let candidateInlineMinimumCellWidth: CGFloat = 41
     private static let candidateInlineCellHorizontalPadding: CGFloat = 20
     private static let candidateTextFontSize: CGFloat = 20
@@ -504,6 +506,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let initialHeight = currentKeyboardContentHeight + Self.topChromeCoverHeight
         inputModeSwitchActivationAllowedAt = CACurrentMediaTime() + 0.45
         didSuppressInitialInputModeSwitchEvent = false
+        isHoldingKeyboardPresentationUntilStable = true
+        didCompleteKeyboardViewAppearForPresentation = false
         let rootView = UIInputView(
             frame: CGRect(x: 0, y: 0, width: UIScreen.main.bounds.width, height: initialHeight),
             inputViewStyle: .keyboard
@@ -1047,6 +1051,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         super.viewWillAppear(animated)
         inputModeSwitchActivationAllowedAt = CACurrentMediaTime() + 0.45
         didSuppressInitialInputModeSwitchEvent = false
+        isHoldingKeyboardPresentationUntilStable = true
+        didCompleteKeyboardViewAppearForPresentation = false
+        setKeyboardContentVisible(false)
         configureSystemKeyboardAffordances()
         setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
         configureRimeStateCallback()
@@ -1064,11 +1071,14 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
+        didCompleteKeyboardViewAppearForPresentation = true
         setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
         disableGestureRecognizerDelays()
+        revealKeyboardContentIfPresentationStable()
         logKeyboardPresentationLayout("viewDidAppear", force: true)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
             self?.disableGestureRecognizerDelays()
+            self?.revealKeyboardContentIfPresentationStable()
             self?.logKeyboardPresentationLayout("viewDidAppear+100ms", force: true)
         }
         scheduleDeferredStartupProbe()
@@ -1396,7 +1406,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private func configureRoot() {
         refreshKeyboardBackground()
 
-        keyboardContentView.translatesAutoresizingMaskIntoConstraints = false
+        keyboardContentView.translatesAutoresizingMaskIntoConstraints = true
         keyboardContentView.backgroundColor = .clear
         keyboardContentView.clipsToBounds = false
 
@@ -1404,7 +1414,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         rootStack.spacing = Self.stackSpacing
         rootStack.translatesAutoresizingMaskIntoConstraints = false
 
-        keyboardTouchOverlay.translatesAutoresizingMaskIntoConstraints = false
+        keyboardTouchOverlay.translatesAutoresizingMaskIntoConstraints = true
         keyboardTouchOverlay.hitController = self
         keyboardTouchOverlay.backgroundColor = Self.keyboardTouchableBackgroundColor
         keyboardTouchOverlay.isOpaque = false
@@ -1412,23 +1422,35 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         view.addSubview(keyboardContentView)
         keyboardContentView.addSubview(rootStack)
         view.addSubview(keyboardTouchOverlay)
+        setKeyboardContentVisible(false)
 
         NSLayoutConstraint.activate([
-            keyboardContentView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            keyboardContentView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            keyboardContentView.topAnchor.constraint(equalTo: view.topAnchor),
-            keyboardContentView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-
-            keyboardTouchOverlay.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            keyboardTouchOverlay.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            keyboardTouchOverlay.topAnchor.constraint(equalTo: view.topAnchor),
-            keyboardTouchOverlay.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-
             rootStack.leadingAnchor.constraint(equalTo: keyboardContentView.leadingAnchor, constant: Self.rootHorizontalInset),
             rootStack.trailingAnchor.constraint(equalTo: keyboardContentView.trailingAnchor, constant: -Self.rootHorizontalInset),
             rootStack.topAnchor.constraint(equalTo: keyboardContentView.topAnchor, constant: Self.rootVerticalInset + Self.topChromeCoverHeight),
             rootStack.bottomAnchor.constraint(equalTo: keyboardContentView.bottomAnchor, constant: -Self.rootVerticalInset),
         ])
+        layoutKeyboardContentViewForCurrentBounds()
+    }
+
+    private func setKeyboardContentVisible(_ visible: Bool) {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        UIView.performWithoutAnimation {
+            self.keyboardContentView.alpha = visible ? 1 : 0
+            self.keyboardTouchOverlay.alpha = visible ? 1 : 0
+        }
+        CATransaction.commit()
+    }
+
+    private func revealKeyboardContentIfPresentationStable() {
+        guard isHoldingKeyboardPresentationUntilStable else { return }
+        guard didCompleteKeyboardViewAppearForPresentation else { return }
+        let targetHeight = currentKeyboardContentHeight + Self.topChromeCoverHeight
+        guard abs(view.bounds.height - targetHeight) <= 2 else { return }
+        isHoldingKeyboardPresentationUntilStable = false
+        setKeyboardContentVisible(true)
+        kbLog.notice("revealed keyboard content after stable presentation height")
     }
 
     private func refreshKeyboardBackground() {
@@ -1507,8 +1529,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     private func applyKeyboardHeightForCurrentTraits() {
         let targetContentHeight = currentKeyboardContentHeight
-        heightConstraint?.constant = targetContentHeight + Self.topChromeCoverHeight
-        let contentHeight = max(1, effectiveKeyboardContentHeight)
+        let totalHeight = targetContentHeight + Self.topChromeCoverHeight
+        heightConstraint?.constant = totalHeight
+        let contentHeight = max(1, targetContentHeight)
         view.setNeedsLayout()
         layoutKeyboardContentViewForCurrentBounds()
         textKeyboardContainerHeightConstraint?.constant = Self.textKeyboardBodyHeight(for: contentHeight)
@@ -1516,8 +1539,23 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         logKeyboardPresentationLayout("applyHeight", force: true)
     }
 
+    private func keyboardContentFrameForCurrentBounds() -> CGRect {
+        let bounds = view.bounds
+        let totalHeight = currentKeyboardContentHeight + Self.topChromeCoverHeight
+        let width = bounds.width > 0 ? bounds.width : UIScreen.main.bounds.width
+        let y = max(bounds.minY, bounds.maxY - totalHeight)
+        return CGRect(x: bounds.minX, y: y, width: width, height: totalHeight)
+    }
+
     private func layoutKeyboardContentViewForCurrentBounds() {
-        let contentHeight = max(1, effectiveKeyboardContentHeight)
+        let frame = keyboardContentFrameForCurrentBounds()
+        if keyboardContentView.frame != frame {
+            keyboardContentView.frame = frame
+        }
+        if keyboardTouchOverlay.frame != frame {
+            keyboardTouchOverlay.frame = frame
+        }
+        let contentHeight = max(1, currentKeyboardContentHeight)
         textKeyboardContainerHeightConstraint?.constant = Self.textKeyboardBodyHeight(for: contentHeight)
         orbContainerHeightConstraint?.constant = Self.orbContainerHeight(for: contentHeight)
         keyboardContentView.setNeedsLayout()
@@ -2163,6 +2201,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         updateCandidateGridCollapseButtonFrame()
         resetToolbarIconTransforms()
         updateKeyboardOverlayOrdering()
+        revealKeyboardContentIfPresentationStable()
         logKeyboardPresentationLayout("layout")
         logKeyboardTouchSurfaceLayoutIfNeeded()
         CATransaction.commit()
@@ -2987,7 +3026,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         configuration.baseForegroundColor = .label
         configuration.background.backgroundColor = .clear
         configuration.background.strokeWidth = 0
-        configuration.preferredSymbolConfigurationForImage = UIImage.SymbolConfiguration(pointSize: 17, weight: .regular)
+        configuration.preferredSymbolConfigurationForImage = UIImage.SymbolConfiguration(pointSize: 16, weight: .regular)
         button.configuration = configuration
         button.clipsToBounds = false
         button.imageView?.clipsToBounds = false
@@ -7758,12 +7797,13 @@ final class KeyboardTouchOverlayView: UIView {
         }
         guard let hitController else { return nil }
 
-        let target = hitController.keyboardOverlayTouchTarget(at: point)
-        hitController.logKeyboardTouchEvent("hitTest", target: target, point: point)
+        let controllerPoint = convert(point, to: hitController.view)
+        let target = hitController.keyboardOverlayTouchTarget(at: controllerPoint)
+        hitController.logKeyboardTouchEvent("hitTest", target: target, point: controllerPoint)
         switch target {
         case .textKey, .focusSurface:
             pendingActivationTarget = target
-            pendingActivationPoint = point
+            pendingActivationPoint = controllerPoint
             return self
         case .candidateAction, .none:
             pendingActivationTarget = nil
@@ -7780,8 +7820,8 @@ final class KeyboardTouchOverlayView: UIView {
 
         var handledAnyTouch = false
         for touch in orderedTouches(touches) {
-            let rootPoint = touch.location(in: self)
-            guard let target = hitController.keyboardOverlayTouchTarget(at: rootPoint) else { continue }
+            let controllerPoint = touch.location(in: hitController.view)
+            guard let target = hitController.keyboardOverlayTouchTarget(at: controllerPoint) else { continue }
             releaseExistingTouchIfNeeded(for: target)
             pendingActivationTarget = nil
             pendingActivationPoint = nil
@@ -7794,10 +7834,10 @@ final class KeyboardTouchOverlayView: UIView {
             }
             activeTouches[touch] = ActiveKeyboardTouch(
                 target: target,
-                startPoint: rootPoint,
+                startPoint: controllerPoint,
                 textKeySequence: sequence
             )
-            hitController.beginKeyboardTouchTarget(target, point: rootPoint)
+            hitController.beginKeyboardTouchTarget(target, point: controllerPoint)
             handledAnyTouch = true
         }
         if !handledAnyTouch {
@@ -7815,19 +7855,19 @@ final class KeyboardTouchOverlayView: UIView {
         for touch in orderedTouches(touches) {
             guard let active = activeTouches[touch] else { continue }
             handledAnyTouch = true
-            let rootPoint = touch.location(in: self)
+            let controllerPoint = touch.location(in: hitController.view)
             guard active.target.allowsKeyboardFocusSwipe,
                   let horizontalIntent = hitController.keyboardFocusSwipeIntent(
                     start: active.startPoint,
-                    current: rootPoint
+                    current: controllerPoint
                   )
             else { continue }
 
-            hitController.cancelKeyboardTouchTarget(active.target, point: rootPoint)
+            hitController.cancelKeyboardTouchTarget(active.target, point: controllerPoint)
             hitController.logKeyboardTouchEvent(
                 "swipe",
                 target: active.target,
-                point: rootPoint,
+                point: controllerPoint,
                 intent: horizontalIntent
             )
             hitController.switchKeyboardFocusFromFallbackSwipe(deltaX: horizontalIntent)
@@ -7849,7 +7889,7 @@ final class KeyboardTouchOverlayView: UIView {
         var handledAnyTouch = false
         for touch in orderedTouches(touches) {
             guard let active = activeTouches[touch] else { continue }
-            let point = touch.location(in: self)
+            let point = touch.location(in: hitController.view)
             if active.textKeySequence != nil {
                 pendingEndedTextKeyPoints[touch] = point
             } else {
@@ -7876,7 +7916,7 @@ final class KeyboardTouchOverlayView: UIView {
         var handledAnyTouch = false
         for touch in orderedTouches(touches) {
             guard let active = activeTouches[touch] else { continue }
-            hitController.cancelKeyboardTouchTarget(active.target, point: touch.location(in: self))
+            hitController.cancelKeyboardTouchTarget(active.target, point: touch.location(in: hitController.view))
             pendingEndedTextKeyPoints.removeValue(forKey: touch)
             activeTouches.removeValue(forKey: touch)
             handledAnyTouch = true
