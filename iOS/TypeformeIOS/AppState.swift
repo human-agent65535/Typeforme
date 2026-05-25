@@ -608,15 +608,17 @@ final class AppState: ObservableObject {
         cachedServerRimeUserPhrases = settings.rimeUserPhrases
         UserDefaults.standard.set(settings.rimeUserPhrases, forKey: Self.serverRimeUserPhrasesKey)
         config.supportedLanguages = settings.supportedLanguages
+        // `config.correctionMode` tracks the server's current default so a
+        // new scene (clearResult / cold start / unpair) can fall back to it.
+        // Do NOT push it onto the live `correctionMode` — the user's chip
+        // selection must survive Mac-settings refreshes (previous behavior
+        // here forced re-align to server, which users found jarring).
         config.correctionMode = settings.correctionMode
         config.languageIDs = ASRLanguageSelection.validatedIDs(
             config.languageIDs,
             supportedOptions: config.supportedLanguageOptions
         )
         selectedLanguageIDs = Set(config.validatedLanguageIDs)
-        if !phase.isBusy {
-            correctionMode = settings.correctionMode
-        }
         store.save(config)
         publishKeyboardDefaults()
     }
@@ -851,7 +853,9 @@ final class AppState: ObservableObject {
 
         // Keep the press-to-record path local-only. Mac settings refresh can
         // take seconds on a stale route; foreground/bootstrap keep it warm.
-        resetCorrectionModeToDefault()
+        // Note: do NOT reset correctionMode here — the user's last chip pick
+        // must persist across recordings within a scene. New scenes (clear /
+        // unpair / cold start) handle the reset themselves.
         do {
             try await startHostRecordingCapture()
             acquireIdleTimer()
@@ -896,7 +900,9 @@ final class AppState: ObservableObject {
 
         // Keep the press-to-record path local-only. Mac settings refresh can
         // take seconds on a stale route; foreground/bootstrap keep it warm.
-        resetCorrectionModeToDefault()
+        // Note: do NOT reset correctionMode here — the user's last chip pick
+        // must persist across recordings within a scene. New scenes (clear /
+        // unpair / cold start) handle the reset themselves.
         do {
             try await startHostRecordingCapture()
             acquireIdleTimer()
@@ -2147,7 +2153,7 @@ final class AppState: ObservableObject {
             }
         }
         // Keep the keyboard press-to-record path local-only for the same reason.
-        resetCorrectionModeToDefault()
+        // No correctionMode reset here either — match the host orb path.
         do {
             _ = try await keyboardAudioSession.beginRecording()
             keyboardCaptureStartedFromKeyboard = true
