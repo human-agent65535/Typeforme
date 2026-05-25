@@ -7,6 +7,7 @@ enum BridgeRequestEndpoint: String, CaseIterable, Hashable, Sendable {
     case settingsRead
     case settingsWrite
     case dictate
+    case jobEvents
     case restyle
     case editText
 
@@ -17,6 +18,7 @@ enum BridgeRequestEndpoint: String, CaseIterable, Hashable, Sendable {
         case .settingsRead: return "Settings"
         case .settingsWrite: return "Settings update"
         case .dictate: return "Dictate"
+        case .jobEvents: return "Job events"
         case .restyle: return "Restyle"
         case .editText: return "Edit text"
         }
@@ -29,6 +31,7 @@ enum BridgeRequestEndpoint: String, CaseIterable, Hashable, Sendable {
         case .settingsRead: return "GET /v1/settings"
         case .settingsWrite: return "POST /v1/settings"
         case .dictate: return "POST /v1/dictate"
+        case .jobEvents: return "GET /v1/jobs/:jobID/events"
         case .restyle: return "POST /v1/restyle"
         case .editText: return "POST /v1/edit-text"
         }

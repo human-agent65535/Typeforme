@@ -2,12 +2,14 @@
 
 // 状态栏
 "Setup" = "需要设置";
+"Full Access" = "完全访问";
 "Opening" = "打开中";
 "Preparing" = "准备中";
 "Ready" = "就绪";
 "Recording" = "录音中";
 "Sending" = "处理中";
-"Rewriting" = "改写中";
+"Refining" = "优化中";
+"Editing" = "编辑中";
 "Style saved" = "样式已保存";
 "Inserted" = "已插入";
 "Issue" = "异常";
@@ -54,10 +56,11 @@
 "Open Typeforme" = "打开 Typeforme";
 "Enable Full Access" = "允许完全访问";
 "Command selected text" = "对选中文本下达指令";
+"Pick refine style" = "选择优化风格";
 "Cancel recording" = "取消录音";
 "Paste from Clipboard" = "从剪贴板粘贴";
 "Voice level" = "音量";
-"Correction mode: %@" = "纠正模式: %@";
+"Refine mode: %@" = "优化模式: %@";
 "Double tap to choose another mode" = "双击切换模式";
 "Show keyboard" = "显示键盘";
 "Show voice input" = "显示语音输入";

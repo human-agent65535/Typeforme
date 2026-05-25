@@ -119,6 +119,11 @@ struct ContentView: View {
                     // so it sits at the bottom and can be dismissed.
                     VStack(spacing: 16) {
                         HeroRecordCard(audio: state.audioCoordinator)
+                        if state.keyboardNeedsFullAccessSetup {
+                            KeyboardFullAccessBanner {
+                                showingKeyboardGuide = true
+                            }
+                        }
                         ModeChipsRow()
                         LanguagesRow()
                         ResultCard()
@@ -164,9 +169,9 @@ private struct SetupStatusCard: View {
                 withAnimation(.snappy(duration: 0.2)) { isExpanded.toggle() }
             } label: {
                 HStack(spacing: 8) {
-                    Image(systemName: "checkmark.seal.fill")
-                        .foregroundStyle(Color.green)
-                    Text("Paired with Mac")
+                    Image(systemName: state.keyboardNeedsFullAccessSetup ? "lock.shield.fill" : "checkmark.seal.fill")
+                        .foregroundStyle(state.keyboardNeedsFullAccessSetup ? Color.orange : Color.green)
+                    Text(state.keyboardNeedsFullAccessSetup ? "Keyboard needs Full Access" : "Keyboard ready")
                         .font(.subheadline.weight(.semibold))
                     Spacer()
                     Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
@@ -183,7 +188,7 @@ private struct SetupStatusCard: View {
             if isExpanded {
                 Divider()
 
-                Text("Typeforme dictates in any text field via its keyboard. Two iOS-only steps:")
+                Text(state.keyboardNeedsFullAccessSetup ? "Allow Full Access so the Typeforme keyboard can talk to this app." : "Typeforme dictates in any text field via its keyboard.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -231,14 +236,68 @@ private struct SetupStatusCard: View {
         .onAppear {
             guard !didApplyInitialExpansion else { return }
             didApplyInitialExpansion = true
-            isExpanded = !state.keyboardEverContacted
+            isExpanded = state.keyboardNeedsFullAccessSetup
         }
-        .onChange(of: state.keyboardEverContacted) { _, contacted in
-            guard contacted else { return }
+        .onChange(of: state.keyboardNeedsFullAccessSetup) { _, needsSetup in
+            guard !needsSetup else {
+                withAnimation(.snappy(duration: 0.2)) {
+                    isExpanded = true
+                }
+                return
+            }
             withAnimation(.snappy(duration: 0.2)) {
                 isExpanded = false
             }
         }
+    }
+}
+
+private struct KeyboardFullAccessBanner: View {
+    let onShowGuide: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "lock.shield.fill")
+                .foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Keyboard needs Full Access")
+                    .font(.footnote.weight(.semibold))
+                Text("Open iOS Settings, enable the Typeforme keyboard, then allow Full Access.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 10) {
+                    Button {
+                        onShowGuide()
+                    } label: {
+                        Label("Guide", systemImage: "questionmark.circle")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+
+                    Button {
+                        if let url = URL(string: UIApplication.openSettingsURLString) {
+                            UIApplication.shared.open(url)
+                        }
+                    } label: {
+                        Label("Open Settings", systemImage: "arrow.up.right.square")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color.orange.opacity(0.12))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color.orange.opacity(0.32), lineWidth: 0.5)
+        )
     }
 }
 
@@ -380,11 +439,13 @@ private struct HeroRecordCard: View {
                 Text(title)
                     .font(.title3.weight(.semibold))
                     .foregroundStyle(.primary)
-                Text(detail)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .lineLimit(2)
+                if !detail.isEmpty {
+                    Text(detail)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .lineLimit(2)
+                }
             }
             .padding(.horizontal, 24)
 
@@ -522,23 +583,27 @@ private struct HeroRecordCard: View {
         (audio.recorder.isRecording || state.phase == .recording) && !state.isStopAndSendInFlight
     }
 
-    /// The orb is a single-purpose action: hold to speak, release to send.
-    /// Title only ever reflects that contract or the in-flight verb of a
-    /// user-initiated action — never a retry CTA, never a success/error
-    /// status. Status goes to `detail`, errors go to `ErrorBanner`.
+    /// Title carries the live stage label when a job is in flight (so it
+    /// stays in lock-step with the keyboard's status label and the bridge's
+    /// `processingStatusMessage`); otherwise it shows the input-mode prompt.
     private var title: String {
         if state.phase == .preparing {
             return NSLocalizedString("Preparing…", comment: "Host recording preparing title")
         }
         if isRecording { return state.inputMode.recordingTitle }
+        if state.phase == .sending || state.phase == .restyling,
+           let stage = state.processingStatusMessage,
+           !stage.isEmpty {
+            return stage
+        }
         switch state.phase {
         case .sending:
-            return NSLocalizedString("Sending…", comment: "Host dictation sending title")
+            return NSLocalizedString("Sending", comment: "Bridge job stage")
         case .restyling:
-            return NSLocalizedString("Restyling…", comment: "Host dictation restyling title")
+            return NSLocalizedString("Refining", comment: "Bridge job stage")
         default:
             return state.isRefreshingRoute
-                ? NSLocalizedString("Checking Bridge…", comment: "Host route refresh title")
+                ? NSLocalizedString("Sending", comment: "Bridge job stage")
                 : state.inputMode.idleTitle
         }
     }
@@ -555,8 +620,10 @@ private struct HeroRecordCard: View {
             return installing
         }
         switch state.phase {
-        case .sending: return "Transcribing…"
-        case .restyling: return "Re-styling with the new mode."
+        case .sending, .restyling:
+            // Title now carries the live stage label — leave detail empty so
+            // the orb doesn't show "Sending" twice on two lines.
+            return ""
         case .success(.ready): return "Result ready."
         case .success(.copied): return "Result copied to the clipboard."
         case .success(.inserted): return "Result inserted."
@@ -1132,10 +1199,10 @@ private struct KeyboardGuideView: View {
                 )
             }
 
-            Section("Style Buttons") {
+            Section("Refine Buttons") {
                 GuideStepRow(
                     icon: "sparkles",
-                    title: "Restyle existing text",
+                    title: "Refine existing text",
                     detail: "Clean, Polish, Polish+, Structure+, and Formal+ use the selected text first, then the current visible input text."
                 )
                 GuideStepRow(
@@ -1324,7 +1391,7 @@ private struct MacSettingsView: View {
                     }
                 }
 
-                Section("Correction") {
+                Section("Refine") {
                     Picker("Engine", selection: correctionBackendBinding) {
                         ForEach(draft.correctionBackendOptions) { option in
                             Text(option.displayName).tag(option.id)
@@ -1333,7 +1400,7 @@ private struct MacSettingsView: View {
                     .pickerStyle(.menu)
 
                     TimeoutSecondsRow(
-                        title: "Correction Timeout",
+                        title: "Refine Timeout",
                         seconds: correctionTimeoutSecondsBinding,
                         range: 0.1...30
                     )

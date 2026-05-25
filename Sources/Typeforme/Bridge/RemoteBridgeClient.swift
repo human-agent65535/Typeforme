@@ -439,7 +439,8 @@ struct RemoteBridgeClient {
         appCategory: String,
         contextBefore: String = "",
         contextAfter: String = "",
-        includeRawTranscript: Bool
+        includeRawTranscript: Bool,
+        clientJobID: String? = nil
     ) throws -> (body: Data, contentType: String) {
         let multipart = try BridgeMultipart.dictateBody(
             audioURL: audioURL,
@@ -450,7 +451,8 @@ struct RemoteBridgeClient {
             appCategory: appCategory,
             contextBefore: contextBefore,
             contextAfter: contextAfter,
-            includeRawTranscript: includeRawTranscript
+            includeRawTranscript: includeRawTranscript,
+            clientJobID: clientJobID
         )
         return (multipart.body, multipart.contentType)
     }
@@ -464,7 +466,8 @@ struct RemoteBridgeClient {
         appCategory: String,
         contextBefore: String = "",
         contextAfter: String = "",
-        includeRawTranscript: Bool
+        includeRawTranscript: Bool,
+        clientJobID: String? = nil
     ) throws -> (fileURL: URL, contentType: String, contentLength: Int64) {
         let multipart = try BridgeMultipart.dictateBodyFile(
             audioURL: audioURL,
@@ -475,7 +478,8 @@ struct RemoteBridgeClient {
             appCategory: appCategory,
             contextBefore: contextBefore,
             contextAfter: contextAfter,
-            includeRawTranscript: includeRawTranscript
+            includeRawTranscript: includeRawTranscript,
+            clientJobID: clientJobID
         )
         return (multipart.fileURL, multipart.contentType, multipart.contentLength)
     }

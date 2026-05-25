@@ -47,7 +47,7 @@ enum AppPhase: Equatable {
         case .preparing: return "Preparing"
         case .recording: return "Recording"
         case .sending: return "Sending"
-        case .restyling: return "Restyling"
+        case .restyling: return "Refining"
         case .success(.ready): return "Result ready"
         case .success(.copied): return "Copied"
         case .success(.inserted): return "Inserted"
@@ -151,7 +151,7 @@ struct ServerTimingSummary: Equatable {
             parts.append("Transcription \(transcriptionLatencyMs)ms")
         }
         if let correctionLatencyMs {
-            parts.append("Restyle \(correctionLatencyMs)ms")
+            parts.append("Refine \(correctionLatencyMs)ms")
         }
         if parts.isEmpty, let totalLatencyMs {
             parts.append("Total \(totalLatencyMs)ms")
@@ -189,7 +189,9 @@ final class AppState: ObservableObject {
     /// by SetupStatusCard to decide whether to default-expand the onboarding
     /// hints. Persisted in UserDefaults so it survives app restarts.
     @Published var keyboardEverContacted: Bool
+    @Published var keyboardFullAccessRequired: Bool
     @Published var lastRecordingSummary = ""
+    @Published var processingStatusMessage: String?
     @Published var latestServerTiming: ServerTimingSummary?
     @Published var macSettings: BridgeMacSettingsPayload?
     @Published var isEditingMacSettings = false
@@ -197,6 +199,10 @@ final class AppState: ObservableObject {
     @Published private(set) var isStopAndSendInFlight = false
     /// Transient feedback ("Copied!", "Saved!") rendered as a toast.
     @Published var transientMessage: String?
+
+    var keyboardNeedsFullAccessSetup: Bool {
+        keyboardFullAccessRequired || !keyboardEverContacted
+    }
 
     let audioCoordinator = AudioCoordinator()
 
@@ -218,12 +224,14 @@ final class AppState: ObservableObject {
     private static let keyboardDefaultTextInputLanguageKey = "keyboard.defaultTextInputLanguage"
     private static let keyboardRimeLearningResetGenerationKey = "keyboard.rimeLearningResetGeneration"
     private static let keyboardEverContactedKey = "keyboard.everContacted"
+    private static let keyboardFullAccessRequiredKey = "keyboard.fullAccessRequired"
     private static let serverRimeUserPhrasesKey = "server.rimeUserPhrases"
     private static let recordingTailBufferNanoseconds: UInt64 = 200_000_000
     private var hostHoldReleasePending = false
     private var hostRecordingUsesKeyboardAudioSession = false
     private var keyboardCaptureStartedFromKeyboard = false
     private var activeKeyboardRecordingCommandID: String?
+    private var queuedKeyboardStopCommandID: String?
     private var hostAudioSessionExpiryTask: Task<Void, Never>?
     private var keyboardStandbyRefreshTask: Task<Void, Never>?
     private var routeFetchedAt: Date?
@@ -325,7 +333,7 @@ final class AppState: ObservableObject {
         guard let status = macSettings?.modelStatuses.first(where: { $0.installing }) else {
             return nil
         }
-        let prefix = status.kind == "asr" ? "Installing ASR" : "Installing Restyle"
+        let prefix = status.kind == "asr" ? "Installing ASR" : "Installing Refine"
         return "\(prefix): \(status.displayName)"
     }
 
@@ -356,6 +364,7 @@ final class AppState: ObservableObject {
             .flatMap(KeyboardDefaultTextInputLanguage.init(rawValue:)) ?? .lastUsed
         self.keyboardRimeLearningResetGeneration = UserDefaults.standard.integer(forKey: Self.keyboardRimeLearningResetGenerationKey)
         self.keyboardEverContacted = UserDefaults.standard.bool(forKey: Self.keyboardEverContactedKey)
+        self.keyboardFullAccessRequired = UserDefaults.standard.bool(forKey: Self.keyboardFullAccessRequiredKey)
         self.cachedServerRimeUserPhrases = Self.loadCachedServerRimeUserPhrases()
         self.selectedLanguageIDs = Set(saved.validatedLanguageIDs)
         self.keyboardStandbyEnabled = true
@@ -517,6 +526,22 @@ final class AppState: ObservableObject {
         }
         routeStatus = await routeResolver.resolve(config: config, probeAllEndpoints: probeAllEndpoints)
         persistActiveLocalRouteIfNeeded(routeStatus)
+        routeFetchedAt = Date()
+    }
+
+    private func preflightActiveBridgeRoute() async {
+        guard let baseURL = routeStatus.activeURL else {
+            await refreshRoute(force: true, probeAllEndpoints: false, showIndicator: false)
+            return
+        }
+
+        let timeout = routeStatus.activeKind == .cloud ? 3.0 : 1.5
+        let isHealthy = await BridgeClient(baseURL: baseURL, token: config.token).health(timeout: timeout)
+        guard isHealthy else {
+            routeFetchedAt = nil
+            await refreshRoute(force: true, probeAllEndpoints: false, showIndicator: false)
+            return
+        }
         routeFetchedAt = Date()
     }
 
@@ -744,6 +769,7 @@ final class AppState: ObservableObject {
     ) async throws -> BridgeDictateResponse {
         func dictate(to baseURL: URL) async throws -> BridgeDictateResponse {
             let client = BridgeClient(baseURL: baseURL, token: config.token)
+            let jobID = "ios_\(UUID().uuidString.replacingOccurrences(of: "-", with: "_"))"
             return try await client.dictate(
                 audioURL: audioURL,
                 audioExtension: audioExtension,
@@ -751,7 +777,17 @@ final class AppState: ObservableObject {
                 correctionMode: correctionMode,
                 contextBefore: contextBefore,
                 contextAfter: contextAfter,
-                includeRawTranscript: includeRawTranscript
+                includeRawTranscript: includeRawTranscript,
+                clientJobID: jobID,
+                onJobEvent: { event in
+                    await MainActor.run {
+                        self.applyBridgeJobStatus(
+                            event,
+                            keyboardCommandID: keyboardCommandID,
+                            recordingInfo: recordingInfo
+                        )
+                    }
+                }
             )
         }
 
@@ -764,7 +800,7 @@ final class AppState: ObservableObject {
                 publishKeyboardStatus(
                     .sending,
                     commandID: keyboardCommandID,
-                    message: "Reconnecting Bridge",
+                    message: NSLocalizedString("Sending", comment: "Bridge job stage"),
                     audioDurationSeconds: recordingInfo.durationSeconds,
                     audioByteCount: recordingInfo.byteCount
                 )
@@ -956,7 +992,7 @@ final class AppState: ObservableObject {
         // already behave as stopped/sending.
         setPhase(.sending)
         if shouldPublishKeyboardProgress {
-            publishKeyboardStatus(.sending, commandID: effectiveKeyboardCommandID, message: "Sending")
+            publishKeyboardStatus(.sending, commandID: effectiveKeyboardCommandID, message: NSLocalizedString("Sending", comment: "Bridge job stage"))
         }
         KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.dictationStopped)
         try? await Task.sleep(nanoseconds: Self.recordingTailBufferNanoseconds)
@@ -1002,10 +1038,14 @@ final class AppState: ObservableObject {
         defer { releaseIdleTimer() }
 
         var baseURL = routeStatus.activeURL
-        if baseURL == nil {
+        let shouldPreflightBridge = shouldPublishKeyboardProgress || isKeyboardCapture
+        if shouldPreflightBridge {
             if let effectiveKeyboardCommandID {
-                publishKeyboardStatus(.sending, commandID: effectiveKeyboardCommandID, message: "Resolving Bridge")
+                publishKeyboardStatus(.sending, commandID: effectiveKeyboardCommandID, message: NSLocalizedString("Sending", comment: "Bridge job stage"))
             }
+            await preflightActiveBridgeRoute()
+            baseURL = routeStatus.activeURL
+        } else if baseURL == nil {
             await refreshRoute(force: true, probeAllEndpoints: false, showIndicator: false)
             baseURL = routeStatus.activeURL
         }
@@ -1100,7 +1140,15 @@ final class AppState: ObservableObject {
                 await resumeKeyboardStandbyAfterCommand()
                 return
             }
-            resultText = text
+            // Only populate the host Result panel's TextEditor when this
+            // dictation was initiated from the host UI. Keyboard-driven
+            // dictations insert directly into whatever the user is typing
+            // (which may be the Result TextEditor itself when the user is
+            // running Typeforme as the host) — setting `resultText` there
+            // double-writes the text via the TextEditor's two-way binding.
+            if !shouldPublishKeyboardProgress {
+                resultText = text
+            }
             lastGeneratedResultText = text
             if keyboardTextEditContext == nil {
                 rawTranscript = response.rawTranscript ?? rawTranscript
@@ -1245,6 +1293,7 @@ final class AppState: ObservableObject {
         rawTranscript = ""
         sessionID = nil
         lastGeneratedResultText = nil
+        processingStatusMessage = nil
         resetCorrectionModeToDefault()
         setPhase(.idle)
     }
@@ -1276,6 +1325,7 @@ final class AppState: ObservableObject {
         let action = url.host ?? url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         var source: String?
         var handoffID: String?
+        var reason: String?
         var shouldReturnToKeyboard = false
         var returnBundleID: String?
         var returnProcessID: Int32?
@@ -1288,8 +1338,13 @@ final class AppState: ObservableObject {
             handoffID = items.first { $0.name == "handoff_id" }?
                 .value?
                 .trimmingCharacters(in: .whitespacesAndNewlines)
+            reason = items.first { $0.name == "reason" }?
+                .value?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
 
-            if source == "keyboard",
+            if source == "keyboard", action == "setup", reason == "full_access" {
+                markKeyboardFullAccessRequired()
+            } else if source == "keyboard",
                let handoffID,
                let handoff = KeyboardSharedDefaults.consumeHostHandoff(id: handoffID, now: now),
                handoff.action == action {
@@ -1317,7 +1372,11 @@ final class AppState: ObservableObject {
             rememberReturnTarget(bundleID: resolvedReturnBundleID)
         }
         appLog.notice("handleOpenURL: action=\(action, privacy: .public), source=\(isAuthenticatedKeyboardHandoff ? "keyboard" : (source ?? "nil"), privacy: .public), handoff=\(isAuthenticatedKeyboardHandoff, privacy: .public)")
-        if action == "record" {
+        if action == "setup" {
+            if source == "keyboard", reason == "full_access" {
+                markKeyboardFullAccessRequired()
+            }
+        } else if action == "record" {
             if isAuthenticatedKeyboardHandoff {
                 // Older keyboard builds used `record` for the microphone handoff,
                 // which could start host recording before the extension returned.
@@ -1768,9 +1827,20 @@ final class AppState: ObservableObject {
     /// expose Full Access state to the containing app.
     @MainActor
     private func markKeyboardEverContacted() {
+        if keyboardFullAccessRequired {
+            keyboardFullAccessRequired = false
+            UserDefaults.standard.set(false, forKey: Self.keyboardFullAccessRequiredKey)
+        }
         guard !keyboardEverContacted else { return }
         keyboardEverContacted = true
         UserDefaults.standard.set(true, forKey: Self.keyboardEverContactedKey)
+    }
+
+    @MainActor
+    private func markKeyboardFullAccessRequired() {
+        guard !keyboardFullAccessRequired else { return }
+        keyboardFullAccessRequired = true
+        UserDefaults.standard.set(true, forKey: Self.keyboardFullAccessRequiredKey)
     }
 
     private func clearKeyboardCaptureContext() {
@@ -1798,6 +1868,11 @@ final class AppState: ObservableObject {
 
     private func configureKeyboardDarwinBridge() {
         keyboardDarwinObservers.forEach { $0.stopObserving() }
+        let fullAccessObserver = KeyboardDarwinBridge.observe(KeyboardDarwinNotificationName.fullAccessRequired) { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.markKeyboardFullAccessRequired()
+            }
+        }
         guard let requestStartName = KeyboardDarwinNotificationName.authenticatedRequest(
             KeyboardDarwinNotificationName.requestStartDictation,
             token: keyboardBridgeToken
@@ -1815,10 +1890,11 @@ final class AppState: ObservableObject {
                 token: keyboardBridgeToken
             )
         else {
-            keyboardDarwinObservers = []
+            keyboardDarwinObservers = [fullAccessObserver]
             return
         }
         keyboardDarwinObservers = [
+            fullAccessObserver,
             KeyboardDarwinBridge.observe(requestStartName) { [weak self] in
                 Task { @MainActor [weak self] in
                     guard let self else { return }
@@ -1891,7 +1967,7 @@ final class AppState: ObservableObject {
             activeKeyboardRecordingCommandID = command.id
             await startKeyboardRecording(commandID: command.id, allowSessionStart: true)
         case .stop:
-            await stopAndSend(keyboardCommandID: command.id)
+            return beginKeyboardStopAndSend(commandID: command.id)
         case .cancel:
             rememberCanceledKeyboardCommand(command.id)
             clearKeyboardCaptureContext()
@@ -1919,6 +1995,36 @@ final class AppState: ObservableObject {
         return keyboardBridgeStatus
     }
 
+    private func beginKeyboardStopAndSend(commandID: String) -> KeyboardBridgeStatus {
+        guard keyboardAudioSession.isRecording || recorder.isRecording else {
+            queuedKeyboardStopCommandID = nil
+            publishKeyboardStatus(.standby, commandID: commandID, message: "Ready")
+            KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.dictationStopped)
+            return keyboardBridgeStatus
+        }
+        guard !isStopAndSendInFlight, queuedKeyboardStopCommandID == nil else {
+            if keyboardBridgeStatus.state != .sending {
+                publishKeyboardStatus(
+                    .sending,
+                    commandID: queuedKeyboardStopCommandID ?? commandID,
+                    message: NSLocalizedString("Sending", comment: "Bridge job stage")
+                )
+            }
+            return keyboardBridgeStatus
+        }
+
+        queuedKeyboardStopCommandID = commandID
+        publishKeyboardStatus(.sending, commandID: commandID, message: NSLocalizedString("Sending", comment: "Bridge job stage"))
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.stopAndSend(keyboardCommandID: commandID)
+            if self.queuedKeyboardStopCommandID == commandID {
+                self.queuedKeyboardStopCommandID = nil
+            }
+        }
+        return keyboardBridgeStatus
+    }
+
     private func restyleKeyboardText(_ command: KeyboardBridgeCommand) async {
         guard !isBusy else {
             publishKeyboardStatus(.error, commandID: command.id, message: "Typeforme is busy")
@@ -1928,7 +2034,7 @@ final class AppState: ObservableObject {
         guard let source = command.text?.trimmingCharacters(in: .whitespacesAndNewlines),
               !source.isEmpty
         else {
-            publishKeyboardStatus(.error, commandID: command.id, message: "Nothing to rewrite")
+            publishKeyboardStatus(.error, commandID: command.id, message: "Nothing to refine")
             return
         }
         let existingResultText = resultText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1938,7 +2044,7 @@ final class AppState: ObservableObject {
         let preservedRawTranscript = rawTranscript
         correctionMode = requestedCorrectionMode
 
-        publishKeyboardStatus(.sending, commandID: command.id, message: "Rewriting text")
+        publishKeyboardStatus(.sending, commandID: command.id, message: NSLocalizedString("Refining", comment: "Bridge job stage"))
         await refreshRoute(force: true, probeAllEndpoints: false, showIndicator: false)
         guard let baseURL = routeStatus.activeURL else {
             setFailure("Bridge unavailable. Check pairing, Local URL, or Cloud URL.")
@@ -1980,7 +2086,7 @@ final class AppState: ObservableObject {
             publishKeyboardStatus(
                 .result,
                 commandID: command.id,
-                message: "Rewritten",
+                message: "Refined",
                 resultText: text,
                 rawTranscriptLength: isRestylingCurrentDictationResult
                     ? preservedRawTranscript.trimmingCharacters(in: .whitespacesAndNewlines).count
@@ -2143,6 +2249,70 @@ final class AppState: ObservableObject {
         keyboardBridgeStatus = status
     }
 
+    private func applyBridgeJobStatus(
+        _ event: BridgeJobStatusEvent,
+        keyboardCommandID: String?,
+        recordingInfo: RecordingFileInfo
+    ) {
+        guard phase.isBusy else { return }
+        let transcriptLength = event.rawTranscriptLength
+            ?? event.rawTranscript?.trimmingCharacters(in: .whitespacesAndNewlines).count
+
+        // Collapse the bridge's 6 raw stages into the 5 user-meaningful ones:
+        //   audio_received    → Sending
+        //   transcribing      → Transcribing
+        //   transcript_ready  → (skip; still in Transcribing, refining starts next)
+        //   refining          → Refining
+        //   result_ready      → Inserted
+        //   failed            → <error reason>
+        // Same string drives `processingStatusMessage` (host orb detail) and
+        // `publishKeyboardStatus(... message:)` (keyboard top label).
+        if event.stage == .transcriptReady,
+           let raw = event.rawTranscript?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !raw.isEmpty {
+            rawTranscript = raw
+        }
+
+        let stageMessage: String?
+        let keyboardState: KeyboardBridgeState
+        switch event.stage {
+        case .audioReceived:
+            stageMessage = NSLocalizedString("Sending", comment: "Bridge job stage")
+            keyboardState = .sending
+        case .transcribing:
+            stageMessage = NSLocalizedString("Transcribing", comment: "Bridge job stage")
+            keyboardState = .sending
+        case .transcriptReady:
+            stageMessage = nil
+            keyboardState = .sending
+        case .refining:
+            stageMessage = NSLocalizedString("Refining", comment: "Bridge job stage")
+            keyboardState = .sending
+        case .resultReady:
+            stageMessage = NSLocalizedString("Inserted", comment: "Bridge job stage")
+            keyboardState = .sending
+        case .failed:
+            let trimmedError = event.error?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            stageMessage = trimmedError.isEmpty ? event.message : trimmedError
+            keyboardState = .error
+        }
+
+        guard let stageMessage else { return }
+        processingStatusMessage = stageMessage
+        if event.stage != .resultReady, let keyboardCommandID {
+            // `.resultReady` is a host-only transient — the final keyboard
+            // status is published by the dictate response handler.
+            publishKeyboardStatus(
+                keyboardState,
+                commandID: keyboardCommandID,
+                message: stageMessage,
+                audioDurationSeconds: recordingInfo.durationSeconds,
+                audioByteCount: recordingInfo.byteCount,
+                rawTranscriptLength: transcriptLength
+            )
+        }
+    }
+
     private func applyCorrectionMetadata(
         status correctionStatus: String?,
         error correctionError: String?,
@@ -2150,7 +2320,7 @@ final class AppState: ObservableObject {
     ) {
         if correctionStatus == "error" {
             let message = correctionError?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            setFailure(message.isEmpty ? "Mac correction failed." : message)
+            setFailure(message.isEmpty ? "Mac refine failed." : message)
             return
         }
         if correctionStatus == "timeout" {
@@ -2158,11 +2328,11 @@ final class AppState: ObservableObject {
             setPhase(.success(successKind))
             switch successKind {
             case .ready:
-                showTransient("Correction timed out; transcript ready")
+                showTransient("Refine timed out; transcript ready")
             case .copied:
-                showTransient("Correction timed out; copied transcript")
+                showTransient("Refine timed out; copied transcript")
             case .inserted:
-                showTransient("Correction timed out; inserted transcript")
+                showTransient("Refine timed out; inserted transcript")
             }
             return
         }
@@ -2189,6 +2359,9 @@ final class AppState: ObservableObject {
 
     private func setPhase(_ next: AppPhase) {
         phase = next
+        if !next.isBusy {
+            processingStatusMessage = nil
+        }
         phaseResetTask?.cancel()
         phaseResetTask = nil
         switch next {

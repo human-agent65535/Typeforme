@@ -27,7 +27,6 @@ engine:
   processors:
     - ascii_composer
     - recognizer
-    - key_binder
     - speller
     - punctuator
     - selector
@@ -110,13 +109,6 @@ punctuator:
     '=': '='
   full_shape:
     ' ': { commit: '　' }
-
-key_binder:
-  bindings:
-    - { when: has_menu, accept: minus, send: Page_Up }
-    - { when: has_menu, accept: equal, send: Page_Down }
-    - { when: has_menu, accept: comma, send: Page_Up }
-    - { when: has_menu, accept: period, send: Page_Down }
 
 recognizer:
   patterns:

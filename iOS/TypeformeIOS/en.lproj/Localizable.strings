@@ -8,7 +8,12 @@
 
 // Setup status card
 "Paired with Mac" = "Paired with Mac";
+"Keyboard ready" = "Keyboard ready";
+"Keyboard needs Full Access" = "Keyboard needs Full Access";
 "Typeforme dictates in any text field via its keyboard. Two iOS-only steps:" = "Typeforme dictates in any text field via its keyboard. Two iOS-only steps:";
+"Typeforme dictates in any text field via its keyboard." = "Typeforme dictates in any text field via its keyboard.";
+"Allow Full Access so the Typeforme keyboard can talk to this app." = "Allow Full Access so the Typeforme keyboard can talk to this app.";
+"Open iOS Settings, enable the Typeforme keyboard, then allow Full Access." = "Open iOS Settings, enable the Typeforme keyboard, then allow Full Access.";
 "Enable Typeforme keyboard" = "Enable Typeforme keyboard";
 "Settings → General → Keyboard → Add New Keyboard" = "Settings → General → Keyboard → Add New Keyboard";
 "Allow Full Access" = "Allow Full Access";
@@ -75,7 +80,17 @@
 "No raw transcript yet — start dictation to see the unedited recognition output here." = "No raw transcript yet — start dictation to see the unedited recognition output here.";
 "Preparing…" = "Preparing…";
 "Sending…" = "Sending…";
-"Restyling…" = "Restyling…";
+"Refining…" = "Refining…";
+"Audio received." = "Audio received.";
+"Transcribing…" = "Transcribing…";
+"Transcript ready. Refining…" = "Transcript ready. Refining…";
+"Result ready." = "Result ready.";
+
+/* Bridge job stage strings — host orb + keyboard top label share these. */
+"Sending" = "Sending";
+"Transcribing" = "Transcribing";
+"Refining" = "Refining";
+"Inserted" = "Inserted";
 
 // Pairing and routing
 "Pair your Mac" = "Pair your Mac";
@@ -117,7 +132,7 @@
 // Keyboard guide
 "Setup" = "Setup";
 "In Any App" = "In Any App";
-"Style Buttons" = "Style Buttons";
+"Refine Buttons" = "Refine Buttons";
 "Pair the Mac Server" = "Pair the Mac Server";
 "Paste the pairing JSON from the Mac app, then refresh Server Settings so iOS has the current languages and default mode." = "Paste the pairing JSON from the Mac app, then refresh Server Settings so iOS has the current languages and default mode.";
 "Enable the keyboard" = "Enable the keyboard";
@@ -128,7 +143,7 @@
 "Select the wrong span first, then press the mic and say the intended replacement. Only that selected span is replaced." = "Select the wrong span first, then press the mic and say the intended replacement. Only that selected span is replaced.";
 "Command edit" = "Command edit";
 "Press the wand and speak an instruction like make this shorter, translate this, or turn it into bullets. With no selection, it targets the current input text." = "Press the wand and speak an instruction like make this shorter, translate this, or turn it into bullets. With no selection, it targets the current input text.";
-"Restyle existing text" = "Restyle existing text";
+"Refine existing text" = "Refine existing text";
 "Clean, Polish, Polish+, Structure+, and Formal+ use the selected text first, then the current visible input text." = "Clean, Polish, Polish+, Structure+, and Formal+ use the selected text first, then the current visible input text.";
 "Selection changed" = "Selection changed";
 "If iOS no longer reports the same selection when the result returns, Typeforme copies the result instead of guessing where to paste it." = "If iOS no longer reports the same selection when the result returns, Typeforme copies the result instead of guessing where to paste it.";
@@ -137,9 +152,9 @@
 "Speech" = "Speech";
 "ASR Engine" = "ASR Engine";
 "ASR Timeout" = "ASR Timeout";
-"Correction" = "Correction";
+"Refine" = "Refine";
 "Engine" = "Engine";
-"Correction Timeout" = "Correction Timeout";
+"Refine Timeout" = "Refine Timeout";
 "Model Startup Timeout" = "Model Startup Timeout";
 "Mode" = "Mode";
 "Numbers" = "Numbers";

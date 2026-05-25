@@ -4,7 +4,7 @@
 "Ready" = "就绪";
 "Recording" = "录音中";
 "Transcribing…" = "识别中…";
-"Polishing…" = "润色中…";
+"Refining…" = "优化中…";
 "Preview" = "预览";
 "Inserting…" = "插入中…";
 "Done" = "完成";
@@ -22,6 +22,18 @@
 "Settings…" = "设置…";
 "Quit Typeforme" = "退出 Typeforme";
 
+// 登录启动
+"Open Typeforme at login" = "登录时打开 Typeforme";
+"Open Login Items…" = "打开登录项…";
+"On" = "已开启";
+"Off" = "已关闭";
+"Needs approval" = "需要批准";
+"Unavailable" = "不可用";
+"Typeforme will open automatically when you log in." = "你登录后 Typeforme 会自动打开。";
+"Typeforme will not open automatically when you log in." = "你登录后 Typeforme 不会自动打开。";
+"Approve Typeforme in System Settings to finish enabling login launch." = "请在系统设置中批准 Typeforme,以完成登录启动启用。";
+"Login launch is unavailable for this build. Make sure the app bundle is code signed." = "此构建无法使用登录启动。请确认 app bundle 已签名。";
+
 // 设置 sidebar
 "General" = "通用";
 "Modes" = "模式";
@@ -31,7 +43,7 @@
 "Typeforme Settings" = "Typeforme 设置";
 
 // 设置:模式子项
-"Correction" = "纠错";
+"Refine" = "优化";
 "Prompts" = "提示词";
 "Vocabulary" = "词库";
 

@@ -158,10 +158,16 @@ final class BridgeService {
     func dictate(_ request: BridgeDictateRequest) async throws -> BridgeDictateResponse {
         pruneExpiredSessions()
         let start = Date()
+        let jobID = normalizedJobID(request.clientJobID)
         let languageIDs = resolveLanguageIDs(ids: request.languageIDs, mode: request.languageMode)
         let correctionMode = try resolveCorrectionMode(request.correctionMode)
         let audioURL = try await writeAudio(request)
         defer { try? FileManager.default.removeItem(at: audioURL) }
+        await publishJobStatus(
+            jobID: jobID,
+            stage: .audioReceived,
+            message: "Audio received"
+        )
 
         let appCategory = resolveAppCategory(rawValue: request.appCategory, bundleID: request.bundleID)
         let debugLog = DebugLogStore.begin(
@@ -178,6 +184,11 @@ final class BridgeService {
         let raw: String
         let transcriptionLatencyMs: Int
         do {
+            await publishJobStatus(
+                jobID: jobID,
+                stage: .transcribing,
+                message: "Transcribing audio"
+            )
             raw = try await ASRFactory.shared.get().transcribe(audioFileURL: audioURL, languageIDs: languageIDs)
             transcriptionLatencyMs = elapsedMs(since: asrStarted)
             DebugLogStore.recordASR(
@@ -194,10 +205,33 @@ final class BridgeService {
                 error: error.localizedDescription,
                 latencyMs: elapsedMs(since: asrStarted)
             )
+            await publishJobStatus(
+                jobID: jobID,
+                stage: .failed,
+                message: "Transcription failed",
+                error: error.localizedDescription
+            )
             throw error
         }
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { throw BridgeServiceError.emptyTranscript }
+        guard !trimmed.isEmpty else {
+            await publishJobStatus(
+                jobID: jobID,
+                stage: .failed,
+                message: "Audio produced an empty transcript",
+                transcriptionLatencyMs: transcriptionLatencyMs,
+                error: BridgeServiceError.emptyTranscript.localizedDescription
+            )
+            throw BridgeServiceError.emptyTranscript
+        }
+        await publishJobStatus(
+            jobID: jobID,
+            stage: .transcriptReady,
+            message: "Transcript ready",
+            rawTranscript: request.includeRawTranscript == true ? trimmed : nil,
+            rawTranscriptLength: trimmed.count,
+            transcriptionLatencyMs: transcriptionLatencyMs
+        )
         let contextBefore = request.contextBefore ?? ""
         let contextAfter = request.contextAfter ?? ""
         let editRequest = correctionRequest(
@@ -215,6 +249,13 @@ final class BridgeService {
         let correction: BridgeCorrectionOutput
         let correctionLatencyMs: Int
         do {
+            await publishJobStatus(
+                jobID: jobID,
+                stage: .refining,
+                message: "Refining transcript",
+                rawTranscriptLength: trimmed.count,
+                transcriptionLatencyMs: transcriptionLatencyMs
+            )
             correction = try await correct(
                 rawTranscript: trimmed,
                 languageIDs: languageIDs,
@@ -238,6 +279,15 @@ final class BridgeService {
                     latencyMs: latencyMs,
                     request: editRequest,
                     timeoutMs: AppSettings.correctionTimeoutMs
+                )
+                await publishJobStatus(
+                    jobID: jobID,
+                    stage: .failed,
+                    message: "Refine failed",
+                    rawTranscriptLength: trimmed.count,
+                    transcriptionLatencyMs: transcriptionLatencyMs,
+                    refineLatencyMs: latencyMs,
+                    error: error.localizedDescription
                 )
                 throw error
             }
@@ -281,7 +331,7 @@ final class BridgeService {
             createdAt: Date()
         ))
 
-        return BridgeDictateResponse(
+        let response = BridgeDictateResponse(
             sessionID: sessionID,
             text: correction.result.text,
             correctionMode: correctionMode.rawValue,
@@ -293,11 +343,24 @@ final class BridgeService {
             correctionStatus: correction.status,
             correctionError: correction.error
         )
+        await publishJobStatus(
+            jobID: jobID,
+            stage: .resultReady,
+            message: correction.status == "ok" ? "Refine complete" : "Transcript ready",
+            rawTranscriptLength: trimmed.count,
+            text: correction.result.text,
+            latencyMs: response.latencyMs,
+            transcriptionLatencyMs: transcriptionLatencyMs,
+            refineLatencyMs: correctionLatencyMs,
+            error: correction.error
+        )
+        return response
     }
 
     func restyle(_ request: BridgeRestyleRequest) async throws -> BridgeRestyleResponse {
         pruneExpiredSessions()
         let start = Date()
+        let jobID = normalizedJobID(request.clientJobID)
         let session = request.sessionID.flatMap { sessions[$0] }
         let correctionMode = try resolveCorrectionMode(request.correctionMode ?? session?.correctionMode.rawValue)
         let providedRawTranscript = request.rawTranscript?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -324,6 +387,12 @@ final class BridgeService {
         let correction: BridgeCorrectionOutput
         let correctionLatencyMs: Int
         do {
+            await publishJobStatus(
+                jobID: jobID,
+                stage: .refining,
+                message: "Refining text",
+                rawTranscriptLength: rawTranscript.count
+            )
             correction = try await correct(
                 rawTranscript: rawTranscript,
                 languageIDs: languageIDs,
@@ -337,7 +406,17 @@ final class BridgeService {
             correctionLatencyMs = elapsedMs(since: correctionStarted)
         } catch {
             let latencyMs = elapsedMs(since: correctionStarted)
-            guard Self.canFallbackToRawTranscript(error) else { throw error }
+            guard Self.canFallbackToRawTranscript(error) else {
+                await publishJobStatus(
+                    jobID: jobID,
+                    stage: .failed,
+                    message: "Refine failed",
+                    rawTranscriptLength: rawTranscript.count,
+                    refineLatencyMs: latencyMs,
+                    error: error.localizedDescription
+                )
+                throw error
+            }
             let fallbackResult = normalize(
                 CorrectionResult(action: .commit, text: rawTranscript, risk: .medium),
                 languageIDs: languageIDs,
@@ -364,7 +443,7 @@ final class BridgeService {
             createdAt: Date()
         ))
 
-        return BridgeRestyleResponse(
+        let response = BridgeRestyleResponse(
             sessionID: sessionID,
             text: correction.result.text,
             correctionMode: correctionMode.rawValue,
@@ -374,6 +453,17 @@ final class BridgeService {
             correctionStatus: correction.status,
             correctionError: correction.error
         )
+        await publishJobStatus(
+            jobID: jobID,
+            stage: .resultReady,
+            message: correction.status == "ok" ? "Refine complete" : "Text ready",
+            rawTranscriptLength: rawTranscript.count,
+            text: correction.result.text,
+            latencyMs: response.latencyMs,
+            refineLatencyMs: correctionLatencyMs,
+            error: correction.error
+        )
+        return response
     }
 
     private static func isCorrectionTimeout(_ error: Error) -> Bool {
@@ -724,6 +814,43 @@ final class BridgeService {
 
     private func elapsedMs(since date: Date) -> Int {
         Int((Date().timeIntervalSince(date) * 1000).rounded())
+    }
+
+    private func normalizedJobID(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed.count <= 96 else { return nil }
+        let allowed = trimmed.filter { character in
+            character.isLetter || character.isNumber || character == "-" || character == "_"
+        }
+        return allowed == trimmed ? trimmed : nil
+    }
+
+    private func publishJobStatus(
+        jobID: String?,
+        stage: BridgeJobStatusStage,
+        message: String,
+        rawTranscript: String? = nil,
+        rawTranscriptLength: Int? = nil,
+        text: String? = nil,
+        latencyMs: Int? = nil,
+        transcriptionLatencyMs: Int? = nil,
+        refineLatencyMs: Int? = nil,
+        error: String? = nil
+    ) async {
+        guard let jobID else { return }
+        await BridgeJobStatusCenter.shared.publish(BridgeJobStatusEvent(
+            jobID: jobID,
+            stage: stage,
+            message: message,
+            rawTranscript: rawTranscript,
+            rawTranscriptLength: rawTranscriptLength,
+            text: text,
+            latencyMs: latencyMs,
+            transcriptionLatencyMs: transcriptionLatencyMs,
+            refineLatencyMs: refineLatencyMs,
+            error: error
+        ))
     }
 
     private func appVersion() -> String {

@@ -2,12 +2,14 @@
 
 // Status strip
 "Setup" = "Setup";
+"Full Access" = "Full Access";
 "Opening" = "Opening";
 "Preparing" = "Preparing";
 "Ready" = "Ready";
 "Recording" = "Recording";
 "Sending" = "Sending";
-"Rewriting" = "Rewriting";
+"Refining" = "Refining";
+"Editing" = "Editing";
 "Style saved" = "Style saved";
 "Inserted" = "Inserted";
 "Issue" = "Issue";
@@ -54,10 +56,11 @@
 "Open Typeforme" = "Open Typeforme";
 "Enable Full Access" = "Enable Full Access";
 "Command selected text" = "Command selected text";
+"Pick refine style" = "Pick refine style";
 "Cancel recording" = "Cancel recording";
 "Paste from Clipboard" = "Paste from Clipboard";
 "Voice level" = "Voice level";
-"Correction mode: %@" = "Correction mode: %@";
+"Refine mode: %@" = "Refine mode: %@";
 "Double tap to choose another mode" = "Double tap to choose another mode";
 "Show keyboard" = "Show keyboard";
 "Show voice input" = "Show voice input";

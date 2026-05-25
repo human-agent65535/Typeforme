@@ -6,7 +6,7 @@
 "Ready" = "Ready";
 "Recording" = "Recording";
 "Transcribing…" = "Transcribing…";
-"Polishing…" = "Polishing…";
+"Refining…" = "Refining…";
 "Preview" = "Preview";
 "Inserting…" = "Inserting…";
 "Done" = "Done";
@@ -24,6 +24,18 @@
 "Settings…" = "Settings…";
 "Quit Typeforme" = "Quit Typeforme";
 
+// Login launch
+"Open Typeforme at login" = "Open Typeforme at login";
+"Open Login Items…" = "Open Login Items…";
+"On" = "On";
+"Off" = "Off";
+"Needs approval" = "Needs approval";
+"Unavailable" = "Unavailable";
+"Typeforme will open automatically when you log in." = "Typeforme will open automatically when you log in.";
+"Typeforme will not open automatically when you log in." = "Typeforme will not open automatically when you log in.";
+"Approve Typeforme in System Settings to finish enabling login launch." = "Approve Typeforme in System Settings to finish enabling login launch.";
+"Login launch is unavailable for this build. Make sure the app bundle is code signed." = "Login launch is unavailable for this build. Make sure the app bundle is code signed.";
+
 // Settings sidebar
 "General" = "General";
 "Modes" = "Modes";
@@ -33,7 +45,7 @@
 "Typeforme Settings" = "Typeforme Settings";
 
 // Settings: Modes subsections
-"Correction" = "Correction";
+"Refine" = "Refine";
 "Prompts" = "Prompts";
 "Vocabulary" = "Vocabulary";
 

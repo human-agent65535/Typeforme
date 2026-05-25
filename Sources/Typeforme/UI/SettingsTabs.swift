@@ -72,9 +72,11 @@ private struct IntegerSettingField: View {
 
 struct GeneralSettingsView: View {
     @AppStorage(AppSettings.Keys.processingMode) private var processingModeRaw = ProcessingMode.client.rawValue
+    @AppStorage(AppSettings.Keys.launchAtLogin) private var launchAtLogin = true
     @State private var axTrusted = AccessibilityPermissions.isTrusted
     @State private var microphoneStatus = AppPermissions.microphoneStatus
-    @State private var localNetworkCheck = LocalNetworkPermissionCheck.notChecked
+    @State private var launchAtLoginStatus = LaunchAtLoginController.status
+    @State private var launchAtLoginError: String?
 
     var body: some View {
         Form {
@@ -90,6 +92,27 @@ struct GeneralSettingsView: View {
                     Text(Bundle.main.bundleIdentifier ?? "—")
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
+                }
+                HStack {
+                    Toggle("Open Typeforme at login", isOn: launchAtLoginBinding)
+                    Spacer()
+                    Text(LocalizedStringKey(launchAtLoginStatus.displayText))
+                        .foregroundStyle(launchAtLoginStatusColor)
+                    if launchAtLoginStatus == .requiresApproval {
+                        Button("Open Login Items…") {
+                            LaunchAtLoginController.openSystemSettings()
+                        }
+                    }
+                }
+                Text(LocalizedStringKey(launchAtLoginHelpText))
+                    .font(.footnote)
+                    .foregroundStyle(launchAtLoginHelpColor)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let launchAtLoginError {
+                    Text(launchAtLoginError)
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
             Section("Role") {
@@ -134,7 +157,7 @@ struct GeneralSettingsView: View {
                     .fixedSize()
                 }
                 Text(axTrusted
-                     ? "Typeforme can insert corrected text via synthesized input."
+                     ? "Typeforme can insert refined text via synthesized input."
                      : "Toggle Typeforme on in System Settings → Privacy → Accessibility. This row refreshes automatically once you grant access.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
@@ -169,24 +192,6 @@ struct GeneralSettingsView: View {
                     .font(.footnote)
                     .foregroundStyle(microphoneHelpColor)
                     .fixedSize(horizontal: false, vertical: true)
-
-                HStack {
-                    Text("Local Network")
-                    Spacer()
-                    Text(localNetworkStatusText)
-                        .foregroundStyle(localNetworkStatusColor)
-                    Button(localNetworkCheck.status == .checking ? "Checking" : "Check") {
-                        Task { await checkLocalNetworkPermission() }
-                    }
-                    .disabled(localNetworkCheck.status == .checking)
-                    Button("Open System Settings…") {
-                        AppPermissions.openLocalNetworkSettings()
-                    }
-                }
-                Text(localNetworkHelpText)
-                    .font(.footnote)
-                    .foregroundStyle(localNetworkHelpColor)
-                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .formStyle(.grouped)
@@ -198,9 +203,8 @@ struct GeneralSettingsView: View {
                 if now != axTrusted { axTrusted = now }
                 let mic = AppPermissions.microphoneStatus
                 if mic != microphoneStatus { microphoneStatus = mic }
-                if localNetworkCheck.status == .notChecked {
-                    await checkLocalNetworkPermission()
-                }
+                let loginStatus = LaunchAtLoginController.status
+                if loginStatus != launchAtLoginStatus { launchAtLoginStatus = loginStatus }
                 try? await Task.sleep(nanoseconds: 1_500_000_000)
             }
         }
@@ -209,7 +213,7 @@ struct GeneralSettingsView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             axTrusted = AccessibilityPermissions.isTrusted
             microphoneStatus = AppPermissions.microphoneStatus
-            Task { await checkLocalNetworkPermission() }
+            launchAtLoginStatus = LaunchAtLoginController.status
         }
     }
 
@@ -231,6 +235,50 @@ struct GeneralSettingsView: View {
             AppSettings.setProcessingMode(mode)
             processingModeRaw = AppSettings.processingMode.rawValue
         }
+    }
+
+    private var launchAtLoginBinding: Binding<Bool> {
+        Binding {
+            launchAtLogin
+        } set: { enabled in
+            launchAtLogin = enabled
+            launchAtLoginError = nil
+            do {
+                launchAtLoginStatus = try LaunchAtLoginController.setEnabled(enabled)
+            } catch {
+                launchAtLoginStatus = LaunchAtLoginController.status
+                launchAtLoginError = error.localizedDescription
+                Log.app.error("Launch at login toggle failed enabled=\(enabled, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            }
+        }
+    }
+
+    private var launchAtLoginStatusColor: Color {
+        switch launchAtLoginStatus {
+        case .enabled: return .green
+        case .disabled: return .secondary
+        case .requiresApproval: return .orange
+        case .unavailable: return .red
+        }
+    }
+
+    private var launchAtLoginHelpText: String {
+        switch launchAtLoginStatus {
+        case .enabled:
+            return "Typeforme will open automatically when you log in."
+        case .disabled:
+            return "Typeforme will not open automatically when you log in."
+        case .requiresApproval:
+            return "Approve Typeforme in System Settings to finish enabling login launch."
+        case .unavailable:
+            return "Login launch is unavailable for this build. Make sure the app bundle is code signed."
+        }
+    }
+
+    private var launchAtLoginHelpColor: Color {
+        launchAtLoginStatus == .enabled || launchAtLoginStatus == .disabled
+            ? Color.secondary
+            : Color.orange
     }
 
     private var microphoneStatusText: String {
@@ -268,43 +316,6 @@ struct GeneralSettingsView: View {
 
     private var microphoneHelpColor: Color {
         microphoneStatus == .granted ? Color.secondary : Color.orange
-    }
-
-    private var localNetworkStatusText: String {
-        switch localNetworkCheck.status {
-        case .notChecked: return "Not checked"
-        case .checking: return "Checking"
-        case .reachable: return "Reachable"
-        case .notRequired: return "Not required"
-        case .noLocalTarget: return "No LAN target"
-        case .blockedOrUnreachable: return "Blocked or unreachable"
-        }
-    }
-
-    private var localNetworkStatusColor: Color {
-        switch localNetworkCheck.status {
-        case .reachable, .notRequired: return .green
-        case .notChecked, .checking, .noLocalTarget: return .orange
-        case .blockedOrUnreachable: return .red
-        }
-    }
-
-    private var localNetworkHelpText: String {
-        let prefix = localNetworkCheck.targetDescription.isEmpty
-            ? ""
-            : "\(localNetworkCheck.targetDescription): "
-        return prefix + localNetworkCheck.detail
-    }
-
-    private var localNetworkHelpColor: Color {
-        localNetworkCheck.status == .reachable || localNetworkCheck.status == .notRequired
-            ? Color.secondary
-            : Color.orange
-    }
-
-    private func checkLocalNetworkPermission() async {
-        localNetworkCheck = .checking
-        localNetworkCheck = await AppPermissions.checkLocalNetwork()
     }
 }
 
@@ -473,7 +484,7 @@ struct ClientServerSettingsView: View {
                     }
                 }
 
-                Section("Server Correction") {
+                Section("Server Refine") {
                     Picker("Engine", selection: correctionBackendBinding) {
                         ForEach(correctionBackendOptions(for: current)) { option in
                             Text(option.displayName).tag(option.id)
@@ -538,7 +549,7 @@ struct ClientServerSettingsView: View {
                         }
                         .disabled(!clientConfig.isConfigured)
                     }
-                    Text("After pulling, this page shows the active Server ASR, language, correction, default mode, auto-commit, and debug settings returned by /v1/settings.")
+                    Text("After pulling, this page shows the active Server ASR, language, refine engine, default mode, auto-commit, and debug settings returned by /v1/settings.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -1012,7 +1023,7 @@ struct RecordingSettingsView: View {
                     Spacer()
                     Button("Reset") { KeyboardShortcuts.reset(.toggleDictation) }
                 }
-                Text("Press once to start, press again to stop. While transcribing or correcting, press again to cancel. Combo (⌘ ⌥ ⌃ ⇧ + key) only — single modifiers belong in the hold section above. Default is ⌘⇧Space.")
+                Text("Press once to start, press again to stop. While transcribing or refining, press again to cancel. Combo (⌘ ⌥ ⌃ ⇧ + key) only — single modifiers belong in the hold section above. Default is ⌘⇧Space.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
@@ -1273,7 +1284,7 @@ struct ASRSettingsView: View {
                     Text(selectedQwenModel.note)
                         .font(.footnote)
                         .foregroundStyle(.secondary)
-                    Text("This caps only Qwen-ASR transcript output. It is not the correction model token limit.")
+                    Text("This caps only Qwen-ASR transcript output. It is not the refine model token limit.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -1864,7 +1875,7 @@ struct CorrectionSettingsView: View {
     var body: some View {
         Form {
             Section("Engine") {
-                Picker("Correction engine", selection: $backendRaw) {
+                Picker("Refine engine", selection: $backendRaw) {
                     ForEach(selectableBackends, id: \.rawValue) { kind in
                         Text(backendLabel(kind)).tag(kind.rawValue)
                     }
@@ -1902,7 +1913,7 @@ struct CorrectionSettingsView: View {
 
                 Toggle("Auto-commit in Classic", isOn: $autoCommit)
 
-                Text("Voice Draft writes into the focused input first, then keeps the action bar available for restyle or text actions.")
+                Text("Voice Draft writes into the focused input first, then keeps the action bar available for refine or text actions.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
 
@@ -2643,7 +2654,7 @@ struct BridgeSettingsView: View {
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
                 }
-                Text("Bridge accepts requests from Typeforme clients and returns corrected text. It listens on 127.0.0.1 unless LAN access is enabled. The adapter setting controls which LAN URLs are included in pairing JSON.")
+                Text("Bridge accepts requests from Typeforme clients and returns refined text. It listens on 127.0.0.1 unless LAN access is enabled. The adapter setting controls which LAN URLs are included in pairing JSON.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
@@ -2711,10 +2722,10 @@ struct BridgeSettingsView: View {
                     .foregroundStyle(.secondary)
             }
             Section("Endpoints") {
-                Text("GET  /v1/health\nGET  /v1/pairing\nGET  /v1/settings\nPOST /v1/settings\nPOST /v1/dictate\nPOST /v1/restyle\nPOST /v1/edit-text")
+                Text("GET  /v1/health\nGET  /v1/pairing\nGET  /v1/settings\nGET  /v1/jobs/:jobID/events\nPOST /v1/settings\nPOST /v1/dictate\nPOST /v1/restyle\nPOST /v1/edit-text")
                     .font(.system(.callout, design: .monospaced))
                     .foregroundStyle(.secondary)
-                Text("All endpoints require the bearer token. Missing or wrong tokens return an empty not-found response. /v1/pairing returns token plus enabled LAN/public URLs for first setup; clients pull languages and defaults from /v1/settings. /v1/dictate uses multipart audio file upload and returns corrected text. /v1/restyle reuses text from a recent session or submitted text so mode switching does not require another recording. /v1/edit-text edits a selected or targeted text span from a spoken repair or command.")
+                Text("All endpoints require the bearer token. Missing or wrong tokens return an empty not-found response. /v1/pairing returns token plus enabled LAN/public URLs for first setup; clients pull languages and defaults from /v1/settings. /v1/jobs/:jobID/events streams transcript and refine status. /v1/dictate uses multipart audio file upload and returns refined text. /v1/restyle reuses text from a recent session or submitted text so mode switching does not require another recording. /v1/edit-text edits a selected or targeted text span from a spoken repair or command.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }

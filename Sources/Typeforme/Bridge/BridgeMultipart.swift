@@ -38,7 +38,8 @@ enum BridgeMultipart {
         appCategory: String,
         contextBefore: String = "",
         contextAfter: String = "",
-        includeRawTranscript: Bool
+        includeRawTranscript: Bool,
+        clientJobID: String? = nil
     ) throws -> Body {
         try dictateBody(
             audioURL: audioURL,
@@ -50,7 +51,8 @@ enum BridgeMultipart {
             appCategory: appCategory,
             contextBefore: contextBefore,
             contextAfter: contextAfter,
-            includeRawTranscript: includeRawTranscript
+            includeRawTranscript: includeRawTranscript,
+            clientJobID: clientJobID
         )
     }
 
@@ -63,7 +65,8 @@ enum BridgeMultipart {
         appCategory: String,
         contextBefore: String,
         contextAfter: String,
-        includeRawTranscript: Bool
+        includeRawTranscript: Bool,
+        clientJobID: String? = nil
     ) throws -> Body {
         try dictateBody(
             audioURL: audioURL,
@@ -75,7 +78,8 @@ enum BridgeMultipart {
             appCategory: appCategory,
             contextBefore: contextBefore,
             contextAfter: contextAfter,
-            includeRawTranscript: includeRawTranscript
+            includeRawTranscript: includeRawTranscript,
+            clientJobID: clientJobID
         )
     }
 
@@ -89,11 +93,15 @@ enum BridgeMultipart {
         appCategory: String,
         contextBefore: String,
         contextAfter: String,
-        includeRawTranscript: Bool
+        includeRawTranscript: Bool,
+        clientJobID: String?
     ) throws -> Body {
         let boundary = "Typeforme-\(UUID().uuidString)"
         var body = Data()
 
+        if let clientJobID = normalizedClientJobID(clientJobID) {
+            appendField("client_job_id", clientJobID, to: &body, boundary: boundary)
+        }
         appendField("language_ids", jsonString(languageIDs), to: &body, boundary: boundary)
         appendField("correction_mode", correctionMode, to: &body, boundary: boundary)
         appendField("app_category", appCategory, to: &body, boundary: boundary)
@@ -131,7 +139,8 @@ enum BridgeMultipart {
         appCategory: String,
         contextBefore: String = "",
         contextAfter: String = "",
-        includeRawTranscript: Bool
+        includeRawTranscript: Bool,
+        clientJobID: String? = nil
     ) throws -> FileBody {
         try dictateBodyFile(
             audioURL: audioURL,
@@ -143,7 +152,8 @@ enum BridgeMultipart {
             appCategory: appCategory,
             contextBefore: contextBefore,
             contextAfter: contextAfter,
-            includeRawTranscript: includeRawTranscript
+            includeRawTranscript: includeRawTranscript,
+            clientJobID: clientJobID
         )
     }
 
@@ -157,7 +167,8 @@ enum BridgeMultipart {
         appCategory: String,
         contextBefore: String,
         contextAfter: String,
-        includeRawTranscript: Bool
+        includeRawTranscript: Bool,
+        clientJobID: String?
     ) throws -> FileBody {
         let boundary = "Typeforme-\(UUID().uuidString)"
         let bodyURL = FileManager.default.temporaryDirectory
@@ -166,6 +177,9 @@ enum BridgeMultipart {
         let handle = try FileHandle(forWritingTo: bodyURL)
 
         do {
+            if let clientJobID = normalizedClientJobID(clientJobID) {
+                try writeField("client_job_id", clientJobID, to: handle, boundary: boundary)
+            }
             try writeField("language_ids", jsonString(languageIDs), to: handle, boundary: boundary)
             try writeField("correction_mode", correctionMode, to: handle, boundary: boundary)
             try writeField("app_category", appCategory, to: handle, boundary: boundary)
@@ -566,6 +580,16 @@ enum BridgeMultipart {
             throw BridgeMultipartError.invalidRequest("Unsupported audio extension: \(ext)")
         }
         return ext
+    }
+
+    private static func normalizedClientJobID(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed.count <= 96 else { return nil }
+        let allowed = trimmed.filter { character in
+            character.isLetter || character.isNumber || character == "-" || character == "_"
+        }
+        return allowed == trimmed ? trimmed : nil
     }
 
     private static func jsonString<T: Encodable>(_ value: T) -> String {

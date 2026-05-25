@@ -215,6 +215,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private var lastMissingAudioLevelLogAt: TimeInterval = 0
     private var bridgeStatus: KeyboardBridgeStatus?
     private var lastBridgeContactAt: TimeInterval = 0
+    /// Wall-clock deadline for the post-insert "Inserted" flash on the text
+    /// toolbar. While in window, the status label displays the inserted hint
+    /// (green) in place of the normal toolbar icons, then auto-clears.
+    private var insertedFlashUntil: TimeInterval = 0
+    private var insertedFlashClearTask: DispatchWorkItem?
+    private static let insertedFlashDuration: TimeInterval = 1.2
     /// Set whenever the host posts a Darwin signal that proves the bridge is
     /// alive (sessionStarted, dictationStarted, dictationStopped). Cleared by
     /// `sessionEnded` or by a confirmed `.start` failure. This is a durable
@@ -231,7 +237,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     /// Hold-mode "release-to-cancel" zone: set when the user drags the
     /// finger off the orb mid-press, cleared if they drag back in. Lift
     /// while true => cancel; lift while false => commit.
-    private var isVoicePressWillCancel = false
     private var voicePressBeganAt: TimeInterval = 0
     private var isStartRequestInFlight = false
     private var shouldStopWhenStartCompletes = false
@@ -244,8 +249,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private var recentSelectionTarget: TextRewriteTarget?
     private var recentSelectionCapturedAt: TimeInterval = 0
     private var styleRewriteCommandID: String?
-    private var recentRestyleText: String?
-    private var recentRestyleShownAt: TimeInterval = 0
     private var isTextSpaceCursorTracking = false
     private var textSpaceCursorStartX: CGFloat = 0
     private var suppressTextSpaceTapUntil: TimeInterval = 0
@@ -269,7 +272,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     /// rather than reject deliberate quick taps.
     private let minimumIntentReleaseDuration: TimeInterval = 0.10
     private let selectionSnapshotTTL: TimeInterval = 1.25
-    private let restyleSuggestionTTL: TimeInterval = 45
     private static let dictationContextLimit = 600
     private static let textRewriteContextExpansionLimit = 2_000
     private static let textRewriteContextExpansionMaxSteps = 40
@@ -318,6 +320,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     /// surface a second strip in the topRow while hold-recording. Tap mode
     /// keeps the original in-orb voiceprint since the orb stays visible.
     private let topRowVoicePrint = VoicePrintView()
+    /// Overlay shown on the text-keyboard toolbar during recording. Replaces
+    /// the toolbar icons visually so the user only sees the live waveform.
+    private let textToolbarVoicePrint = VoicePrintView()
+    /// Overlay shown on the text-keyboard toolbar during sending/error. Mirrors
+    /// the voiceprint's location and surfaces the bridge `status.message`
+    /// (Audio received → Transcribing → Refining → …) plus terminal errors.
+    private let textToolbarStatusLabel = UILabel()
     /// Smoothed audioLevel driving pulse-ring brightness — louder voice =
     /// brighter rings, visible at the orb's edges even when a finger covers
     /// the rest of the orb.
@@ -377,7 +386,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private static let topChromeCoverHeight: CGFloat = 0
 
     private let utilityRow = UIStackView()
-    private let pasteButton = UIButton(type: .system)
     private let commandButton = UIButton(type: .system)
     private let spaceButton = UIButton(type: .system)
     private let deleteButton = UIButton(type: .system)
@@ -387,7 +395,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private let textToolbar = UIStackView()
     private let textWandButton = UIButton(type: .system)
     private let textStylePickerButton = UIButton(type: .system)
-    private let textPasteButton = UIButton(type: .system)
     private let textToolsButton = UIButton(type: .system)
     private let textKeyboardSwitchButton = UIButton(type: .system)
     private let textHostSettingsButton = UIButton(type: .system)
@@ -436,7 +443,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private var reusableCandidateSeparators: [UIView] = []
     private var reusableCandidateStatusLabels: [UILabel] = []
     private var candidateStatusLabelWidthConstraints: [ObjectIdentifier: NSLayoutConstraint] = [:]
-    private var reusableRestyleButtons: [CorrectionModePreset: UIButton] = [:]
     private var isCandidateGridExpanded = false
     private var activeCandidateSeparatorIndex = 0
     private var activeCandidateStatusLabelIndex = 0
@@ -601,7 +607,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             voiceButton,
             inputModeSwitch,
             voiceSendButton,
-            pasteButton,
             commandButton,
             spaceButton,
             deleteButton,
@@ -610,7 +615,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             candidateGridCollapseButton,
             textWandButton,
             textStylePickerButton,
-            textPasteButton,
             textToolsButton,
             textKeyboardSwitchButton,
             textHostSettingsButton,
@@ -728,7 +732,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         [
             textWandButton,
             textStylePickerButton,
-            textPasteButton,
             textToolsButton,
             textKeyboardSwitchButton,
             textHostSettingsButton,
@@ -1206,6 +1209,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         keyboardDarwinObservers = []
         voicePrint.isActive = false
         topRowVoicePrint.isActive = false
+        textToolbarVoicePrint.isActive = false
         stopPulseRings()
         // Snap the popover closed without animation so a future appearance
         // starts from a clean state.
@@ -1657,11 +1661,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             voiceIconView,
             voicePrint,
             topRowVoicePrint,
+            textToolbarVoicePrint,
             voiceTitleLabel,
             inputModeSwitch,
             voiceSendButton,
             utilityRow,
-            pasteButton,
             spaceButton,
             deleteButton,
             returnButton,
@@ -1669,7 +1673,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             textToolbar,
             textWandButton,
             textStylePickerButton,
-            textPasteButton,
             textToolsButton,
             textKeyboardSwitchButton,
             textHostSettingsButton,
@@ -1699,7 +1702,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             $0.button.overrideUserInterfaceStyle = style
             $0.button.setNeedsUpdateConfiguration()
         }
-        [settingsButton, keyboardFocusButton, pasteButton, spaceButton, deleteButton, returnButton].forEach {
+        [settingsButton, keyboardFocusButton, spaceButton, deleteButton, returnButton].forEach {
             $0.setNeedsUpdateConfiguration()
         }
         refreshCapsuleButtonConfigurations()
@@ -1943,13 +1946,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         voiceButton.accessibilityTraits = .button
         voiceButton.isExclusiveTouch = true
         voiceButton.addTarget(self, action: #selector(voicePressDown), for: .touchDown)
-        voiceButton.addTarget(self, action: #selector(voicePressDragIn), for: .touchDragEnter)
-        voiceButton.addTarget(self, action: #selector(voicePressDragOut), for: .touchDragExit)
         voiceButton.addTarget(self, action: #selector(voicePressUp), for: .touchUpInside)
-        // touchDragExit no longer fires the cancel here — it sets the
-        // "release-to-cancel" pre-state via `voicePressDragOut`, so the
-        // user can drag back in to recover instead of being cancelled the
-        // instant their finger crosses the edge.
+        // Hold mode: release outside the orb still ends the dictation (no
+        // drag-out cancel — recording can only be ended, not aborted).
         voiceButton.addTarget(self, action: #selector(voicePressCancelled), for: [.touchUpOutside, .touchCancel])
 
         // Linear top-light → bottom-deep gradient. With a circular mask this
@@ -2284,7 +2283,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             keyboardFocusButton,
             textWandButton,
             textStylePickerButton,
-            textPasteButton,
             textToolsButton,
             textKeyboardSwitchButton,
             textHostSettingsButton,
@@ -2409,12 +2407,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         utilityRow.distribution = .fill
         utilityRow.heightAnchor.constraint(equalToConstant: Self.utilityRowHeight).isActive = true
 
-        configureCapsuleButton(pasteButton, title: "", image: "doc.on.clipboard", style: .utility)
-        pasteButton.widthAnchor.constraint(equalToConstant: 52).isActive = true
-        pasteButton.accessibilityLabel = NSLocalizedString("Paste from Clipboard", comment: "Paste button accessibility label")
-        pasteButton.addTarget(self, action: #selector(pasteResult), for: .touchUpInside)
-        attachPressAnimation(pasteButton)
-
         configureCapsuleButton(commandButton, title: "", image: "wand.and.stars", style: .utility)
         commandButton.widthAnchor.constraint(equalToConstant: 48).isActive = true
         commandButton.accessibilityLabel = NSLocalizedString("Command selected text", comment: "Accessibility label for command/edit-selection button")
@@ -2437,7 +2429,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         returnButton.addTarget(self, action: #selector(insertReturn), for: .touchDown)
         attachPressAnimation(returnButton)
 
-        utilityRow.addArrangedSubview(pasteButton)
         utilityRow.addArrangedSubview(commandButton)
         utilityRow.addArrangedSubview(spaceButton)
         utilityRow.addArrangedSubview(deleteButton)
@@ -2485,17 +2476,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         // from the wand (wand = free-form voice command, picker = preset).
         configureToolbarIconButton(textStylePickerButton, image: "paintbrush")
         textStylePickerButton.widthAnchor.constraint(equalToConstant: 32).isActive = true
-        textStylePickerButton.accessibilityLabel = NSLocalizedString("Pick rewrite style", comment: "Accessibility label for text-mode style preset picker")
+        textStylePickerButton.accessibilityLabel = NSLocalizedString("Pick refine style", comment: "Accessibility label for text-mode style preset picker")
         textStylePickerButton.addTarget(self, action: #selector(toggleCorrectionPopover), for: .touchUpInside)
         attachPressAnimation(textStylePickerButton)
-
-        // Paste from the system clipboard — same tap contract as the
-        // voice-mode pasteButton.
-        configureToolbarIconButton(textPasteButton, image: "doc.on.clipboard")
-        textPasteButton.widthAnchor.constraint(equalToConstant: 32).isActive = true
-        textPasteButton.accessibilityLabel = NSLocalizedString("Paste from Clipboard", comment: "Paste button accessibility label")
-        textPasteButton.addTarget(self, action: #selector(pasteResult), for: .touchUpInside)
-        attachPressAnimation(textPasteButton)
 
         configureToolbarIconButton(textToolsButton, image: "mic.fill")
         textToolsButton.widthAnchor.constraint(equalToConstant: 32).isActive = true
@@ -2648,9 +2631,40 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         textToolbar.addArrangedSubview(candidateScrollView)
         textToolbar.addArrangedSubview(textCandidateGridButton)
         textToolbar.setCustomSpacing(0, after: candidateScrollView)
-        textToolbar.addArrangedSubview(textPasteButton)
         textToolbar.addArrangedSubview(textKeyboardSwitchButton)
         textToolbar.addArrangedSubview(textHostSettingsButton)
+
+        // Overlay shown during text-mode recording; covers the toolbar slots
+        // visually. Non-arranged subview so it stays out of the stack layout.
+        textToolbarVoicePrint.translatesAutoresizingMaskIntoConstraints = false
+        textToolbarVoicePrint.isUserInteractionEnabled = false
+        textToolbarVoicePrint.tint = .systemRed
+        textToolbarVoicePrint.alpha = 0
+        textToolbarVoicePrint.accessibilityLabel = NSLocalizedString("Voice level", comment: "Accessibility label for the recording voiceprint")
+        textToolbar.addSubview(textToolbarVoicePrint)
+        NSLayoutConstraint.activate([
+            textToolbarVoicePrint.centerXAnchor.constraint(equalTo: textToolbar.centerXAnchor),
+            textToolbarVoicePrint.centerYAnchor.constraint(equalTo: textToolbar.centerYAnchor),
+            textToolbarVoicePrint.widthAnchor.constraint(equalToConstant: 180),
+            textToolbarVoicePrint.heightAnchor.constraint(equalToConstant: 22),
+        ])
+
+        // Status label shown during sending/error. Same slot as the voiceprint.
+        textToolbarStatusLabel.translatesAutoresizingMaskIntoConstraints = false
+        textToolbarStatusLabel.isUserInteractionEnabled = false
+        textToolbarStatusLabel.font = .systemFont(ofSize: 13, weight: .semibold)
+        textToolbarStatusLabel.textColor = .secondaryLabel
+        textToolbarStatusLabel.textAlignment = .center
+        textToolbarStatusLabel.adjustsFontSizeToFitWidth = true
+        textToolbarStatusLabel.minimumScaleFactor = 0.7
+        textToolbarStatusLabel.alpha = 0
+        textToolbar.addSubview(textToolbarStatusLabel)
+        NSLayoutConstraint.activate([
+            textToolbarStatusLabel.leadingAnchor.constraint(equalTo: textToolbar.leadingAnchor, constant: 12),
+            textToolbarStatusLabel.trailingAnchor.constraint(equalTo: textToolbar.trailingAnchor, constant: -12),
+            textToolbarStatusLabel.centerYAnchor.constraint(equalTo: textToolbar.centerYAnchor),
+        ])
+
         textKeyboardContainer.addArrangedSubview(keyRowsStack)
         textKeyboardContainer.addArrangedSubview(candidateGridScrollView)
         rootStack.addArrangedSubview(textKeyboardContainer)
@@ -2993,6 +3007,16 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             : NSLocalizedString("space", comment: "Space key title in English input mode")
     }
 
+    /// Swaps the space key label to the recording-stop hint and back. Driven
+    /// from `updateUI` so the title tracks the bridge recording state.
+    private func updateSpaceKeyTitleForRecording(_ recording: Bool) {
+        guard let spaceKey = textSpaceKeyButton else { return }
+        let title = recording
+            ? NSLocalizedString("点击发送", comment: "Space key label during text-keyboard dictation")
+            : spaceKeyTitle
+        configureTextKeyButton(spaceKey, title: title, image: nil, weight: .primary)
+    }
+
     private var returnKeyTitle: String {
         let isChinese = textInputLanguage == .chinese
         switch textDocumentProxy.returnKeyType {
@@ -3263,7 +3287,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func refreshCapsuleButtonConfigurations() {
-        pasteButton.configuration = capsuleButtonConfiguration(title: "", image: "doc.on.clipboard", style: .utility)
         commandButton.configuration = capsuleButtonConfiguration(title: "", image: "wand.and.stars", style: .utility)
         spaceButton.configuration = capsuleButtonConfiguration(title: "space", image: nil, style: .key)
         deleteButton.configuration = capsuleButtonConfiguration(title: "", image: "delete.left", style: .utility)
@@ -3284,23 +3307,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         lastCorrectionModeButtonSignature = ""
         lastTextRecordingButtonsSignature = ""
         updateCorrectionModeButtons()
-    }
-
-    /// Tap-mode swap: pasteButton becomes a red ✕ Cancel during recording.
-    /// Paste is meaningless mid-recording anyway, so the slot doubles as the
-    /// only cancel affordance tap-mode users have (hold mode uses drag-out).
-    private func applyPasteButtonRecordingState(isTapRecording: Bool) {
-        if isTapRecording {
-            var configuration = capsuleButtonConfiguration(title: "", image: "xmark", style: .utility)
-            configuration.baseForegroundColor = .systemRed
-            configuration.baseBackgroundColor = UIColor.systemRed
-                .withAlphaComponent(isKeyboardDark ? 0.22 : 0.14)
-            pasteButton.configuration = configuration
-            pasteButton.accessibilityLabel = NSLocalizedString("Cancel recording", comment: "Tap-mode cancel paste-slot button")
-        } else {
-            pasteButton.configuration = capsuleButtonConfiguration(title: "", image: "doc.on.clipboard", style: .utility)
-            pasteButton.accessibilityLabel = NSLocalizedString("Paste from Clipboard", comment: "Paste button accessibility label")
-        }
     }
 
     private func capsuleButtonConfiguration(title: String, image: String?, style: CapsuleStyle) -> UIButton.Configuration {
@@ -3354,14 +3360,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         // the orb itself stays uncovered.
         let isHoldRecording = isRecordingState && inputMode == .hold
         let isTapRecording = isRecordingState && inputMode == .tap
-        // When the finger drags off the orb mid-hold, swap the topRow
-        // voiceprint out for a "Release to cancel" cue so the user knows
-        // letting go now will discard. updateUI is the single source of
-        // truth so subsequent status refreshes don't fight us.
-        let showsWillCancelCue = isHoldRecording && isVoicePressWillCancel
         let showsInOrbVoicePrint = isRecordingState && !isHoldRecording
-        let showsTopRowVoicePrint = isHoldRecording && !showsWillCancelCue
-        applyPasteButtonRecordingState(isTapRecording: isTapRecording)
+        let showsTopRowVoicePrint = isHoldRecording
         let updates = {
             self.statusLabel.text = self.statusText
             self.statusDot.backgroundColor = self.statusColor
@@ -3371,18 +3371,16 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 self.voiceTitleLabel.textColor = .label
                 self.voiceTitleLabel.alpha = 1
             } else {
-                self.voiceTitleLabel.text = showsWillCancelCue
-                    ? NSLocalizedString("Release to cancel", comment: "Hold-mode drag-out cancel hint")
-                    : self.voiceTitle
-                self.voiceTitleLabel.textColor = showsWillCancelCue ? .systemRed : self.voiceTitleColor
-                self.voiceTitleLabel.alpha = (isHoldRecording && !showsWillCancelCue) ? 0 : 1
+                self.voiceTitleLabel.text = self.voiceTitle
+                self.voiceTitleLabel.textColor = self.voiceTitleColor
+                self.voiceTitleLabel.alpha = isHoldRecording ? 0 : 1
             }
             self.voiceIconView.image = UIImage(systemName: self.voiceIconName)
             let showsSpinner = isSendingState || (!isRecordingState && (self.isStartRequestInFlight || self.isOpeningHostApp))
             self.voiceIconView.alpha = (isRecordingState || showsSpinner) ? 0 : 1
             self.voicePrint.alpha = showsInOrbVoicePrint ? 1 : 0
             self.topRowVoicePrint.alpha = (self.keyboardFocus == .text ? false : showsTopRowVoicePrint) ? 1 : 0
-            self.voiceButton.alpha = showsWillCancelCue ? 0.45 : 1
+            self.voiceButton.alpha = 1
             self.voiceSpinner.alpha = showsSpinner ? 1 : 0
 
             let acceptsVoiceTouch = !isSendingState || self.isVoicePressActive
@@ -3392,8 +3390,25 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             self.commandButton.alpha = self.commandButton.isEnabled ? 1 : 0.45
             self.inputModeSwitch.setEnabled(!isRecordingState && !isSendingState && !self.isStartRequestInFlight)
             let locksTextRows = self.keyboardFocus == .text && (isRecordingState || isSendingState)
-            self.keyRowsStack.isUserInteractionEnabled = !locksTextRows
-            self.keyRowsStack.alpha = locksTextRows ? 0.48 : 1
+            // Keep keys touchable during recording so the space key can act as
+            // the stop-and-send affordance; per-handler guards swallow the
+            // other keys. Sending blocks everything until the bridge returns
+            // to result / error / idle.
+            self.keyRowsStack.isUserInteractionEnabled = !(self.keyboardFocus == .text && isSendingState)
+            // Dim per-key (not the whole stack) so the space key, which stays
+            // the live stop-and-send affordance during recording, can render
+            // at full opacity. UIView.alpha cascades multiplicatively, so we
+            // can't set the stack to 0.48 and the space child back to 1.
+            self.keyRowsStack.alpha = 1
+            let recordingDim = isRecordingState && self.keyboardFocus == .text
+            for button in self.textKeyboardButtons {
+                if recordingDim {
+                    button.alpha = button === self.textSpaceKeyButton ? 1 : 0.48
+                } else {
+                    button.alpha = locksTextRows ? 0.48 : 1
+                }
+            }
+            self.updateSpaceKeyTitleForRecording(recordingDim)
             self.candidateScrollView.alpha = locksTextRows ? 0.62 : 1
             self.refreshTextRecordingButtons(isRecording: isRecordingState, isSending: isSendingState)
             self.voiceButton.layer.shadowColor = self.voiceShadowColor.cgColor
@@ -3420,24 +3435,71 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             voiceGradient.colors = gradientColors
         }
 
+        let showsTextToolbarVoicePrint = isRecordingState && keyboardFocus == .text
+        let isErrorState = state == .error
+        let isInsertedFlash = keyboardFocus == .text
+            && Date().timeIntervalSince1970 < insertedFlashUntil
+        let showsTextToolbarStatus = keyboardFocus == .text
+            && (isSendingState || isErrorState || isInsertedFlash)
         voicePrint.isActive = showsInOrbVoicePrint
         topRowVoicePrint.isActive = isHoldRecording
+        textToolbarVoicePrint.isActive = showsTextToolbarVoicePrint
+        textToolbarVoicePrint.alpha = showsTextToolbarVoicePrint ? 1 : 0
+        if showsTextToolbarStatus {
+            if isInsertedFlash {
+                textToolbarStatusLabel.text = NSLocalizedString("Inserted", comment: "Bridge job stage")
+                textToolbarStatusLabel.textColor = .systemGreen
+            } else if isErrorState {
+                textToolbarStatusLabel.text = currentBridgeStatus?.message
+                textToolbarStatusLabel.textColor = .systemRed
+            } else {
+                textToolbarStatusLabel.text = currentBridgeStatus?.message
+                textToolbarStatusLabel.textColor = .secondaryLabel
+            }
+        }
+        textToolbarStatusLabel.alpha = showsTextToolbarStatus ? 1 : 0
+        applyTextToolbarRecordingOverlay(
+            recording: showsTextToolbarVoicePrint,
+            sending: showsTextToolbarStatus
+        )
         if isRecordingState {
             let audioLevel = currentBridgeStatus?.audioLevel
             voicePrint.updateLevel(audioLevel)
             topRowVoicePrint.updateLevel(audioLevel)
+            textToolbarVoicePrint.updateLevel(audioLevel)
             updatePulseAudioLevel(audioLevel)
             startPulseRings()
         } else {
             stopPulseRings()
         }
 
-        let desiredInterval: TimeInterval = isRecordingState ? 0.12 : 0.35
+        // Use the fast cadence while sending too — bridge transitions through
+        // Sending → Transcribing → Refining → Result in a couple hundred ms
+        // for short clips, and 350ms polling would skip the Refining stage.
+        let desiredInterval: TimeInterval = (isRecordingState || isSendingState) ? 0.12 : 0.35
         if statusTimer != nil, abs(statusTimerInterval - desiredInterval) > 0.01 {
             stopStatusPolling()
             startStatusPolling(interval: desiredInterval)
         }
         updateTextRecordingStatus(isRecording: isRecordingState, isSending: isSendingState)
+    }
+
+    /// Fades the regular text-toolbar items out while the voiceprint overlay
+    /// (recording) or status label (sending / error) takes over. Uses `alpha`
+    /// rather than `isHidden` so the UIStackView layout stays put — `isHidden`
+    /// removes items from the stack and the right-edge icons reflow.
+    private func applyTextToolbarRecordingOverlay(recording: Bool, sending: Bool) {
+        let icons: [UIView] = [
+            textToolsButton,
+            textStylePickerButton,
+            textWandButton,
+            textCandidateGridButton,
+            textKeyboardSwitchButton,
+            textHostSettingsButton,
+        ]
+        let occupied = recording || sending
+        icons.forEach { $0.alpha = occupied ? 0 : 1 }
+        candidateScrollView.alpha = occupied ? 0 : 1
     }
 
     private func refreshTextRecordingButtons(isRecording: Bool, isSending: Bool) {
@@ -3480,15 +3542,15 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             isShowingTextRecordingStatus = false
             return
         }
+        // Recording / sending status is now rendered in the top-toolbar
+        // overlay (voiceprint + textToolbarStatusLabel). The candidate strip
+        // just collapses; restore the Rime view when the bridge returns to
+        // idle so users see normal candidates again.
         if isRecording || isSending {
             isShowingTextRecordingStatus = true
             setCandidateGridExpanded(false)
             resetCandidateStackForReuse()
             textCandidateGridButton.isHidden = true
-            let title = isRecording
-                ? NSLocalizedString("Listening…", comment: "Inline text keyboard recording status")
-                : NSLocalizedString("Processing…", comment: "Inline text keyboard sending status")
-            addCandidateStatus(title, color: isRecording ? .systemRed : .secondaryLabel, emphasized: true)
             return
         }
         if isShowingTextRecordingStatus {
@@ -3685,7 +3747,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         kbLog.notice("voicePressDown fired (bounds=\(NSCoder.string(for: self.voiceButton.bounds), privacy: .public))")
         guard !isVoicePressActive else { return }
         isVoicePressActive = true
-        isVoicePressWillCancel = false
         voicePressBeganAt = Date().timeIntervalSince1970
         UIView.animate(withDuration: 0.12, delay: 0, options: [.allowUserInteraction, .beginFromCurrentState]) {
             self.voiceButton.transform = CGAffineTransform(scaleX: 0.92, y: 0.92)
@@ -3700,22 +3761,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     @objc private func voicePressUp() {
-        kbLog.notice("voicePressUp fired (willCancel=\(self.isVoicePressWillCancel, privacy: .public))")
+        kbLog.notice("voicePressUp fired")
         UIView.animate(withDuration: 0.32, delay: 0, usingSpringWithDamping: 0.55, initialSpringVelocity: 0.5, options: [.allowUserInteraction, .beginFromCurrentState]) {
             self.voiceButton.transform = .identity
             self.voiceButton.alpha = 1
         }
         switch inputMode {
         case .hold:
-            // Safety net: touchUpInside while still flagged as will-cancel
-            // (e.g., user drag-enters and immediately lifts in the same frame
-            // before touchDragEnter is dispatched) → honour the cancel intent.
-            if isVoicePressWillCancel, hasFullAccess {
-                isVoicePressWillCancel = false
-                cancelActiveHoldRecording()
-                isVoicePressActive = false
-                return
-            }
             endDictationPress()
         case .tap:
             isVoicePressActive = false
@@ -3723,51 +3775,19 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     @objc private func voicePressCancelled() {
-        // Fires for touchUpOutside / touchCancel — i.e., user released the
-        // finger off the orb, or the system interrupted us. In hold mode
-        // this is the canonical "drag-up to cancel" path.
-        kbLog.notice("voicePressCancelled fired (willCancel=\(self.isVoicePressWillCancel, privacy: .public))")
+        // Fires for touchUpOutside / touchCancel — user released off-orb or
+        // the system interrupted us. Treat the same as `voicePressUp` for
+        // hold mode (drag-out no longer cancels; recording always commits).
+        kbLog.notice("voicePressCancelled fired")
         let wasActive = isVoicePressActive
         UIView.animate(withDuration: 0.18, delay: 0, options: [.allowUserInteraction, .beginFromCurrentState]) {
             self.voiceButton.transform = .identity
             self.voiceButton.alpha = 1
         }
         if wasActive, inputMode == .hold, hasFullAccess {
-            cancelActiveHoldRecording()
+            endDictationPress()
         }
         isVoicePressActive = false
-        isVoicePressWillCancel = false
-    }
-
-    /// Hold-mode finger left the orb — enter "release-to-cancel" visual state
-    /// without cancelling yet. The user can drag back in to recover.
-    @objc private func voicePressDragOut() {
-        guard inputMode == .hold, isVoicePressActive else { return }
-        guard !isVoicePressWillCancel else { return }
-        isVoicePressWillCancel = true
-        // updateUI() owns the will-cancel cue (label swap + orb dim + topRow
-        // voiceprint hide) so subsequent status refreshes don't overwrite it.
-        // Wrap in a property animation block so the alpha/text swaps fade in.
-        UIView.animate(withDuration: 0.18, delay: 0, options: [.allowUserInteraction, .beginFromCurrentState]) {
-            self.updateUI(animated: false)
-        }
-    }
-
-    /// Hold-mode finger came back onto the orb — clear the will-cancel state
-    /// and let recording continue. Tap mode treats this like a fresh press if
-    /// the user dragged in from elsewhere without first lifting.
-    @objc private func voicePressDragIn() {
-        if inputMode == .hold, isVoicePressActive {
-            guard isVoicePressWillCancel else { return }
-            isVoicePressWillCancel = false
-            UIView.animate(withDuration: 0.18, delay: 0, options: [.allowUserInteraction, .beginFromCurrentState]) {
-                self.updateUI(animated: false)
-            }
-            return
-        }
-        if !isVoicePressActive {
-            voicePressDown()
-        }
     }
 
     @objc private func textVoiceTapped() {
@@ -3783,7 +3803,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
 
         guard hasFullAccess else {
-            showFullAccessRequiredStatus(showTextNotice: true)
+            openHostForFullAccessSetup(showTextNotice: true)
             return
         }
 
@@ -3870,7 +3890,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         guard hasFullAccess else {
             kbLog.notice("beginDictationPress: no full access")
             isVoicePressActive = false
-            showFullAccessRequiredStatus()
+            openHostForFullAccessSetup()
             return
         }
         guard currentBridgeStatus?.state != .sending else {
@@ -3915,7 +3935,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         kbLog.notice("handleTapModePress: fullAccess=\(self.hasFullAccess, privacy: .public), bridgeState=\(self.currentBridgeStatus?.state.rawValue ?? "nil", privacy: .public), awake=\(self.isBridgeAwake, privacy: .public)")
         lightHaptic()
         guard hasFullAccess else {
-            showFullAccessRequiredStatus()
+            openHostForFullAccessSetup()
             return
         }
         if isStartRequestInFlight {
@@ -3944,7 +3964,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         lightHaptic()
         guard hasFullAccess else {
             isCommandPressActive = false
-            showFullAccessRequiredStatus()
+            openHostForFullAccessSetup()
             return
         }
         guard currentBridgeStatus?.state != .sending else {
@@ -3991,7 +4011,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private func handleCommandTapModePress() {
         lightHaptic()
         guard hasFullAccess else {
-            showFullAccessRequiredStatus()
+            openHostForFullAccessSetup()
             return
         }
         if isStartRequestInFlight { return }
@@ -4183,6 +4203,20 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         openingMessage: String,
         allowBundleFallback: Bool = true
     ) {
+        guard hasFullAccess else {
+            openHostForFullAccessSetup(showTextNotice: keyboardFocus == .text)
+            return
+        }
+        if isRunningInsideHostApp {
+            kbLog.notice("openHostAppForKeyboardAction: already running inside host app; suppressing self-open")
+            cancelHostWakeResetTask()
+            cancelHostBundleWakeFallback()
+            openingHostUntil = 0
+            bridgeStatus = KeyboardBridgeStatus(state: .standby, message: "Ready")
+            lastBridgeContactAt = Date().timeIntervalSince1970
+            updateUI()
+            return
+        }
         let requestedCorrectionMode = action == "record" ? currentDefaultCorrectionMode() : correctionMode
         let handoff = KeyboardHostHandoff(
             action: action,
@@ -4252,6 +4286,32 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                     self.showTextKeyboardNotice("")
                 }
             }
+        }
+    }
+
+    private func openHostForFullAccessSetup(showTextNotice: Bool = false) {
+        showFullAccessRequiredStatus(showTextNotice: showTextNotice)
+        guard !isRunningInsideHostApp else {
+            kbLog.notice("openHostForFullAccessSetup: already running inside host app; posted full access signal only")
+            return
+        }
+
+        var components = URLComponents()
+        components.scheme = "typeforme"
+        components.host = "setup"
+        components.queryItems = [
+            URLQueryItem(name: "source", value: "keyboard"),
+            URLQueryItem(name: "reason", value: "full_access"),
+        ]
+        guard let url = components.url else { return }
+        openingHostUntil = Date().timeIntervalSince1970 + 8
+        updateUI()
+        openHostApp(url) { [weak self] success in
+            kbLog.notice("openHostForFullAccessSetup: open success=\(success, privacy: .public)")
+            guard let self, !success else { return }
+            self.cancelHostWakeResetTask()
+            self.openingHostUntil = 0
+            self.updateUI()
         }
     }
 
@@ -4371,22 +4431,31 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private var currentHostBundleID: String? {
-        // Non-public return-target discovery. This exists only to make the
-        // microphone handoff feel like a keyboard action on device. Removing it
-        // makes host return manual; keeping it is not appropriate for an App
-        // Store-safe build.
-        if let id = privateStringValue(named: "_hostApplicationBundleIdentifier", from: self),
-           isUsableReturnBundleID(id) {
-            return id
+        currentTextHostBundleID.flatMap { isUsableReturnBundleID($0) ? $0 : nil }
+    }
+
+    private var currentTextHostBundleID: String? {
+        // Non-public host discovery. This exists only to make the microphone
+        // handoff feel like a keyboard action on device and to avoid opening
+        // Typeforme from inside Typeforme. Removing it makes host return
+        // manual; keeping it is not appropriate for an App Store-safe build.
+        if let id = privateStringValue(named: "_hostApplicationBundleIdentifier", from: self) {
+            let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
+            if isBundleIdentifierShape(trimmed) {
+                return trimmed
+            }
         }
-        if let id = privateStringValue(named: "_hostBundleID", from: parent),
-           isUsableReturnBundleID(id) {
-            return id
+        if let id = privateStringValue(named: "_hostBundleID", from: parent) {
+            let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
+            if isBundleIdentifierShape(trimmed) {
+                return trimmed
+            }
         }
         guard let pid = currentHostProcessID else { return nil }
         let hostPID: AnyObject = NSNumber(value: pid)
-        return currentHostBundleIDFromXPC(hostPID: hostPID).flatMap {
-            isUsableReturnBundleID($0) ? $0 : nil
+        return currentHostBundleIDFromXPC(hostPID: hostPID).flatMap { id in
+            let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
+            return isBundleIdentifierShape(trimmed) ? trimmed : nil
         }
     }
 
@@ -4631,7 +4700,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         shouldStopWhenStartCompletes = false
         shouldCancelWhenStartCompletes = false
         isVoicePressActive = false
-        isVoicePressWillCancel = false
         isCommandPressActive = false
         tapRecordingActive = false
         activeRecordingCommandID = nil
@@ -4703,28 +4771,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     @objc private func openHostFromSettingsButton() {
         lightHaptic()
-        guard hasFullAccess else {
-            showFullAccessRequiredStatus()
-            return
-        }
         openStandbyInHostApp(returnToKeyboard: false)
-    }
-
-    @objc private func pasteResult() {
-        lightHaptic()
-        guard hasFullAccess else { return }
-        // Tap mode hijacks this slot as a Cancel button while recording —
-        // there's no touch on the orb to swipe away from, so the user needs
-        // an explicit affordance to discard.
-        if currentBridgeStatus?.state == .recording, inputMode == .tap {
-            kbLog.notice("pasteResult: tap-mode cancel pressed")
-            tapRecordingActive = false
-            cancelActiveHoldRecording()
-            return
-        }
-        let text = UIPasteboard.general.string
-        guard let text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        textDocumentProxy.insertText(text)
     }
 
     @objc private func selectCorrectionModeButton(_ sender: UIButton) {
@@ -4846,14 +4893,14 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         correctionModeTrigger.titleLabel?.minimumScaleFactor = 0.7
         correctionModeTrigger.isEnabled = isEnabled
         correctionModeTrigger.alpha = isEnabled ? 1 : 0.45
-        let modeLabelFormat = NSLocalizedString("Correction mode: %@", comment: "Accessibility label for the mode trigger")
+        let modeLabelFormat = NSLocalizedString("Refine mode: %@", comment: "Accessibility label for the mode trigger")
         correctionModeTrigger.accessibilityLabel = String(format: modeLabelFormat, correctionMode.title)
         correctionModeTrigger.accessibilityHint = NSLocalizedString("Double tap to choose another mode", comment: "Accessibility hint for mode trigger")
     }
 
     private func rewriteCurrentInputOrPasteboard(using preset: CorrectionModePreset) {
         guard hasFullAccess else {
-            showFullAccessRequiredStatus()
+            openHostForFullAccessSetup()
             return
         }
         guard styleRewriteCommandID == nil,
@@ -4877,10 +4924,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             text: target.text
         )
         styleRewriteCommandID = command.id
-        bridgeStatus = KeyboardBridgeStatus(commandID: command.id, state: .sending, message: "Rewriting")
+        bridgeStatus = KeyboardBridgeStatus(commandID: command.id, state: .sending, message: "Refining")
         lastBridgeContactAt = Date().timeIntervalSince1970
         updateUI()
-        showTextKeyboardNotice(NSLocalizedString("Rewriting", comment: "Inline status while rewriting recent text"))
+        showTextKeyboardNotice(NSLocalizedString("Refining", comment: "Inline status while refining recent text"))
 
         styleRewriteTask?.cancel()
         let bridgeToken = hostKeyboardBridgeToken
@@ -4971,7 +5018,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func recentInsertedTextRewriteTarget() -> TextRewriteTarget? {
-        guard let text = recentRestyleText ?? defaults.string(forKey: lastInsertedTextKey),
+        guard let text = defaults.string(forKey: lastInsertedTextKey),
               !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else { return nil }
 
@@ -5168,12 +5215,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         defaults.set(commandID, forKey: lastInsertedCommandIDKey)
         defaults.set(text, forKey: lastInsertedTextKey)
         recentSelectionTarget = nil
-        rememberRestyleText(text)
         applyDefaultCorrectionModeFromHost(status.defaultCorrectionMode)
-        bridgeStatus = KeyboardBridgeStatus(commandID: commandID, state: .result, message: "Rewritten", resultText: text)
+        bridgeStatus = KeyboardBridgeStatus(commandID: commandID, state: .result, message: "Refined", resultText: text)
         lastBridgeContactAt = Date().timeIntervalSince1970
         updateUI()
-        renderRestyleSuggestionsIfIdle()
     }
 
     @discardableResult
@@ -5617,11 +5662,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     private func handleTextCharacter(_ character: String) {
         guard keyboardFocus == .text,
-              CACurrentMediaTime() >= suppressTextKeyCommitUntil
+              CACurrentMediaTime() >= suppressTextKeyCommitUntil,
+              currentBridgeStatus?.state != .recording
         else {
             return
         }
-        clearRestyleSuggestions()
 
         if textInputLanguage == .english {
             applyRimeState(rimeInput.commitComposition())
@@ -5705,7 +5750,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             textDocumentProxy.deleteBackward()
             return
         }
-        clearRestyleSuggestions()
+        // Recording locks regular keys; only space (stop-and-send) is live.
+        if currentBridgeStatus?.state == .recording { return }
 
         if !pendingRimeCharacters.isEmpty {
             pendingRimeCharacters.removeLast()
@@ -5732,7 +5778,16 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             textDocumentProxy.insertText(" ")
             return
         }
-        clearRestyleSuggestions()
+
+        // Space ends an in-progress text-keyboard dictation (replaces the
+        // tap-toggle mic; the user types and stays on the keys).
+        if tapRecordingActive || currentBridgeStatus?.state == .recording {
+            cancelScheduledStop()
+            tapRecordingActive = false
+            showTextKeyboardNotice(NSLocalizedString("Transcribing", comment: "Inline status after stopping dictation"))
+            sendBridgeCommand(.stop)
+            return
+        }
 
         if textInputLanguage == .english {
             applyRimeState(rimeInput.commitComposition())
@@ -5759,7 +5814,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             textDocumentProxy.insertText("\n")
             return
         }
-        clearRestyleSuggestions()
+        if currentBridgeStatus?.state == .recording { return }
 
         let currentState = rimeInput.state()
         if textInputLanguage == .english {
@@ -5830,10 +5885,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
         if !state.isReady {
             addCandidateStatus(NSLocalizedString("Chinese preparing…", comment: "Rime preparing status"), color: .secondaryLabel, emphasized: true)
-            return
-        }
-
-        if !state.isComposing, renderRecentRestyleActions() {
             return
         }
 
@@ -5928,7 +5979,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private func updateCandidateToolbarControls(for state: RimeKeyboardState) {
         let isComposing = state.isComposing
         let hasCandidates = !state.candidates.isEmpty
-        let showingRestyleChips = !isComposing && wouldShowRestyleChips()
 
         // Grid expand chevron only when there are candidates to expand.
         textCandidateGridButton.isHidden = !(isComposing && hasCandidates)
@@ -5939,28 +5989,14 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             : NSLocalizedString("Show more candidates", comment: "Accessibility label for expanding candidate list")
         candidateGridCollapseButton.accessibilityLabel = textCandidateGridButton.accessibilityLabel
 
-        // The icon row is an idle/restyle affordance. Once Rime has
-        // candidates, it collapses so the candidate strip owns the width.
-        let showAllIdleIcons = !isComposing && !hasCandidates && !showingRestyleChips
-        let showChipCompanions = !isComposing && !hasCandidates && showingRestyleChips
-        textWandButton.isHidden = !(showAllIdleIcons || showChipCompanions)
-        textToolsButton.isHidden = !(showAllIdleIcons || showChipCompanions) // mic
+        // Idle full toolbar; collapses to make room for the candidate strip
+        // once Rime has candidates.
+        let showAllIdleIcons = !isComposing && !hasCandidates
+        textWandButton.isHidden = !showAllIdleIcons
+        textToolsButton.isHidden = !showAllIdleIcons // mic
         textStylePickerButton.isHidden = !showAllIdleIcons
-        textPasteButton.isHidden = !showAllIdleIcons
         textKeyboardSwitchButton.isHidden = !showAllIdleIcons
         textHostSettingsButton.isHidden = !showAllIdleIcons || isRunningInsideHostApp
-    }
-
-    /// Mirrors `renderRecentRestyleActions`'s guard conditions so the toolbar
-    /// can reserve width for the 5 chips BEFORE the render call. Keep these
-    /// two in sync.
-    private func wouldShowRestyleChips() -> Bool {
-        styleRewriteCommandID == nil &&
-            currentBridgeStatus?.state != .recording &&
-            currentBridgeStatus?.state != .sending &&
-            (recentRestyleText?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false) &&
-            Date().timeIntervalSince1970 - recentRestyleShownAt <= restyleSuggestionTTL &&
-            recentInsertedTextRewriteTarget() != nil
     }
 
     private func updateCandidateScrollViewport() {
@@ -5970,8 +6006,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private var isRunningInsideHostApp: Bool {
-        guard let bundleID = currentHostBundleID else { return false }
-        return bundleID == "com.example.typeforme"
+        currentTextHostBundleID == Self.containingAppBundleIdentifier
     }
 
     private func addCandidateSeparator() {
@@ -6379,16 +6414,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         widthConstraint.constant = max(72, candidateScrollView.bounds.width)
     }
 
-    private func rememberRestyleText(_ text: String) {
-        recentRestyleText = text
-        recentRestyleShownAt = Date().timeIntervalSince1970
-    }
-
-    private func clearRestyleSuggestions() {
-        recentRestyleText = nil
-        recentRestyleShownAt = 0
-    }
-
     private func renderRestyleSuggestionsIfIdle() {
         guard keyboardFocus == .text else { return }
         renderRimeState(RimeKeyboardState(
@@ -6403,37 +6428,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             commitText: "",
             errorMessage: nil
         ))
-    }
-
-    private func renderRecentRestyleActions() -> Bool {
-        guard styleRewriteCommandID == nil,
-              currentBridgeStatus?.state != .recording,
-              currentBridgeStatus?.state != .sending,
-              let text = recentRestyleText,
-              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              Date().timeIntervalSince1970 - recentRestyleShownAt <= restyleSuggestionTTL,
-              recentInsertedTextRewriteTarget() != nil
-        else { return false }
-
-        for preset in CorrectionModePreset.allCases {
-            let button: UIButton
-            if let existing = reusableRestyleButtons[preset] {
-                button = existing
-            } else {
-                button = UIButton(type: .system)
-                button.heightAnchor.constraint(equalToConstant: 30).isActive = true
-                button.widthAnchor.constraint(greaterThanOrEqualToConstant: preset == .structurePlus ? 74 : 58).isActive = true
-                button.addAction(UIAction { [weak self] _ in
-                    self?.rewriteCurrentInputOrPasteboard(using: preset)
-                }, for: .touchUpInside)
-                attachPressAnimation(button)
-                reusableRestyleButtons[preset] = button
-            }
-            button.configuration = correctionModeButtonConfiguration(title: preset.title, selected: preset == correctionMode)
-            addCandidateArrangedView(button)
-        }
-        candidateScrollView.setContentOffset(.zero, animated: false)
-        return true
     }
 
     private func showTextKeyboardNotice(_ text: String, color: UIColor = .secondaryLabel) {
@@ -6852,6 +6846,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func showFullAccessRequiredStatus(showTextNotice: Bool = false) {
+        KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.fullAccessRequired)
         bridgeStatus = KeyboardBridgeStatus(state: .error, message: "Enable Full Access in iOS keyboard settings.")
         lastBridgeContactAt = Date().timeIntervalSince1970
         if showTextNotice {
@@ -6898,7 +6893,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         if isOpeningHostApp { return NSLocalizedString("Opening Typeforme…", comment: "Voice title when host is launching") }
         switch currentBridgeStatus?.state {
         case .recording: return inputMode.recordingTitle
-        case .sending: return NSLocalizedString("Transcribing", comment: "Voice title during transcription")
+        case .sending: return sendingStatusTitle
         default: return inputMode.idleTitle
         }
     }
@@ -6983,7 +6978,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         case .recording:
             return NSLocalizedString("Recording", comment: "Status active recording")
         case .sending:
-            return NSLocalizedString("Sending", comment: "Status during transcription/sending")
+            return sendingStatusTitle
         case .result:
             return NSLocalizedString("Inserted", comment: "Status after result inserted")
         case .error:
@@ -6993,6 +6988,15 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         case .idle:
             return ready
         }
+    }
+
+    private var sendingStatusTitle: String {
+        // The host publishes the curated stage label (Sending / Transcribing /
+        // Refining / Inserted / error text) directly in `status.message`, so
+        // show it verbatim — no inference, no rewriting.
+        let message = currentBridgeStatus?.message.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !message.isEmpty { return message }
+        return NSLocalizedString("Sending", comment: "Bridge job stage")
     }
 
     private func syncKeyboardSettingsToHost() {
@@ -7304,6 +7308,18 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
     }
 
+    private func beginInsertedFlash() {
+        insertedFlashClearTask?.cancel()
+        insertedFlashUntil = Date().timeIntervalSince1970 + Self.insertedFlashDuration
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.insertedFlashUntil = 0
+            self.updateUI(animated: false)
+        }
+        insertedFlashClearTask = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.insertedFlashDuration, execute: work)
+    }
+
     private func applyBridgeStatus(_ status: KeyboardBridgeStatus) {
         if shouldIgnoreStaleIdleStatus(status) {
             return
@@ -7334,6 +7350,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         if status.state == .result || status.state == .error || status.state == .idle || status.state == .standby {
             pendingStopCommandID = nil
         }
+        if status.state == .result, currentBridgeStatus?.state != .result, keyboardFocus == .text {
+            beginInsertedFlash()
+        }
         bridgeStatus = status
         lastBridgeContactAt = Date().timeIntervalSince1970
         if styleRewriteCommandID == nil {
@@ -7360,8 +7379,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 defaults.set(commandID, forKey: lastInsertedCommandIDKey)
                 defaults.set(text, forKey: lastInsertedTextKey)
                 recentSelectionTarget = nil
-                rememberRestyleText(text)
-                renderRestyleSuggestionsIfIdle()
             } else {
                 defaults.set(commandID, forKey: lastInsertedCommandIDKey)
                 defaults.set(text, forKey: lastInsertedTextKey)
@@ -7382,6 +7399,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             // the level inside updateUI(). Drive them here for every sample.
             voicePrint.updateLevel(status.audioLevel)
             topRowVoicePrint.updateLevel(status.audioLevel)
+            textToolbarVoicePrint.updateLevel(status.audioLevel)
             updatePulseAudioLevel(status.audioLevel)
             if status.audioLevel == nil {
                 let now = Date().timeIntervalSince1970

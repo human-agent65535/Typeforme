@@ -8,7 +8,12 @@
 
 // 设置状态卡片
 "Paired with Mac" = "已与 Mac 配对";
+"Keyboard ready" = "键盘已就绪";
+"Keyboard needs Full Access" = "键盘需要完全访问";
 "Typeforme dictates in any text field via its keyboard. Two iOS-only steps:" = "Typeforme 通过自带键盘在任意文本框听写。还差两步 iOS 端设置:";
+"Typeforme dictates in any text field via its keyboard." = "Typeforme 通过自带键盘在任意文本框听写。";
+"Allow Full Access so the Typeforme keyboard can talk to this app." = "请允许完全访问,这样 Typeforme 键盘才能连接本 app。";
+"Open iOS Settings, enable the Typeforme keyboard, then allow Full Access." = "打开 iOS 设置,启用 Typeforme 键盘,然后允许完全访问。";
 "Enable Typeforme keyboard" = "启用 Typeforme 键盘";
 "Settings → General → Keyboard → Add New Keyboard" = "设置 → 通用 → 键盘 → 添加新键盘";
 "Allow Full Access" = "允许完全访问";
@@ -75,7 +80,17 @@
 "No raw transcript yet — start dictation to see the unedited recognition output here." = "还没有原始识别内容。开始听写后,这里会显示未编辑的识别结果。";
 "Preparing…" = "准备中…";
 "Sending…" = "发送中…";
-"Restyling…" = "改写中…";
+"Refining…" = "优化中…";
+"Audio received." = "音频已收到。";
+"Transcribing…" = "转写中…";
+"Transcript ready. Refining…" = "转写完成，正在优化…";
+"Result ready." = "结果已就绪。";
+
+/* Bridge job stage strings — host orb + keyboard top label share these. */
+"Sending" = "发送中";
+"Transcribing" = "转写中";
+"Refining" = "优化中";
+"Inserted" = "已插入";
 
 // 配对和路由
 "Pair your Mac" = "配对你的 Mac";
@@ -117,7 +132,7 @@
 // 键盘指南
 "Setup" = "设置";
 "In Any App" = "在任意 App 中";
-"Style Buttons" = "风格按钮";
+"Refine Buttons" = "优化按钮";
 "Pair the Mac Server" = "配对 Mac 服务器";
 "Paste the pairing JSON from the Mac app, then refresh Server Settings so iOS has the current languages and default mode." = "粘贴 Mac app 的配对 JSON,然后刷新服务器设置,让 iOS 获取当前语言和默认模式。";
 "Enable the keyboard" = "启用键盘";
@@ -128,7 +143,7 @@
 "Select the wrong span first, then press the mic and say the intended replacement. Only that selected span is replaced." = "先选中错误片段,再按麦克风说出想替换的内容。只会替换选中的片段。";
 "Command edit" = "指令编辑";
 "Press the wand and speak an instruction like make this shorter, translate this, or turn it into bullets. With no selection, it targets the current input text." = "点击魔棒后说出指令,例如缩短、翻译或改成项目符号。没有选区时会处理当前输入文本。";
-"Restyle existing text" = "改写现有文本";
+"Refine existing text" = "优化现有文本";
 "Clean, Polish, Polish+, Structure+, and Formal+ use the selected text first, then the current visible input text." = "清洁、润色、润色+、结构+、正式+ 会优先使用选中文本,否则使用当前可见输入文本。";
 "Selection changed" = "选区已变化";
 "If iOS no longer reports the same selection when the result returns, Typeforme copies the result instead of guessing where to paste it." = "如果结果返回时 iOS 不再报告同一选区,Typeforme 会复制结果,不会猜测粘贴位置。";
@@ -137,9 +152,9 @@
 "Speech" = "语音";
 "ASR Engine" = "ASR 引擎";
 "ASR Timeout" = "ASR 超时";
-"Correction" = "修正";
+"Refine" = "优化";
 "Engine" = "引擎";
-"Correction Timeout" = "修正超时";
+"Refine Timeout" = "优化超时";
 "Model Startup Timeout" = "模型启动超时";
 "Mode" = "模式";
 "Numbers" = "数字";

@@ -22,6 +22,7 @@ struct BridgeDictateRequest {
     var audioData: Data?
     var audioFileURL: URL?
     var audioExtension: String?
+    var clientJobID: String?
     var languageIDs: [String]?
     var languageMode: String?
     var correctionMode: String?
@@ -36,6 +37,7 @@ struct BridgeDictateRequest {
         audioData: Data? = nil,
         audioFileURL: URL? = nil,
         audioExtension: String?,
+        clientJobID: String? = nil,
         languageIDs: [String]?,
         languageMode: String? = nil,
         correctionMode: String?,
@@ -49,6 +51,7 @@ struct BridgeDictateRequest {
         self.audioData = audioData
         self.audioFileURL = audioFileURL
         self.audioExtension = audioExtension
+        self.clientJobID = clientJobID
         self.languageIDs = languageIDs
         self.languageMode = languageMode
         self.correctionMode = correctionMode
@@ -64,6 +67,7 @@ struct BridgeDictateRequest {
 struct BridgeRestyleRequest: Decodable {
     var sessionID: String?
     var rawTranscript: String?
+    var clientJobID: String?
     var languageIDs: [String]?
     var languageMode: String?
     var correctionMode: String?
@@ -76,6 +80,7 @@ struct BridgeRestyleRequest: Decodable {
     enum CodingKeys: String, CodingKey {
         case sessionID = "session_id"
         case rawTranscript = "raw_transcript"
+        case clientJobID = "client_job_id"
         case languageIDs = "language_ids"
         case languageMode = "language_mode"
         case correctionMode = "correction_mode"
@@ -178,6 +183,78 @@ struct BridgeTextEditResponse: Codable, Sendable {
         case editLatencyMs = "edit_latency_ms"
         case editStatus = "edit_status"
         case editError = "edit_error"
+    }
+}
+
+enum BridgeJobStatusStage: String, Codable, Sendable {
+    case audioReceived = "audio_received"
+    case transcribing
+    case transcriptReady = "transcript_ready"
+    case refining
+    case resultReady = "result_ready"
+    case failed
+
+    var isTerminal: Bool {
+        switch self {
+        case .resultReady, .failed:
+            return true
+        default:
+            return false
+        }
+    }
+}
+
+struct BridgeJobStatusEvent: Codable, Sendable {
+    let jobID: String
+    let stage: BridgeJobStatusStage
+    let message: String
+    let rawTranscript: String?
+    let rawTranscriptLength: Int?
+    let text: String?
+    let latencyMs: Int?
+    let transcriptionLatencyMs: Int?
+    let refineLatencyMs: Int?
+    let error: String?
+    let updatedAt: TimeInterval
+
+    enum CodingKeys: String, CodingKey {
+        case jobID = "job_id"
+        case stage
+        case message
+        case rawTranscript = "raw_transcript"
+        case rawTranscriptLength = "raw_transcript_length"
+        case text
+        case latencyMs = "latency_ms"
+        case transcriptionLatencyMs = "transcription_latency_ms"
+        case refineLatencyMs = "refine_latency_ms"
+        case error
+        case updatedAt = "updated_at"
+    }
+
+    init(
+        jobID: String,
+        stage: BridgeJobStatusStage,
+        message: String,
+        rawTranscript: String? = nil,
+        rawTranscriptLength: Int? = nil,
+        text: String? = nil,
+        latencyMs: Int? = nil,
+        transcriptionLatencyMs: Int? = nil,
+        refineLatencyMs: Int? = nil,
+        error: String? = nil,
+        updatedAt: TimeInterval = Date().timeIntervalSince1970
+    ) {
+        self.jobID = jobID
+        self.stage = stage
+        self.message = message
+        self.rawTranscript = rawTranscript
+        self.rawTranscriptLength = rawTranscriptLength
+        self.text = text
+        self.latencyMs = latencyMs
+        self.transcriptionLatencyMs = transcriptionLatencyMs
+        self.refineLatencyMs = refineLatencyMs
+        self.error = error
+        self.updatedAt = updatedAt
     }
 }
 

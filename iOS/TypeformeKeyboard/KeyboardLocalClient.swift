@@ -93,7 +93,9 @@ extension KeyboardBridgeCommandAction {
         case .configure, .cancel:
             return 1.2
         case .stop:
-            return 90
+            // `.stop` only waits for the host to acknowledge receipt. The
+            // host publishes transcription progress/result asynchronously.
+            return 1.5
         case .restyleText:
             return 30
         }

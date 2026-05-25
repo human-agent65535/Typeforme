@@ -13,6 +13,7 @@ enum AppSettings {
         static let alwaysShowHUD        = "recording.alwaysShowHUD"
         static let holdModifier         = "recording.holdModifier"  // HoldModifier raw
         static let voiceUXMode          = "recording.voiceUXMode"   // VoiceUXMode raw
+        static let launchAtLogin        = "app.launchAtLogin"
 
         // ASR
         static let asrProvider          = "asr.provider"            // "whisperkit" | "qwen3-asr-llama"
@@ -100,6 +101,7 @@ enum AppSettings {
             Keys.alwaysShowHUD:        false,
             Keys.holdModifier:         HoldModifier.rightOption.rawValue,
             Keys.voiceUXMode:          VoiceUXMode.classic.rawValue,
+            Keys.launchAtLogin:        true,
 
             Keys.asrProvider:       "qwen3-asr-llama",
             Keys.asrModel:          "large-v3-v20240930_626MB",
@@ -263,6 +265,7 @@ enum AppSettings {
 
     static var maxRecordingDuration: TimeInterval     { ud.double(forKey: Keys.maxRecordingDuration) }
     static var alwaysShowHUD: Bool                    { ud.bool(forKey: Keys.alwaysShowHUD) }
+    static var launchAtLogin: Bool                    { ud.bool(forKey: Keys.launchAtLogin) }
     static var voiceUXMode: VoiceUXMode {
         if let raw = ud.string(forKey: Keys.voiceUXMode),
            let value = VoiceUXMode(rawValue: raw) {

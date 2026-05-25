@@ -157,7 +157,7 @@ struct ModesSettingsView: View {
     @State private var subsection: Subsection = .correction
 
     enum Subsection: String, CaseIterable, Hashable {
-        case correction = "Correction"
+        case correction = "Refine"
         case prompts    = "Prompts"
         case vocabulary = "Vocabulary"
     }

@@ -644,6 +644,7 @@ struct BridgeDictateResponse: Decodable {
 struct BridgeRestyleRequest: Encodable {
     let sessionID: String?
     let rawTranscript: String?
+    let clientJobID: String?
     let languageIDs: [String]
     let correctionMode: String
     let appName: String
@@ -652,6 +653,7 @@ struct BridgeRestyleRequest: Encodable {
     enum CodingKeys: String, CodingKey {
         case sessionID = "session_id"
         case rawTranscript = "raw_transcript"
+        case clientJobID = "client_job_id"
         case languageIDs = "language_ids"
         case correctionMode = "correction_mode"
         case appName = "app_name"
@@ -720,5 +722,51 @@ struct BridgeTextEditResponse: Decodable {
         case editLatencyMs = "edit_latency_ms"
         case editStatus = "edit_status"
         case editError = "edit_error"
+    }
+}
+
+enum BridgeJobStatusStage: String, Codable {
+    case audioReceived = "audio_received"
+    case transcribing
+    case transcriptReady = "transcript_ready"
+    case refining
+    case resultReady = "result_ready"
+    case failed
+
+    var isTerminal: Bool {
+        switch self {
+        case .resultReady, .failed:
+            return true
+        default:
+            return false
+        }
+    }
+}
+
+struct BridgeJobStatusEvent: Decodable {
+    let jobID: String
+    let stage: BridgeJobStatusStage
+    let message: String
+    let rawTranscript: String?
+    let rawTranscriptLength: Int?
+    let text: String?
+    let latencyMs: Int?
+    let transcriptionLatencyMs: Int?
+    let refineLatencyMs: Int?
+    let error: String?
+    let updatedAt: TimeInterval
+
+    enum CodingKeys: String, CodingKey {
+        case jobID = "job_id"
+        case stage
+        case message
+        case rawTranscript = "raw_transcript"
+        case rawTranscriptLength = "raw_transcript_length"
+        case text
+        case latencyMs = "latency_ms"
+        case transcriptionLatencyMs = "transcription_latency_ms"
+        case refineLatencyMs = "refine_latency_ms"
+        case error
+        case updatedAt = "updated_at"
     }
 }

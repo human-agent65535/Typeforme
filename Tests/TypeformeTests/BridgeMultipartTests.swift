@@ -26,7 +26,8 @@ struct BridgeMultipartTests {
             appCategory: "chat",
             contextBefore: "前一句。",
             contextAfter: "后一句。",
-            includeRawTranscript: true
+            includeRawTranscript: true,
+            clientJobID: "ios_test_1"
         )
 
         #expect(multipart.contentType.hasPrefix("multipart/form-data; boundary="))
@@ -35,6 +36,8 @@ struct BridgeMultipartTests {
         #expect(bodyText.contains("Content-Type: audio/mp4"))
         #expect(bodyText.contains("AUDIOBYTES"))
         #expect(bodyText.contains(#"name="language_ids""#))
+        #expect(bodyText.contains(#"name="client_job_id""#))
+        #expect(bodyText.contains("ios_test_1"))
         #expect(bodyText.contains(#"["zh-CN","en-US"]"#))
         #expect(bodyText.contains(#"name="context_before""#))
         #expect(bodyText.contains("前一句。"))
@@ -58,7 +61,8 @@ struct BridgeMultipartTests {
             appCategory: "chat",
             contextBefore: "前一句。",
             contextAfter: "后一句。",
-            includeRawTranscript: true
+            includeRawTranscript: true,
+            clientJobID: "ios_test_2"
         )
         defer { try? FileManager.default.removeItem(at: multipart.fileURL) }
 
@@ -71,6 +75,8 @@ struct BridgeMultipartTests {
         #expect(bodyText.contains("Content-Type: audio/mp4"))
         #expect(bodyText.contains("AUDIOBYTES"))
         #expect(bodyText.contains(#"name="language_ids""#))
+        #expect(bodyText.contains(#"name="client_job_id""#))
+        #expect(bodyText.contains("ios_test_2"))
         #expect(bodyText.contains(#"["zh-CN","en-US"]"#))
         #expect(!bodyText.contains("audio_base64"))
     }
@@ -91,7 +97,8 @@ struct BridgeMultipartTests {
             appCategory: "chat",
             contextBefore: "前一句。",
             contextAfter: "后一句。",
-            includeRawTranscript: true
+            includeRawTranscript: true,
+            clientJobID: "ios_stream_1"
         )
         defer { try? FileManager.default.removeItem(at: multipart.fileURL) }
 
@@ -124,6 +131,7 @@ struct BridgeMultipartTests {
         #expect(form.audioFilename == "audio.m4a")
         #expect(form.fields["correction_mode"] == CorrectionMode.polishPlus.rawValue)
         #expect(form.fields["app_name"] == "Notes")
+        #expect(form.fields["client_job_id"] == "ios_stream_1")
         #expect(form.fields["context_before"] == "前一句。")
         #expect(form.fields["context_after"] == "后一句。")
         #expect(form.fields["include_raw_transcript"] == "true")

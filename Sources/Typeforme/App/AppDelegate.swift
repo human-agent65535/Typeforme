@@ -137,6 +137,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Log.app.notice("AX trust not granted; automatic text insertion will fail until granted")
         }
         applyProcessingMode(AppSettings.processingMode)
+        syncLaunchAtLogin()
         clientSettingsSync.syncIfNeeded(force: true)
         Log.app.info("Typeforme launched (accessory mode)")
     }
@@ -190,6 +191,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Exposed for the SwiftUI MenuBarMenu's Settings button.
     func openSettings() {
         settingsWindow.show()
+    }
+
+    private func syncLaunchAtLogin() {
+        do {
+            let status = try LaunchAtLoginController.syncDesiredState()
+            Log.app.info("Launch at login synced status=\(status.logValue, privacy: .public)")
+        } catch {
+            Log.app.error("Launch at login sync failed: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     // MARK: - Hotkey dispatch

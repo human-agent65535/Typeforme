@@ -108,11 +108,23 @@ struct BridgeClient {
         correctionMode: CorrectionModeID,
         contextBefore: String = "",
         contextAfter: String = "",
-        includeRawTranscript: Bool
+        includeRawTranscript: Bool,
+        clientJobID: String? = nil,
+        onJobEvent: (@Sendable (BridgeJobStatusEvent) async -> Void)? = nil
     ) async throws -> BridgeDictateResponse {
         let ext = (audioURL.pathExtension.isEmpty ? audioExtension : audioURL.pathExtension).lowercased()
         guard ["m4a", "aac"].contains(ext) else {
             throw BridgeClientError.unsupportedAudioFormat(ext.isEmpty ? "missing extension" : ext)
+        }
+        let normalizedJobID = Self.normalizedClientJobID(clientJobID)
+        let eventTask: Task<Void, Never>? = {
+            guard let normalizedJobID, let onJobEvent else { return nil }
+            return Task {
+                try? await streamJobEvents(jobID: normalizedJobID, onEvent: onJobEvent)
+            }
+        }()
+        defer {
+            eventTask?.cancel()
         }
         let multipart = try Self.multipartDictateBody(
             audioURL: audioURL,
@@ -121,7 +133,8 @@ struct BridgeClient {
             correctionMode: correctionMode.rawValue,
             contextBefore: contextBefore,
             contextAfter: contextAfter,
-            includeRawTranscript: includeRawTranscript
+            includeRawTranscript: includeRawTranscript,
+            clientJobID: normalizedJobID
         )
         return try await request(
             path: "/v1/dictate",
@@ -136,11 +149,24 @@ struct BridgeClient {
         sessionID: String?,
         rawTranscript: String?,
         languageIDs: [String],
-        correctionMode: CorrectionModeID
+        correctionMode: CorrectionModeID,
+        clientJobID: String? = nil,
+        onJobEvent: (@Sendable (BridgeJobStatusEvent) async -> Void)? = nil
     ) async throws -> BridgeRestyleResponse {
+        let normalizedJobID = Self.normalizedClientJobID(clientJobID)
+        let eventTask: Task<Void, Never>? = {
+            guard let normalizedJobID, let onJobEvent else { return nil }
+            return Task {
+                try? await streamJobEvents(jobID: normalizedJobID, onEvent: onJobEvent)
+            }
+        }()
+        defer {
+            eventTask?.cancel()
+        }
         let payload = BridgeRestyleRequest(
             sessionID: sessionID,
             rawTranscript: rawTranscript,
+            clientJobID: normalizedJobID,
             languageIDs: languageIDs,
             correctionMode: correctionMode.rawValue,
             appName: "iOS",
@@ -168,6 +194,65 @@ struct BridgeClient {
             appCategory: "chat"
         )
         return try await request(path: "/v1/edit-text", method: "POST", json: payload, timeout: 30)
+    }
+
+    func streamJobEvents(
+        jobID: String,
+        onEvent: @Sendable (BridgeJobStatusEvent) async -> Void
+    ) async throws {
+        guard let safeJobID = Self.normalizedClientJobID(jobID),
+              let encodedJobID = safeJobID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
+              let url = URL(string: "/v1/jobs/\(encodedJobID)/events", relativeTo: baseURL)?.absoluteURL
+        else {
+            throw BridgeClientError.invalidURL
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 60
+        request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+        request.setValue("no-store", forHTTPHeaderField: "Cache-Control")
+        BridgeClientIdentity.apply(to: &request)
+
+        let (bytes, response) = try await URLSession.shared.bytes(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw BridgeClientError.invalidResponse
+        }
+        guard http.statusCode != 401 && http.statusCode != 403 && http.statusCode != 404 else {
+            throw BridgeClientError.unauthorizedOrUnavailable
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            throw BridgeClientError.server("HTTP \(http.statusCode)")
+        }
+
+        var dataLines: [String] = []
+        for try await rawLine in bytes.lines {
+            try Task.checkCancellation()
+            let line = rawLine.trimmingCharacters(in: CharacterSet(charactersIn: "\r"))
+            if line.isEmpty {
+                guard !dataLines.isEmpty else { continue }
+                let dataText = dataLines.joined(separator: "\n")
+                dataLines.removeAll(keepingCapacity: true)
+                guard let data = dataText.data(using: .utf8),
+                      let event = try? JSONDecoder().decode(BridgeJobStatusEvent.self, from: data)
+                else {
+                    continue
+                }
+                await onEvent(event)
+                if event.stage.isTerminal {
+                    return
+                }
+                continue
+            }
+            if line.hasPrefix(":") {
+                continue
+            }
+            if line.hasPrefix("data:") {
+                let value = line.dropFirst(5)
+                dataLines.append(String(value).trimmingCharacters(in: .whitespaces))
+            }
+        }
     }
 
     private func request<T: Decodable, Body: Encodable>(
@@ -229,6 +314,28 @@ struct BridgeClient {
         contextAfter: String,
         includeRawTranscript: Bool
     ) throws -> (body: Data, contentType: String) {
+        try multipartDictateBody(
+            audioURL: audioURL,
+            audioExtension: audioExtension,
+            languageIDs: languageIDs,
+            correctionMode: correctionMode,
+            contextBefore: contextBefore,
+            contextAfter: contextAfter,
+            includeRawTranscript: includeRawTranscript,
+            clientJobID: nil
+        )
+    }
+
+    private static func multipartDictateBody(
+        audioURL: URL,
+        audioExtension: String,
+        languageIDs: [String],
+        correctionMode: String,
+        contextBefore: String,
+        contextAfter: String,
+        includeRawTranscript: Bool,
+        clientJobID: String?
+    ) throws -> (body: Data, contentType: String) {
         let multipart = try BridgeMultipart.dictateBody(
             audioURL: audioURL,
             audioExtension: audioExtension,
@@ -238,9 +345,20 @@ struct BridgeClient {
             appCategory: "chat",
             contextBefore: contextBefore,
             contextAfter: contextAfter,
-            includeRawTranscript: includeRawTranscript
+            includeRawTranscript: includeRawTranscript,
+            clientJobID: clientJobID
         )
         return (multipart.body, multipart.contentType)
+    }
+
+    private static func normalizedClientJobID(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed.count <= 96 else { return nil }
+        let allowed = trimmed.filter { character in
+            character.isLetter || character.isNumber || character == "-" || character == "_"
+        }
+        return allowed == trimmed ? trimmed : nil
     }
 
 }

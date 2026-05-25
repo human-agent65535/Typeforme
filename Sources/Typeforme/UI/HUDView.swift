@@ -254,10 +254,10 @@ struct HUDView: View {
         case .transcribing: return NSLocalizedString("Transcribing…", comment: "HUD status")
         case .correcting:
             // Re-correct: keep the prior text on screen so the HUD doesn't
-            // flash to "Polishing…" mid-edit. First correction has no prior
+            // flash to "Refining…" mid-edit. First refine has no prior
             // text, so we still show the spinner copy.
             return coordinator.lastCorrected.isEmpty
-                ? NSLocalizedString("Polishing…", comment: "HUD status")
+                ? NSLocalizedString("Refining…", comment: "HUD status")
                 : coordinator.lastCorrected
         case .preview:
             return coordinator.lastCorrected.isEmpty

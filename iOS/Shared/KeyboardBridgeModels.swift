@@ -77,6 +77,7 @@ enum KeyboardDarwinNotificationName {
     static let requestStopDictation = "com.example.typeforme.keyboard.requestStopDictation"
     static let requestCancelDictation = "com.example.typeforme.keyboard.requestCancelDictation"
     static let keyboardDefaultsChanged = "com.example.typeforme.keyboard.defaultsChanged"
+    static let fullAccessRequired = "com.example.typeforme.keyboard.fullAccessRequired"
 
     static func authenticatedRequest(_ name: String, token: String?) -> String? {
         guard let token,

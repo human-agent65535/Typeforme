@@ -243,6 +243,17 @@ final class BridgeHTTPServer: @unchecked Sendable {
             }
         }
 
+        router.get("v1/jobs/:jobID/events") { request, context async -> Response in
+            await Self.authorizedRecordedRequest(
+                .jobEvents,
+                request: request,
+                context: context
+            ) {
+                let jobID = try context.parameters.require("jobID")
+                return Self.jobEventsResponse(jobID: jobID)
+            }
+        }
+
         router.post("v1/restyle") { request, context async -> Response in
             await Self.authorizedDecodedRecordedRequest(
                 .restyle,
@@ -452,6 +463,35 @@ final class BridgeHTTPServer: @unchecked Sendable {
         )
     }
 
+    private static func jobEventsResponse(jobID: String) -> Response {
+        var headers = HTTPFields()
+        headers[.contentType] = "text/event-stream; charset=utf-8"
+        headers[.cacheControl] = "no-store"
+        if let bufferingHeader = HTTPField.Name("X-Accel-Buffering") {
+            headers[bufferingHeader] = "no"
+        }
+
+        let body = ResponseBody { writer in
+            let stream = await BridgeJobStatusCenter.shared.subscribe(jobID: jobID)
+            try await writer.write(ByteBuffer(string: ": typeforme job status\n\n"))
+            for await event in stream {
+                guard let data = try? BridgeJSON.encodeSorted(event),
+                      let json = String(data: data, encoding: .utf8)
+                else {
+                    continue
+                }
+                var payload = "event: \(event.stage.rawValue)\n"
+                payload += "data: \(json)\n\n"
+                try await writer.write(ByteBuffer(string: payload))
+                if event.stage.isTerminal {
+                    break
+                }
+            }
+            try await writer.finish(nil)
+        }
+        return Response(status: .ok, headers: headers, body: body)
+    }
+
     private static func errorResponse(_ error: Error) -> Response {
         if let bridgeError = error as? BridgeServiceError {
             return errorResponse(400, "Bad Request", bridgeError.localizedDescription)
@@ -511,6 +551,7 @@ final class BridgeHTTPServer: @unchecked Sendable {
             return BridgeDictateRequest(
                 audioFileURL: tempAudioURL,
                 audioExtension: fields["audio_extension"] ?? form.audioFilename.flatMap(fileExtension),
+                clientJobID: fields["client_job_id"],
                 languageIDs: parseLanguageIDs(fields["language_ids"]),
                 languageMode: fields["language_mode"],
                 correctionMode: fields["correction_mode"],
