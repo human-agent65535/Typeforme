@@ -6962,6 +6962,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
     }
 
+    /// Top-left status pill is a *bridge session indicator*: a coarse-grained
+    /// view of where the keyboard session is in its lifecycle (Ready /
+    /// Recording / Sending / Inserted / Issue). The granular per-stage label
+    /// (Transcribing / Refining / …) lives on the voice orb title and the
+    /// text-toolbar status overlay so the two surfaces don't duplicate.
     private var statusText: String {
         if !hasFullAccess {
             return NSLocalizedString("Full Access", comment: "Status when keyboard full access is missing")
@@ -6978,7 +6983,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         case .recording:
             return NSLocalizedString("Recording", comment: "Status active recording")
         case .sending:
-            return sendingStatusTitle
+            return NSLocalizedString("Sending", comment: "Status during transcription/sending")
         case .result:
             return NSLocalizedString("Inserted", comment: "Status after result inserted")
         case .error:
