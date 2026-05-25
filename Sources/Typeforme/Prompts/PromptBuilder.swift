@@ -79,7 +79,7 @@ enum PromptBuilder {
         }
         parts.append("""
         <actual_task>
-        Use the examples only as decision patterns. Now clean the single input_json below.
+        Use the examples only as decision patterns. Now process the single input_json below using the correction_mode named in its context, and follow that mode's rules — do not default to a milder mode regardless of phrasing here.
         </actual_task>
         """)
         if let json = PromptPayloadEncoder.jsonString(input) {
@@ -94,11 +94,16 @@ enum PromptBuilder {
     }
 
     private static func requestDirective(for request: CorrectionRequest) -> String? {
-        let lowerTranscript = request.rawTranscript.lowercased()
-        guard lowerTranscript.contains(" should be ") else { return nil }
+        let raw = request.rawTranscript
+        let lowerTranscript = raw.lowercased()
+        let englishAnchors = [" should be ", " oh wait ", " wait no ", " scratch that "]
+        let chineseAnchors = ["应该是", "不对", "改成", "更正", "不是", "取消", "删掉", "去掉", "不要了"]
+        let hasEnglishAnchor = englishAnchors.contains(where: { lowerTranscript.contains($0) })
+        let hasChineseAnchor = chineseAnchors.contains(where: { raw.contains($0) })
+        guard hasEnglishAnchor || hasChineseAnchor else { return nil }
         return """
         <request_directive>
-        Anchored spoken repair detected in the current raw_transcript. For "A should be B", if A is a local label, token, or ASR error and B is the intended label/token, output the final text using B. Do not leave both A and B in the output, and do not include the repair wording "should be".
+        Anchored spoken repair detected in the current raw_transcript. For replacement patterns ("A should be B", "A 应该是 B", "A 不对 B", "A 哦不对 B", "A 改成 B", "A wait no B", "A oh wait B"), if A is a local label, token, value, or ASR error and B is the intended replacement, output the final text using B. Do not leave both A and B in the output, and do not include the repair wording ("should be" / "应该是" / "不对" / "哦不对" / "改成" / "wait no" / "oh wait") as content. For cancellation/deletion patterns ("A 不要了", "取消 A", "删掉 A", "去掉 A"), drop A from the output.
         </request_directive>
         """
     }
@@ -128,6 +133,12 @@ enum PromptBuilder {
             </example>
             <example>
             Input:
+            {"context":{"correction_mode":"clean"},"raw_transcript":"the variable name use stamp should be user stamp"}
+            Output:
+            {"text":"the variable name user stamp"}
+            </example>
+            <example>
+            Input:
             {"context":{"correction_mode":"clean"},"raw_transcript":"明天去买苹果两个梨子不要了香蕉一个改两个"}
             Output:
             {"text":"明天去买苹果两个，梨子不要了，香蕉一个改两个。"}
@@ -137,6 +148,18 @@ enum PromptBuilder {
             {"context":{"correction_mode":"clean"},"raw_transcript":"今天 ship 这个 feature 不要翻译 feature"}
             Output:
             {"text":"今天 ship 这个 feature，不要翻译 feature"}
+            </example>
+            <example>
+            Input:
+            {"context":{"correction_mode":"clean"},"raw_transcript":"这碗面好吃极了。"}
+            Output:
+            {"text":"这碗面好吃极了。"}
+            </example>
+            <example>
+            Input:
+            {"context":{"correction_mode":"clean"},"raw_transcript":"this is super useful."}
+            Output:
+            {"text":"This is super useful."}
             </example>
             </examples>
             """
@@ -179,6 +202,12 @@ enum PromptBuilder {
             Output:
             {"text":"host app 第一次打开白屏很久，用户以为卡死。"}
             </example>
+            <example>
+            Input:
+            {"context":{"correction_mode":"polish"},"raw_transcript":"这个 feature 用起来好得很 不过文档写得有点乱"}
+            Output:
+            {"text":"这个 feature 用起来好得很，不过文档写得有点乱。"}
+            </example>
             </examples>
             """
         case .polishPlus:
@@ -192,9 +221,15 @@ enum PromptBuilder {
             </example>
             <example>
             Input:
-            {"context":{"correction_mode":"polish_plus"},"raw_transcript":"transcript 没问题 但是逻辑表达很别扭 polish+ 应该帮我把因果关系讲清楚"}
+            {"context":{"correction_mode":"polish_plus"},"raw_transcript":"the bug repros on safari oh wait i mean firefox the safari one is a different issue"}
             Output:
-            {"text":"transcript 本身没有问题，但逻辑表达很别扭；Polish+ 应该把因果关系整理清楚。"}
+            {"text":"The bug reproduces on Firefox. The Safari case is a separate issue."}
+            </example>
+            <example>
+            Input:
+            {"context":{"correction_mode":"polish_plus"},"raw_transcript":"明天去买番茄两个哦不对三个番茄黄瓜一个"}
+            Output:
+            {"text":"明天去买三个番茄和一个黄瓜。"}
             </example>
             <example>
             Input:
@@ -255,6 +290,18 @@ enum PromptBuilder {
             Output:
             {"text":"采购：\\n- 超市：3个李子、2个西瓜\\n- 市场：1条鱼\\n处理要求：\\n1. 请师傅处理鱼鳞\\n2. 切好"}
             </example>
+            <example>
+            Input:
+            {"context":{"correction_mode":"structure_plus"},"raw_transcript":"need to finish the api doc fix the login bug and also ship the new pricing page by friday"}
+            Output:
+            {"text":"To do by Friday:\\n- Finish the API doc\\n- Fix the login bug\\n- Ship the new pricing page"}
+            </example>
+            <example>
+            Input:
+            {"context":{"correction_mode":"structure_plus"},"raw_transcript":"meeting tomorrow at 3 pm in room 204 with alice and bob to review the q4 roadmap"}
+            Output:
+            {"text":"Time: tomorrow 3 PM\\nLocation: Room 204\\nAttendees: Alice, Bob\\nTopic: Review the Q4 roadmap"}
+            </example>
             </examples>
             """
         case .formalPlus:
@@ -283,6 +330,18 @@ enum PromptBuilder {
             {"context":{"correction_mode":"formal_plus"},"raw_transcript":"这次采购火腿不要了改成鸡腿萝卜一个改两个"}
             Output:
             {"text":"本次采购改为鸡腿和两个萝卜。"}
+            </example>
+            <example>
+            Input:
+            {"context":{"correction_mode":"formal_plus"},"raw_transcript":"PR要赶在今天合 不对应该是明天合 deadline其实是周五"}
+            Output:
+            {"text":"PR 要赶在明天合并，deadline 其实是周五。"}
+            </example>
+            <example>
+            Input:
+            {"context":{"correction_mode":"formal_plus"},"raw_transcript":"the meeting is at 3 pm wait no 4 pm in the small room"}
+            Output:
+            {"text":"The meeting is at 4 PM in the small room."}
             </example>
             </examples>
             """

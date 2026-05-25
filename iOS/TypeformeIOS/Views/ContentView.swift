@@ -1211,6 +1211,40 @@ private struct KeyboardGuideView: View {
                     detail: "If iOS no longer reports the same selection when the result returns, Typeforme copies the result instead of guessing where to paste it."
                 )
             }
+
+            Section {
+                GuideStepRow(
+                    icon: "checkmark.circle",
+                    title: "Clean",
+                    detail: "Lightest touch. Adds punctuation, casing, spacing; drops um/uh/嗯; collapses obvious ASR label fixes like \"hold to steak should be hold to speak\" → \"hold to speak\". Keeps wording, intensifiers (好得很, super well), and order unchanged. Does not invent lists or reorder."
+                )
+                GuideStepRow(
+                    icon: "paintbrush",
+                    title: "Polish",
+                    detail: "Clean plus light readability fixes — small grammar/word repairs, sentence merge or split. Preserves the user's voice and any spoken edit intent (cancellations, quantity changes). Does not synthesize the final list state or restructure into bullets."
+                )
+                GuideStepRow(
+                    icon: "paintbrush.fill",
+                    title: "Polish+",
+                    detail: "Full prose rewrite. Resolves anchored repairs (A 不对 B / A oh wait B / quantity updates) to the final intended state, reorders preconditions, fixes awkward causal flow. Outputs polished prose, not bullets. Keeps compound intensifiers (好得很, super useful) atomic; never invents structure for short utterances."
+                )
+                GuideStepRow(
+                    icon: "list.bullet.rectangle",
+                    title: "Structure+",
+                    detail: "For multi-item content. Produces bullets / numbered lines / label lines for lists, schedules, todos, recipes, multi-step plans. Resolves spoken repairs and cancellations before structuring. A short single-clause utterance stays as prose — no fake structure."
+                )
+                GuideStepRow(
+                    icon: "doc.text",
+                    title: "Formal+",
+                    detail: "Lifts casual speech into professional written prose. Drops fillers, fixes register, upgrades word choice. Resolves anchored repairs but preserves intensifiers, degree words, and emphatic constructions (好得很, 累得不得了, super well, really impressed) — does not flatten them. Does not add courtesy or invent business context."
+                )
+            } header: {
+                Text("Refine Modes")
+            } footer: {
+                Text("All five modes preserve the user's meaning, names, numbers, URLs, code, and intentional mixed-language text. Anchored spoken repairs (A 不对 B / A should be B) collapse to the final intended state in every mode.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
         }
         .navigationTitle("Keyboard Guide")
     }
