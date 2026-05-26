@@ -431,6 +431,18 @@ final class AppState: ObservableObject {
         hostRecordingUsesKeyboardAudioSession ? keyboardAudioSession.level : recorder.level
     }
 
+    private var hasAnyActiveRecordingCapture: Bool {
+        recorder.isRecording || keyboardAudioSession.isRecording
+    }
+
+    private var hasHostOwnedRecordingCapture: Bool {
+        recorder.isRecording || (hostRecordingUsesKeyboardAudioSession && keyboardAudioSession.isRecording)
+    }
+
+    private var hasKeyboardOwnedRecordingCapture: Bool {
+        keyboardAudioSession.isRecording && !hostRecordingUsesKeyboardAudioSession
+    }
+
     var activeModelInstallText: String? {
         guard let status = macSettings?.modelStatuses.first(where: { $0.installing }) else {
             return nil
@@ -1271,13 +1283,11 @@ final class AppState: ObservableObject {
                     languageIDs: activeLanguageIDs,
                     clientJobID: editJobID,
                     onJobEvent: { [weak self] event in
-                        await MainActor.run {
-                            self?.applyBridgeJobStatus(
-                                event,
-                                keyboardCommandID: effectiveKeyboardCommandID,
-                                recordingInfo: recordingInfo
-                            )
-                        }
+                        await self?.applyBridgeJobStatus(
+                            event,
+                            keyboardCommandID: effectiveKeyboardCommandID,
+                            recordingInfo: recordingInfo
+                        )
                     }
                 )
                 text = editResponse.text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1412,9 +1422,7 @@ final class AppState: ObservableObject {
                 correctionMode: newMode,
                 clientJobID: restyleJobID,
                 onJobEvent: { [weak self] event in
-                    await MainActor.run {
-                        self?.applyBridgeJobStatus(event, keyboardCommandID: nil)
-                    }
+                    await self?.applyBridgeJobStatus(event, keyboardCommandID: nil)
                 }
             )
             let text = response.text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2082,6 +2090,9 @@ final class AppState: ObservableObject {
             guard let self else { return .idle }
             return await MainActor.run {
                 self.markKeyboardEverContacted()
+                self.reconcileStaleRecordingStateIfNeeded(
+                    message: "Recording stopped because the audio session ended."
+                )
                 let base = self.keyboardBridgeStatus
                 guard base.state == .recording else {
                     return base
@@ -2196,16 +2207,12 @@ final class AppState: ObservableObject {
                 Task { @MainActor [weak self] in
                     guard let self else { return }
                     self.clearKeyboardCaptureContext()
-                    if self.keyboardAudioSession.isRecording {
-                        self.keyboardAudioSession.cancelRecording()
-                    } else {
-                        _ = self.recorder.stop(deactivateSession: true)
-                    }
-                    self.teardownLivePartialPreview(clearText: true)
-                    self.releaseIdleTimer()
-                    await self.resumeKeyboardStandbyAfterCommand()
-                    self.publishKeyboardStatus(.standby, message: "Ready")
-                    KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.dictationStopped)
+                    await self.cancelActiveRecordingWithoutSending(
+                        hostFailureMessage: nil,
+                        keyboardCommandID: nil,
+                        keyboardMessage: "Ready",
+                        resumeKeyboardStandby: true
+                    )
                 }
             },
             KeyboardDarwinBridge.observe(requestSessionStatusName) { [weak self] in
@@ -2252,16 +2259,12 @@ final class AppState: ObservableObject {
         case .cancel:
             rememberCanceledKeyboardCommand(command.id)
             clearKeyboardCaptureContext()
-            if keyboardAudioSession.isRecording {
-                keyboardAudioSession.cancelRecording()
-            } else {
-                _ = recorder.stop(deactivateSession: true)
-            }
-            teardownLivePartialPreview(clearText: true)
-            releaseIdleTimer()
-            await resumeKeyboardStandbyAfterCommand()
-            publishKeyboardStatus(.standby, commandID: command.id, message: "Ready")
-            KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.dictationStopped)
+            await cancelActiveRecordingWithoutSending(
+                hostFailureMessage: nil,
+                keyboardCommandID: command.id,
+                keyboardMessage: "Ready",
+                resumeKeyboardStandby: true
+            )
             resetCorrectionModeToDefault()
         case .configure:
             if let requestedMode = CorrectionModeID(rawValue: command.correctionMode) {
@@ -2340,6 +2343,7 @@ final class AppState: ObservableObject {
             setPhase(.restyling)
             let client = BridgeClient(baseURL: baseURL, token: config.token)
             let restyleJobID = "ios_\(UUID().uuidString.replacingOccurrences(of: "-", with: "_"))"
+            let keyboardCommandID = command.id
             let response = try await client.restyle(
                 sessionID: nil,
                 rawTranscript: source,
@@ -2347,9 +2351,7 @@ final class AppState: ObservableObject {
                 correctionMode: requestedCorrectionMode,
                 clientJobID: restyleJobID,
                 onJobEvent: { [weak self] event in
-                    await MainActor.run {
-                        self?.applyBridgeJobStatus(event, keyboardCommandID: command.id)
-                    }
+                    await self?.applyBridgeJobStatus(event, keyboardCommandID: keyboardCommandID)
                 }
             )
             let text = response.text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2553,6 +2555,76 @@ final class AppState: ObservableObject {
         let next = livePartialTranscript.isEmpty ? nil : livePartialTranscript
         guard keyboardBridgeStatus.livePartialTranscript != next else { return }
         keyboardBridgeStatus = keyboardBridgeStatus.withLivePartialTranscript(next)
+    }
+
+    private func cancelActiveRecordingWithoutSending(
+        hostFailureMessage: String?,
+        keyboardCommandID: String?,
+        keyboardMessage: String,
+        resumeKeyboardStandby: Bool
+    ) async {
+        let hadCapture = hasAnyActiveRecordingCapture
+        if let fileURL = recorder.stop(deactivateSession: true) {
+            try? FileManager.default.removeItem(at: fileURL)
+        }
+        if keyboardAudioSession.isRecording {
+            keyboardAudioSession.cancelRecording()
+        }
+        teardownLivePartialPreview(clearText: true)
+        hostRecordingUsesKeyboardAudioSession = false
+        hostHoldReleasePending = false
+        queuedKeyboardStopCommandID = nil
+        clearKeyboardCaptureContext()
+        if hadCapture || phase == .recording || phase == .preparing {
+            releaseIdleTimer()
+        }
+
+        if let hostFailureMessage, hadCapture || phase == .recording || phase == .preparing {
+            setPhase(.failure(hostFailureMessage))
+        } else if phase == .recording || phase == .preparing {
+            setPhase(.idle)
+        }
+
+        let nextKeyboardState: KeyboardBridgeState = (keyboardStandbyEnabled || keyboardAudioSession.isActive)
+            ? .standby
+            : .idle
+        publishKeyboardStatus(
+            nextKeyboardState,
+            commandID: keyboardCommandID,
+            message: nextKeyboardState == .standby ? keyboardMessage : KeyboardBridgeStatus.idle.message
+        )
+        KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.dictationStopped)
+        if resumeKeyboardStandby {
+            await resumeKeyboardStandbyAfterCommand()
+        }
+    }
+
+    private func reconcileStaleRecordingStateIfNeeded(
+        message: String,
+        includePreparing: Bool = false
+    ) {
+        guard !hasAnyActiveRecordingCapture else { return }
+        if phase == .recording || (includePreparing && phase == .preparing) {
+            hostRecordingUsesKeyboardAudioSession = false
+            hostHoldReleasePending = false
+            clearKeyboardCaptureContext()
+            teardownLivePartialPreview(clearText: true)
+            releaseIdleTimer()
+            setPhase(.failure(message))
+        }
+        if keyboardBridgeStatus.state == .recording {
+            let commandID = keyboardBridgeStatus.commandID
+            clearKeyboardCaptureContext()
+            let nextKeyboardState: KeyboardBridgeState = (keyboardStandbyEnabled || keyboardAudioSession.isActive)
+                ? .standby
+                : .idle
+            publishKeyboardStatus(
+                nextKeyboardState,
+                commandID: commandID,
+                message: nextKeyboardState == .standby ? "Ready" : KeyboardBridgeStatus.idle.message
+            )
+            KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.dictationStopped)
+        }
     }
 
     private func applyBridgeJobStatus(
@@ -2811,25 +2883,42 @@ final class AppState: ObservableObject {
     }
 
     private func handleEnteredBackground() {
-        teardownLivePartialPreview(clearText: true)
         // Backgrounding kills the AVAudioSession we're recording on. Cancel
         // the in-flight recording so we don't ship an empty / corrupted file
         // to the Bridge on resume.
-        if recorder.isRecording || (hostRecordingUsesKeyboardAudioSession && keyboardAudioSession.isRecording) {
-            if hostRecordingUsesKeyboardAudioSession {
-                keyboardAudioSession.cancelRecording()
-                hostRecordingUsesKeyboardAudioSession = false
-                clearKeyboardCaptureContext()
-            } else {
-                _ = recorder.stop(deactivateSession: true)
+        if hasHostOwnedRecordingCapture {
+            Task { @MainActor [weak self] in
+                await self?.cancelActiveRecordingWithoutSending(
+                    hostFailureMessage: "Recording stopped — app went to background.",
+                    keyboardCommandID: nil,
+                    keyboardMessage: "Ready",
+                    resumeKeyboardStandby: false
+                )
             }
-            releaseIdleTimer()
-            hostHoldReleasePending = false
-            setPhase(.failure("Recording stopped — app went to background."))
+            return
         }
+        reconcileStaleRecordingStateIfNeeded(
+            message: "Recording stopped because the audio session ended.",
+            includePreparing: true
+        )
     }
 
     private func handleWillEnterForeground() {
+        if hasKeyboardOwnedRecordingCapture {
+            Task { @MainActor [weak self] in
+                await self?.cancelActiveRecordingWithoutSending(
+                    hostFailureMessage: "Recording stopped — keyboard was closed.",
+                    keyboardCommandID: nil,
+                    keyboardMessage: "Ready",
+                    resumeKeyboardStandby: true
+                )
+            }
+        } else {
+            reconcileStaleRecordingStateIfNeeded(
+                message: "Recording stopped because the audio session ended.",
+                includePreparing: true
+            )
+        }
         scheduleHostRecorderPreWarm()
         // Warm route status for the UI. Hot recording/rewrite paths request a
         // fast route separately so Cloud diagnostics never block input.

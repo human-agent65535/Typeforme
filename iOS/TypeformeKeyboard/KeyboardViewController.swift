@@ -5146,6 +5146,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             || tapRecordingActive
             || isVoicePressActive
             || isCommandPressActive
+            || activeRecordingCommandID != nil
+            || activeRecordingTextTarget != nil
             || currentBridgeStatus?.state == .recording
         guard shouldCancel else { return }
 
