@@ -195,7 +195,8 @@ final class BridgeService {
                 debugLog,
                 text: raw,
                 status: "ok",
-                latencyMs: transcriptionLatencyMs
+                latencyMs: transcriptionLatencyMs,
+                alternateText: request.alternateTranscript
             )
         } catch {
             DebugLogStore.recordASR(
@@ -203,7 +204,8 @@ final class BridgeService {
                 text: nil,
                 status: "error",
                 error: error.localizedDescription,
-                latencyMs: elapsedMs(since: asrStarted)
+                latencyMs: elapsedMs(since: asrStarted),
+                alternateText: request.alternateTranscript
             )
             await publishJobStatus(
                 jobID: jobID,
@@ -242,7 +244,8 @@ final class BridgeService {
             bundleID: request.bundleID,
             appCategory: appCategory,
             contextBefore: contextBefore,
-            contextAfter: contextAfter
+            contextAfter: contextAfter,
+            alternateTranscript: request.alternateTranscript?.trimmingCharacters(in: .whitespacesAndNewlines)
         )
 
         let correctionStarted = Date()
@@ -638,7 +641,8 @@ final class BridgeService {
         bundleID: String?,
         appCategory: AppCategory,
         contextBefore: String = "",
-        contextAfter: String = ""
+        contextAfter: String = "",
+        alternateTranscript: String? = nil
     ) -> CorrectionRequest {
         CorrectionRequest(
             correctionMode: correctionMode,
@@ -651,7 +655,8 @@ final class BridgeService {
             contextAfter: contextAfter,
             numberOutputPreference: AppSettings.numberOutputPreference,
             punctuationPreference: AppSettings.punctuationPreference,
-            userDictionary: dictionary.sortedSnapshot()
+            userDictionary: dictionary.sortedSnapshot(),
+            alternateTranscript: alternateTranscript
         )
     }
 

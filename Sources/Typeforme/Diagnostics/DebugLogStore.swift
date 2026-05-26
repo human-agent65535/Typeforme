@@ -13,6 +13,10 @@ private struct DebugLogTranscript: Codable {
     var provider: String?
     var model: String?
     var maxTokens: Int?
+    /// Supplementary transcription received alongside the audio (e.g. iOS
+    /// on-device Apple Speech preview). Stored verbatim so post-hoc analysis
+    /// can compare it against the canonical `text` for quality regressions.
+    var alternateText: String?
 
     enum CodingKeys: String, CodingKey {
         case status
@@ -22,6 +26,7 @@ private struct DebugLogTranscript: Codable {
         case provider
         case model
         case maxTokens = "max_tokens"
+        case alternateText = "alternate_text"
     }
 }
 
@@ -284,7 +289,8 @@ enum DebugLogStore {
         text: String?,
         status: String,
         error: String? = nil,
-        latencyMs: Int? = nil
+        latencyMs: Int? = nil,
+        alternateText: String? = nil
     ) {
         mutate(handle) { record in
             record.transcript = DebugLogTranscript(
@@ -294,7 +300,10 @@ enum DebugLogStore {
                 latencyMs: latencyMs,
                 provider: AppSettings.asrProvider,
                 model: activeASRModelDescription(),
-                maxTokens: activeASRMaxTokens()
+                maxTokens: activeASRMaxTokens(),
+                alternateText: alternateText
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .flatMap { $0.isEmpty ? nil : $0 }
             )
         }
     }

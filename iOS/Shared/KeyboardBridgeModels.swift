@@ -425,6 +425,11 @@ struct KeyboardBridgeStatus: Codable, Equatable {
     /// `AudioRecorder` and surfaced on every `/status` poll. `nil` when the
     /// host can't sample (e.g. before recording starts).
     let audioLevel: Float?
+    /// Live partial transcript from Apple Speech recognition, fed continuously
+    /// while recording. The keyboard renders this as the user speaks; the Mac
+    /// final result later replaces it. `nil` / empty when no preview is
+    /// available (unsupported locale, denied permission, or not recording).
+    let livePartialTranscript: String?
     let updatedAt: TimeInterval
 
     init(
@@ -437,6 +442,7 @@ struct KeyboardBridgeStatus: Codable, Equatable {
         rawTranscriptLength: Int? = nil,
         defaultCorrectionMode: String? = nil,
         audioLevel: Float? = nil,
+        livePartialTranscript: String? = nil,
         updatedAt: TimeInterval = Date().timeIntervalSince1970
     ) {
         self.commandID = commandID
@@ -448,6 +454,7 @@ struct KeyboardBridgeStatus: Codable, Equatable {
         self.rawTranscriptLength = rawTranscriptLength
         self.defaultCorrectionMode = defaultCorrectionMode
         self.audioLevel = audioLevel
+        self.livePartialTranscript = livePartialTranscript
         self.updatedAt = updatedAt
     }
 
@@ -462,7 +469,24 @@ struct KeyboardBridgeStatus: Codable, Equatable {
             rawTranscriptLength: rawTranscriptLength,
             defaultCorrectionMode: defaultCorrectionMode,
             audioLevel: level,
+            livePartialTranscript: livePartialTranscript,
             updatedAt: updatedAt
+        )
+    }
+
+    func withLivePartialTranscript(_ text: String?) -> KeyboardBridgeStatus {
+        KeyboardBridgeStatus(
+            commandID: commandID,
+            state: state,
+            message: message,
+            resultText: resultText,
+            audioDurationSeconds: audioDurationSeconds,
+            audioByteCount: audioByteCount,
+            rawTranscriptLength: rawTranscriptLength,
+            defaultCorrectionMode: defaultCorrectionMode,
+            audioLevel: audioLevel,
+            livePartialTranscript: text?.isEmpty == true ? nil : text,
+            updatedAt: Date().timeIntervalSince1970
         )
     }
 

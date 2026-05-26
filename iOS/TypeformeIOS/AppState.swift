@@ -747,6 +747,11 @@ final class AppState: ObservableObject {
         keyboardCommandID: String?,
         recordingInfo: RecordingFileInfo
     ) async throws -> BridgeDictateResponse {
+        // Snapshot the live preview text *before* tearing down — Mac uses it
+        // as a supplementary hypothesis (neutral framing, no "from Apple
+        // Speech" attribution; see prompt design in baseSystem).
+        let alternate = livePartialTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+        let alternateForBridge: String? = alternate.isEmpty ? nil : alternate
         func dictate(to baseURL: URL) async throws -> BridgeDictateResponse {
             let client = BridgeClient(baseURL: baseURL, token: config.token)
             let jobID = "ios_\(UUID().uuidString.replacingOccurrences(of: "-", with: "_"))"
@@ -759,6 +764,7 @@ final class AppState: ObservableObject {
                 contextAfter: contextAfter,
                 includeRawTranscript: includeRawTranscript,
                 clientJobID: jobID,
+                alternateTranscript: alternateForBridge,
                 onJobEvent: { event in
                     await MainActor.run {
                         self.applyBridgeJobStatus(
@@ -1740,6 +1746,7 @@ final class AppState: ObservableObject {
                         .trimmingCharacters(in: .whitespacesAndNewlines)
                     if !text.isEmpty {
                         self.livePartialTranscript = text
+                        self.publishLivePartialTranscriptToKeyboard()
                     }
                 }
                 if error != nil {
@@ -1772,7 +1779,10 @@ final class AppState: ObservableObject {
         liveSpeechTask = nil
         liveSpeechRequest = nil
         liveSpeechRecognizer = nil
-        if clearText { livePartialTranscript = "" }
+        if clearText {
+            livePartialTranscript = ""
+            publishLivePartialTranscriptToKeyboard()
+        }
     }
 
     private func resolvedReturnBundleID(
@@ -2354,6 +2364,7 @@ final class AppState: ObservableObject {
             return
         }
 
+        let partial = livePartialTranscript.isEmpty ? nil : livePartialTranscript
         let status = KeyboardBridgeStatus(
             commandID: commandID,
             state: state,
@@ -2362,9 +2373,21 @@ final class AppState: ObservableObject {
             audioDurationSeconds: audioDurationSeconds,
             audioByteCount: audioByteCount,
             rawTranscriptLength: rawTranscriptLength,
-            defaultCorrectionMode: config.correctionMode.rawValue
+            defaultCorrectionMode: config.correctionMode.rawValue,
+            livePartialTranscript: partial
         )
         keyboardBridgeStatus = status
+    }
+
+    /// Called from the SFSpeechRecognizer partial callback on every new
+    /// hypothesis. Updates only the live partial field on the keyboard bridge
+    /// status — keeps the existing state / message / commandID intact so the
+    /// keyboard's stage indicator doesn't churn.
+    private func publishLivePartialTranscriptToKeyboard() {
+        guard keyboardBridgeStatus.state == .recording || keyboardBridgeStatus.state == .sending else { return }
+        let next = livePartialTranscript.isEmpty ? nil : livePartialTranscript
+        guard keyboardBridgeStatus.livePartialTranscript != next else { return }
+        keyboardBridgeStatus = keyboardBridgeStatus.withLivePartialTranscript(next)
     }
 
     private func applyBridgeJobStatus(
