@@ -560,7 +560,8 @@ final class BridgeHTTPServer: @unchecked Sendable {
                 appCategory: fields["app_category"],
                 contextBefore: fields["context_before"],
                 contextAfter: fields["context_after"],
-                includeRawTranscript: parseBool(fields["include_raw_transcript"])
+                includeRawTranscript: parseBool(fields["include_raw_transcript"]),
+                alternateTranscript: fields["alternate_transcript"]
             )
         } catch {
             parser.cleanup()

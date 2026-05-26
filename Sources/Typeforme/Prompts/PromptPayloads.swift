@@ -46,6 +46,10 @@ struct DictationPromptInputPayload: Codable, Sendable, Equatable {
     let contextAfter: String
     let vocabularyCandidates: [VocabularyCandidatePayload]
     let rawTranscript: String
+    /// Optional supplementary transcript. Encoded as `alternate_transcript`
+    /// without any source attribution to avoid biasing the model toward
+    /// "expert" labels — see baseSystem prompt for handling rules.
+    let alternateTranscript: String?
 
     enum CodingKeys: String, CodingKey {
         case task
@@ -55,6 +59,23 @@ struct DictationPromptInputPayload: Codable, Sendable, Equatable {
         case contextAfter = "context_after"
         case vocabularyCandidates = "vocabulary_candidates"
         case rawTranscript = "raw_transcript"
+        case alternateTranscript = "alternate_transcript"
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(task, forKey: .task)
+        try container.encode(commitScope, forKey: .commitScope)
+        try container.encode(context, forKey: .context)
+        try container.encode(contextBefore, forKey: .contextBefore)
+        try container.encode(contextAfter, forKey: .contextAfter)
+        try container.encode(vocabularyCandidates, forKey: .vocabularyCandidates)
+        try container.encode(rawTranscript, forKey: .rawTranscript)
+        // Only emit alternate_transcript when present so prompts without a
+        // live preview stay byte-identical to before.
+        if let alternateTranscript, !alternateTranscript.isEmpty {
+            try container.encode(alternateTranscript, forKey: .alternateTranscript)
+        }
     }
 }
 

@@ -32,6 +32,11 @@ struct BridgeDictateRequest {
     var contextBefore: String?
     var contextAfter: String?
     var includeRawTranscript: Bool?
+    /// Optional additional transcription of the same audio from another ASR
+    /// (e.g. on-device Apple Speech for live preview). Neutral framing — not
+    /// labelled as "source X" or "preview" in any prompt — Mac treats it as a
+    /// supplementary hypothesis to resolve ambiguity in raw_transcript.
+    var alternateTranscript: String?
 
     init(
         audioData: Data? = nil,
@@ -46,7 +51,8 @@ struct BridgeDictateRequest {
         appCategory: String?,
         contextBefore: String? = nil,
         contextAfter: String? = nil,
-        includeRawTranscript: Bool?
+        includeRawTranscript: Bool?,
+        alternateTranscript: String? = nil
     ) {
         self.audioData = audioData
         self.audioFileURL = audioFileURL
@@ -61,6 +67,7 @@ struct BridgeDictateRequest {
         self.contextBefore = contextBefore
         self.contextAfter = contextAfter
         self.includeRawTranscript = includeRawTranscript
+        self.alternateTranscript = alternateTranscript
     }
 }
 

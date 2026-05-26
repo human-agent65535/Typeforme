@@ -58,6 +58,11 @@ enum PromptBuilder {
             ]
         )
 
+        // Alternate hypothesis: trimmed and only emitted when non-empty. Field
+        // name is deliberately neutral ("alternate") — never reveals source so
+        // the model can't anchor on training-data priors about specific ASRs.
+        let alternate = request.alternateTranscript?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let alternateNonEmpty = alternate.flatMap { $0.isEmpty ? nil : $0 }
         let input = DictationPromptInputPayload(
             task: "clean_dictation_transcript_for_direct_insertion",
             commitScope: "new_transcript_only",
@@ -65,7 +70,8 @@ enum PromptBuilder {
             contextBefore: request.contextBefore,
             contextAfter: request.contextAfter,
             vocabularyCandidates: vocabularyCandidates,
-            rawTranscript: request.rawTranscript
+            rawTranscript: request.rawTranscript,
+            alternateTranscript: alternateNonEmpty
         )
 
         parts.append("""

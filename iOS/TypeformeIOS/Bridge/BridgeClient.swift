@@ -110,6 +110,7 @@ struct BridgeClient {
         contextAfter: String = "",
         includeRawTranscript: Bool,
         clientJobID: String? = nil,
+        alternateTranscript: String? = nil,
         onJobEvent: (@Sendable (BridgeJobStatusEvent) async -> Void)? = nil
     ) async throws -> BridgeDictateResponse {
         let ext = (audioURL.pathExtension.isEmpty ? audioExtension : audioURL.pathExtension).lowercased()
@@ -134,7 +135,8 @@ struct BridgeClient {
             contextBefore: contextBefore,
             contextAfter: contextAfter,
             includeRawTranscript: includeRawTranscript,
-            clientJobID: normalizedJobID
+            clientJobID: normalizedJobID,
+            alternateTranscript: alternateTranscript
         )
         return try await request(
             path: "/v1/dictate",
@@ -335,7 +337,8 @@ struct BridgeClient {
             contextBefore: contextBefore,
             contextAfter: contextAfter,
             includeRawTranscript: includeRawTranscript,
-            clientJobID: nil
+            clientJobID: nil,
+            alternateTranscript: nil
         )
     }
 
@@ -347,7 +350,8 @@ struct BridgeClient {
         contextBefore: String,
         contextAfter: String,
         includeRawTranscript: Bool,
-        clientJobID: String?
+        clientJobID: String?,
+        alternateTranscript: String? = nil
     ) throws -> (body: Data, contentType: String) {
         let multipart = try BridgeMultipart.dictateBody(
             audioURL: audioURL,
@@ -359,7 +363,8 @@ struct BridgeClient {
             contextBefore: contextBefore,
             contextAfter: contextAfter,
             includeRawTranscript: includeRawTranscript,
-            clientJobID: clientJobID
+            clientJobID: clientJobID,
+            alternateTranscript: alternateTranscript
         )
         return (multipart.body, multipart.contentType)
     }

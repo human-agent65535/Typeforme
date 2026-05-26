@@ -39,7 +39,8 @@ enum BridgeMultipart {
         contextBefore: String = "",
         contextAfter: String = "",
         includeRawTranscript: Bool,
-        clientJobID: String? = nil
+        clientJobID: String? = nil,
+        alternateTranscript: String? = nil
     ) throws -> Body {
         try dictateBody(
             audioURL: audioURL,
@@ -52,7 +53,8 @@ enum BridgeMultipart {
             contextBefore: contextBefore,
             contextAfter: contextAfter,
             includeRawTranscript: includeRawTranscript,
-            clientJobID: clientJobID
+            clientJobID: clientJobID,
+            alternateTranscript: alternateTranscript
         )
     }
 
@@ -66,7 +68,8 @@ enum BridgeMultipart {
         contextBefore: String,
         contextAfter: String,
         includeRawTranscript: Bool,
-        clientJobID: String? = nil
+        clientJobID: String? = nil,
+        alternateTranscript: String? = nil
     ) throws -> Body {
         try dictateBody(
             audioURL: audioURL,
@@ -79,7 +82,8 @@ enum BridgeMultipart {
             contextBefore: contextBefore,
             contextAfter: contextAfter,
             includeRawTranscript: includeRawTranscript,
-            clientJobID: clientJobID
+            clientJobID: clientJobID,
+            alternateTranscript: alternateTranscript
         )
     }
 
@@ -94,7 +98,8 @@ enum BridgeMultipart {
         contextBefore: String,
         contextAfter: String,
         includeRawTranscript: Bool,
-        clientJobID: String?
+        clientJobID: String?,
+        alternateTranscript: String? = nil
     ) throws -> Body {
         let boundary = "Typeforme-\(UUID().uuidString)"
         var body = Data()
@@ -113,6 +118,9 @@ enum BridgeMultipart {
         }
         if let bundleID, !bundleID.isEmpty {
             appendField("bundle_id", bundleID, to: &body, boundary: boundary)
+        }
+        if let alt = alternateTranscript?.trimmingCharacters(in: .whitespacesAndNewlines), !alt.isEmpty {
+            appendField("alternate_transcript", alt, to: &body, boundary: boundary)
         }
 
         let explicitExtension = audioExtension?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -140,7 +148,8 @@ enum BridgeMultipart {
         contextBefore: String = "",
         contextAfter: String = "",
         includeRawTranscript: Bool,
-        clientJobID: String? = nil
+        clientJobID: String? = nil,
+        alternateTranscript: String? = nil
     ) throws -> FileBody {
         try dictateBodyFile(
             audioURL: audioURL,
@@ -153,7 +162,8 @@ enum BridgeMultipart {
             contextBefore: contextBefore,
             contextAfter: contextAfter,
             includeRawTranscript: includeRawTranscript,
-            clientJobID: clientJobID
+            clientJobID: clientJobID,
+            alternateTranscript: alternateTranscript
         )
     }
 
@@ -168,7 +178,8 @@ enum BridgeMultipart {
         contextBefore: String,
         contextAfter: String,
         includeRawTranscript: Bool,
-        clientJobID: String?
+        clientJobID: String?,
+        alternateTranscript: String? = nil
     ) throws -> FileBody {
         let boundary = "Typeforme-\(UUID().uuidString)"
         let bodyURL = FileManager.default.temporaryDirectory
@@ -191,6 +202,9 @@ enum BridgeMultipart {
             }
             if let bundleID, !bundleID.isEmpty {
                 try writeField("bundle_id", bundleID, to: handle, boundary: boundary)
+            }
+            if let alt = alternateTranscript?.trimmingCharacters(in: .whitespacesAndNewlines), !alt.isEmpty {
+                try writeField("alternate_transcript", alt, to: handle, boundary: boundary)
             }
 
             let explicitExtension = audioExtension?.trimmingCharacters(in: .whitespacesAndNewlines)
