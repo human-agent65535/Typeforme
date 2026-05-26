@@ -197,6 +197,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let updatedAt: TimeInterval
     }
 
+    private enum MarkedTextOwner {
+        case rimeComposition
+        case livePartial
+    }
+
     private let defaults = UserDefaults.standard
     private let localClient = KeyboardLocalClient()
     private let inputModeKey = "keyboard.inputMode"
@@ -231,6 +236,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     )
     private var pendingRimeCharacters: [String] = []
     private var activeMarkedText = ""
+    private var activeMarkedTextOwner: MarkedTextOwner?
     private var heightConstraint: NSLayoutConstraint?
     private var inputModeSwitchActivationAllowedAt: CFTimeInterval = 0
     private var didSuppressInitialInputModeSwitchEvent = false
@@ -3782,7 +3788,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         // duration of the hold. Tap mode keeps the in-orb voiceprint since
         // the orb itself stays uncovered.
         let isHoldRecording = isRecordingState && inputMode == .hold
-        let isTapRecording = isRecordingState && inputMode == .tap
         let showsInOrbVoicePrint = isRecordingState && !isHoldRecording
         let showsTopRowVoicePrint = isHoldRecording
         let updates = {
@@ -6473,10 +6478,15 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             clearRestyleUndoStateForManualEdit()
             commitTextReplacingMarkedText(state.commitText)
             activeMarkedText = ""
+            activeMarkedTextOwner = nil
         }
 
         let composingText = state.isComposing ? (state.preedit.isEmpty ? state.input : state.preedit) : ""
-        replaceMarkedText(composingText)
+        if composingText.isEmpty {
+            clearMarkedText(ifOwnedBy: .rimeComposition)
+        } else {
+            replaceMarkedText(composingText, owner: .rimeComposition)
+        }
 
         renderRimeState(state)
     }
@@ -6625,6 +6635,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         textWandButton.isHidden = !showAllIdleIcons
         textToolsButton.isHidden = !showAllIdleIcons // mic
         textStylePickerButton.isHidden = !showAllIdleIcons
+        textUndoButton.isHidden = !showAllIdleIcons
         textKeyboardSwitchButton.isHidden = !showAllIdleIcons
         textHostSettingsButton.isHidden = !showAllIdleIcons || isRunningInsideHostApp
     }
@@ -6980,7 +6991,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         paragraph.lineBreakMode = .byTruncatingTail
         paragraph.alignment = .center
         let attributes: [NSAttributedString.Key: Any] = [
-            .font: candidateFont(weight: displayIndex == 0 ? .semibold : .regular),
+            .font: candidateFont(weight: .regular),
             .foregroundColor: UIColor.label,
             .paragraphStyle: paragraph,
         ]
@@ -6991,14 +7002,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         configuration.cornerStyle = .fixed
         configuration.contentInsets = .zero
         configuration.baseForegroundColor = .label
-        configuration.background.cornerRadius = displayIndex == 0 ? 11 : 0
-        configuration.background.backgroundColor = displayIndex == 0
-            ? UIColor.label.withAlphaComponent(isKeyboardDark ? 0.18 : 0.08)
-            : .clear
+        configuration.background.cornerRadius = 0
+        configuration.background.backgroundColor = .clear
         button.configuration = configuration
         button.titleLabel?.numberOfLines = 1
         button.titleLabel?.lineBreakMode = .byTruncatingTail
-        candidateButtonWidthConstraints[displayIndex].constant = candidateButtonMinimumWidth(for: candidate, isFirst: displayIndex == 0)
+        candidateButtonWidthConstraints[displayIndex].constant = candidateButtonMinimumWidth(for: candidate)
     }
 
     @objc private func candidateButtonTapped(_ sender: UIButton) {
@@ -7007,11 +7016,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         applyRimeState(rimeInput.selectCandidate(at: sender.tag))
     }
 
-    private func candidateButtonMinimumWidth(for candidate: RimeKeyboardCandidate, isFirst: Bool) -> CGFloat {
+    private func candidateButtonMinimumWidth(for candidate: RimeKeyboardCandidate) -> CGFloat {
         // Native collapsed Chinese candidates are text-width adaptive:
         // single characters are ~41pt wide and "是很舒服" is ~97pt, both
         // matching text width + about 20pt of total horizontal padding.
-        let titleFont = candidateFont(weight: isFirst ? .semibold : .regular)
+        let titleFont = candidateFont(weight: .regular)
         let titleWidth = ceil((candidate.text as NSString).size(withAttributes: [.font: titleFont]).width)
         return max(Self.candidateInlineMinimumCellWidth, titleWidth + Self.candidateInlineCellHorizontalPadding)
     }
@@ -7072,8 +7081,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         candidateScrollView.setContentOffset(.zero, animated: false)
     }
 
-    private func replaceMarkedText(_ text: String) {
-        guard activeMarkedText != text else { return }
+    private func replaceMarkedText(_ text: String, owner: MarkedTextOwner? = nil) {
+        let nextOwner = text.isEmpty ? nil : owner
+        guard activeMarkedText != text || activeMarkedTextOwner != nextOwner else { return }
         if !text.isEmpty {
             let cursor = (text as NSString).length
             textDocumentProxy.setMarkedText(text, selectedRange: NSRange(location: cursor, length: 0))
@@ -7081,6 +7091,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             textDocumentProxy.setMarkedText("", selectedRange: NSRange(location: 0, length: 0))
         }
         activeMarkedText = text
+        activeMarkedTextOwner = nextOwner
+    }
+
+    private func clearMarkedText(ifOwnedBy owner: MarkedTextOwner) {
+        guard activeMarkedTextOwner == owner else { return }
+        replaceMarkedText("")
     }
 
     private func commitTextReplacingMarkedText(_ text: String) {
@@ -8069,17 +8085,14 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         if status.state == .result, currentBridgeStatus?.state != .result, keyboardFocus == .text {
             beginInsertedFlash()
         }
-        // Live partial preview (Apple Speech on the host) → marked text on
-        // the focused field. State machine:
-        //   recording / sending + non-empty partial → update marked text
-        //   any other state (incl. error / idle / standby) → clear marked text
-        // The Mac final commit below replaces marked text with the final
-        // string via setMarkedText + unmarkText, so there's no flicker.
+        // Live partial preview (Apple Speech on the host) owns only the marked
+        // text it created. Rime composition also uses marked text; bridge idle
+        // polls must not clear the user's in-progress Pinyin preedit.
         let partial = status.livePartialTranscript?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let showsPartial = (status.state == .recording || status.state == .sending) && !partial.isEmpty
         if showsPartial {
-            replaceMarkedText(partial)
-        } else if status.state != .result {
+            replaceMarkedText(partial, owner: .livePartial)
+        } else if status.state != .result, activeMarkedTextOwner == .livePartial {
             // .result is handled below — don't clear here or the commit step
             // would have no marked text to replace.
             replaceMarkedText("")
@@ -8112,6 +8125,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 // insertText. activeMarkedText must be reset by the caller.
                 commitTextReplacingMarkedText(text)
                 activeMarkedText = ""
+                activeMarkedTextOwner = nil
                 didApply = true
                 appliedRewriteTarget = nil
             }
