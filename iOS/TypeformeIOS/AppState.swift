@@ -465,7 +465,7 @@ final class AppState: ObservableObject {
         self.inputMode = UserDefaults.standard.string(forKey: Self.inputModeKey)
             .flatMap(VoiceInputMode.init(rawValue:)) ?? .hold
         self.hostAudioSessionLength = UserDefaults.standard.string(forKey: Self.hostAudioSessionLengthKey)
-            .flatMap(HostAudioSessionLength.init(rawValue:)) ?? .thirtyMinutes
+            .flatMap(HostAudioSessionLength.init(rawValue:)) ?? .fifteenMinutes
         self.keyboardAutoCapitalizationEnabled = UserDefaults.standard.object(forKey: Self.keyboardAutoCapitalizationKey)
             .map { _ in UserDefaults.standard.bool(forKey: Self.keyboardAutoCapitalizationKey) } ?? true
         self.keyboardCharacterPreviewEnabled = UserDefaults.standard.object(forKey: Self.keyboardCharacterPreviewKey)
