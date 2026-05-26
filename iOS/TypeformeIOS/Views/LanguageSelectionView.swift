@@ -12,27 +12,30 @@ enum LanguageDisplay {
 struct LanguageSelectionView: View {
     @Binding var selection: Set<String>
     let options: [ASRLanguageOption]
-    let showsPreviewSupport: Bool
-    private let previewSupportByLanguageID: [String: Bool]
+    let livePreviewEnabled: Bool
+    let livePreviewRecognitionMode: KeyboardLivePreviewRecognitionMode?
+    private let previewCapabilityByLanguageID: [String: AppleSpeechPreviewCapability]
     @State private var searchText = ""
 
     init(
         selection: Binding<Set<String>>,
         options: [ASRLanguageOption] = ASRLanguageSelection.all,
-        showsPreviewSupport: Bool = false
+        livePreviewEnabled: Bool = true,
+        livePreviewRecognitionMode: KeyboardLivePreviewRecognitionMode? = nil
     ) {
         let resolvedOptions = options.isEmpty ? ASRLanguageSelection.all : options
         self._selection = selection
         self.options = resolvedOptions
-        self.showsPreviewSupport = showsPreviewSupport
-        if showsPreviewSupport {
-            self.previewSupportByLanguageID = Dictionary(
+        self.livePreviewEnabled = livePreviewEnabled
+        self.livePreviewRecognitionMode = livePreviewRecognitionMode
+        if livePreviewRecognitionMode != nil {
+            self.previewCapabilityByLanguageID = Dictionary(
                 uniqueKeysWithValues: resolvedOptions.map { option in
-                    (option.id, AppleSpeechPreviewSupport.supportsOnDevicePreview(languageID: option.id))
+                    (option.id, AppleSpeechPreviewSupport.capability(languageID: option.id))
                 }
             )
         } else {
-            self.previewSupportByLanguageID = [:]
+            self.previewCapabilityByLanguageID = [:]
         }
     }
 
@@ -45,16 +48,24 @@ struct LanguageSelectionView: View {
                     }
                 }
 
-                Section("Supported Languages") {
+                Section {
                     ForEach(otherLanguages) { option in
                         languageRow(option)
                     }
+                } header: {
+                    Text("Supported Languages")
+                } footer: {
+                    previewGuideFooter
                 }
             } else {
-                Section("Matches") {
+                Section {
                     ForEach(filteredLanguages) { option in
                         languageRow(option)
                     }
+                } header: {
+                    Text("Matches")
+                } footer: {
+                    previewGuideFooter
                 }
             }
         }
@@ -83,8 +94,15 @@ struct LanguageSelectionView: View {
         }
     }
 
+    @ViewBuilder
+    private var previewGuideFooter: some View {
+        if livePreviewRecognitionMode != nil {
+            Text("On-device preview availability is reported by iOS. Manage Dictation languages and system updates in iOS Settings.")
+        }
+    }
+
     private func languageRow(_ option: ASRLanguageOption) -> some View {
-        let supportsPreview = previewSupportByLanguageID[option.id] ?? false
+        let previewCapability = previewCapabilityByLanguageID[option.id] ?? .unsupported
         return Button {
             toggle(option.id)
         } label: {
@@ -94,8 +112,12 @@ struct LanguageSelectionView: View {
                     Text(option.id)
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    if showsPreviewSupport {
-                        previewBadge(supportsPreview: supportsPreview)
+                    if let livePreviewRecognitionMode {
+                        previewBadge(
+                            capability: previewCapability,
+                            livePreviewEnabled: livePreviewEnabled,
+                            recognitionMode: livePreviewRecognitionMode
+                        )
                     }
                 }
                 Spacer()
@@ -109,17 +131,48 @@ struct LanguageSelectionView: View {
         .foregroundStyle(.primary)
     }
 
-    private func previewBadge(supportsPreview: Bool) -> some View {
-        HStack(spacing: 4) {
-            Image(systemName: supportsPreview ? "waveform.circle.fill" : "waveform.circle")
-            if supportsPreview {
-                Text("Preview")
-            } else {
+    private func previewBadge(
+        capability: AppleSpeechPreviewCapability,
+        livePreviewEnabled: Bool,
+        recognitionMode: KeyboardLivePreviewRecognitionMode
+    ) -> some View {
+        let isActive = livePreviewEnabled && recognitionMode.canUse(capability)
+        return HStack(spacing: 4) {
+            Image(systemName: previewBadgeIcon(capability: capability))
+            switch capability {
+            case .onDevice:
+                Text("On-device")
+            case .cloud:
+                Text("Cloud")
+            case .unsupported:
                 Text("No preview")
             }
         }
         .font(.caption)
-        .foregroundStyle(supportsPreview ? .green : .secondary)
+        .foregroundStyle(previewBadgeColor(capability: capability, isActive: isActive))
+    }
+
+    private func previewBadgeIcon(capability: AppleSpeechPreviewCapability) -> String {
+        switch capability {
+        case .onDevice:
+            return "lock.shield.fill"
+        case .cloud:
+            return "icloud"
+        case .unsupported:
+            return "waveform.circle"
+        }
+    }
+
+    private func previewBadgeColor(capability: AppleSpeechPreviewCapability, isActive: Bool) -> Color {
+        guard isActive else { return .secondary }
+        switch capability {
+        case .onDevice:
+            return .green
+        case .cloud:
+            return .orange
+        case .unsupported:
+            return .secondary
+        }
     }
 
     private func toggle(_ id: String) {

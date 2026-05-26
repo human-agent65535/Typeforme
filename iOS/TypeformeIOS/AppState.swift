@@ -141,13 +141,87 @@ enum KeyboardDefaultTextInputLanguage: String, CaseIterable, Identifiable {
     }
 }
 
+enum AppleSpeechPreviewCapability: Equatable {
+    case unsupported
+    case cloud
+    case onDevice
+
+    var supportsPreview: Bool {
+        self != .unsupported
+    }
+
+    var supportsOnDevicePreview: Bool {
+        self == .onDevice
+    }
+}
+
 enum AppleSpeechPreviewSupport {
-    static func supportsOnDevicePreview(languageID: String) -> Bool {
+    private static let cacheLock = NSLock()
+    private static var cachedCapabilities: [String: AppleSpeechPreviewCapability] = [:]
+    private static let supportedLocaleIDs: Set<String> = Set(
+        SFSpeechRecognizer.supportedLocales().map { normalizedIdentifier($0.identifier) }
+    )
+
+    static func capability(languageID: String) -> AppleSpeechPreviewCapability {
+        let normalizedID = normalizedIdentifier(languageID)
+        cacheLock.lock()
+        if let cached = cachedCapabilities[normalizedID] {
+            cacheLock.unlock()
+            return cached
+        }
+        cacheLock.unlock()
+
+        let capability = resolveCapability(languageID: languageID, normalizedID: normalizedID)
+
+        cacheLock.lock()
+        cachedCapabilities[normalizedID] = capability
+        cacheLock.unlock()
+        return capability
+    }
+
+    private static func resolveCapability(languageID: String, normalizedID: String) -> AppleSpeechPreviewCapability {
         let locale = Locale(identifier: languageID)
-        guard SFSpeechRecognizer.supportedLocales().contains(where: { $0.identifier == locale.identifier }),
+        guard supportedLocaleIDs.contains(normalizedID),
               let recognizer = SFSpeechRecognizer(locale: locale)
-        else { return false }
-        return recognizer.supportsOnDeviceRecognition
+        else { return .unsupported }
+        return recognizer.supportsOnDeviceRecognition ? .onDevice : .cloud
+    }
+
+    private static func normalizedIdentifier(_ identifier: String) -> String {
+        Locale(identifier: identifier).identifier
+            .replacingOccurrences(of: "_", with: "-")
+            .lowercased()
+    }
+}
+
+enum KeyboardLivePreviewRecognitionMode: String, CaseIterable, Identifiable {
+    case onDeviceOnly = "on_device_only"
+    case cloudFallback = "cloud_fallback"
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .onDeviceOnly:
+            return NSLocalizedString("On-device Only", comment: "Apple Speech preview recognition mode")
+        case .cloudFallback:
+            return NSLocalizedString("Cloud Fallback", comment: "Apple Speech preview recognition mode")
+        }
+    }
+
+    var allowsCloud: Bool {
+        self == .cloudFallback
+    }
+
+    func canUse(_ capability: AppleSpeechPreviewCapability) -> Bool {
+        switch capability {
+        case .onDevice:
+            return true
+        case .cloud:
+            return allowsCloud
+        case .unsupported:
+            return false
+        }
     }
 }
 
@@ -189,6 +263,7 @@ final class AppState: ObservableObject {
     @Published var keyboardAutoCapitalizationEnabled: Bool
     @Published var keyboardCharacterPreviewEnabled: Bool
     @Published var keyboardLivePreviewEnabled: Bool
+    @Published var keyboardLivePreviewRecognitionMode: KeyboardLivePreviewRecognitionMode
     @Published var keyboardChinesePunctuationStyle: KeyboardChinesePunctuationStyle
     @Published var keyboardRimeDictionaryTier: KeyboardRimeDictionaryTier
     @Published var keyboardDefaultTextInputLanguage: KeyboardDefaultTextInputLanguage
@@ -232,6 +307,7 @@ final class AppState: ObservableObject {
     private static let keyboardAutoCapitalizationKey = "keyboard.autoCapitalizationEnabled"
     private static let keyboardCharacterPreviewKey = "keyboard.characterPreviewEnabled"
     private static let keyboardLivePreviewKey = "keyboard.livePreviewEnabled"
+    private static let keyboardLivePreviewRecognitionModeKey = "keyboard.livePreviewRecognitionMode"
     private static let keyboardChinesePunctuationStyleKey = "keyboard.chinesePunctuationStyle"
     private static let keyboardRimeDictionaryTierKey = "keyboard.rimeDictionaryTier"
     private static let keyboardDefaultTextInputLanguageKey = "keyboard.defaultTextInputLanguage"
@@ -378,6 +454,8 @@ final class AppState: ObservableObject {
             .map { _ in UserDefaults.standard.bool(forKey: Self.keyboardCharacterPreviewKey) } ?? false
         self.keyboardLivePreviewEnabled = UserDefaults.standard.object(forKey: Self.keyboardLivePreviewKey)
             .map { _ in UserDefaults.standard.bool(forKey: Self.keyboardLivePreviewKey) } ?? true
+        self.keyboardLivePreviewRecognitionMode = UserDefaults.standard.string(forKey: Self.keyboardLivePreviewRecognitionModeKey)
+            .flatMap(KeyboardLivePreviewRecognitionMode.init(rawValue:)) ?? .onDeviceOnly
         self.keyboardChinesePunctuationStyle = UserDefaults.standard.string(forKey: Self.keyboardChinesePunctuationStyleKey)
             .flatMap(KeyboardChinesePunctuationStyle.init(rawValue:)) ?? .chinese
         self.keyboardRimeDictionaryTier = UserDefaults.standard.string(forKey: Self.keyboardRimeDictionaryTierKey)
@@ -500,6 +578,12 @@ final class AppState: ObservableObject {
         if !enabled {
             teardownLivePartialPreview(clearText: true)
         }
+    }
+
+    func setKeyboardLivePreviewRecognitionMode(_ mode: KeyboardLivePreviewRecognitionMode) {
+        guard mode != keyboardLivePreviewRecognitionMode else { return }
+        keyboardLivePreviewRecognitionMode = mode
+        UserDefaults.standard.set(mode.rawValue, forKey: Self.keyboardLivePreviewRecognitionModeKey)
     }
 
     func setKeyboardChinesePunctuationStyle(_ style: KeyboardChinesePunctuationStyle) {
@@ -1720,8 +1804,9 @@ final class AppState: ObservableObject {
     // text is also shipped to Mac as `alternate_transcript` (see Step 5/6).
     //
     // Gating: this only runs when the user enables live preview and the selected
-    // primary locale supports Apple on-device recognition. Unsupported locales /
-    // denied permission silently degrade to the previous no-preview behaviour.
+    // primary locale is usable in the selected Apple Speech preview mode.
+    // Unsupported locales / denied permission silently degrade to the previous
+    // no-preview behaviour.
 
     private func startLivePartialPreviewIfAvailable() {
         // Tear down anything previous so re-press never leaks tasks.
@@ -1729,7 +1814,8 @@ final class AppState: ObservableObject {
 
         guard keyboardLivePreviewEnabled else { return }
         let primaryID = activeLanguageIDs.first ?? "en-US"
-        guard AppleSpeechPreviewSupport.supportsOnDevicePreview(languageID: primaryID) else { return }
+        let capability = AppleSpeechPreviewSupport.capability(languageID: primaryID)
+        guard keyboardLivePreviewRecognitionMode.canUse(capability) else { return }
         let locale = Locale(identifier: primaryID)
         guard let recognizer = SFSpeechRecognizer(locale: locale), recognizer.isAvailable else { return }
 
@@ -1752,7 +1838,7 @@ final class AppState: ObservableObject {
         let request = SFSpeechAudioBufferRecognitionRequest()
         request.shouldReportPartialResults = true
         request.taskHint = .dictation
-        request.requiresOnDeviceRecognition = true
+        request.requiresOnDeviceRecognition = capability.supportsOnDevicePreview || !keyboardLivePreviewRecognitionMode.allowsCloud
         request.addsPunctuation = (macSettings?.punctuationPreference ?? .normal) != .spaces
 
         liveSpeechRecognizer = recognizer

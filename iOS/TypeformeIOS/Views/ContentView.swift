@@ -849,7 +849,8 @@ private struct LanguagesRow: View {
             LanguageSelectionView(
                 selection: $state.selectedLanguageIDs,
                 options: state.config.supportedLanguageOptions,
-                showsPreviewSupport: state.keyboardLivePreviewEnabled
+                livePreviewEnabled: state.keyboardLivePreviewEnabled,
+                livePreviewRecognitionMode: state.keyboardLivePreviewRecognitionMode
             )
             .onChange(of: state.selectedLanguageIDs) { _, _ in
                 state.persistLanguageSelection()
@@ -936,6 +937,13 @@ private struct KeyboardSettingsView: View {
             }
             Section {
                 Toggle("Live Preview", isOn: livePreviewBinding)
+                Picker("Preview Recognition", selection: livePreviewRecognitionModeBinding) {
+                    ForEach(KeyboardLivePreviewRecognitionMode.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
+                .pickerStyle(.menu)
+                .disabled(!state.keyboardLivePreviewEnabled || state.isBusy)
                 Picker("Host audio session", selection: hostAudioSessionLengthBinding) {
                     ForEach(HostAudioSessionLength.allCases) { length in
                         Text(length.title).tag(length)
@@ -945,7 +953,7 @@ private struct KeyboardSettingsView: View {
             } header: {
                 Text("Audio")
             } footer: {
-                Text("Live Preview uses Apple on-device speech for supported primary languages. Preview punctuation follows Server Settings. Host audio session controls how long Typeforme keeps keyboard dictation ready after the host app is opened.")
+                Text("On-device Only keeps preview audio local. Cloud Fallback uses on-device when available and Apple servers otherwise. Preview punctuation follows Server Settings. Host audio session controls how long keyboard dictation stays ready.")
             }
         }
         .navigationTitle("Keyboard Settings")
@@ -978,6 +986,14 @@ private struct KeyboardSettingsView: View {
             state.keyboardLivePreviewEnabled
         } set: { enabled in
             state.setKeyboardLivePreviewEnabled(enabled)
+        }
+    }
+
+    private var livePreviewRecognitionModeBinding: Binding<KeyboardLivePreviewRecognitionMode> {
+        Binding {
+            state.keyboardLivePreviewRecognitionMode
+        } set: { mode in
+            state.setKeyboardLivePreviewRecognitionMode(mode)
         }
     }
 
