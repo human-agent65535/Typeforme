@@ -3725,6 +3725,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             self.updateSpaceKeyTitleForRecording(recordingDim)
             self.candidateScrollView.alpha = locksTextRows ? 0.62 : 1
             self.refreshTextRecordingButtons(isRecording: isRecordingState, isSending: isSendingState)
+            // Voice-orb mode: dim the correction mode chip during recording /
+            // sending so its disabled state reads visually. The mic + send
+            // buttons stay at full opacity because they're the only live
+            // affordances during dictation.
+            let voiceModeDim = (isRecordingState || isSendingState) && self.keyboardFocus == .voice
+            self.correctionModePanel.alpha = voiceModeDim ? 0.48 : 1
             self.voiceButton.layer.shadowColor = self.voiceShadowColor.cgColor
 
             if showsSpinner {
@@ -5537,6 +5543,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     @discardableResult
     private func applyRewrittenText(_ text: String, replacing target: TextRewriteTarget) -> Bool {
+        // If a live partial is still showing as marked text, clear it before
+        // performing selection / context replacement. Both downstream paths
+        // assume the field has no active composition.
+        if !activeMarkedText.isEmpty {
+            replaceMarkedText("")
+        }
         switch target {
         case .selection(let original, let contextBefore, let contextAfter):
             guard applySelectionReplacement(
@@ -7697,6 +7709,21 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         if status.state == .result, currentBridgeStatus?.state != .result, keyboardFocus == .text {
             beginInsertedFlash()
         }
+        // Live partial preview (Apple Speech on the host) → marked text on
+        // the focused field. State machine:
+        //   recording / sending + non-empty partial → update marked text
+        //   any other state (incl. error / idle / standby) → clear marked text
+        // The Mac final commit below replaces marked text with the final
+        // string via setMarkedText + unmarkText, so there's no flicker.
+        let partial = status.livePartialTranscript?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let showsPartial = (status.state == .recording || status.state == .sending) && !partial.isEmpty
+        if showsPartial {
+            replaceMarkedText(partial)
+        } else if status.state != .result {
+            // .result is handled below — don't clear here or the commit step
+            // would have no marked text to replace.
+            replaceMarkedText("")
+        }
         bridgeStatus = status
         lastBridgeContactAt = Date().timeIntervalSince1970
         if styleRewriteCommandID == nil {
@@ -7716,7 +7743,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             } else if activeRecordingTextTarget != nil {
                 didApply = false
             } else {
-                textDocumentProxy.insertText(text)
+                // commitTextReplacingMarkedText handles both cases: if marked
+                // text is active (live partial), it's atomically replaced by
+                // `text` and committed; if not, it falls through to a plain
+                // insertText. activeMarkedText must be reset by the caller.
+                commitTextReplacingMarkedText(text)
+                activeMarkedText = ""
                 didApply = true
             }
             if didApply {
