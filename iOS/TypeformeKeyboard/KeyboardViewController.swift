@@ -532,6 +532,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let startedAt: TimeInterval
     }
 
+    private struct TextTouchGutterProximity {
+        let isNear: Bool
+        let distance: CGFloat
+        let threshold: CGFloat
+    }
+
     override init(nibName nibNameOrNil: String?, bundle nibBundleOrNil: Bundle?) {
         super.init(nibName: nibNameOrNil, bundle: nibBundleOrNil)
         configureSystemKeyboardAffordances()
@@ -1169,18 +1175,20 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             character: rightCharacter,
             frame: buttons[right].frame
         )
-        let winner = textTouchLearner.gutterWinner(
+        guard let decision = textTouchLearner.gutterWinner(
             left: leftCandidate,
             right: rightCandidate,
             touchPoint: point
-        )
-        switch winner {
-        case .some(.left):
+        ) else { return nil }
+        let leftSamples = Int(decision.leftSamples.rounded())
+        let rightSamples = Int(decision.rightSamples.rounded())
+        let marginPercent = Int((decision.margin * 100).rounded())
+        kbLog.info("touch gaussian pick side=\(decision.side.rawValue, privacy: .public) leftSamples=\(leftSamples, privacy: .public) rightSamples=\(rightSamples, privacy: .public) marginPct=\(marginPercent, privacy: .public)")
+        switch decision.side {
+        case .left:
             return buttons[left].button
-        case .some(.right):
+        case .right:
             return buttons[right].button
-        case nil:
-            return nil
         }
     }
 
@@ -1225,18 +1233,29 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     private func registerCommittedTextTouch(_ sample: TextKeyTouchSample) {
         if let correction = pendingTextTouchCorrection {
-            if sample.committedAt - correction.startedAt <= Self.textTouchCorrectionWindow,
-               correction.sample.character != sample.character,
-               textTouchLearner.areHorizontalNeighbors(
+            let isCorrectionCandidate = sample.committedAt - correction.startedAt <= Self.textTouchCorrectionWindow
+                && correction.sample.character != sample.character
+                && textTouchLearner.areHorizontalNeighbors(
                     correction.sample.buttonFrame,
                     sample.buttonFrame
-               ) {
-                textTouchLearner.recordTouch(
-                    touchPoint: correction.sample.touchPoint,
-                    intendedFrame: sample.buttonFrame,
-                    character: sample.character,
-                    kind: .correction
                 )
+            if isCorrectionCandidate {
+                let proximity = correctionTouchGutterProximity(
+                    correction: correction.sample,
+                    replacement: sample
+                )
+                if proximity.isNear {
+                    textTouchLearner.recordTouch(
+                        touchPoint: correction.sample.touchPoint,
+                        intendedFrame: sample.buttonFrame,
+                        character: sample.character,
+                        kind: .correction
+                    )
+                } else {
+                    let distance = Int(proximity.distance.rounded())
+                    let threshold = Int(proximity.threshold.rounded())
+                    kbLog.info("touch gaussian learn skipped reason=center distance=\(distance, privacy: .public) threshold=\(threshold, privacy: .public)")
+                }
             }
             pendingTextTouchCorrection = nil
             pendingTextTouchSample = sample
@@ -1245,6 +1264,30 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
         acceptPendingTextTouchIfSurvived(now: sample.committedAt)
         pendingTextTouchSample = sample
+    }
+
+    private func correctionTouchGutterProximity(
+        correction: TextKeyTouchSample,
+        replacement: TextKeyTouchSample
+    ) -> TextTouchGutterProximity {
+        let originalFrame = correction.buttonFrame
+        let replacementFrame = replacement.buttonFrame
+        let boundaryX: CGFloat
+        if originalFrame.maxX <= replacementFrame.minX {
+            boundaryX = (originalFrame.maxX + replacementFrame.minX) * 0.5
+        } else if replacementFrame.maxX <= originalFrame.minX {
+            boundaryX = (replacementFrame.maxX + originalFrame.minX) * 0.5
+        } else {
+            boundaryX = (originalFrame.midX + replacementFrame.midX) * 0.5
+        }
+        let maxWidth = max(originalFrame.width, replacementFrame.width)
+        let threshold = min(TextKeyboardTouchModel.gutterRadius * 2, maxWidth * 0.35)
+        let distance = abs(correction.touchPoint.x - boundaryX)
+        return TextTouchGutterProximity(
+            isNear: distance <= threshold,
+            distance: distance,
+            threshold: threshold
+        )
     }
 
     private func acceptPendingTextTouchIfSurvived(now: TimeInterval = Date().timeIntervalSince1970) {
@@ -8226,9 +8269,18 @@ private final class TextKeyTouchLearner {
     enum SampleKind {
         case accepted
         case correction
+
+        var logName: String {
+            switch self {
+            case .accepted:
+                return "accepted"
+            case .correction:
+                return "correction"
+            }
+        }
     }
 
-    enum CandidateSide {
+    enum CandidateSide: String {
         case left
         case right
     }
@@ -8236,6 +8288,13 @@ private final class TextKeyTouchLearner {
     struct Candidate {
         let character: String
         let frame: CGRect
+    }
+
+    struct Decision {
+        let side: CandidateSide
+        let leftSamples: Double
+        let rightSamples: Double
+        let margin: Double
     }
 
     private struct StoredState: Codable {
@@ -8258,6 +8317,8 @@ private final class TextKeyTouchLearner {
     private static let correctionWeight = 3.0
     private static let acceptedWeight = 1.0
     private static let sigmaX = 0.34
+    // Horizontal pairs usually share midY, but each key can learn a different
+    // vertical mean; keep sigmaY active for that bias and future row-adjacent routing.
     private static let sigmaY = 0.70
     private static let maxObservationX = 0.75
     private static let maxObservationY = 0.75
@@ -8323,6 +8384,10 @@ private final class TextKeyTouchLearner {
         stats.sampleCount = nextCount
         stats.updatedAt = Date().timeIntervalSince1970
         state.keys[character] = stats
+        let sampleCount = Int(stats.sampleCount.rounded())
+        let dxPercent = Int((observedX * 100).rounded())
+        let dyPercent = Int((observedY * 100).rounded())
+        kbLog.debug("touch gaussian learn kind=\(kind.logName, privacy: .public) key=\(character, privacy: .private) samples=\(sampleCount, privacy: .public) dxPct=\(dxPercent, privacy: .public) dyPct=\(dyPercent, privacy: .public)")
         persist()
     }
 
@@ -8330,7 +8395,7 @@ private final class TextKeyTouchLearner {
         left: Candidate,
         right: Candidate,
         touchPoint: CGPoint
-    ) -> CandidateSide? {
+    ) -> Decision? {
         guard areHorizontalNeighbors(left.frame, right.frame),
               let leftOffset = normalizedOffset(touchPoint, in: left.frame),
               let rightOffset = normalizedOffset(touchPoint, in: right.frame)
@@ -8338,14 +8403,21 @@ private final class TextKeyTouchLearner {
 
         let leftStats = state.keys[left.character]
         let rightStats = state.keys[right.character]
-        let maxSamples = max(leftStats?.sampleCount ?? 0, rightStats?.sampleCount ?? 0)
+        let leftSamples = leftStats?.sampleCount ?? 0
+        let rightSamples = rightStats?.sampleCount ?? 0
+        let maxSamples = max(leftSamples, rightSamples)
         guard maxSamples >= Self.minimumDecisionSamples else { return nil }
 
         let leftScore = score(offset: leftOffset, stats: leftStats)
         let rightScore = score(offset: rightOffset, stats: rightStats)
         let difference = leftScore - rightScore
         guard abs(difference) >= Self.decisionMargin else { return nil }
-        return difference > 0 ? .left : .right
+        return Decision(
+            side: difference > 0 ? .left : .right,
+            leftSamples: leftSamples,
+            rightSamples: rightSamples,
+            margin: abs(difference)
+        )
     }
 
     private func score(offset: (x: Double, y: Double), stats: KeyStats?) -> Double {
