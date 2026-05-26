@@ -39,6 +39,7 @@
 "Auto-Capitalization" = "句首自动大写";
 "Character Preview" = "按键预览";
 "Dictionary" = "词库";
+"Pinyin Correction" = "拼音纠错";
 "Standard" = "标准";
 "Extended" = "扩展";
 "Large" = "大词库";
@@ -48,11 +49,17 @@
 "On" = "开启";
 "Reset Learning" = "重置学习";
 "Learning reset requested" = "已请求重置学习";
+"Reset Chinese Learning" = "重置中文学习";
+"Reset Touch Learning" = "重置触控学习";
+"Chinese learning reset requested" = "已请求重置中文学习";
+"Touch learning reset requested" = "已请求重置触控学习";
 "Last Used" = "保持上次";
 "Chinese" = "中文";
 "English" = "英文";
 "These settings apply to the Typeforme keyboard after Full Access is enabled." = "开启完全访问后,这些设置会同步到 Typeforme 键盘。";
 "Controls how long Typeforme keeps keyboard dictation ready after the host app is opened." = "控制从键盘打开宿主 app 后,Typeforme 保持听写就绪的时长。";
+"Only active when the keyboard is in English mode." = "仅在键盘处于英文模式时生效。";
+"Chinese learning clears the Rime user dictionary. Touch learning clears the per-key tap-position model. Both apply once Full Access is enabled." = "中文学习会清除 Rime 用户词典。触控学习会清除每个按键的触点模型。两者都需要开启完全访问后生效。";
 
 // VoiceInputMode (与键盘扩展共享)
 "Hold" = "按住";

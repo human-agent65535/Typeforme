@@ -1701,6 +1701,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
            let tier = RimeKeyboardDictionaryTier(rawValue: raw) {
             rimeProfile.dictionaryTier = tier
         }
+        if let enabled = payload["rime_correction_enabled"] as? Bool {
+            rimeProfile.correctionEnabled = enabled
+        }
         let hostRimeUserPhrases = payload["rime_user_phrases"] as? [String] ?? []
         let hostRimeUserPhrasesRevision = payload["rime_user_phrases_revision"] as? String ?? ""
         let userPhrasesChanged = hostRimeUserPhrasesRevision != rimeUserPhrasesRevision
@@ -1784,6 +1787,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             "character_preview_enabled": isCharacterPreviewEnabled,
             "chinese_punctuation_style": chinesePunctuationStyle.rawValue,
             "rime_dictionary_tier": rimeProfile.dictionaryTier.rawValue,
+            "rime_correction_enabled": rimeProfile.correctionEnabled,
             "rime_user_phrases": [],
             "rime_user_phrases_revision": "",
             "default_text_input_language": hostDefaultLanguage.rawValue,
@@ -6887,11 +6891,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func shouldAutoCapitalizeNextEnglishLetter() -> Bool {
-        let result = shouldAutoCapitalizeNextEnglishLetterDecision()
-        kbLog.debug(
-            "autocap decision=\(result.outcome, privacy: .public) reason=\(result.reason, privacy: .public) enabled=\(self.isAutoCapitalizationEnabled, privacy: .public) lang=\(self.textInputLanguage.rawValue, privacy: .public) kbType=\(self.textDocumentProxy.keyboardType?.rawValue ?? -1, privacy: .public) capPolicy=\(self.textDocumentProxy.autocapitalizationType?.rawValue ?? -1, privacy: .public) ctxNil=\(self.textDocumentProxy.documentContextBeforeInput == nil, privacy: .public) ctxEmpty=\(self.textDocumentProxy.documentContextBeforeInput?.isEmpty ?? true, privacy: .public)"
-        )
-        return result.outcome
+        shouldAutoCapitalizeNextEnglishLetterDecision().outcome
     }
 
     private struct AutocapDecision {

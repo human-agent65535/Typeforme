@@ -54,15 +54,16 @@ enum RimeKeyboardDictionaryTier: String {
 
 struct RimeKeyboardProfile: Equatable {
     var dictionaryTier: RimeKeyboardDictionaryTier = .standard
+    var correctionEnabled: Bool = true
 
     var schemaID: String {
         switch dictionaryTier {
         case .standard:
-            return "typeforme_pinyin"
+            return correctionEnabled ? "typeforme_pinyin" : "typeforme_pinyin_no_correction"
         case .extended:
-            return "typeforme_pinyin_ext"
+            return correctionEnabled ? "typeforme_pinyin_ext" : "typeforme_pinyin_ext_no_correction"
         case .large:
-            return "typeforme_pinyin_large"
+            return correctionEnabled ? "typeforme_pinyin_large" : "typeforme_pinyin_large_no_correction"
         }
     }
 }

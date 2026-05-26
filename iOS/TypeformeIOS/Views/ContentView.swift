@@ -900,6 +900,7 @@ private struct KeyboardSettingsView: View {
                         Text(tier.title).tag(tier)
                     }
                 }
+                Toggle("Pinyin Correction", isOn: rimeCorrectionBinding)
                 Picker("Default text input", selection: defaultTextInputLanguageBinding) {
                     ForEach(KeyboardDefaultTextInputLanguage.allCases) { language in
                         Text(language.title).tag(language)
@@ -1013,6 +1014,14 @@ private struct KeyboardSettingsView: View {
             state.keyboardRimeDictionaryTier
         } set: { tier in
             state.setKeyboardRimeDictionaryTier(tier)
+        }
+    }
+
+    private var rimeCorrectionBinding: Binding<Bool> {
+        Binding {
+            state.keyboardRimeCorrectionEnabled
+        } set: { enabled in
+            state.setKeyboardRimeCorrectionEnabled(enabled)
         }
     }
 

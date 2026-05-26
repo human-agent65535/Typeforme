@@ -6,6 +6,8 @@ iOS keyboard extension.
 - `typeforme_pinyin*.schema.yaml`, `typeforme_pinyin*.dict.yaml`,
   `typeforme_overrides.dict.yaml`, and `default.yaml` are Typeforme integration
   files that configure librime for the screen keyboard.
+- `scripts/build-rime-ios-data.sh` generates no-correction schema variants
+  from the three checked-in pinyin schemas before building prebuilt data.
 - `cn_dicts/8105.dict.yaml`, `cn_dicts/base.dict.yaml`,
   `cn_dicts/ext.dict.yaml`, `cn_dicts/tencent.dict.yaml`, and
   `LICENSE.rime-ice.txt` are copied from `iDvel/rime-ice` and are distributed

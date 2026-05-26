@@ -266,6 +266,7 @@ final class AppState: ObservableObject {
     @Published var keyboardLivePreviewRecognitionMode: KeyboardLivePreviewRecognitionMode
     @Published var keyboardChinesePunctuationStyle: KeyboardChinesePunctuationStyle
     @Published var keyboardRimeDictionaryTier: KeyboardRimeDictionaryTier
+    @Published var keyboardRimeCorrectionEnabled: Bool
     @Published var keyboardDefaultTextInputLanguage: KeyboardDefaultTextInputLanguage
     @Published private(set) var keyboardRimeLearningResetGeneration: Int
     @Published private(set) var keyboardTouchLearningResetGeneration: Int
@@ -311,6 +312,7 @@ final class AppState: ObservableObject {
     private static let keyboardLivePreviewRecognitionModeKey = "keyboard.livePreviewRecognitionMode"
     private static let keyboardChinesePunctuationStyleKey = "keyboard.chinesePunctuationStyle"
     private static let keyboardRimeDictionaryTierKey = "keyboard.rimeDictionaryTier"
+    private static let keyboardRimeCorrectionKey = "keyboard.rimeCorrectionEnabled"
     private static let keyboardDefaultTextInputLanguageKey = "keyboard.defaultTextInputLanguage"
     private static let keyboardRimeLearningResetGenerationKey = "keyboard.rimeLearningResetGeneration"
     private static let keyboardTouchLearningResetGenerationKey = "keyboard.touchLearningResetGeneration"
@@ -462,6 +464,8 @@ final class AppState: ObservableObject {
             .flatMap(KeyboardChinesePunctuationStyle.init(rawValue:)) ?? .chinese
         self.keyboardRimeDictionaryTier = UserDefaults.standard.string(forKey: Self.keyboardRimeDictionaryTierKey)
             .flatMap(KeyboardRimeDictionaryTier.init(rawValue:)) ?? .standard
+        self.keyboardRimeCorrectionEnabled = UserDefaults.standard.object(forKey: Self.keyboardRimeCorrectionKey)
+            .map { _ in UserDefaults.standard.bool(forKey: Self.keyboardRimeCorrectionKey) } ?? true
         self.keyboardDefaultTextInputLanguage = UserDefaults.standard.string(forKey: Self.keyboardDefaultTextInputLanguageKey)
             .flatMap(KeyboardDefaultTextInputLanguage.init(rawValue:)) ?? .lastUsed
         self.keyboardRimeLearningResetGeneration = UserDefaults.standard.integer(forKey: Self.keyboardRimeLearningResetGenerationKey)
@@ -600,6 +604,13 @@ final class AppState: ObservableObject {
         guard tier != keyboardRimeDictionaryTier else { return }
         keyboardRimeDictionaryTier = tier
         UserDefaults.standard.set(tier.rawValue, forKey: Self.keyboardRimeDictionaryTierKey)
+        publishKeyboardDefaults()
+    }
+
+    func setKeyboardRimeCorrectionEnabled(_ enabled: Bool) {
+        guard enabled != keyboardRimeCorrectionEnabled else { return }
+        keyboardRimeCorrectionEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: Self.keyboardRimeCorrectionKey)
         publishKeyboardDefaults()
     }
 
@@ -792,6 +803,7 @@ final class AppState: ObservableObject {
             characterPreviewEnabled: keyboardCharacterPreviewEnabled,
             chinesePunctuationStyle: keyboardChinesePunctuationStyle,
             rimeDictionaryTier: keyboardRimeDictionaryTier,
+            rimeCorrectionEnabled: keyboardRimeCorrectionEnabled,
             rimeUserPhrases: macSettings?.rimeUserPhrases ?? cachedServerRimeUserPhrases,
             defaultTextInputLanguage: keyboardDefaultTextInputLanguage,
             rimeLearningResetGeneration: keyboardRimeLearningResetGeneration,
