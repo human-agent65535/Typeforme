@@ -986,6 +986,7 @@ struct RecordingSettingsView: View {
     @AppStorage(AppSettings.Keys.alwaysShowHUD)        private var alwaysShowHUD: Bool = false
     @AppStorage(AppSettings.Keys.holdModifier)         private var holdModifierRaw: String = HoldModifier.rightOption.rawValue
     @AppStorage(AppSettings.Keys.voiceUXMode)          private var voiceUXModeRaw: String = VoiceUXMode.classic.rawValue
+    @AppStorage(AppSettings.Keys.voiceLivePreview)     private var voiceLivePreview: Bool = true
 
     var body: some View {
         Form {
@@ -997,6 +998,12 @@ struct RecordingSettingsView: View {
                 }
                 .pickerStyle(.menu)
                 Text(selectedVoiceUXMode.helpText)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            Section("Live Preview") {
+                Toggle("Show transcript while speaking", isOn: $voiceLivePreview)
+                Text("Uses Apple's on-device speech recognizer in parallel with recording to render a live transcript in the HUD. The final inserted text always comes from your selected ASR + correction pipeline; the preview also goes to the corrector as a supplementary hypothesis to help disambiguate. On-device only — audio does not leave your Mac. Supported languages depend on macOS — unsupported languages silently skip the preview.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }

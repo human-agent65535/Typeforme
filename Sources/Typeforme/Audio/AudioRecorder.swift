@@ -35,6 +35,12 @@ final class AudioRecorder: @unchecked Sendable {
     var onLevel: (@MainActor (Float) -> Void)?
     /// Called on the main thread if the audio config changes mid-recording.
     var onConfigurationChanged: (@MainActor () -> Void)?
+    /// Optional second consumer of the input PCM tap. Used by the live-preview
+    /// SFSpeechRecognizer feed so we don't need a parallel AVAudioEngine
+    /// pulling from the same mic. Set BEFORE recording starts; cleared on stop.
+    /// Read on the audio thread; storage is a Sendable closure so there's no
+    /// shared-state mutation inside the tap.
+    var onPCMBuffer: (@Sendable (AVAudioPCMBuffer) -> Void)?
 
     func start() async throws -> URL {
         guard await Self.ensureMicrophonePermission() else {
@@ -50,10 +56,15 @@ final class AudioRecorder: @unchecked Sendable {
 
         let writer = fileWriter
         let levelHandler = onLevel
+        let pcmHandler = onPCMBuffer
         input.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
             // Tap closure runs on the audio thread; it only touches its own
-            // buffer writer and a snapshotted level handler.
+            // buffer writer and snapshotted handlers.
             writer.write(buffer)
+            // Fan the same buffer out to any live-preview consumer (e.g.
+            // SFSpeechRecognizer). Snapshotted at install-time so a late
+            // attach is intentionally a no-op for the current recording.
+            pcmHandler?(buffer)
             let rms = Self.rms(buffer)
             if let levelHandler {
                 Task { @MainActor [weak self] in

@@ -82,15 +82,17 @@ final class HUDWindowController {
 
         anchorBottomCenter = Self.loadAnchor()
 
-        // Re-apply the frame whenever state OR the previewed text changes —
-        // the latter so a re-correct that produces a longer/shorter result
-        // grows or shrinks the panel to fit.
-        Publishers.CombineLatest(
+        // Re-apply the frame whenever state OR previewed text OR the live
+        // partial changes — the corrected text grows / shrinks the preview
+        // panel; the live partial grows / shrinks the compact body while the
+        // user is actively dictating.
+        Publishers.CombineLatest3(
             coordinator.$state.removeDuplicates(),
-            coordinator.$lastCorrected.removeDuplicates()
+            coordinator.$lastCorrected.removeDuplicates(),
+            coordinator.$livePartialTranscript.removeDuplicates()
         )
         .receive(on: DispatchQueue.main)
-        .sink { [weak self] state, _ in
+        .sink { [weak self] state, _, _ in
             self?.applyWidth(for: state, animated: true)
         }
         .store(in: &cancellables)

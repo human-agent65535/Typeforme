@@ -13,6 +13,7 @@ enum AppSettings {
         static let alwaysShowHUD        = "recording.alwaysShowHUD"
         static let holdModifier         = "recording.holdModifier"  // HoldModifier raw
         static let voiceUXMode          = "recording.voiceUXMode"   // VoiceUXMode raw
+        static let voiceLivePreview     = "recording.voiceLivePreview" // Bool — show Apple Speech preview while recording
         static let launchAtLogin        = "app.launchAtLogin"
 
         // ASR
@@ -101,6 +102,7 @@ enum AppSettings {
             Keys.alwaysShowHUD:        false,
             Keys.holdModifier:         HoldModifier.rightOption.rawValue,
             Keys.voiceUXMode:          VoiceUXMode.classic.rawValue,
+            Keys.voiceLivePreview:     true,
             Keys.launchAtLogin:        true,
 
             Keys.asrProvider:       "qwen3-asr-llama",
@@ -272,6 +274,15 @@ enum AppSettings {
             return value
         }
         return .classic
+    }
+    /// When `true`, the recorder feeds PCM into Apple Speech on-device so the
+    /// HUD can show a live transcript while the user is still speaking. The
+    /// final text always comes from the Mac ASR + correction pipeline; the
+    /// Apple Speech preview is also sent as `alternate_transcript` to the
+    /// corrector so it can act as a supplementary hypothesis (see prompt
+    /// design — neutral framing, never attributed by source name).
+    static var voiceLivePreview: Bool {
+        ud.bool(forKey: Keys.voiceLivePreview)
     }
     static var holdModifier: HoldModifier {
         if let raw = ud.string(forKey: Keys.holdModifier),

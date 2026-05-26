@@ -1,6 +1,8 @@
+import AVFoundation
 import Foundation
 import Combine
 import CoreGraphics
+import Speech
 
 /// Owns the full dictation state machine and orchestrates services.
 /// Per spec §7: `idle→recording→transcribing→correcting→(inserting|preview)→success→idle`;
@@ -16,6 +18,11 @@ final class DictationCoordinator: ObservableObject {
     @Published private(set) var previewCorrectionMode: CorrectionMode?
     @Published private(set) var previewKind: VoicePreviewKind = .dictation
     @Published private(set) var previewAnchorRect: CGRect?
+    /// Live-preview transcript fed by Apple Speech in parallel with recording.
+    /// Held in place from the first partial until the Mac ASR + correction
+    /// final replaces it, then cleared. Empty string = no preview (unsupported
+    /// language, denied permission, toggle off, or not recording).
+    @Published private(set) var livePartialTranscript: String = ""
 
     private let recorder = AudioRecorder()
     /// Resolved per-request so provider/model setting changes take effect immediately.
@@ -44,6 +51,12 @@ final class DictationCoordinator: ObservableObject {
     private var startInProgress = false
     private var stopAfterStart = false
     private var recordingStartedAt: Date?
+    private var liveSpeechRecognizer: SFSpeechRecognizer?
+    private var liveSpeechRequest: SFSpeechAudioBufferRecognitionRequest?
+    private var liveSpeechTask: SFSpeechRecognitionTask?
+    /// Last partial text we surfaced. Snapshot at correction time so the Mac
+    /// LLM gets the same string the user just saw.
+    private var liveSnapshotAtCorrection: String = ""
 
     private static let errorResetDelay: TimeInterval = 4.0
     private static let previewResetDelay: TimeInterval = 12.0
@@ -158,6 +171,7 @@ final class DictationCoordinator: ObservableObject {
                 }
                 return
             }
+            startLivePartialPreviewIfAvailable()
             transition(to: .recording)
             scheduleAutoStop(after: AppSettings.maxRecordingDuration)
             if stopAfterStart {
@@ -244,6 +258,7 @@ final class DictationCoordinator: ObservableObject {
                 }
                 return
             }
+            startLivePartialPreviewIfAvailable()
             transition(to: .recording)
             scheduleAutoStop(after: AppSettings.maxRecordingDuration)
             if stopAfterStart {
@@ -275,6 +290,11 @@ final class DictationCoordinator: ObservableObject {
             return
         }
         let url = recorder.stop()
+        // Close the SFSpeech audio side so it finalises its last partial; we
+        // intentionally KEEP `livePartialTranscript` on screen until the Mac
+        // final replaces it. liveSnapshotAtCorrection is captured here so the
+        // value flowing into the corrector matches what the user just saw.
+        endLivePartialPreviewAudio()
         audioLevel = 0
         transition(to: .transcribing)
 
@@ -317,7 +337,8 @@ final class DictationCoordinator: ObservableObject {
                 debugLog,
                 text: raw,
                 status: "ok",
-                latencyMs: elapsedMs(since: asrStarted)
+                latencyMs: elapsedMs(since: asrStarted),
+                alternateText: liveSnapshotAtCorrection
             )
             didRecordASR = true
             try await ensureActive(sessionID: sessionID, token: cancelToken)
@@ -502,7 +523,8 @@ final class DictationCoordinator: ObservableObject {
                     text: nil,
                     status: "error",
                     error: error.localizedDescription,
-                    latencyMs: elapsedMs(since: asrStarted)
+                    latencyMs: elapsedMs(since: asrStarted),
+                    alternateText: liveSnapshotAtCorrection
                 )
             }
             try? FileManager.default.removeItem(at: url)
@@ -528,6 +550,14 @@ final class DictationCoordinator: ObservableObject {
         guard state != next else { return }
         Log.coordinator.debug("state: \(self.state.rawValue) → \(next.rawValue)")
         recordingStartedAt = next == .recording ? Date() : nil
+        // Live preview lives only across the active in-flight states
+        // (recording/transcribing/correcting/inserting). Any transition out of
+        // those — to preview/success/idle/error — replaces it with the final
+        // text or clears it entirely.
+        let activeStates: Set<DictationState> = [.recording, .transcribing, .correcting, .inserting]
+        if !activeStates.contains(next) {
+            teardownLivePartialPreview(clearText: true)
+        }
         state = next
     }
 
@@ -575,6 +605,7 @@ final class DictationCoordinator: ObservableObject {
         startInProgress = false
         stopAfterStart = false
         recordingStartedAt = nil
+        teardownLivePartialPreview(clearText: true)
         lastError = message
         Log.coordinator.error("\(message, privacy: .public)")
         state = .error
@@ -613,6 +644,7 @@ final class DictationCoordinator: ObservableObject {
         activeDictationContextBefore = ""
         activeDictationContextAfter = ""
         audioLevel = 0
+        teardownLivePartialPreview(clearText: true)
         state = .idle
     }
 
@@ -832,6 +864,11 @@ final class DictationCoordinator: ObservableObject {
         let snapshot = frontmostSnapshot
         let category = AppCategory.from(bundleID: snapshot?.bundleID)
         let correctionMode = correctionModeOverride ?? AppSettings.correctionMode
+        // Snapshot the live partial so the corrector sees the same text the
+        // user just saw on screen. Neutral framing (see baseSystem prompt) —
+        // never attributed by source name in the prompt itself.
+        let alternate = liveSnapshotAtCorrection.trimmingCharacters(in: .whitespacesAndNewlines)
+        let alternateForRequest: String? = alternate.isEmpty ? nil : alternate
         return CorrectionRequest(
             correctionMode: correctionMode,
             frontmostAppName:  snapshot?.localizedName,
@@ -843,8 +880,106 @@ final class DictationCoordinator: ObservableObject {
             contextAfter: activeDictationContextAfter,
             numberOutputPreference: AppSettings.numberOutputPreference,
             punctuationPreference: AppSettings.punctuationPreference,
-            userDictionary: dictionary.sortedSnapshot()
+            userDictionary: dictionary.sortedSnapshot(),
+            alternateTranscript: alternateForRequest
         )
+    }
+
+    // MARK: - Live partial preview (Apple Speech, on-device only)
+    //
+    // Pattern mirrors iOS: SFSpeechRecognizer subscribes to the AudioRecorder
+    // PCM tap and renders partial hypotheses into `livePartialTranscript` for
+    // the HUD. The Mac ASR + correction pipeline is unchanged — Apple Speech
+    // never replaces the canonical result. The last partial is captured into
+    // `liveSnapshotAtCorrection` at stopDictation() time and threaded into
+    // CorrectionRequest.alternateTranscript so the corrector LLM can use it
+    // as a supplementary hypothesis (neutral framing — see baseSystem prompt).
+    //
+    // Gating: AppSettings.voiceLivePreview must be on, the primary language
+    // must support on-device recognition, and authorization must be granted.
+    // Any failure silently degrades to "no preview" — recording still works.
+
+    func startLivePartialPreviewIfAvailable() {
+        teardownLivePartialPreview(clearText: true)
+        guard AppSettings.voiceLivePreview else { return }
+
+        let primaryID = AppSettings.activeLanguageIDs.first ?? "en-US"
+        let locale = Locale(identifier: primaryID)
+        guard SFSpeechRecognizer.supportedLocales().contains(where: { $0.identifier == locale.identifier }) else {
+            return
+        }
+        guard let recognizer = SFSpeechRecognizer(locale: locale),
+              recognizer.isAvailable,
+              recognizer.supportsOnDeviceRecognition
+        else { return }
+
+        switch SFSpeechRecognizer.authorizationStatus() {
+        case .authorized:
+            break
+        case .notDetermined:
+            // First-time use: kick the system prompt asynchronously so the
+            // NEXT recording can use it. Don't block the current one.
+            SFSpeechRecognizer.requestAuthorization { _ in }
+            return
+        case .denied, .restricted:
+            return
+        @unknown default:
+            return
+        }
+
+        let request = SFSpeechAudioBufferRecognitionRequest()
+        request.shouldReportPartialResults = true
+        request.taskHint = .dictation
+        request.requiresOnDeviceRecognition = true
+        if AppSettings.punctuationPreference != .spaces {
+            request.addsPunctuation = true
+        }
+
+        liveSpeechRecognizer = recognizer
+        liveSpeechRequest = request
+        liveSpeechTask = recognizer.recognitionTask(with: request) { [weak self] result, error in
+            // Callback fires off the main actor — hop back before @Published
+            // mutation.
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if let result {
+                    let text = result.bestTranscription.formattedString
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !text.isEmpty {
+                        self.livePartialTranscript = text
+                    }
+                }
+                if error != nil {
+                    self.teardownLivePartialPreview(clearText: false)
+                }
+            }
+        }
+
+        recorder.onPCMBuffer = { [weak request] buffer in
+            request?.append(buffer)
+        }
+    }
+
+    /// Called when stopDictation() pulls the audio file. Closes the audio side
+    /// of the request so the recognizer finalises its last partial. We keep
+    /// `livePartialTranscript` on screen until the Mac final replaces it.
+    func endLivePartialPreviewAudio() {
+        recorder.onPCMBuffer = nil
+        liveSpeechRequest?.endAudio()
+        liveSnapshotAtCorrection = livePartialTranscript
+    }
+
+    /// Called after the Mac final result is applied (or on reset / error).
+    func teardownLivePartialPreview(clearText: Bool) {
+        recorder.onPCMBuffer = nil
+        liveSpeechTask?.cancel()
+        liveSpeechTask = nil
+        liveSpeechRequest = nil
+        liveSpeechRecognizer = nil
+        if clearText {
+            livePartialTranscript = ""
+            liveSnapshotAtCorrection = ""
+        }
     }
 
     private func normalizeResult(_ result: CorrectionResult, correctionMode: CorrectionMode) -> CorrectionResult {
@@ -874,6 +1009,8 @@ final class DictationCoordinator: ObservableObject {
             let appCategory = AppCategory.from(bundleID: snapshot?.bundleID)
             let resolved = try await RemoteBridgeClient.resolvedFromSettings(probeAllEndpoints: false)
             let client = resolved.client
+            let alternateForRemote = liveSnapshotAtCorrection
+                .trimmingCharacters(in: .whitespacesAndNewlines)
             let response = try await client.dictate(
                 audioURL: audioURL,
                 languageIDs: AppSettings.clientLanguageIDs,
@@ -882,7 +1019,8 @@ final class DictationCoordinator: ObservableObject {
                 appCategory: appCategory,
                 contextBefore: activeDictationContextBefore,
                 contextAfter: activeDictationContextAfter,
-                includeRawTranscript: true
+                includeRawTranscript: true,
+                alternateTranscript: alternateForRemote.isEmpty ? nil : alternateForRemote
             )
             try await ensureActive(sessionID: sessionID, token: cancelToken)
 
@@ -892,7 +1030,8 @@ final class DictationCoordinator: ObservableObject {
                 debugLog,
                 text: raw.isEmpty ? nil : raw,
                 status: raw.isEmpty ? "remote_no_raw" : "remote_ok",
-                latencyMs: response.transcriptionLatencyMs ?? elapsedMs(since: started)
+                latencyMs: response.transcriptionLatencyMs ?? elapsedMs(since: started),
+                alternateText: liveSnapshotAtCorrection
             )
             lastTranscript = raw.isEmpty ? response.text : raw
             remoteBridgeSessionID = response.sessionID
@@ -1011,7 +1150,8 @@ final class DictationCoordinator: ObservableObject {
                 text: nil,
                 status: "remote_error",
                 error: error.localizedDescription,
-                latencyMs: elapsedMs(since: started)
+                latencyMs: elapsedMs(since: started),
+                alternateText: liveSnapshotAtCorrection
             )
             guard await isActive(sessionID: sessionID, token: cancelToken) else { return }
             reportError(error.localizedDescription)

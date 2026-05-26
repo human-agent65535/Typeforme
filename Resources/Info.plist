@@ -21,9 +21,9 @@
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.1.94</string>
+    <string>0.1.95</string>
     <key>CFBundleVersion</key>
-    <string>101</string>
+    <string>102</string>
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>
     <key>LSMultipleInstancesProhibited</key>
@@ -45,5 +45,7 @@
     <string>Typeforme 需要连接你配置的局域网 Bridge 或 LM Studio 服务。</string>
     <key>NSAppleEventsUsageDescription</key>
     <string>Typeforme 需要把整理后的文本插入当前 App。</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>Typeforme 在录音时使用 Apple 语音识别提供实时预览。仅对支持设备端识别的语言开启，音频不会离开本机。</string>
 </dict>
 </plist>

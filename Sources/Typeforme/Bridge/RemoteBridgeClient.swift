@@ -221,7 +221,8 @@ struct RemoteBridgeClient {
         appCategory: AppCategory,
         contextBefore: String = "",
         contextAfter: String = "",
-        includeRawTranscript: Bool = true
+        includeRawTranscript: Bool = true,
+        alternateTranscript: String? = nil
     ) async throws -> BridgeDictateResponse {
         let uploadURL = try ASRAudioSupport.bridgeUploadAudioURL(for: audioURL)
         let multipart = try Self.multipartDictateBodyFile(
@@ -233,7 +234,8 @@ struct RemoteBridgeClient {
             appCategory: appCategory.rawValue,
             contextBefore: contextBefore,
             contextAfter: contextAfter,
-            includeRawTranscript: includeRawTranscript
+            includeRawTranscript: includeRawTranscript,
+            alternateTranscript: alternateTranscript
         )
         defer { try? FileManager.default.removeItem(at: multipart.fileURL) }
         let response: BridgeDictateResponse = try await request(
@@ -467,7 +469,8 @@ struct RemoteBridgeClient {
         contextBefore: String = "",
         contextAfter: String = "",
         includeRawTranscript: Bool,
-        clientJobID: String? = nil
+        clientJobID: String? = nil,
+        alternateTranscript: String? = nil
     ) throws -> (fileURL: URL, contentType: String, contentLength: Int64) {
         let multipart = try BridgeMultipart.dictateBodyFile(
             audioURL: audioURL,
@@ -479,7 +482,8 @@ struct RemoteBridgeClient {
             contextBefore: contextBefore,
             contextAfter: contextAfter,
             includeRawTranscript: includeRawTranscript,
-            clientJobID: clientJobID
+            clientJobID: clientJobID,
+            alternateTranscript: alternateTranscript
         )
         return (multipart.fileURL, multipart.contentType, multipart.contentLength)
     }

@@ -64,15 +64,25 @@ struct HUDView: View {
             leadingArea
                 .help(statusText)
             // Error keeps the text — users need to know what failed.
-            // Everyone else: color + icon + (timer in recording) carry the
-            // message; tooltip on the leading area exposes the full status
-            // for users who want the literal phrasing.
+            // Active in-flight states (recording / transcribing / correcting)
+            // surface the live Apple-Speech partial when it's non-empty so the
+            // user sees their words appearing as they speak. The mic dot or
+            // ProcessingIndicator on the left still conveys stage.
+            // Otherwise: color + icon + (timer) carry the state; tooltip on
+            // leading exposes the literal phrasing.
             if coordinator.state == .error {
                 Text(coordinator.lastError ?? "Error")
                     .font(.system(size: 13, weight: .medium, design: .rounded))
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
                     .truncationMode(.middle)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else if showsLivePartial {
+                Text(coordinator.livePartialTranscript)
+                    .font(.system(size: 13.5, weight: .medium, design: .rounded))
+                    .foregroundStyle(.primary)
+                    .lineLimit(2)
+                    .truncationMode(.head)
                     .frame(maxWidth: .infinity, alignment: .leading)
             } else {
                 Spacer(minLength: 0)
@@ -81,6 +91,16 @@ struct HUDView: View {
         }
         .padding(.horizontal, 18)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var showsLivePartial: Bool {
+        guard !coordinator.livePartialTranscript.isEmpty else { return false }
+        switch coordinator.state {
+        case .recording, .transcribing, .correcting, .inserting:
+            return true
+        default:
+            return false
+        }
     }
 
     @ViewBuilder
