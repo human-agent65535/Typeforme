@@ -52,7 +52,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         static let minimumSwipeDistance: CGFloat = 72
         static let axisDominance: CGFloat = 1.6
         static let handledCooldown: CFTimeInterval = 0.45
-        static let commitSuppressionDuration: CFTimeInterval = 0.35
+        // Shorter than the 0.26s focus animation so a deliberate tap right after
+        // a swipe is not silently dropped; the easing curve has the keys
+        // visually settled well before the animation formally ends.
+        static let commitSuppressionDuration: CFTimeInterval = 0.18
 
         static func horizontalIntent(start: CGPoint, current: CGPoint) -> CGFloat? {
             let dx = current.x - start.x
@@ -97,6 +100,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         // bottom controls become accidental character keys.
         static let rowTopOverflow: CGFloat = 14
         static let rowBottomOverflow: CGFloat = 13
+        // Drag-to-correct: small finger jitter keeps the originally pressed key
+        // (first-touch sticking), but a deliberate drag past this distance that
+        // ends on a different text key commits the new key instead.
+        static let dragRescueThreshold: CGFloat = 14
     }
 
     private struct TextKeyboardLayoutModel {
@@ -675,6 +682,47 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         case .candidateAction, .focusSurface:
             break
         }
+    }
+
+    fileprivate func commitTextKeyTouchWithDragRescue(
+        activeTarget: KeyboardTouchTarget,
+        startPoint: CGPoint,
+        endPoint: CGPoint
+    ) {
+        let resolvedTarget = dragRescuedTarget(
+            activeTarget: activeTarget,
+            startPoint: startPoint,
+            endPoint: endPoint
+        )
+        if case .textKey(let activeButton) = activeTarget,
+           case .textKey(let resolvedButton) = resolvedTarget,
+           ObjectIdentifier(activeButton) != ObjectIdentifier(resolvedButton) {
+            resetPressedControlState(activeButton)
+        }
+        commitKeyboardTouchTarget(resolvedTarget, point: endPoint)
+    }
+
+    private func dragRescuedTarget(
+        activeTarget: KeyboardTouchTarget,
+        startPoint: CGPoint,
+        endPoint: CGPoint
+    ) -> KeyboardTouchTarget {
+        guard case .textKey(let activeButton) = activeTarget else {
+            return activeTarget
+        }
+        let dx = endPoint.x - startPoint.x
+        let dy = endPoint.y - startPoint.y
+        let threshold = TextKeyboardTouchModel.dragRescueThreshold
+        guard dx * dx + dy * dy > threshold * threshold else {
+            return activeTarget
+        }
+        guard let endTarget = keyboardOverlayTouchTarget(at: endPoint),
+              case .textKey(let endButton) = endTarget,
+              ObjectIdentifier(endButton) != ObjectIdentifier(activeButton)
+        else {
+            return activeTarget
+        }
+        return endTarget
     }
 
     fileprivate func cancelKeyboardTouchTarget(_ target: KeyboardTouchTarget, point: CGPoint) {
@@ -5698,6 +5746,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let currentRimeState = rimeInput.state()
         if !currentRimeState.isReady,
            currentRimeState.errorMessage != nil {
+            for queued in pendingRimeCharacters {
+                textDocumentProxy.insertText(queued)
+            }
             pendingRimeCharacters.removeAll()
             applyRimeState(currentRimeState)
             textDocumentProxy.insertText(character)
@@ -5736,13 +5787,18 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         _ = rimeInput.setAsciiMode(false)
 
         var replayState = state
-        for character in queuedCharacters {
+        var unprocessed: ArraySlice<String> = []
+        for (index, character) in queuedCharacters.enumerated() {
             replayState = rimeInput.processCharacter(character)
             if !replayState.isReady || replayState.errorMessage != nil {
+                unprocessed = queuedCharacters[index...]
                 break
             }
         }
         applyRimeState(replayState)
+        for character in unprocessed {
+            textDocumentProxy.insertText(character)
+        }
     }
 
     private func handleTextBackspace() {
@@ -8076,7 +8132,11 @@ final class KeyboardTouchOverlayView: UIView {
         guard let hitController else { return }
 
         while let next = nextEndedTextKeyReadyToCommit() {
-            hitController.commitKeyboardTouchTarget(next.active.target, point: next.point)
+            hitController.commitTextKeyTouchWithDragRescue(
+                activeTarget: next.active.target,
+                startPoint: next.active.startPoint,
+                endPoint: next.point
+            )
             pendingEndedTextKeyPoints.removeValue(forKey: next.touch)
             activeTouches.removeValue(forKey: next.touch)
             lastTouchCommitTime = CACurrentMediaTime()
