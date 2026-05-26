@@ -6922,7 +6922,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             return AutocapDecision(outcome: true, reason: "policy-all")
         case .words:
             guard let context = textDocumentProxy.documentContextBeforeInput else {
-                return AutocapDecision(outcome: false, reason: "policy-words-ctx-nil")
+                return AutocapDecision(outcome: true, reason: "policy-words-ctx-nil-boundary")
             }
             let yes = context.isEmpty || context.last?.isWhitespace == true
             return AutocapDecision(outcome: yes, reason: yes ? "policy-words-boundary" : "policy-words-midword")
@@ -6933,7 +6933,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
 
         guard let context = textDocumentProxy.documentContextBeforeInput else {
-            return AutocapDecision(outcome: false, reason: "sentences-ctx-nil")
+            return AutocapDecision(outcome: true, reason: "sentences-ctx-nil-boundary")
         }
         guard !context.isEmpty else {
             return AutocapDecision(outcome: true, reason: "sentences-empty-context")
