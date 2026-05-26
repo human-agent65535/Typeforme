@@ -142,7 +142,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Log.app.info("Typeforme launched (accessory mode)")
     }
 
-    /// Spec §12: stop any owned llama-server subprocess before the system
+    /// Stops owned ASR and correction helper subprocesses before the system
     /// kills the app.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         coordinator.shutdown()
@@ -281,7 +281,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    // MARK: - Esc cancel (spec §8)
+    // MARK: - Esc cancel
 
     private func installEscMonitor() {
         guard escMonitor == nil, localEscMonitor == nil else { return }

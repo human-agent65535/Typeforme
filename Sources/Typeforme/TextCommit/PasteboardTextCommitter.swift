@@ -1,7 +1,7 @@
 import AppKit
 import ApplicationServices
 
-/// Spec §21 flow:
+/// Automatic text commit flow:
 ///   refocus target → synthesize Unicode text input directly into the focused
 ///   control.
 ///

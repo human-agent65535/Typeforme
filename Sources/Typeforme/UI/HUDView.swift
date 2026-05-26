@@ -4,8 +4,7 @@ import KeyboardShortcuts
 /// Bottom-centered glass capsule HUD.
 ///
 /// Visual targets:
-/// - ultraThinMaterial surface with a thin hairline border (cleaner edge than
-///   the old `.thickMaterial` capsule which melted into the background)
+/// - ultraThinMaterial surface with a thin hairline border for contrast
 /// - state-tinted leading indicator (red while recording, green on success, …)
 /// - rich 20-bar waveform during recording, plus a pulsing dot + elapsed timer
 /// - inline preview text with readable correction mode chips
@@ -49,7 +48,7 @@ struct HUDView: View {
 
     /// Idle: a small circular presence indicator. The panel itself shrinks to
     /// a 40pt circle (see HUDWindowController). Hover surfaces the hotkey hint
-    /// that used to occupy the old 320pt idle capsule.
+    /// without expanding the idle HUD.
     private var idleDotBody: some View {
         Image(systemName: "mic")
             .font(.system(size: 13, weight: .semibold))

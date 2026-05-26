@@ -1,8 +1,8 @@
 import Foundation
 import os
 
-/// Per spec §25: never log full user text. Use these categories from services;
-/// log provider, latency, text length, hash, error code only.
+/// Central log categories. Normal logs must never include full user text; log
+/// provider, latency, text length, hash, and error code instead.
 enum Log {
     private static let subsystem = "com.example.typeforme.mac"
     static let app          = Logger(subsystem: subsystem, category: "app")

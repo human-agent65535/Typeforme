@@ -2,8 +2,8 @@ import Foundation
 
 /// Single source of truth for persisted settings. Backed by UserDefaults so
 /// SwiftUI `@AppStorage` and service-side reads stay in sync.
-/// Per spec §22 tabs: General, Recording, ASR, Correction, Prompts, Vocabulary,
-/// Bridge, Diagnostics.
+/// Keys are grouped by feature area; Settings UI may present them under a
+/// different sidebar structure.
 enum AppSettings {
     private static let currentMacDefaultsDomain = "com.example.typeforme.mac"
 

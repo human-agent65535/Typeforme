@@ -18,8 +18,8 @@ enum AudioRecorderError: LocalizedError {
     }
 }
 
-/// Spec §8: AVAudioEngine-based capture; handles configuration changes safely
-/// (we stop on device-change and surface an error to the coordinator).
+/// AVAudioEngine-based capture. On device-change we stop recording and surface
+/// the interruption to the coordinator.
 /// Marked `@unchecked Sendable` — `isRunning` / `currentURL` / observer are
 /// only mutated from the main-actor coordinator's call sites. The tap closure
 /// writes through a captured writer and only weakly checks `self.isRunning`

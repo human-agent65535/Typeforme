@@ -80,8 +80,8 @@ final class UserDictionaryStore: ObservableObject {
         save()
     }
 
-    /// Stable snapshot — spec §17 wants the vocabulary segment of the prompt to
-    /// be cacheable when the candidate set is unchanged.
+    /// Stable snapshot order keeps the prompt vocabulary segment cacheable when
+    /// the candidate set is unchanged.
     nonisolated func sortedSnapshot(_ snapshot: [DictionaryEntry]) -> [DictionaryEntry] {
         snapshot.sorted {
             if $0.type != $1.type { return $0.type < $1.type }

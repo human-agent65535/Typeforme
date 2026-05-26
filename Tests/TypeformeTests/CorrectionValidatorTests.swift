@@ -1,7 +1,7 @@
 import Testing
 @testable import Typeforme
 
-/// Spec §18 — rejection cases for the validator.
+/// Rejection coverage for correction output validation.
 @Suite("CorrectionValidator")
 struct CorrectionValidatorTests {
 

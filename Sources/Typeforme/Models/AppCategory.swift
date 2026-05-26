@@ -1,7 +1,7 @@
 import Foundation
 
 /// Coarse classification of the frontmost app, used to bias the corrector.
-/// Per spec §15 — we use `appCategory`, never `field_type`.
+/// Prompt payloads expose this as `appCategory`, not `field_type`.
 enum AppCategory: String, Codable, Sendable {
     case chat
     case email

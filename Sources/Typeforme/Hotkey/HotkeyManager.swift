@@ -2,9 +2,8 @@ import AppKit
 import KeyboardShortcuts
 
 extension KeyboardShortcuts.Name {
-    /// Default combo for the dictation hotkey. Spec §8 prefers Fn / Right-Option
-    /// hold; we ship Cmd+Shift+Space as a safe combo default and will add the
-    /// modifier-only variant in a later phase via NSEvent monitoring.
+    /// Default combo for toggle dictation. Modifier-only hold dictation is
+    /// handled separately by `DoubleTapModifierMonitor`.
     static let toggleDictation = Self(
         "toggleDictation",
         default: .init(.space, modifiers: [.command, .shift])

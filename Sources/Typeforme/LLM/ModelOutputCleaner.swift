@@ -1,6 +1,6 @@
 import Foundation
 
-/// Per spec §18 pipeline step 1–3:
+/// Normalizes raw model output before JSON validation:
 ///   raw model output → strip <think> blocks → strip code fences →
 ///   extract first JSON object
 enum ModelOutputCleaner {

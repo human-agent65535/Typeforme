@@ -17,9 +17,9 @@ enum LlamaServerError: LocalizedError {
     }
 }
 
-/// Per spec §12: bundle the helper binary, launch it on a free localhost port,
-/// `--ctx-size 4096 --n-gpu-layers 999 --no-webui`, try `--flash-attn` and
-/// retry without if it fails; manage a single owned subprocess + PID file.
+/// Launches the bundled llama-server helper on a free localhost port, using
+/// the configured context size and GPU settings. Flash attention is retried
+/// without `--flash-attn` if the primary launch fails.
 actor LlamaCppServerManager {
     enum Status: Equatable {
         case stopped
@@ -142,7 +142,7 @@ actor LlamaCppServerManager {
 
         terminateStaleServer()
 
-        // Try with flash-attn first if requested; fall back without on failure (§12).
+        // Try with flash-attn first if requested; fall back without on failure.
         let port: Int
         do {
             port = try await launchWithPortRetries(flashAttn: useFlashAttn)
@@ -290,8 +290,8 @@ actor LlamaCppServerManager {
         throw LlamaServerError.warmupTimeout(seconds: timeout)
     }
 
-    /// Spec §12: read the PID file, kill -0 to test liveness, SIGTERM if alive
-    /// — BUT only if the PID still belongs to our own llama-server binary.
+    /// Reads the PID file, checks liveness, and terminates stale helpers only
+    /// when the PID still belongs to our own llama-server binary.
     /// PIDs get recycled on macOS; killing blindly could nuke an unrelated app.
     private func terminateStaleServer() {
         guard let pidStr = try? String(contentsOf: pidFile, encoding: .utf8),

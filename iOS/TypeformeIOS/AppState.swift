@@ -10,9 +10,9 @@ import UIKit
 private let appLog = Logger(subsystem: "com.example.typeforme", category: "app")
 
 /// Top-level UI phase for the iOS host app. Drives the hero record card,
-/// busy/disabled gating, and the keyboard bridge status. Replaces the older
-/// stringly-typed `status` field that produced silent breakage whenever a
-/// label was reworded (e.g. `isBusy` checking `"Resolving route"`).
+/// busy/disabled gating, and the keyboard bridge status. Keep user-facing
+/// labels derived from this typed state rather than using strings as control
+/// flow.
 enum AppPhase: Equatable {
     case idle
     case preparing

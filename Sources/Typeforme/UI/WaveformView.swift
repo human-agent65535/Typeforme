@@ -1,8 +1,7 @@
 import SwiftUI
 
-/// Live RMS waveform. 20 thin bars with a center-weighted shape envelope and
-/// a subtle gradient — replaces the older 5-bar version. Bars stay flat (only
-/// the base height) when `state != .recording`.
+/// Live RMS waveform. Bars use a center-weighted envelope and stay flat at
+/// base height when `state != .recording`.
 struct WaveformView: View {
     let level: Float
     let state: DictationState

@@ -1,6 +1,6 @@
 import Foundation
 
-/// Resolves the active corrector chain per spec §11.
+/// Resolves the active correction backend and caches backend-specific services.
 @MainActor
 final class CorrectorFactory {
     static let shared = CorrectorFactory()

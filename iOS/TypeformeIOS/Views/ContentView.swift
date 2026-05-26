@@ -419,18 +419,16 @@ private struct RouteStatusBar: View {
 
 // MARK: - Hero record orb
 
-/// Mirror of the keyboard's UIKit orb: 200pt circle with vertical gradient,
+/// Test-record surface mirroring the keyboard's UIKit orb: vertical gradient,
 /// soft inner highlight, state-tinted shadow, and concentric pulse rings during
-/// recording. The mic icon swaps out for a voiceprint when recording.
+/// recording. The mic icon swaps out for a voiceprint while recording.
 private struct HeroRecordCard: View {
     @EnvironmentObject private var state: AppState
     @ObservedObject var audio: AudioCoordinator
     @State private var isPressed = false
 
-    /// Demoted from the original 200pt hero — this view is now a small
-    /// test-record surface under `TestDictationSection`, not the screen's
-    /// primary affordance. 120pt keeps it tappable and shows the gradient
-    /// without dominating vertical space.
+    /// Compact enough for `TestDictationSection` while remaining tappable and
+    /// large enough to show the gradient and recording state.
     private let orbDiameter: CGFloat = 120
 
     var body: some View {
@@ -1350,7 +1348,7 @@ private struct ToastView: View {
     }
 }
 
-// MARK: - Server Settings
+// MARK: - Dictation Settings
 
 private struct TimeoutSecondsRow: View {
     let title: String
