@@ -8596,10 +8596,11 @@ private final class TextKeyTouchLearner {
     }
 }
 
-/// Full-bounds touch-swallow surface. Background can be `.clear` because
-/// `point(inside:)` always returns true within bounds — gap touches still
-/// resolve to this view instead of leaking to the host app, without needing
-/// the legacy 0.01-alpha background hack to satisfy iOS's hit-testing.
+/// Backing surface for blank keyboard areas. The owning controller paints it
+/// with `keyboardTouchableBackgroundColor` (0.01 alpha); do not make it
+/// `.clear`. iOS custom keyboards also consider rendered pixel alpha for
+/// hit-test eligibility, so `point(inside:)` alone is not enough to stop gap
+/// touches from leaking to the host app.
 final class KeyboardSurfaceView: UIView {
     override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
         guard isUserInteractionEnabled, !isHidden, alpha > 0.01 else { return false }
