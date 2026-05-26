@@ -39,6 +39,7 @@
 "Auto-Capitalization" = "Auto-Capitalization";
 "Character Preview" = "Character Preview";
 "Dictionary" = "Dictionary";
+"Pinyin Correction" = "Pinyin Correction";
 "Standard" = "Standard";
 "Extended" = "Extended";
 "Large" = "Large";
@@ -48,11 +49,17 @@
 "On" = "On";
 "Reset Learning" = "Reset Learning";
 "Learning reset requested" = "Learning reset requested";
+"Reset Chinese Learning" = "Reset Chinese Learning";
+"Reset Touch Learning" = "Reset Touch Learning";
+"Chinese learning reset requested" = "Chinese learning reset requested";
+"Touch learning reset requested" = "Touch learning reset requested";
 "Last Used" = "Last Used";
 "Chinese" = "Chinese";
 "English" = "English";
 "These settings apply to the Typeforme keyboard after Full Access is enabled." = "These settings apply to the Typeforme keyboard after Full Access is enabled.";
 "Controls how long Typeforme keeps keyboard dictation ready after the host app is opened." = "Controls how long Typeforme keeps keyboard dictation ready after the host app is opened.";
+"Only active when the keyboard is in English mode." = "Only active when the keyboard is in English mode.";
+"Chinese learning clears the Rime user dictionary. Touch learning clears the per-key tap-position model. Both apply once Full Access is enabled." = "Chinese learning clears the Rime user dictionary. Touch learning clears the per-key tap-position model. Both apply once Full Access is enabled.";
 
 // VoiceInputMode (shared with keyboard)
 "Hold" = "Hold";
