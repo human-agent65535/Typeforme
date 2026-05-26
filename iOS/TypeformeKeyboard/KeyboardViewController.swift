@@ -192,6 +192,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private let textInputLanguageKey = "keyboard.textInputLanguage"
     private let hostDefaultTextInputLanguageKey = "keyboard.hostDefaultTextInputLanguage"
     private let rimeLearningResetGenerationKey = "keyboard.rimeLearningResetGeneration"
+    private let touchLearningResetGenerationKey = "keyboard.touchLearningResetGeneration"
     private let rimeUserPhrasesRevisionKey = "keyboard.rimeUserPhrasesRevision"
     private let lastInsertedTextKey = "keyboard.lastInsertedText"
     private let lastInsertedCommandIDKey = "keyboard.lastInsertedCommandID"
@@ -1743,8 +1744,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
            let generation = payload["rime_learning_reset_generation"] as? Int,
            generation > defaults.integer(forKey: rimeLearningResetGenerationKey) {
             defaults.set(generation, forKey: rimeLearningResetGenerationKey)
-            resetTextTouchLearning()
             applyRimeState(rimeInput.resetUserData())
+        }
+        if let generation = payload["touch_learning_reset_generation"] as? Int,
+           generation > defaults.integer(forKey: touchLearningResetGenerationKey) {
+            defaults.set(generation, forKey: touchLearningResetGenerationKey)
+            resetTextTouchLearning()
         }
         guard rebuildIfNeeded else { return }
         let changed = previousAutoCapitalization != isAutoCapitalizationEnabled
@@ -1783,6 +1788,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             "rime_user_phrases_revision": "",
             "default_text_input_language": hostDefaultLanguage.rawValue,
             "rime_learning_reset_generation": defaults.integer(forKey: rimeLearningResetGenerationKey),
+            "touch_learning_reset_generation": defaults.integer(forKey: touchLearningResetGenerationKey),
             "updated_at": Date().timeIntervalSince1970,
         ]
         guard KeyboardSharedDefaults.savePayload(payload) else { return nil }
@@ -6881,13 +6887,29 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func shouldAutoCapitalizeNextEnglishLetter() -> Bool {
-        guard isAutoCapitalizationEnabled,
-              textInputLanguage == .english
-        else { return false }
+        let result = shouldAutoCapitalizeNextEnglishLetterDecision()
+        kbLog.debug(
+            "autocap decision=\(result.outcome, privacy: .public) reason=\(result.reason, privacy: .public) enabled=\(self.isAutoCapitalizationEnabled, privacy: .public) lang=\(self.textInputLanguage.rawValue, privacy: .public) kbType=\(self.textDocumentProxy.keyboardType?.rawValue ?? -1, privacy: .public) capPolicy=\(self.textDocumentProxy.autocapitalizationType?.rawValue ?? -1, privacy: .public) ctxNil=\(self.textDocumentProxy.documentContextBeforeInput == nil, privacy: .public) ctxEmpty=\(self.textDocumentProxy.documentContextBeforeInput?.isEmpty ?? true, privacy: .public)"
+        )
+        return result.outcome
+    }
+
+    private struct AutocapDecision {
+        let outcome: Bool
+        let reason: String
+    }
+
+    private func shouldAutoCapitalizeNextEnglishLetterDecision() -> AutocapDecision {
+        guard isAutoCapitalizationEnabled else {
+            return AutocapDecision(outcome: false, reason: "disabled")
+        }
+        guard textInputLanguage == .english else {
+            return AutocapDecision(outcome: false, reason: "not-english")
+        }
 
         switch textDocumentProxy.keyboardType {
         case .URL, .emailAddress, .numberPad, .phonePad, .decimalPad, .numbersAndPunctuation, .twitter, .webSearch, .asciiCapableNumberPad:
-            return false
+            return AutocapDecision(outcome: false, reason: "kbtype-excluded")
         default:
             break
         }
@@ -6895,20 +6917,27 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let capitalizationPolicy = textDocumentProxy.autocapitalizationType ?? .sentences
         switch capitalizationPolicy {
         case .none:
-            return false
+            return AutocapDecision(outcome: false, reason: "policy-none")
         case .allCharacters:
-            return true
+            return AutocapDecision(outcome: true, reason: "policy-all")
         case .words:
-            guard let context = textDocumentProxy.documentContextBeforeInput else { return false }
-            return context.isEmpty || context.last?.isWhitespace == true
+            guard let context = textDocumentProxy.documentContextBeforeInput else {
+                return AutocapDecision(outcome: false, reason: "policy-words-ctx-nil")
+            }
+            let yes = context.isEmpty || context.last?.isWhitespace == true
+            return AutocapDecision(outcome: yes, reason: yes ? "policy-words-boundary" : "policy-words-midword")
         case .sentences:
             break
         @unknown default:
             break
         }
 
-        guard let context = textDocumentProxy.documentContextBeforeInput else { return false }
-        guard !context.isEmpty else { return true }
+        guard let context = textDocumentProxy.documentContextBeforeInput else {
+            return AutocapDecision(outcome: false, reason: "sentences-ctx-nil")
+        }
+        guard !context.isEmpty else {
+            return AutocapDecision(outcome: true, reason: "sentences-empty-context")
+        }
 
         var crossedLineBreak = false
         for character in context.reversed() {
@@ -6919,10 +6948,16 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 }
                 continue
             }
-            if crossedLineBreak { return true }
-            return ".!?。？！".contains(character)
+            if crossedLineBreak {
+                return AutocapDecision(outcome: true, reason: "sentences-after-newline")
+            }
+            let isSentenceEnd = ".!?。？！".contains(character)
+            return AutocapDecision(
+                outcome: isSentenceEnd,
+                reason: isSentenceEnd ? "sentences-after-punct" : "sentences-mid-sentence"
+            )
         }
-        return true
+        return AutocapDecision(outcome: true, reason: "sentences-whitespace-only")
     }
 
     private func refreshEnglishLetterCasingIfNeeded() {

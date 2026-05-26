@@ -916,10 +916,16 @@ private struct KeyboardSettingsView: View {
                 Text("Changes apply immediately after Full Access is enabled.")
             }
             Section {
-                Toggle("Auto-Capitalization", isOn: autoCapitalizationBinding)
                 Toggle("Character Preview", isOn: characterPreviewBinding)
             } header: {
                 Text("Typing")
+            }
+            Section {
+                Toggle("Auto-Capitalization", isOn: autoCapitalizationBinding)
+            } header: {
+                Text("English")
+            } footer: {
+                Text("Only active when the keyboard is in English mode.")
             }
             Section {
                 LabeledContent("Self-learning") {
@@ -928,12 +934,17 @@ private struct KeyboardSettingsView: View {
                 Button(role: .destructive) {
                     state.resetKeyboardRimeLearning()
                 } label: {
-                    Text("Reset Learning")
+                    Text("Reset Chinese Learning")
+                }
+                Button(role: .destructive) {
+                    state.resetKeyboardTouchLearning()
+                } label: {
+                    Text("Reset Touch Learning")
                 }
             } header: {
                 Text("Learning")
             } footer: {
-                Text("Changes apply immediately after Full Access is enabled.")
+                Text("Chinese learning clears the Rime user dictionary. Touch learning clears the per-key tap-position model. Both apply once Full Access is enabled.")
             }
             Section {
                 Toggle("Live Preview", isOn: livePreviewBinding)
