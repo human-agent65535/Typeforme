@@ -174,6 +174,7 @@ final class RimeInputController {
             if session != 0, appliedUserPhraseSignature != customPhraseSignature {
                 api.cleanAllSession()
                 session = 0
+                probeSession = 0
                 selectedSchemaID = nil
             }
             try applyCustomPhrasesOnQueue(
@@ -263,6 +264,15 @@ final class RimeInputController {
                     return notReadyState()
                 }
                 selectedSchemaID = profile.schemaID
+                if probeSession != 0 {
+                    api.cleanComposition(probeSession)
+                    if !api.selectSchema(probeSession, andSchameId: profile.schemaID) {
+                        probeSession = 0
+                    }
+                }
+                if probeSession == 0 {
+                    ensureProbeSessionOnQueue()
+                }
                 applyDesiredOptionsOnQueue()
             }
             return stateOnQueue()
@@ -293,6 +303,7 @@ final class RimeInputController {
             if session != 0 {
                 api.cleanAllSession()
                 session = 0
+                probeSession = 0
             }
             selectedSchemaID = nil
             stateLock.lock()
@@ -310,6 +321,7 @@ final class RimeInputController {
             if session != 0 {
                 api.cleanAllSession()
                 session = 0
+                probeSession = 0
             }
             selectedSchemaID = nil
             stateLock.lock()
