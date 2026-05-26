@@ -250,6 +250,15 @@ final class RimeInputController {
         }
     }
 
+    func applyOptions(asciiPunctuation: Bool, asciiMode: Bool) -> RimeKeyboardState {
+        setDesiredOptions(asciiPunctuation: asciiPunctuation, asciiMode: asciiMode)
+        guard startIfNeeded() else { return notReadyState() }
+        return rimeQueue.sync {
+            applyOptionsOnQueue(asciiMode: asciiMode, asciiPunctuation: asciiPunctuation)
+            return stateOnQueue()
+        }
+    }
+
     func setProfile(_ profile: RimeKeyboardProfile) -> RimeKeyboardState {
         stateLock.lock()
         desiredProfile = profile
@@ -355,6 +364,22 @@ final class RimeInputController {
         else { return notReadyState() }
         return rimeQueue.sync {
             _ = api.setOption(session, andOption: "ascii_mode", andValue: false)
+            _ = api.processKeyCode(Int32(scalar.value), modifier: 0, andSession: session)
+            return stateOnQueue(commitText: drainCommit())
+        }
+    }
+
+    func processCharacter(
+        _ character: String,
+        asciiPunctuation: Bool,
+        asciiMode: Bool
+    ) -> RimeKeyboardState {
+        setDesiredOptions(asciiPunctuation: asciiPunctuation, asciiMode: asciiMode)
+        guard startIfNeeded(),
+              let scalar = character.unicodeScalars.first
+        else { return notReadyState() }
+        return rimeQueue.sync {
+            applyOptionsOnQueue(asciiMode: asciiMode, asciiPunctuation: asciiPunctuation)
             _ = api.processKeyCode(Int32(scalar.value), modifier: 0, andSession: session)
             return stateOnQueue(commitText: drainCommit())
         }
@@ -614,6 +639,17 @@ final class RimeInputController {
         let asciiMode = desiredAsciiMode
         let asciiPunctuation = desiredAsciiPunctuation
         stateLock.unlock()
+        applyOptionsOnQueue(asciiMode: asciiMode, asciiPunctuation: asciiPunctuation)
+    }
+
+    private func setDesiredOptions(asciiPunctuation: Bool, asciiMode: Bool) {
+        stateLock.lock()
+        desiredAsciiMode = asciiMode
+        desiredAsciiPunctuation = asciiPunctuation
+        stateLock.unlock()
+    }
+
+    private func applyOptionsOnQueue(asciiMode: Bool, asciiPunctuation: Bool) {
         _ = api.setOption(session, andOption: "ascii_mode", andValue: asciiMode)
         _ = api.setOption(session, andOption: "ascii_punct", andValue: asciiPunctuation)
     }
