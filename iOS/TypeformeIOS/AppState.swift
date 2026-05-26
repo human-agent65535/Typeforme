@@ -1940,11 +1940,26 @@ final class AppState: ObservableObject {
     }
 
     private func rememberReturnTarget(bundleID: String?) {
+        guard let bundleID else {
+            clearReturnTarget()
+            appendReturnTrace("rememberReturnTarget skipped missingBundle")
+            return
+        }
         showsReturnButton = true
         returnBundleID = bundleID
     }
 
+    private func clearReturnTarget() {
+        showsReturnButton = false
+        returnBundleID = nil
+    }
+
     func returnToPreviousAppFromToolbar() async {
+        guard returnBundleID != nil else {
+            clearReturnTarget()
+            await refreshRoute(force: true)
+            return
+        }
         await returnToPreviousAppSoon(bundleID: returnBundleID)
     }
 
@@ -1954,7 +1969,8 @@ final class AppState: ObservableObject {
         guard let bundleID else {
             appLog.notice("returnToPreviousAppSoon: no return bundle available")
             appendReturnTrace("return skipped missingBundle")
-            showTransient("Ready. Tap the top-left back arrow to return.")
+            clearReturnTarget()
+            showTransient(NSLocalizedString("Ready. Return to your previous app manually.", comment: "Return-to-keyboard fallback toast"))
             return
         }
 
@@ -1974,13 +1990,15 @@ final class AppState: ObservableObject {
                 appLog.notice("returnToPreviousAppSoon: returned via LSApplicationWorkspace bundle")
                 appendReturnTrace("return success LSApplicationWorkspace attempt=\(index + 1) bundle=\(bundleID)")
                 logReturnTrace("returned via LSApplicationWorkspace bundle")
+                clearReturnTarget()
                 return
             }
         }
 
         appLog.notice("returnToPreviousAppSoon: all attempts failed")
         appendReturnTrace("return failed allAttempts bundle=\(bundleID)")
-        showTransient("Ready. Tap the top-left back arrow to return.")
+        clearReturnTarget()
+        showTransient(NSLocalizedString("Ready. Return to your previous app manually.", comment: "Return-to-keyboard fallback toast"))
     }
 
     private func isUsableReturnBundleID(_ id: String) -> Bool {

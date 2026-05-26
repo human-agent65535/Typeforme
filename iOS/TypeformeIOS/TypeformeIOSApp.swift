@@ -46,10 +46,10 @@ struct TypeformeIOSApp: App {
                 .onChange(of: scenePhase) { _, phase in
                     guard phase == .active else { return }
                     guard !state.isEditingMacSettings else { return }
-                    // Refresh server settings whenever the app comes to the
+                    // Refresh dictation settings whenever the app comes to the
                     // foreground. Mac-side changes to ASR / correction /
                     // languages stay invisible otherwise — users would never
-                    // know to open the Server Settings sheet to pull a fresh
+                    // know to open the Dictation Settings sheet to pull a fresh
                     // copy. Silent: failures populate the existing
                     // errorMessage banner without disrupting current input.
                     Task { try? await state.refreshMacSettings() }
