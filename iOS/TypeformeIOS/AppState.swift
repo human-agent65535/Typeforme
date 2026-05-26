@@ -264,6 +264,7 @@ final class AppState: ObservableObject {
     @Published var keyboardCharacterPreviewEnabled: Bool
     @Published var keyboardLivePreviewEnabled: Bool
     @Published var keyboardLivePreviewRecognitionMode: KeyboardLivePreviewRecognitionMode
+    @Published var keyboardChineseInputEnabled: Bool
     @Published var keyboardChinesePunctuationStyle: KeyboardChinesePunctuationStyle
     @Published var keyboardRimeDictionaryTier: KeyboardRimeDictionaryTier
     @Published var keyboardRimeCorrectionEnabled: Bool
@@ -310,6 +311,7 @@ final class AppState: ObservableObject {
     private static let keyboardCharacterPreviewKey = "keyboard.characterPreviewEnabled"
     private static let keyboardLivePreviewKey = "keyboard.livePreviewEnabled"
     private static let keyboardLivePreviewRecognitionModeKey = "keyboard.livePreviewRecognitionMode"
+    private static let keyboardChineseInputEnabledKey = "keyboard.chineseInputEnabled"
     private static let keyboardChinesePunctuationStyleKey = "keyboard.chinesePunctuationStyle"
     private static let keyboardRimeDictionaryTierKey = "keyboard.rimeDictionaryTier"
     private static let keyboardRimeCorrectionKey = "keyboard.rimeCorrectionEnabled"
@@ -460,6 +462,8 @@ final class AppState: ObservableObject {
             .map { _ in UserDefaults.standard.bool(forKey: Self.keyboardLivePreviewKey) } ?? true
         self.keyboardLivePreviewRecognitionMode = UserDefaults.standard.string(forKey: Self.keyboardLivePreviewRecognitionModeKey)
             .flatMap(KeyboardLivePreviewRecognitionMode.init(rawValue:)) ?? .onDeviceOnly
+        self.keyboardChineseInputEnabled = UserDefaults.standard.object(forKey: Self.keyboardChineseInputEnabledKey)
+            .map { _ in UserDefaults.standard.bool(forKey: Self.keyboardChineseInputEnabledKey) } ?? true
         self.keyboardChinesePunctuationStyle = UserDefaults.standard.string(forKey: Self.keyboardChinesePunctuationStyleKey)
             .flatMap(KeyboardChinesePunctuationStyle.init(rawValue:)) ?? .chinese
         self.keyboardRimeDictionaryTier = UserDefaults.standard.string(forKey: Self.keyboardRimeDictionaryTierKey)
@@ -591,6 +595,13 @@ final class AppState: ObservableObject {
         guard mode != keyboardLivePreviewRecognitionMode else { return }
         keyboardLivePreviewRecognitionMode = mode
         UserDefaults.standard.set(mode.rawValue, forKey: Self.keyboardLivePreviewRecognitionModeKey)
+    }
+
+    func setKeyboardChineseInputEnabled(_ enabled: Bool) {
+        guard enabled != keyboardChineseInputEnabled else { return }
+        keyboardChineseInputEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: Self.keyboardChineseInputEnabledKey)
+        publishKeyboardDefaults()
     }
 
     func setKeyboardChinesePunctuationStyle(_ style: KeyboardChinesePunctuationStyle) {
@@ -801,6 +812,7 @@ final class AppState: ObservableObject {
             correctionMode: config.correctionMode,
             autoCapitalizationEnabled: keyboardAutoCapitalizationEnabled,
             characterPreviewEnabled: keyboardCharacterPreviewEnabled,
+            chineseInputEnabled: keyboardChineseInputEnabled,
             chinesePunctuationStyle: keyboardChinesePunctuationStyle,
             rimeDictionaryTier: keyboardRimeDictionaryTier,
             rimeCorrectionEnabled: keyboardRimeCorrectionEnabled,

@@ -27,6 +27,7 @@
 // Keyboard input settings
 "Keyboard Input" = "Keyboard Input";
 "Keyboard Settings" = "Keyboard Settings";
+"Enable Chinese Input" = "Enable Chinese Input";
 "Chinese Input" = "Chinese Input";
 "Typing" = "Typing";
 "Learning" = "Learning";
@@ -57,6 +58,7 @@
 "Chinese" = "Chinese";
 "English" = "English";
 "These settings apply to the Typeforme keyboard after Full Access is enabled." = "These settings apply to the Typeforme keyboard after Full Access is enabled.";
+"Turn off to make the text keyboard English-only and hide the Chinese/English switch key." = "Turn off to make the text keyboard English-only and hide the Chinese/English switch key.";
 "Controls how long Typeforme keeps keyboard dictation ready after the host app is opened." = "Controls how long Typeforme keeps keyboard dictation ready after the host app is opened.";
 "Only active when the keyboard is in English mode." = "Only active when the keyboard is in English mode.";
 "Chinese learning clears the Rime user dictionary. Touch learning clears the per-key tap-position model. Both apply once Full Access is enabled." = "Chinese learning clears the Rime user dictionary. Touch learning clears the per-key tap-position model. Both apply once Full Access is enabled.";

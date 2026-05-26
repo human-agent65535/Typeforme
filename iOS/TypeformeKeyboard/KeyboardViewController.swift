@@ -208,6 +208,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private let keyboardFocusKey = "keyboard.focus"
     private let textInputLanguageKey = "keyboard.textInputLanguage"
     private let hostDefaultTextInputLanguageKey = "keyboard.hostDefaultTextInputLanguage"
+    private let hostChineseInputEnabledKey = "keyboard.hostChineseInputEnabled"
     private let rimeLearningResetGenerationKey = "keyboard.rimeLearningResetGeneration"
     private let touchLearningResetGenerationKey = "keyboard.touchLearningResetGeneration"
     private let rimeUserPhrasesRevisionKey = "keyboard.rimeUserPhrasesRevision"
@@ -228,6 +229,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private var isAlternateSymbolKeyboard = false
     private var isAutoCapitalizationEnabled = true
     private var isCharacterPreviewEnabled = false
+    private var isChineseInputEnabled = true
     private var chinesePunctuationStyle: ChinesePunctuationStyle = .chinese
     private let rimeInput = RimeInputController()
     private lazy var textTouchLearner = TextKeyTouchLearner(
@@ -1644,6 +1646,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
            let saved = TextInputLanguage(rawValue: raw) {
             textInputLanguage = saved
         }
+        isChineseInputEnabled = defaults.object(forKey: hostChineseInputEnabledKey)
+            .map { _ in defaults.bool(forKey: hostChineseInputEnabledKey) } ?? true
+        if !isChineseInputEnabled {
+            textInputLanguage = .english
+            syncPrimaryLanguage()
+        }
         rimeUserPhrasesRevision = defaults.string(forKey: rimeUserPhrasesRevisionKey) ?? ""
         refreshKeyboardPreferencesFromHost(
             rebuildIfNeeded: false,
@@ -1654,7 +1662,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func syncPrimaryLanguage() {
-        primaryLanguage = textInputLanguage == .chinese ? "zh-Hans" : "en-US"
+        primaryLanguage = isChineseInputEnabled && textInputLanguage == .chinese ? "zh-Hans" : "en-US"
     }
 
     private func applyTextInputOptionsToRime() {
@@ -1662,7 +1670,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         applyRimeState(
             rimeInput.applyOptions(
                 asciiPunctuation: chinesePunctuationStyle == .english,
-                asciiMode: textInputLanguage == .english
+                asciiMode: !isChineseInputEnabled || textInputLanguage == .english
             )
         )
     }
@@ -1705,6 +1713,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         guard let payload = hostKeyboardDefaultsPayload() else { return }
         let previousAutoCapitalization = isAutoCapitalizationEnabled
         let previousCharacterPreview = isCharacterPreviewEnabled
+        let previousChineseInputEnabled = isChineseInputEnabled
         let previousPunctuationStyle = chinesePunctuationStyle
         let previousRimeProfile = rimeProfile
         let previousRimeUserPhrasesRevision = rimeUserPhrasesRevision
@@ -1715,6 +1724,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
         if let enabled = payload["character_preview_enabled"] as? Bool {
             isCharacterPreviewEnabled = enabled
+        }
+        if let enabled = payload["chinese_input_enabled"] as? Bool {
+            isChineseInputEnabled = enabled
+            defaults.set(enabled, forKey: hostChineseInputEnabledKey)
         }
         if let raw = payload["chinese_punctuation_style"] as? String,
            let style = ChinesePunctuationStyle(rawValue: raw) {
@@ -1744,7 +1757,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             let previousHostDefault = defaults.string(forKey: hostDefaultTextInputLanguageKey)
             let shouldApplyDefault = applyDefaultTextInputLanguageIfNeeded || previousHostDefault != raw
             defaults.set(raw, forKey: hostDefaultTextInputLanguageKey)
-            if shouldApplyDefault,
+            if isChineseInputEnabled,
+               shouldApplyDefault,
                let defaultLanguage = hostDefaultLanguage.textInputLanguage {
                 if textInputLanguage == .chinese, defaultLanguage == .english {
                     applyRimeState(rimeInput.commitComposition())
@@ -1755,9 +1769,19 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 clearTextShiftState()
             }
         }
+        if !isChineseInputEnabled, textInputLanguage != .english {
+            if applyRimeChanges {
+                applyRimeState(rimeInput.commitComposition())
+            }
+            textInputLanguage = .english
+            defaults.set(TextInputLanguage.english.rawValue, forKey: textInputLanguageKey)
+            syncPrimaryLanguage()
+            clearTextShiftState()
+        }
 
         if applyRimeChanges,
-           previousPunctuationStyle != chinesePunctuationStyle
+           previousChineseInputEnabled != isChineseInputEnabled
+            || previousPunctuationStyle != chinesePunctuationStyle
             || previousRimeProfile != rimeProfile
             || previousTextInputLanguage != textInputLanguage {
             resetQuoteParity()
@@ -1780,6 +1804,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         guard rebuildIfNeeded else { return }
         let changed = previousAutoCapitalization != isAutoCapitalizationEnabled
             || previousCharacterPreview != isCharacterPreviewEnabled
+            || previousChineseInputEnabled != isChineseInputEnabled
             || previousPunctuationStyle != chinesePunctuationStyle
             || previousRimeProfile != rimeProfile
             || previousRimeUserPhrasesRevision != rimeUserPhrasesRevision
@@ -1808,6 +1833,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             "correction_mode": correctionMode.rawValue,
             "auto_capitalization_enabled": isAutoCapitalizationEnabled,
             "character_preview_enabled": isCharacterPreviewEnabled,
+            "chinese_input_enabled": isChineseInputEnabled,
             "chinese_punctuation_style": chinesePunctuationStyle.rawValue,
             "rime_dictionary_tier": rimeProfile.dictionaryTier.rawValue,
             "rime_correction_enabled": rimeProfile.correctionEnabled,
@@ -3389,8 +3415,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         row.addArrangedSubview(textGlobeButton)
         textKeyboardButtons.append(textGlobeButton)
 
-        row.addArrangedSubview(textLanguageButton)
-        textKeyboardButtons.append(textLanguageButton)
+        if isChineseInputEnabled {
+            row.addArrangedSubview(textLanguageButton)
+            textKeyboardButtons.append(textLanguageButton)
+        }
 
         let spaceKey = makeTextKeyButton(title: spaceKeyTitle, weight: .primary)
         spaceKey.addTarget(self, action: #selector(textSpaceTapped), for: .touchUpInside)
@@ -3409,11 +3437,14 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         lastReturnKeyImageName = returnKeyImageName
 
         keyRowsStack.addArrangedSubview(row)
+        let directButtons = isChineseInputEnabled
+            ? [textModeButton, textGlobeButton, textLanguageButton, spaceKey, returnKey]
+            : [textModeButton, textGlobeButton, spaceKey, returnKey]
         registerTextKeyboardHitRow(
             row,
             routedButtons: [],
-            directButtons: [textModeButton, textGlobeButton, textLanguageButton, spaceKey, returnKey],
-            boundaryButtons: [textModeButton, textGlobeButton, textLanguageButton, spaceKey, returnKey],
+            directButtons: directButtons,
+            boundaryButtons: directButtons,
             kind: .bottom
         )
     }
@@ -6123,6 +6154,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     @objc private func toggleTextInputLanguage() {
+        guard isChineseInputEnabled else { return }
         if textInputLanguage == .chinese {
             applyRimeState(rimeInput.commitComposition())
             textInputLanguage = .english

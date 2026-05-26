@@ -893,6 +893,11 @@ private struct KeyboardSettingsView: View {
     var body: some View {
         List {
             Section {
+                Toggle("Enable Chinese Input", isOn: chineseInputEnabledBinding)
+            } footer: {
+                Text("Turn off to make the text keyboard English-only and hide the Chinese/English switch key.")
+            }
+            Section {
                 Picker("Dictionary", selection: rimeDictionaryTierBinding) {
                     ForEach(KeyboardRimeDictionaryTier.allCases) { tier in
                         Text(tier.title).tag(tier)
@@ -914,6 +919,7 @@ private struct KeyboardSettingsView: View {
             } footer: {
                 Text("Changes apply immediately after Full Access is enabled.")
             }
+            .disabled(!state.keyboardChineseInputEnabled)
             Section {
                 Toggle("Character Preview", isOn: characterPreviewBinding)
             } header: {
@@ -1012,6 +1018,14 @@ private struct KeyboardSettingsView: View {
             state.keyboardRimeDictionaryTier
         } set: { tier in
             state.setKeyboardRimeDictionaryTier(tier)
+        }
+    }
+
+    private var chineseInputEnabledBinding: Binding<Bool> {
+        Binding {
+            state.keyboardChineseInputEnabled
+        } set: { enabled in
+            state.setKeyboardChineseInputEnabled(enabled)
         }
     }
 
