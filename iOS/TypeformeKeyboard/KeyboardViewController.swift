@@ -196,6 +196,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private let lastInsertedTextKey = "keyboard.lastInsertedText"
     private let lastInsertedCommandIDKey = "keyboard.lastInsertedCommandID"
     private let textTouchLearningStatsKey = "keyboard.textTouchGaussianStats.v1"
+    private let keyboardTouchTraceEnabledKey = "keyboard.touchTraceEnabled"
     private let keyPressOverlayTag = 0x74797065
 
     private var correctionMode: CorrectionModePreset = .polish
@@ -666,10 +667,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     fileprivate func keyboardTouchTargetLogName(_ target: KeyboardTouchTarget?) -> String {
         guard let target else { return "none" }
         switch target {
-        case .textKey(let button):
-            if let character = textKeyCommitCharacters[ObjectIdentifier(button)] {
-                return "textKey(\(character))"
-            }
+        case .textKey:
             return "textKey"
         case .candidateAction:
             return "candidateAction"
@@ -678,17 +676,26 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
     }
 
+    fileprivate func keyboardTouchTargetLogKey(_ target: KeyboardTouchTarget?) -> String {
+        guard case .textKey(let button) = target,
+              let character = textKeyCommitCharacters[ObjectIdentifier(button)]
+        else { return "" }
+        return character
+    }
+
     fileprivate func logKeyboardTouchEvent(
         _ event: String,
         target: KeyboardTouchTarget?,
         point: CGPoint?,
         intent: CGFloat? = nil
     ) {
+        guard defaults.bool(forKey: keyboardTouchTraceEnabledKey) else { return }
         let name = keyboardTouchTargetLogName(target)
+        let key = keyboardTouchTargetLogKey(target)
         let x = point.map { Int($0.x.rounded()) } ?? -1
         let y = point.map { Int($0.y.rounded()) } ?? -1
         let dx = intent.map { Int($0.rounded()) } ?? 0
-        kbLog.notice("touch \(event, privacy: .public) target=\(name, privacy: .public) x=\(x, privacy: .public) y=\(y, privacy: .public) dx=\(dx, privacy: .public) focus=\(self.keyboardFocus.rawValue, privacy: .public)")
+        kbLog.notice("touch \(event, privacy: .public) target=\(name, privacy: .public) key=\(key, privacy: .private) x=\(x, privacy: .public) y=\(y, privacy: .public) dx=\(dx, privacy: .public) focus=\(self.keyboardFocus.rawValue, privacy: .public)")
     }
 
     fileprivate func beginKeyboardTouchTarget(_ target: KeyboardTouchTarget, point: CGPoint) {
@@ -1620,8 +1627,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     private func applyTextInputOptionsToRime() {
         _ = rimeInput.setProfile(rimeProfile)
-        _ = rimeInput.setAsciiPunctuation(chinesePunctuationStyle == .english)
-        applyRimeState(rimeInput.setAsciiMode(textInputLanguage == .english))
+        applyRimeState(
+            rimeInput.applyOptions(
+                asciiPunctuation: chinesePunctuationStyle == .english,
+                asciiMode: textInputLanguage == .english
+            )
+        )
     }
 
     private func resetCorrectionModeToDefault() {
@@ -6085,9 +6096,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             return true
         }
 
-        _ = rimeInput.setAsciiPunctuation(chinesePunctuationStyle == .english)
-        _ = rimeInput.setAsciiMode(false)
-        let state = rimeInput.processCharacter(character)
+        let state = rimeInput.processCharacter(
+            character,
+            asciiPunctuation: chinesePunctuationStyle == .english,
+            asciiMode: false
+        )
         applyRimeState(state)
         return true
     }
@@ -6108,13 +6121,14 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
         let queuedCharacters = pendingRimeCharacters
         pendingRimeCharacters.removeAll()
-        _ = rimeInput.setAsciiPunctuation(chinesePunctuationStyle == .english)
-        _ = rimeInput.setAsciiMode(false)
-
         var replayState = state
         var unprocessed: ArraySlice<String> = []
         for (index, character) in queuedCharacters.enumerated() {
-            replayState = rimeInput.processCharacter(character)
+            replayState = rimeInput.processCharacter(
+                character,
+                asciiPunctuation: chinesePunctuationStyle == .english,
+                asciiMode: false
+            )
             if !replayState.isReady || replayState.errorMessage != nil {
                 unprocessed = queuedCharacters[index...]
                 break
@@ -6185,9 +6199,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             return
         }
 
-        _ = rimeInput.setAsciiPunctuation(chinesePunctuationStyle == .english)
-        _ = rimeInput.setAsciiMode(false)
-        let wasComposing = rimeInput.state().isComposing
+        let wasComposing = rimeInput.applyOptions(
+            asciiPunctuation: chinesePunctuationStyle == .english,
+            asciiMode: false
+        ).isComposing
         let state = rimeInput.processKeyCode(32)
         applyRimeState(state)
         if !wasComposing, state.commitText.isEmpty, !state.isComposing {
@@ -7002,7 +7017,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 return
             }
             if isRimeCompositionControlKey(character) {
-                applyRimeState(rimeInput.processCharacter(character))
+                applyRimeState(
+                    rimeInput.processCharacter(
+                        character,
+                        asciiPunctuation: chinesePunctuationStyle == .english,
+                        asciiMode: false
+                    )
+                )
                 return
             }
             applyRimeState(rimeInput.commitComposition())
@@ -7015,9 +7036,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             renderRestyleSuggestionsIfIdle()
             return
         }
-        _ = rimeInput.setAsciiPunctuation(chinesePunctuationStyle == .english)
-        _ = rimeInput.setAsciiMode(false)
-        let state = rimeInput.processCharacter(character)
+        let state = rimeInput.processCharacter(
+            character,
+            asciiPunctuation: chinesePunctuationStyle == .english,
+            asciiMode: false
+        )
         applyRimeState(state)
         if state.commitText.isEmpty, !state.isComposing {
             textDocumentProxy.insertText(chineseDirectText(for: character))
@@ -8498,7 +8521,10 @@ final class KeyboardTouchOverlayView: UIView {
     private var nextTextKeySequence: UInt64 = 0
     private var pendingActivationTarget: KeyboardTouchTarget?
     private var pendingActivationPoint: CGPoint?
+    private var pendingActivationResolvedAt: CFTimeInterval = 0
     private var lastTouchCommitTime: CFTimeInterval = 0
+    private static let pendingActivationReuseWindow: CFTimeInterval = 0.12
+    private static let pendingActivationPointTolerance: CGFloat = 1.5
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -8523,23 +8549,25 @@ final class KeyboardTouchOverlayView: UIView {
 
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
         guard self.point(inside: point, with: event) else {
-            pendingActivationTarget = nil
-            pendingActivationPoint = nil
+            clearPendingActivation()
             return nil
         }
-        guard let hitController else { return nil }
+        guard let hitController else {
+            clearPendingActivation()
+            return nil
+        }
 
         let controllerPoint = convert(point, to: hitController.view)
-        let target = hitController.keyboardOverlayTouchTarget(at: controllerPoint)
+        let target = resolveTouchTarget(at: controllerPoint, hitController: hitController)
         hitController.logKeyboardTouchEvent("hitTest", target: target, point: controllerPoint)
         switch target {
         case .textKey, .focusSurface:
             pendingActivationTarget = target
             pendingActivationPoint = controllerPoint
+            pendingActivationResolvedAt = CACurrentMediaTime()
             return self
         case .candidateAction, .none:
-            pendingActivationTarget = nil
-            pendingActivationPoint = nil
+            clearPendingActivation()
             return nil
         }
     }
@@ -8553,10 +8581,9 @@ final class KeyboardTouchOverlayView: UIView {
         var handledAnyTouch = false
         for touch in orderedTouches(touches) {
             let controllerPoint = touch.location(in: hitController.view)
-            guard let target = hitController.keyboardOverlayTouchTarget(at: controllerPoint) else { continue }
+            guard let target = resolveTouchTarget(at: controllerPoint, hitController: hitController) else { continue }
             releaseExistingTouchIfNeeded(for: target)
-            pendingActivationTarget = nil
-            pendingActivationPoint = nil
+            clearPendingActivation()
             let sequence: UInt64?
             if case .textKey = target {
                 sequence = nextTextKeySequence
@@ -8675,8 +8702,33 @@ final class KeyboardTouchOverlayView: UIView {
         hitController.logKeyboardTouchEvent("activate", target: target, point: point)
         hitController.beginKeyboardTouchTarget(target, point: point)
         hitController.commitKeyboardTouchTarget(target, point: point)
+        clearPendingActivation()
+    }
+
+    private func resolveTouchTarget(
+        at controllerPoint: CGPoint,
+        hitController: KeyboardViewController
+    ) -> KeyboardTouchTarget? {
+        if let target = reusablePendingActivationTarget(at: controllerPoint) {
+            return target
+        }
+        return hitController.keyboardOverlayTouchTarget(at: controllerPoint)
+    }
+
+    private func reusablePendingActivationTarget(at controllerPoint: CGPoint) -> KeyboardTouchTarget? {
+        guard let target = pendingActivationTarget,
+              let point = pendingActivationPoint,
+              CACurrentMediaTime() - pendingActivationResolvedAt <= Self.pendingActivationReuseWindow,
+              abs(point.x - controllerPoint.x) <= Self.pendingActivationPointTolerance,
+              abs(point.y - controllerPoint.y) <= Self.pendingActivationPointTolerance
+        else { return nil }
+        return target
+    }
+
+    private func clearPendingActivation() {
         pendingActivationTarget = nil
         pendingActivationPoint = nil
+        pendingActivationResolvedAt = 0
     }
 
     private func flushEndedTextKeyTouches() {
