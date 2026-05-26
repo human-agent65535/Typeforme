@@ -45,7 +45,7 @@
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Typeforme checks whether your paired Mac is reachable on the local network before falling back to Cloud.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>Typeforme uses Apple Speech only for on-device live preview in supported languages while recording.</string>
+	<string>Typeforme uses Apple Speech for live preview while recording. Preview runs on device unless Cloud Fallback is enabled for cloud-only languages.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

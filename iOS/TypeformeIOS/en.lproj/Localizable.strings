@@ -33,6 +33,9 @@
 "Audio" = "Audio";
 "Host audio session" = "Host audio session";
 "Live Preview" = "Live Preview";
+"Preview Recognition" = "Preview Recognition";
+"On-device Only" = "On-device Only";
+"Cloud Fallback" = "Cloud Fallback";
 "Auto-Capitalization" = "Auto-Capitalization";
 "Character Preview" = "Character Preview";
 "Dictionary" = "Dictionary";
@@ -174,9 +177,9 @@
 "Matches" = "Matches";
 "None" = "None";
 "Input mode" = "Input mode";
-"Preview" = "Preview";
+"On-device" = "On-device";
 "No preview" = "No preview";
+"On-device preview availability is reported by iOS. Manage Dictation languages and system updates in iOS Settings." = "On-device preview availability is reported by iOS. Manage Dictation languages and system updates in iOS Settings.";
 "Changes apply immediately after Full Access is enabled." = "Changes apply immediately after Full Access is enabled.";
 "Changes apply immediately. Controls how long Typeforme keeps keyboard dictation ready after the host app is opened." = "Changes apply immediately. Controls how long Typeforme keeps keyboard dictation ready after the host app is opened.";
-"Live Preview uses Apple on-device speech for supported primary languages. Preview punctuation follows Server Settings." = "Live Preview uses Apple on-device speech for supported primary languages. Preview punctuation follows Server Settings.";
-"Live Preview uses Apple on-device speech for supported primary languages. Preview punctuation follows Server Settings. Host audio session controls how long Typeforme keeps keyboard dictation ready after the host app is opened." = "Live Preview uses Apple on-device speech for supported primary languages. Preview punctuation follows Server Settings. Host audio session controls how long Typeforme keeps keyboard dictation ready after the host app is opened.";
+"On-device Only keeps preview audio local. Cloud Fallback uses on-device when available and Apple servers otherwise. Preview punctuation follows Server Settings. Host audio session controls how long keyboard dictation stays ready." = "On-device Only keeps preview audio local. Cloud Fallback uses on-device when available and Apple servers otherwise. Preview punctuation follows Server Settings. Host audio session controls how long keyboard dictation stays ready.";
