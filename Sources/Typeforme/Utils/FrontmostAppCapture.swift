@@ -1,7 +1,7 @@
 import AppKit
 
-/// Snapshot of the frontmost app at recording-start, so we can refocus it
-/// before inserting text (spec §9, §21).
+/// Snapshot of the frontmost app at recording start, so we can refocus it
+/// before inserting text.
 struct FrontmostAppSnapshot: Sendable, Equatable {
     let pid: pid_t
     let bundleID: String?

@@ -1,8 +1,6 @@
 import SwiftUI
 
-/// SwiftUI replacement for the old AppKit MenuBarController menu. Items
-/// here are pure SwiftUI views; the parent `MenuBarExtra` scene turns
-/// them into a real NSMenu under the hood.
+/// Menu bar commands rendered by the parent `MenuBarExtra` as an `NSMenu`.
 struct MenuBarMenu: View {
     let onOpenSettings: () -> Void
 

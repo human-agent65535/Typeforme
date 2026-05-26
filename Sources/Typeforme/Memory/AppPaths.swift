@@ -1,16 +1,18 @@
 import Foundation
 
-/// Filesystem paths for runtime artifacts. Per spec §12, §19, §23:
+/// Filesystem paths for runtime artifacts:
 ///   ~/Library/Application Support/Typeforme/
-///     ├── Models/          (qwen3.5-*.gguf)
+///     ├── Models/          (correction and ASR model files)
 ///     │   └── WhisperKit/  (WhisperKit HuggingFace/Core ML cache)
-///     │   └── Qwen3ASR/    (optional local ASR model/cache folder)
+///     │   └── Qwen3ASR/    (Qwen3 ASR GGUF + mmproj files)
 ///     ├── prompts/         (system.md and mode-*.md)
 ///     ├── Bridge/          (temporary uploaded audio)
 ///     ├── ASRWork/         (temporary audio for external ASR)
+///     ├── Logs/            (local helper logs)
 ///     ├── DebugCaptures/   (opt-in debug captures)
 ///     ├── user_vocabulary.json
-///     └── llama.pid
+///     ├── llama.pid
+///     └── qwen3-asr-llama.pid
 enum AppPaths {
     static let appSupportDir: URL = {
         let fm = FileManager.default

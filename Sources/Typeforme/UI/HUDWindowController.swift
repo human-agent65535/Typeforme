@@ -417,9 +417,9 @@ final class HUDWindowController {
         return ceil(bounds.height)
     }
 
-    /// Widths for the compact (non-idle, non-preview) capsule. Status text was
-    /// removed from compact in favour of color + icon + (timer) + tooltip, so
-    /// these are tighter than the old "headline-friendly" widths.
+    /// Widths for the compact (non-idle, non-preview) capsule. Status text
+    /// lives in color + icon + timer + tooltip, so these widths only reserve
+    /// space for active controls.
     private static func width(for state: DictationState) -> CGFloat {
         switch state {
         case .idle:                          return idleSize  // unused; size(for:) handles idle specially

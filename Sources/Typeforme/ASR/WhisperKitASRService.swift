@@ -31,8 +31,8 @@ struct WhisperKitModelCacheInfo: Equatable, Sendable {
     let usesDocumentDirectoryCache: Bool
 }
 
-/// Spec §10: dev model `tiny`; normal `large-v3-v20240930_626MB`; lazy load;
-/// optional unload after 5 idle minutes.
+/// WhisperKit-backed ASR with lazy model loading and optional configurable
+/// idle unload.
 @MainActor
 final class WhisperKitASRService: ASRService {
     let modelName: String

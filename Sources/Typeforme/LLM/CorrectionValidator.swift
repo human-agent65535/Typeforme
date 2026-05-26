@@ -16,7 +16,7 @@ enum CorrectionValidationError: LocalizedError {
     }
 }
 
-/// Per spec §18.
+/// Parses the model JSON payload and enforces output guardrails before commit.
 enum CorrectionValidator {
     static func parseAndValidate(rawOutput: String, for request: CorrectionRequest) throws -> CorrectionResult {
         let cleaned = ModelOutputCleaner.clean(rawOutput)

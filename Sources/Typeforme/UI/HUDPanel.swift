@@ -1,7 +1,7 @@
 import AppKit
 
-/// Frameless, non-activating panel per spec §9. Showing this panel must not
-/// steal focus from the user's current app.
+/// Frameless, non-activating panel. Showing this panel must not steal focus
+/// from the user's current app.
 final class HUDPanel: NSPanel {
     init() {
         super.init(

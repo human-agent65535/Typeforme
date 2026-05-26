@@ -1,7 +1,7 @@
 import Testing
 @testable import Typeforme
 
-/// Spec §18 — cleaning + JSON extraction.
+/// Cleaning and JSON extraction coverage for raw model output.
 @Suite("ModelOutputCleaner")
 struct ModelOutputCleanerTests {
 

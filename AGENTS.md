@@ -15,6 +15,7 @@
 - Keep edits scoped to the requested behavior and the surrounding ownership boundary.
 - Prefer existing project patterns over new abstractions. Add a new abstraction only when it removes real duplication or clarifies a shared contract.
 - Do not commit generated app bundles, local model files, signing material, or personal configuration.
+- Code comments should explain current invariants, non-obvious platform constraints, failure modes, and source-of-truth boundaries. Avoid comments that only restate code, narrate old implementation history, or cite unavailable specs. If a comment's factual content needs correction, report that separately for human review.
 - When changing deployable macOS or iOS app behavior, UI, assets, entitlements, bundle metadata, or embedded runtime packaging, bump the relevant app version/build in the same change. Pure docs, tests, scripts that are not packaged, and internal-only benchmark changes do not need an app version bump. macOS version lives in `Resources/Info.plist`; iOS host app and keyboard extension versions live in `iOS/TypeformeIOS.xcodeproj/project.pbxproj` and should stay in lockstep.
 - For benchmark results, never treat app success, non-empty output, endpoint status, or simple automatic checks as semantic correctness. Correctness must be judged by an agent or human reviewer from the per-sample input, intent, output, and expected product behavior; report unreviewed correctness as pending.
 

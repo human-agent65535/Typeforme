@@ -1,7 +1,7 @@
 import Foundation
 
-/// Per spec §17. Stable content first (system + vocabulary + app metadata),
-/// dynamic transcript last — cacheable.
+/// Builds prompts with stable system content separated from volatile transcript
+/// data so the reusable portions remain cacheable.
 enum PromptBuilder {
     static func build(for request: CorrectionRequest) -> (system: String, user: String) {
         (systemPrompt(for: request), userPrompt(for: request))

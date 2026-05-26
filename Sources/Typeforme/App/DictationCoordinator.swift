@@ -5,8 +5,9 @@ import CoreGraphics
 import Speech
 
 /// Owns the full dictation state machine and orchestrates services.
-/// Per spec §7: `idle→recording→transcribing→correcting→(inserting|preview)→success→idle`;
-/// any state can fall to `error→idle`.
+/// Main flow: `idle → recording → transcribing → correcting →
+/// (inserting | preview) → success → idle`; any state can fall to
+/// `error → idle`.
 @MainActor
 final class DictationCoordinator: ObservableObject {
     @Published private(set) var state: DictationState = .idle
@@ -652,9 +653,8 @@ final class DictationCoordinator: ObservableObject {
         state = .idle
     }
 
-    /// Spec §8: Esc cancels any phase. Tears down the recorder if needed,
-    /// cancels pending timers, and goes straight back to idle without
-    /// inserting text.
+    /// Cancels any active phase, tears down recording if needed, cancels
+    /// pending timers, and returns to idle without inserting text.
     func cancelDictation() async {
         autoStopTask?.cancel(); autoStopTask = nil
         resetTask?.cancel();     resetTask = nil
@@ -730,7 +730,7 @@ final class DictationCoordinator: ObservableObject {
         _ = recorder.stop()
     }
 
-    // MARK: - Mode switching (spec §16, allowed only in preview)
+    // MARK: - Mode switching
 
     func requestCorrectionModeChange(to newMode: CorrectionMode) async {
         guard state == .preview else { return }

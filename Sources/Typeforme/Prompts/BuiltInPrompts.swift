@@ -1,7 +1,7 @@
 import Foundation
 
-/// Per spec §17. Keep stable instructions here and send volatile transcript
-/// data through `PromptBuilder.userPrompt`.
+/// Stable correction instructions. Volatile transcript data is sent through
+/// `PromptBuilder.userPrompt`.
 ///
 /// Architecture: `baseSystem` carries every rule that applies in every mode.
 /// `modeAddendum` carries only the rule deltas that distinguish one mode from

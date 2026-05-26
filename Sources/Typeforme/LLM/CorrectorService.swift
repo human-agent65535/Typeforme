@@ -1,8 +1,8 @@
 import Foundation
 
 /// Backends transform a `CorrectionRequest` into a `CorrectionResult`.
-/// Per spec §11 every backend has a hard timeout (`timeoutMs`); on cold start
-/// the orchestrator uses a longer warmup timeout.
+/// Every backend receives a hard request timeout; cold starts use a separate
+/// warmup timeout before the chat request.
 protocol CorrectorService: Sendable {
     var kind: CorrectionBackendKind { get }
     func correct(_ request: CorrectionRequest, timeoutMs: Int) async throws -> CorrectionResult
