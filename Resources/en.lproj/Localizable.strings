@@ -38,19 +38,23 @@
 
 // Settings sidebar
 "General" = "General";
-"Modes" = "Modes";
+"Dictation" = "Dictation";
+"Writing" = "Writing";
 "Recording" = "Recording";
 "Connection" = "Connection";
 "Advanced" = "Advanced";
 "Typeforme Settings" = "Typeforme Settings";
 
-// Settings: Modes subsections
+// Settings: Dictation subsections
+"Input" = "Input";
+"Transcription" = "Transcription";
+
+// Settings: Writing subsections
 "Refine" = "Refine";
 "Prompts" = "Prompts";
 "Vocabulary" = "Vocabulary";
 
-// Settings: Advanced subsections
-"ASR" = "ASR";
+// Settings: Diagnostics
 "Diagnostics" = "Diagnostics";
 
 // Hold modifier names

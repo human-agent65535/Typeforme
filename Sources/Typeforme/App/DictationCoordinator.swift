@@ -160,8 +160,9 @@ final class DictationCoordinator: ObservableObject {
             }
         }
 
+        let livePreviewPCMHandler = makeLivePartialPreviewPCMHandlerIfAvailable()
         do {
-            let startedURL = try await recorder.start()
+            let startedURL = try await recorder.start(pcmHandler: livePreviewPCMHandler)
             startInProgress = false
             guard await isActive(sessionID: sessionID, token: cancelToken) else {
                 if let stoppedURL = recorder.stop() {
@@ -169,9 +170,9 @@ final class DictationCoordinator: ObservableObject {
                 } else {
                     try? FileManager.default.removeItem(at: startedURL)
                 }
+                teardownLivePartialPreview(clearText: true)
                 return
             }
-            startLivePartialPreviewIfAvailable()
             transition(to: .recording)
             scheduleAutoStop(after: AppSettings.maxRecordingDuration)
             if stopAfterStart {
@@ -179,6 +180,7 @@ final class DictationCoordinator: ObservableObject {
                 await stopDictation()
             }
         } catch {
+            teardownLivePartialPreview(clearText: true)
             startInProgress = false
             stopAfterStart = false
             guard activeSessionID == sessionID else { return }
@@ -247,8 +249,9 @@ final class DictationCoordinator: ObservableObject {
         stopAfterStart = false
         resetTask?.cancel(); resetTask = nil
 
+        let livePreviewPCMHandler = makeLivePartialPreviewPCMHandlerIfAvailable()
         do {
-            let startedURL = try await recorder.start()
+            let startedURL = try await recorder.start(pcmHandler: livePreviewPCMHandler)
             startInProgress = false
             guard await isActive(sessionID: sessionID, token: cancelToken) else {
                 if let stoppedURL = recorder.stop() {
@@ -256,9 +259,9 @@ final class DictationCoordinator: ObservableObject {
                 } else {
                     try? FileManager.default.removeItem(at: startedURL)
                 }
+                teardownLivePartialPreview(clearText: true)
                 return
             }
-            startLivePartialPreviewIfAvailable()
             transition(to: .recording)
             scheduleAutoStop(after: AppSettings.maxRecordingDuration)
             if stopAfterStart {
@@ -266,6 +269,7 @@ final class DictationCoordinator: ObservableObject {
                 await stopDictation()
             }
         } catch {
+            teardownLivePartialPreview(clearText: true)
             startInProgress = false
             stopAfterStart = false
             activeDraftCommandTargetText = nil
@@ -899,19 +903,19 @@ final class DictationCoordinator: ObservableObject {
     // must support on-device recognition, and authorization must be granted.
     // Any failure silently degrades to "no preview" — recording still works.
 
-    func startLivePartialPreviewIfAvailable() {
+    private func makeLivePartialPreviewPCMHandlerIfAvailable() -> (@Sendable (AVAudioPCMBuffer) -> Void)? {
         teardownLivePartialPreview(clearText: true)
-        guard AppSettings.voiceLivePreview else { return }
+        guard AppSettings.voiceLivePreview else { return nil }
 
         let primaryID = AppSettings.activeLanguageIDs.first ?? "en-US"
         let locale = Locale(identifier: primaryID)
-        guard SFSpeechRecognizer.supportedLocales().contains(where: { $0.identifier == locale.identifier }) else {
-            return
+        guard Self.supportedSpeechLocalesContain(locale) else {
+            return nil
         }
         guard let recognizer = SFSpeechRecognizer(locale: locale),
               recognizer.isAvailable,
               recognizer.supportsOnDeviceRecognition
-        else { return }
+        else { return nil }
 
         switch SFSpeechRecognizer.authorizationStatus() {
         case .authorized:
@@ -920,11 +924,11 @@ final class DictationCoordinator: ObservableObject {
             // First-time use: kick the system prompt asynchronously so the
             // NEXT recording can use it. Don't block the current one.
             SFSpeechRecognizer.requestAuthorization { _ in }
-            return
+            return nil
         case .denied, .restricted:
-            return
+            return nil
         @unknown default:
-            return
+            return nil
         }
 
         let request = SFSpeechAudioBufferRecognitionRequest()
@@ -955,23 +959,35 @@ final class DictationCoordinator: ObservableObject {
             }
         }
 
-        recorder.onPCMBuffer = { [weak request] buffer in
+        return { [weak request] buffer in
             request?.append(buffer)
         }
+    }
+
+    private static func supportedSpeechLocalesContain(_ locale: Locale) -> Bool {
+        let target = normalizedSpeechLocaleIdentifier(locale.identifier)
+        return SFSpeechRecognizer.supportedLocales().contains { candidate in
+            let normalized = normalizedSpeechLocaleIdentifier(candidate.identifier)
+            return normalized == target || normalized.hasPrefix("\(target)-")
+        }
+    }
+
+    private static func normalizedSpeechLocaleIdentifier(_ identifier: String) -> String {
+        Locale(identifier: identifier).identifier
+            .replacingOccurrences(of: "_", with: "-")
+            .lowercased()
     }
 
     /// Called when stopDictation() pulls the audio file. Closes the audio side
     /// of the request so the recognizer finalises its last partial. We keep
     /// `livePartialTranscript` on screen until the Mac final replaces it.
     func endLivePartialPreviewAudio() {
-        recorder.onPCMBuffer = nil
         liveSpeechRequest?.endAudio()
         liveSnapshotAtCorrection = livePartialTranscript
     }
 
     /// Called after the Mac final result is applied (or on reset / error).
     func teardownLivePartialPreview(clearText: Bool) {
-        recorder.onPCMBuffer = nil
         liveSpeechTask?.cancel()
         liveSpeechTask = nil
         liveSpeechRequest = nil

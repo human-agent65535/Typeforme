@@ -979,9 +979,9 @@ private struct ClientRouteRow: View {
     }
 }
 
-// MARK: - Recording
+// MARK: - Dictation Input
 
-struct RecordingSettingsView: View {
+struct DictationInputSettingsView: View {
     @AppStorage(AppSettings.Keys.maxRecordingDuration) private var maxDuration: Double = 30
     @AppStorage(AppSettings.Keys.alwaysShowHUD)        private var alwaysShowHUD: Bool = false
     @AppStorage(AppSettings.Keys.holdModifier)         private var holdModifierRaw: String = HoldModifier.rightOption.rawValue
@@ -990,7 +990,7 @@ struct RecordingSettingsView: View {
 
     var body: some View {
         Form {
-            Section("Voice UX") {
+            Section("Dictation Mode") {
                 Picker("Mode", selection: $voiceUXModeRaw) {
                     ForEach(VoiceUXMode.allCases) { mode in
                         Text(mode.displayName).tag(mode.rawValue)
@@ -1001,9 +1001,9 @@ struct RecordingSettingsView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
-            Section("Live Preview") {
-                Toggle("Show transcript while speaking", isOn: $voiceLivePreview)
-                Text("Uses Apple's on-device speech recognizer in parallel with recording to render a live transcript in the HUD. The final inserted text always comes from your selected ASR + correction pipeline; the preview also goes to the corrector as a supplementary hypothesis to help disambiguate. On-device only — audio does not leave your Mac. Supported languages depend on macOS — unsupported languages silently skip the preview.")
+            Section("Live Transcript") {
+                Toggle("Show live transcript while speaking", isOn: $voiceLivePreview)
+                Text("Uses Apple's on-device speech recognizer in parallel with recording to render a live transcript in the HUD. The final inserted text always comes from your selected ASR + correction pipeline; the preview also goes to the corrector as a supplementary hypothesis to help disambiguate. On-device only — audio does not leave your Mac. iOS can use Cloud Fallback for unsupported languages; macOS preview stays local-only.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
@@ -1046,13 +1046,13 @@ struct RecordingSettingsView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
-            Section("HUD") {
+            Section("HUD Display") {
                 Toggle("Always show HUD", isOn: $alwaysShowHUD)
                 Text("Off (default): the capsule overlay only appears while you're dictating. On: it stays visible at the bottom even when idle, showing the current hotkey.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
-            Section("Duration") {
+            Section("Recording Limit") {
                 HStack {
                     Slider(value: $maxDuration, in: 5...120, step: 5)
                     Text("\(Int(maxDuration))s").monospacedDigit().frame(width: 50, alignment: .trailing)

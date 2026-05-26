@@ -437,10 +437,11 @@ final class AudioRecorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
 final class StandbyAudioSession: ObservableObject {
     /// Optional second consumer of the input PCM tap. Used by the live-preview
     /// SFSpeechRecognizer feed so we don't need a parallel AVAudioEngine
-    /// pulling from the same mic. Set BEFORE recording starts; cleared on stop.
-    /// Read on the audio thread; the storage itself is a Sendable closure so
-    /// there's no shared-state mutation inside the tap.
-    var onPCMBuffer: (@Sendable (AVAudioPCMBuffer) -> Void)?
+    /// pulling from the same mic. Cleared on stop.
+    /// Read on the audio thread after recording begins. The host attaches this
+    /// after the standby tap is already installed, so it intentionally remains a
+    /// late-bound hook.
+    nonisolated(unsafe) var onPCMBuffer: (@Sendable (AVAudioPCMBuffer) -> Void)?
 
     @Published private(set) var isActive = false
     @Published private(set) var level: Float = 0

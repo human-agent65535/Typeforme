@@ -36,19 +36,23 @@
 
 // 设置 sidebar
 "General" = "通用";
-"Modes" = "模式";
+"Dictation" = "听写";
+"Writing" = "写作";
 "Recording" = "录音";
 "Connection" = "连接";
 "Advanced" = "高级";
 "Typeforme Settings" = "Typeforme 设置";
 
-// 设置:模式子项
+// 设置:听写子项
+"Input" = "输入";
+"Transcription" = "转写";
+
+// 设置:写作子项
 "Refine" = "优化";
 "Prompts" = "提示词";
 "Vocabulary" = "词库";
 
-// 设置:高级子项
-"ASR" = "语音识别";
+// 设置:诊断
 "Diagnostics" = "诊断";
 
 // 按住修饰键

@@ -5,10 +5,9 @@ import SwiftUI
 /// titlebar for this LSUIElement-hosted settings window.
 ///
 /// Top-level sections are kept at ≤5 to match Apple's System Settings
-/// information density. Older Correction / Prompts / Vocabulary became
-/// sub-tabs of `Modes`; ASR / Diagnostics became sub-tabs of `Advanced`;
-/// the mode-specific Server / Bridge tabs merged into a single
-/// `Connection` view that swaps content based on processingMode.
+/// information density. Dictation owns input and transcription settings;
+/// Writing owns refine behavior, prompts, and vocabulary; Connection swaps
+/// content based on processingMode.
 struct SettingsView: View {
     @ObservedObject var dictionary: UserDictionaryStore
     @State private var selection: Section = .general
@@ -16,20 +15,20 @@ struct SettingsView: View {
 
     enum Section: String, CaseIterable, Identifiable, Hashable {
         case general    = "General"
-        case modes      = "Modes"
-        case recording  = "Recording"
+        case recording  = "Dictation"
+        case writing    = "Writing"
         case connection = "Connection"
-        case advanced   = "Advanced"
+        case diagnostics = "Diagnostics"
 
         var id: String { rawValue }
 
         var icon: String {
             switch self {
             case .general:    return "gearshape"
-            case .modes:      return "text.badge.checkmark"
             case .recording:  return "waveform.circle"
+            case .writing:    return "text.badge.checkmark"
             case .connection: return "antenna.radiowaves.left.and.right"
-            case .advanced:   return "slider.horizontal.3"
+            case .diagnostics: return "waveform.path.ecg"
             }
         }
     }
@@ -97,10 +96,10 @@ struct SettingsView: View {
     private var detail: some View {
         switch effectiveSelection {
         case .general:    GeneralSettingsView()
-        case .modes:      ModesSettingsView(dictionary: dictionary)
-        case .recording:  RecordingSettingsView()
+        case .recording:  DictationSettingsView()
+        case .writing:    WritingSettingsView(dictionary: dictionary)
         case .connection: ConnectionSettingsView()
-        case .advanced:   AdvancedSettingsView()
+        case .diagnostics: DiagnosticsSettingsView()
         }
     }
 
@@ -108,14 +107,14 @@ struct SettingsView: View {
         ProcessingMode(rawValue: processingModeRaw) ?? .client
     }
 
-    /// Modes (correction / prompts / vocabulary) is server-only — client
+    /// Writing (refine / prompts / vocabulary) is server-only — client
     /// installs talk to a remote bridge that owns those settings.
     private var visibleSections: [Section] {
         switch processingMode {
         case .server:
-            return [.general, .modes, .recording, .connection, .advanced]
+            return [.general, .recording, .writing, .connection, .diagnostics]
         case .client:
-            return [.general, .recording, .connection, .advanced]
+            return [.general, .recording, .connection, .diagnostics]
         }
     }
 
@@ -128,7 +127,7 @@ struct SettingsView: View {
 
 /// Inner segmented tab for grouping related per-section views together
 /// without exploding the top-level sidebar. Identical visual treatment
-/// across `Modes`, `Connection`, and `Advanced`.
+/// across compound sections.
 private struct SubsectionPicker<Choice: Hashable & CaseIterable & RawRepresentable>: View
     where Choice.RawValue == String, Choice.AllCases: RandomAccessCollection
 {
@@ -149,10 +148,45 @@ private struct SubsectionPicker<Choice: Hashable & CaseIterable & RawRepresentab
     }
 }
 
-/// Correction + Prompts + Vocabulary collapsed into one sidebar entry.
+/// Dictation input settings stay visible in client and server modes. The
+/// transcription engine is server-owned, so it appears only when this Mac
+/// is the server.
+struct DictationSettingsView: View {
+    @AppStorage(AppSettings.Keys.processingMode) private var processingModeRaw = ProcessingMode.client.rawValue
+    @State private var subsection: Subsection = .input
+
+    enum Subsection: String, CaseIterable, Hashable {
+        case input = "Input"
+        case transcription = "Transcription"
+    }
+
+    var body: some View {
+        switch ProcessingMode(rawValue: processingModeRaw) ?? .client {
+        case .server:
+            VStack(spacing: 0) {
+                SubsectionPicker(selection: $subsection)
+                Divider()
+                content
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        case .client:
+            DictationInputSettingsView()
+        }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        switch subsection {
+        case .input:         DictationInputSettingsView()
+        case .transcription: ASRSettingsView()
+        }
+    }
+}
+
+/// Refine + Prompts + Vocabulary collapsed into one sidebar entry.
 /// Each retains its full original view; they just share a segmented
 /// switcher at the top of the detail pane.
-struct ModesSettingsView: View {
+struct WritingSettingsView: View {
     @ObservedObject var dictionary: UserDictionaryStore
     @State private var subsection: Subsection = .correction
 
@@ -191,40 +225,6 @@ struct ConnectionSettingsView: View {
         switch ProcessingMode(rawValue: processingModeRaw) ?? .client {
         case .server: BridgeSettingsView()
         case .client: ClientServerSettingsView()
-        }
-    }
-}
-
-/// ASR + Diagnostics. ASR is server-only so the picker collapses on
-/// client installs to a single Diagnostics view.
-struct AdvancedSettingsView: View {
-    @AppStorage(AppSettings.Keys.processingMode) private var processingModeRaw = ProcessingMode.client.rawValue
-    @State private var subsection: Subsection = .asr
-
-    enum Subsection: String, CaseIterable, Hashable {
-        case asr         = "ASR"
-        case diagnostics = "Diagnostics"
-    }
-
-    var body: some View {
-        switch ProcessingMode(rawValue: processingModeRaw) ?? .client {
-        case .server:
-            VStack(spacing: 0) {
-                SubsectionPicker(selection: $subsection)
-                Divider()
-                content
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-        case .client:
-            DiagnosticsSettingsView()
-        }
-    }
-
-    @ViewBuilder
-    private var content: some View {
-        switch subsection {
-        case .asr:         ASRSettingsView()
-        case .diagnostics: DiagnosticsSettingsView()
         }
     }
 }

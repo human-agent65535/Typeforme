@@ -2145,6 +2145,7 @@ final class AppState: ObservableObject {
                     } else {
                         _ = self.recorder.stop(deactivateSession: true)
                     }
+                    self.teardownLivePartialPreview(clearText: true)
                     self.releaseIdleTimer()
                     await self.resumeKeyboardStandbyAfterCommand()
                     self.publishKeyboardStatus(.standby, message: "Ready")
@@ -2200,6 +2201,7 @@ final class AppState: ObservableObject {
             } else {
                 _ = recorder.stop(deactivateSession: true)
             }
+            teardownLivePartialPreview(clearText: true)
             releaseIdleTimer()
             await resumeKeyboardStandbyAfterCommand()
             publishKeyboardStatus(.standby, commandID: command.id, message: "Ready")
@@ -2635,6 +2637,7 @@ final class AppState: ObservableObject {
     }
 
     private func setFailure(_ message: String) {
+        teardownLivePartialPreview(clearText: true)
         errorMessage = message
         setPhase(.failure(message))
     }
@@ -2752,6 +2755,7 @@ final class AppState: ObservableObject {
     }
 
     private func handleEnteredBackground() {
+        teardownLivePartialPreview(clearText: true)
         // Backgrounding kills the AVAudioSession we're recording on. Cancel
         // the in-flight recording so we don't ship an empty / corrupted file
         // to the Bridge on resume.

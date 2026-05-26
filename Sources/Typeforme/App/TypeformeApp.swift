@@ -17,7 +17,7 @@ struct TypeformeApp: App {
         // NSStatusItem + NSMenu boilerplate; the label re-renders when
         // coordinator state changes thanks to @ObservedObject, the
         // "Always show HUD" toggle is bound via @AppStorage and stays in
-        // sync with Settings → Recording.
+        // sync with Settings → Dictation.
         MenuBarExtra {
             MenuBarMenu(onOpenSettings: { appDelegate.openSettings() })
         } label: {

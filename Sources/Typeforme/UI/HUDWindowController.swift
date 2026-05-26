@@ -350,6 +350,8 @@ final class HUDWindowController {
         switch state {
         case .idle:
             return NSSize(width: Self.idleSize, height: Self.idleSize)
+        case .recording, .transcribing, .inserting:
+            return livePartialSize(for: state) ?? NSSize(width: Self.width(for: state), height: Self.compactHeight)
         case .preview:
             if isVoiceDraftBarVisible(for: state) {
                 return Self.voiceDraftBarSize
@@ -360,6 +362,8 @@ final class HUDWindowController {
                 return Self.voiceDraftBarSize
             }
             return previewSize()
+        case .correcting:
+            return livePartialSize(for: state) ?? NSSize(width: Self.width(for: state), height: Self.compactHeight)
         default:
             return NSSize(width: Self.width(for: state), height: Self.compactHeight)
         }
@@ -387,6 +391,20 @@ final class HUDWindowController {
         cachedPreviewText = text
         cachedPreviewSize = size
         return size
+    }
+
+    private func livePartialSize(for state: DictationState) -> NSSize? {
+        let text = coordinator.livePartialTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return nil }
+        let textWidth = Self.measuredTextWidth(for: text)
+        let chrome = state == .recording ? CGFloat(190) : CGFloat(96)
+        let width = min(Self.previewWidth, max(CGFloat(240), ceil(textWidth + chrome)))
+        return NSSize(width: width, height: Self.compactHeight)
+    }
+
+    private static func measuredTextWidth(for text: String) -> CGFloat {
+        let attrs: [NSAttributedString.Key: Any] = [.font: previewMeasureFont]
+        return ceil((text as NSString).size(withAttributes: attrs).width)
     }
 
     private static func measuredTextHeight(for text: String, inWidth width: CGFloat) -> CGFloat {
