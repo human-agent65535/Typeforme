@@ -195,6 +195,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private let rimeUserPhrasesRevisionKey = "keyboard.rimeUserPhrasesRevision"
     private let lastInsertedTextKey = "keyboard.lastInsertedText"
     private let lastInsertedCommandIDKey = "keyboard.lastInsertedCommandID"
+    private let textTouchLearningStatsKey = "keyboard.textTouchGaussianStats.v1"
     private let keyPressOverlayTag = 0x74797065
 
     private var correctionMode: CorrectionModePreset = .polish
@@ -210,6 +211,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private var isCharacterPreviewEnabled = false
     private var chinesePunctuationStyle: ChinesePunctuationStyle = .chinese
     private let rimeInput = RimeInputController()
+    private lazy var textTouchLearner = TextKeyTouchLearner(
+        defaults: defaults,
+        storageKey: textTouchLearningStatsKey
+    )
     private var pendingRimeCharacters: [String] = []
     private var activeMarkedText = ""
     private var heightConstraint: NSLayoutConstraint?
@@ -274,6 +279,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private var bridgeCommandTasks: [String: Task<Void, Never>] = [:]
     private var styleRewriteTask: Task<Void, Never>?
     private var styleConfigureTask: Task<Void, Never>?
+    private var pendingTextTouchSample: TextKeyTouchSample?
+    private var pendingTextTouchCorrection: PendingTextTouchCorrection?
     private var deferredStartupWorkItem: DispatchWorkItem?
     private var keyboardDarwinObservers: [KeyboardDarwinNotificationObserver] = []
     private let minimumHoldRecordingDuration: TimeInterval = 0.55
@@ -286,6 +293,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private static let dictationContextLimit = 600
     private static let textRewriteContextExpansionLimit = 2_000
     private static let textRewriteContextExpansionMaxSteps = 40
+    private static let textTouchCorrectionWindow: TimeInterval = 2.25
+    private static let textTouchPositiveTTL: TimeInterval = 12
     private static let textSpaceCursorPointsPerCharacter: CGFloat = 9
     private static let containingAppBundleIdentifier = "com.example.typeforme"
     private let deleteRepeatInitialDelay: UInt64 = 450_000_000
@@ -511,6 +520,18 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let frame: CGRect
     }
 
+    private struct TextKeyTouchSample {
+        let character: String
+        let buttonFrame: CGRect
+        let touchPoint: CGPoint
+        let committedAt: TimeInterval
+    }
+
+    private struct PendingTextTouchCorrection {
+        let sample: TextKeyTouchSample
+        let startedAt: TimeInterval
+    }
+
     override init(nibName nibNameOrNil: String?, bundle nibBundleOrNil: Bundle?) {
         super.init(nibName: nibNameOrNil, bundle: nibBundleOrNil)
         configureSystemKeyboardAffordances()
@@ -676,13 +697,28 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
     }
 
-    fileprivate func commitKeyboardTouchTarget(_ target: KeyboardTouchTarget, point: CGPoint) {
+    fileprivate func commitKeyboardTouchTarget(
+        _ target: KeyboardTouchTarget,
+        point: CGPoint,
+        touchPoint: CGPoint? = nil
+    ) {
         logKeyboardTouchEvent("commit", target: target, point: point)
         switch target {
         case .textKey(let button):
             resetPressedControlState(button)
             guard let character = textKeyCommitCharacters[ObjectIdentifier(button)] else { return }
-            handleTextCharacter(character)
+            let sample = textKeyTouchSample(
+                button: button,
+                character: character,
+                touchPoint: touchPoint ?? textCharacterIntentPoint(from: point)
+            )
+            if handleTextCharacter(character) {
+                if let sample {
+                    registerCommittedTextTouch(sample)
+                } else {
+                    finishNonLearnableTextTouch()
+                }
+            }
         case .candidateAction, .focusSurface:
             break
         }
@@ -703,7 +739,28 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
            ObjectIdentifier(activeButton) != ObjectIdentifier(resolvedButton) {
             resetPressedControlState(activeButton)
         }
-        commitKeyboardTouchTarget(resolvedTarget, point: endPoint)
+        let touchPoint = keyboardTouchLearningPoint(
+            activeTarget: activeTarget,
+            resolvedTarget: resolvedTarget,
+            startPoint: startPoint,
+            endPoint: endPoint
+        )
+        commitKeyboardTouchTarget(resolvedTarget, point: endPoint, touchPoint: touchPoint)
+    }
+
+    private func keyboardTouchLearningPoint(
+        activeTarget: KeyboardTouchTarget,
+        resolvedTarget: KeyboardTouchTarget,
+        startPoint: CGPoint,
+        endPoint: CGPoint
+    ) -> CGPoint {
+        guard case .textKey(let activeButton) = activeTarget,
+              case .textKey(let resolvedButton) = resolvedTarget,
+              ObjectIdentifier(activeButton) != ObjectIdentifier(resolvedButton)
+        else {
+            return textCharacterIntentPoint(from: startPoint)
+        }
+        return textCharacterIntentPoint(from: endPoint)
     }
 
     private func dragRescuedTarget(
@@ -946,13 +1003,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     private func nearestTextKeySurfaceTarget(at point: CGPoint) -> UIButton? {
         guard !keyRowsStack.isHidden, keyRowsStack.alpha > 0.01 else { return nil }
-        let intentPoint = CGPoint(
-            x: min(
-                max(point.x - TextKeyboardTouchModel.characterIntentXCorrection, view.bounds.minX),
-                view.bounds.maxX
-            ),
-            y: point.y - TextKeyboardTouchModel.characterIntentYCorrection
-        )
+        let intentPoint = textCharacterIntentPoint(from: point)
         let rows = textKeyboardHitRegions().filter { $0.kind == .character }
         guard !rows.isEmpty else { return nil }
 
@@ -970,6 +1021,16 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
 
         return nil
+    }
+
+    private func textCharacterIntentPoint(from point: CGPoint) -> CGPoint {
+        CGPoint(
+            x: min(
+                max(point.x - TextKeyboardTouchModel.characterIntentXCorrection, view.bounds.minX),
+                view.bounds.maxX
+            ),
+            y: point.y - TextKeyboardTouchModel.characterIntentYCorrection
+        )
     }
 
     private func textKeyButtonBandTarget(in row: TextKeyboardHitRegion, at point: CGPoint) -> UIButton? {
@@ -1053,15 +1114,27 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let gutter = TextKeyboardTouchModel.gutterRadius
         if index > buttons.startIndex,
            point.x - leftBoundary < gutter,
-           let chosen = gutterProbeWinner(left: index - 1, right: index, buttons: buttons) {
+           let chosen = gutterResolutionWinner(left: index - 1, right: index, buttons: buttons, point: point) {
             return chosen
         }
         if index < buttons.index(before: buttons.endIndex),
            rightBoundary - point.x < gutter,
-           let chosen = gutterProbeWinner(left: index, right: index + 1, buttons: buttons) {
+           let chosen = gutterResolutionWinner(left: index, right: index + 1, buttons: buttons, point: point) {
             return chosen
         }
         return buttons[index].button
+    }
+
+    private func gutterResolutionWinner(
+        left: Int,
+        right: Int,
+        buttons: [TextKeyboardHitButton],
+        point: CGPoint
+    ) -> UIButton? {
+        if let probeWinner = gutterProbeWinner(left: left, right: right, buttons: buttons) {
+            return probeWinner
+        }
+        return gutterGaussianWinner(left: left, right: right, buttons: buttons, point: point)
     }
 
     private func gutterProbeWinner(left: Int, right: Int, buttons: [TextKeyboardHitButton]) -> UIButton? {
@@ -1079,6 +1152,38 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         return nil
     }
 
+    private func gutterGaussianWinner(
+        left: Int,
+        right: Int,
+        buttons: [TextKeyboardHitButton],
+        point: CGPoint
+    ) -> UIButton? {
+        guard let leftCharacter = learnableTextKeyCharacter(for: buttons[left].button),
+              let rightCharacter = learnableTextKeyCharacter(for: buttons[right].button)
+        else { return nil }
+        let leftCandidate = TextKeyTouchLearner.Candidate(
+            character: leftCharacter,
+            frame: buttons[left].frame
+        )
+        let rightCandidate = TextKeyTouchLearner.Candidate(
+            character: rightCharacter,
+            frame: buttons[right].frame
+        )
+        let winner = textTouchLearner.gutterWinner(
+            left: leftCandidate,
+            right: rightCandidate,
+            touchPoint: point
+        )
+        switch winner {
+        case .some(.left):
+            return buttons[left].button
+        case .some(.right):
+            return buttons[right].button
+        case nil:
+            return nil
+        }
+    }
+
     private func pinyinProbeLetter(for button: UIButton) -> Character? {
         guard let value = textKeyCommitCharacters[ObjectIdentifier(button)],
               value.count == 1,
@@ -1086,6 +1191,111 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
               scalar.value >= 0x61 && scalar.value <= 0x7A
         else { return nil }
         return Character(scalar)
+    }
+
+    private func learnableTextKeyCharacter(for button: UIButton) -> String? {
+        guard let value = textKeyCommitCharacters[ObjectIdentifier(button)] else { return nil }
+        return normalizedLearnableTextKeyCharacter(value)
+    }
+
+    private func normalizedLearnableTextKeyCharacter(_ character: String) -> String? {
+        guard character.count == 1,
+              let scalar = character.lowercased().unicodeScalars.first,
+              scalar.value >= 0x61,
+              scalar.value <= 0x7A
+        else { return nil }
+        return String(scalar)
+    }
+
+    private func textKeyTouchSample(
+        button: UIButton,
+        character: String,
+        touchPoint: CGPoint
+    ) -> TextKeyTouchSample? {
+        guard let normalized = normalizedLearnableTextKeyCharacter(character) else { return nil }
+        let frame = button.convert(button.bounds, to: view)
+        guard frame.width > 1, frame.height > 1 else { return nil }
+        return TextKeyTouchSample(
+            character: normalized,
+            buttonFrame: frame,
+            touchPoint: touchPoint,
+            committedAt: Date().timeIntervalSince1970
+        )
+    }
+
+    private func registerCommittedTextTouch(_ sample: TextKeyTouchSample) {
+        if let correction = pendingTextTouchCorrection {
+            if sample.committedAt - correction.startedAt <= Self.textTouchCorrectionWindow,
+               correction.sample.character != sample.character,
+               textTouchLearner.areHorizontalNeighbors(
+                    correction.sample.buttonFrame,
+                    sample.buttonFrame
+               ) {
+                textTouchLearner.recordTouch(
+                    touchPoint: correction.sample.touchPoint,
+                    intendedFrame: sample.buttonFrame,
+                    character: sample.character,
+                    kind: .correction
+                )
+            }
+            pendingTextTouchCorrection = nil
+            pendingTextTouchSample = sample
+            return
+        }
+
+        acceptPendingTextTouchIfSurvived(now: sample.committedAt)
+        pendingTextTouchSample = sample
+    }
+
+    private func acceptPendingTextTouchIfSurvived(now: TimeInterval = Date().timeIntervalSince1970) {
+        if let correction = pendingTextTouchCorrection,
+           now - correction.startedAt > Self.textTouchCorrectionWindow {
+            pendingTextTouchCorrection = nil
+        }
+        guard let sample = pendingTextTouchSample else { return }
+        pendingTextTouchSample = nil
+        guard now - sample.committedAt <= Self.textTouchPositiveTTL else { return }
+        textTouchLearner.recordTouch(
+            touchPoint: sample.touchPoint,
+            intendedFrame: sample.buttonFrame,
+            character: sample.character,
+            kind: .accepted
+        )
+    }
+
+    private func finishNonLearnableTextTouch() {
+        pendingTextTouchCorrection = nil
+        acceptPendingTextTouchIfSurvived()
+    }
+
+    private func beginTextTouchCorrectionFromBackspace(compositionActive: Bool) {
+        guard deleteRepeatTask == nil else { return }
+        let now = Date().timeIntervalSince1970
+        guard let sample = pendingTextTouchSample else {
+            pendingTextTouchCorrection = nil
+            return
+        }
+        guard now - sample.committedAt <= Self.textTouchCorrectionWindow else {
+            pendingTextTouchSample = nil
+            pendingTextTouchCorrection = nil
+            return
+        }
+        if !compositionActive {
+            guard let last = textDocumentProxy.documentContextBeforeInput?.last,
+                  String(last).lowercased() == sample.character
+            else { return }
+        }
+        pendingTextTouchSample = nil
+        pendingTextTouchCorrection = PendingTextTouchCorrection(
+            sample: sample,
+            startedAt: now
+        )
+    }
+
+    private func resetTextTouchLearning() {
+        pendingTextTouchSample = nil
+        pendingTextTouchCorrection = nil
+        textTouchLearner.reset()
     }
 
     private func bottomTextControlTopLimit() -> CGFloat {
@@ -1471,6 +1681,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
            let generation = payload["rime_learning_reset_generation"] as? Int,
            generation > defaults.integer(forKey: rimeLearningResetGenerationKey) {
             defaults.set(generation, forKey: rimeLearningResetGenerationKey)
+            resetTextTouchLearning()
             applyRimeState(rimeInput.resetUserData())
         }
         guard rebuildIfNeeded else { return }
@@ -5514,6 +5725,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         if isTextFocus {
             applyTextInputOptionsToRime()
         } else {
+            pendingTextTouchCorrection = nil
+            acceptPendingTextTouchIfSurvived()
             replaceMarkedText("")
         }
 
@@ -5763,12 +5976,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             : NSLocalizedString("English active, switch to Chinese", comment: "Accessibility label for language toggle")
     }
 
-    private func handleTextCharacter(_ character: String) {
+    @discardableResult
+    private func handleTextCharacter(_ character: String) -> Bool {
         guard keyboardFocus == .text,
               CACurrentMediaTime() >= suppressTextKeyCommitUntil,
               currentBridgeStatus?.state != .recording
         else {
-            return
+            return false
         }
 
         if textInputLanguage == .english {
@@ -5782,12 +5996,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             if !resetShiftIfSticky() {
                 refreshEnglishLetterCasingIfNeeded()
             }
-            return
+            return true
         }
 
         guard isAlphabeticTextKey(character) else {
             insertChineseDirectTextKey(character)
-            return
+            return true
         }
 
         if isTextShiftEnabled {
@@ -5795,7 +6009,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             textDocumentProxy.insertText(character.uppercased())
             resetShiftIfSticky()
             renderRestyleSuggestionsIfIdle()
-            return
+            return true
         }
 
         let currentRimeState = rimeInput.state()
@@ -5809,17 +6023,18 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             textDocumentProxy.insertText(character)
             resetShiftIfSticky()
             renderRestyleSuggestionsIfIdle()
-            return
+            return true
         }
         if !currentRimeState.isReady {
             queuePendingRimeCharacter(character, state: currentRimeState)
-            return
+            return true
         }
 
         _ = rimeInput.setAsciiPunctuation(chinesePunctuationStyle == .english)
         _ = rimeInput.setAsciiMode(false)
         let state = rimeInput.processCharacter(character)
         applyRimeState(state)
+        return true
     }
 
     private func queuePendingRimeCharacter(_ character: String, state: RimeKeyboardState) {
@@ -5865,6 +6080,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         if currentBridgeStatus?.state == .recording { return }
 
         if !pendingRimeCharacters.isEmpty {
+            beginTextTouchCorrectionFromBackspace(compositionActive: true)
             pendingRimeCharacters.removeLast()
             applyRimeState(rimeInput.state())
             return
@@ -5872,9 +6088,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
         let currentState = rimeInput.state()
         if currentState.isComposing {
+            beginTextTouchCorrectionFromBackspace(compositionActive: true)
             applyRimeState(rimeInput.processKeyCode(0xFF08))
             resetShiftIfSticky()
         } else {
+            beginTextTouchCorrectionFromBackspace(compositionActive: false)
             replaceMarkedText("")
             textDocumentProxy.deleteBackward()
             if !resetShiftIfSticky() {
@@ -5899,6 +6117,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             sendBridgeCommand(.stop)
             return
         }
+
+        pendingTextTouchCorrection = nil
+        acceptPendingTextTouchIfSurvived()
 
         if textInputLanguage == .english {
             applyRimeState(rimeInput.commitComposition())
@@ -5928,6 +6149,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         if currentBridgeStatus?.state == .recording { return }
 
         let currentState = rimeInput.state()
+        pendingTextTouchCorrection = nil
+        acceptPendingTextTouchIfSurvived()
         if textInputLanguage == .english {
             if currentState.isComposing {
                 applyRimeState(rimeInput.clearComposition())
@@ -5951,6 +6174,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     private func applyRimeState(_ state: RimeKeyboardState) {
         if !state.commitText.isEmpty {
+            acceptPendingTextTouchIfSurvived()
             resetQuoteParity()
             commitTextReplacingMarkedText(state.commitText)
             activeMarkedText = ""
@@ -6422,6 +6646,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     @objc private func candidateGridButtonTapped(_ sender: UIButton) {
+        pendingTextTouchCorrection = nil
+        acceptPendingTextTouchIfSurvived()
         setCandidateGridExpanded(false)
         applyRimeState(rimeInput.selectCandidate(at: sender.tag))
     }
@@ -6481,6 +6707,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     @objc private func candidateButtonTapped(_ sender: UIButton) {
+        pendingTextTouchCorrection = nil
+        acceptPendingTextTouchIfSurvived()
         applyRimeState(rimeInput.selectCandidate(at: sender.tag))
     }
 
@@ -7959,6 +8187,170 @@ private final class VoiceInputModeSwitch: UIControl {
 
     @objc private func selectTap() {
         onSelection?("tap")
+    }
+}
+
+private final class TextKeyTouchLearner {
+    enum SampleKind {
+        case accepted
+        case correction
+    }
+
+    enum CandidateSide {
+        case left
+        case right
+    }
+
+    struct Candidate {
+        let character: String
+        let frame: CGRect
+    }
+
+    private struct StoredState: Codable {
+        var version: Int
+        var keys: [String: KeyStats]
+    }
+
+    private struct KeyStats: Codable {
+        var sampleCount: Double
+        var meanX: Double
+        var meanY: Double
+        var updatedAt: TimeInterval
+    }
+
+    private static let storageVersion = 1
+    private static let maxEffectiveSamples = 800.0
+    private static let fullConfidenceSamples = 24.0
+    private static let minimumDecisionSamples = 5.0
+    private static let decisionMargin = 0.28
+    private static let correctionWeight = 3.0
+    private static let acceptedWeight = 1.0
+    private static let sigmaX = 0.34
+    private static let sigmaY = 0.70
+    private static let maxObservationX = 0.75
+    private static let maxObservationY = 0.75
+    private static let maxMeanX = 0.34
+    private static let maxMeanY = 0.28
+
+    private let defaults: UserDefaults
+    private let storageKey: String
+    private var state: StoredState
+
+    init(defaults: UserDefaults, storageKey: String) {
+        self.defaults = defaults
+        self.storageKey = storageKey
+        self.state = Self.loadState(defaults: defaults, storageKey: storageKey)
+    }
+
+    func reset() {
+        state = StoredState(version: Self.storageVersion, keys: [:])
+        defaults.removeObject(forKey: storageKey)
+    }
+
+    func areHorizontalNeighbors(_ first: CGRect, _ second: CGRect) -> Bool {
+        guard first.width > 1,
+              first.height > 1,
+              second.width > 1,
+              second.height > 1
+        else { return false }
+        let verticalTolerance = max(first.height, second.height) * 0.55
+        guard abs(first.midY - second.midY) <= verticalTolerance else { return false }
+        let maxWidth = max(first.width, second.width)
+        return abs(first.midX - second.midX) <= maxWidth * 1.65
+    }
+
+    func recordTouch(
+        touchPoint: CGPoint,
+        intendedFrame: CGRect,
+        character: String,
+        kind: SampleKind
+    ) {
+        guard let offset = normalizedOffset(touchPoint, in: intendedFrame) else { return }
+        let weight = kind == .correction ? Self.correctionWeight : Self.acceptedWeight
+        let observedX = Self.clamp(offset.x, min: -Self.maxObservationX, max: Self.maxObservationX)
+        let observedY = Self.clamp(offset.y, min: -Self.maxObservationY, max: Self.maxObservationY)
+        var stats = state.keys[character] ?? KeyStats(
+            sampleCount: 0,
+            meanX: 0,
+            meanY: 0,
+            updatedAt: 0
+        )
+        let currentCount = min(stats.sampleCount, Self.maxEffectiveSamples)
+        let nextCount = min(currentCount + weight, Self.maxEffectiveSamples)
+        let alpha = weight / max(nextCount, weight)
+        stats.meanX = Self.clamp(
+            stats.meanX + (observedX - stats.meanX) * alpha,
+            min: -Self.maxMeanX,
+            max: Self.maxMeanX
+        )
+        stats.meanY = Self.clamp(
+            stats.meanY + (observedY - stats.meanY) * alpha,
+            min: -Self.maxMeanY,
+            max: Self.maxMeanY
+        )
+        stats.sampleCount = nextCount
+        stats.updatedAt = Date().timeIntervalSince1970
+        state.keys[character] = stats
+        persist()
+    }
+
+    func gutterWinner(
+        left: Candidate,
+        right: Candidate,
+        touchPoint: CGPoint
+    ) -> CandidateSide? {
+        guard areHorizontalNeighbors(left.frame, right.frame),
+              let leftOffset = normalizedOffset(touchPoint, in: left.frame),
+              let rightOffset = normalizedOffset(touchPoint, in: right.frame)
+        else { return nil }
+
+        let leftStats = state.keys[left.character]
+        let rightStats = state.keys[right.character]
+        let maxSamples = max(leftStats?.sampleCount ?? 0, rightStats?.sampleCount ?? 0)
+        guard maxSamples >= Self.minimumDecisionSamples else { return nil }
+
+        let leftScore = score(offset: leftOffset, stats: leftStats)
+        let rightScore = score(offset: rightOffset, stats: rightStats)
+        let difference = leftScore - rightScore
+        guard abs(difference) >= Self.decisionMargin else { return nil }
+        return difference > 0 ? .left : .right
+    }
+
+    private func score(offset: (x: Double, y: Double), stats: KeyStats?) -> Double {
+        let confidence = min(1, (stats?.sampleCount ?? 0) / Self.fullConfidenceSamples)
+        let meanX = Self.clamp((stats?.meanX ?? 0) * confidence, min: -Self.maxMeanX, max: Self.maxMeanX)
+        let meanY = Self.clamp((stats?.meanY ?? 0) * confidence, min: -Self.maxMeanY, max: Self.maxMeanY)
+        let dx = offset.x - meanX
+        let dy = offset.y - meanY
+        return -((dx * dx) / (2 * Self.sigmaX * Self.sigmaX)
+            + (dy * dy) / (2 * Self.sigmaY * Self.sigmaY))
+    }
+
+    private func normalizedOffset(_ point: CGPoint, in frame: CGRect) -> (x: Double, y: Double)? {
+        guard frame.width > 1, frame.height > 1 else { return nil }
+        return (
+            x: Double((point.x - frame.midX) / frame.width),
+            y: Double((point.y - frame.midY) / frame.height)
+        )
+    }
+
+    private func persist() {
+        guard let data = try? JSONEncoder().encode(state) else { return }
+        defaults.set(data, forKey: storageKey)
+    }
+
+    private static func loadState(defaults: UserDefaults, storageKey: String) -> StoredState {
+        guard let data = defaults.data(forKey: storageKey),
+              let stored = try? JSONDecoder().decode(StoredState.self, from: data),
+              stored.version == storageVersion
+        else {
+            return StoredState(version: storageVersion, keys: [:])
+        }
+        return stored
+    }
+
+    private static func clamp(_ value: Double, min lower: Double, max upper: Double) -> Double {
+        Swift.min(Swift.max(value, lower), upper)
     }
 }
 
