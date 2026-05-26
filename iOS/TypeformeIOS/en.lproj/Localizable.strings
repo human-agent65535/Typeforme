@@ -2,7 +2,7 @@
 
 // Toolbar / sheets
 "Pairing" = "Pairing";
-"Server Settings" = "Server Settings";
+"Dictation Settings" = "Dictation Settings";
 "Keyboard Guide" = "Keyboard Guide";
 "Done" = "Done";
 
@@ -108,7 +108,7 @@
 "Typeforme uses your Mac's local ASR + LLM to clean up dictation. Pair the Mac Bridge URL and token to get started." = "Typeforme uses your Mac's local ASR + LLM to clean up dictation. Pair the Mac Bridge URL and token to get started.";
 "Pair Mac Bridge" = "Pair Mac Bridge";
 "Or copy the pairing JSON from the Mac app." = "Or copy the pairing JSON from the Mac app.";
-"Open the Mac app, copy the pairing JSON, then paste it here. Pairing only stores connection details. Languages are an iOS override on the main screen, and the default mode follows Server Settings." = "Open the Mac app, copy the pairing JSON, then paste it here. Pairing only stores connection details. Languages are an iOS override on the main screen, and the default mode follows Server Settings.";
+"Open the Mac app, copy the pairing JSON, then paste it here. Pairing only stores connection details. Languages are an iOS override on the main screen, and the default mode follows Dictation Settings." = "Open the Mac app, copy the pairing JSON, then paste it here. Pairing only stores connection details. Languages are an iOS override on the main screen, and the default mode follows Dictation Settings.";
 "Paste Pairing JSON" = "Paste Pairing JSON";
 "Paste from Clipboard" = "Paste from Clipboard";
 "Scan QR from Mac" = "Scan QR from Mac";
@@ -120,7 +120,7 @@
 "Token" = "Token";
 "Hide token" = "Hide token";
 "Show token" = "Show token";
-"Refresh Server Settings" = "Refresh Server Settings";
+"Refresh Dictation Settings" = "Refresh Dictation Settings";
 "Pulling…" = "Pulling…";
 "Routing" = "Routing";
 "Local" = "Local";
@@ -144,8 +144,8 @@
 "Setup" = "Setup";
 "In Any App" = "In Any App";
 "Refine Buttons" = "Refine Buttons";
-"Pair the Mac Server" = "Pair the Mac Server";
-"Paste the pairing JSON from the Mac app, then refresh Server Settings so iOS has the current languages and default mode." = "Paste the pairing JSON from the Mac app, then refresh Server Settings so iOS has the current languages and default mode.";
+"Pair Typeforme on Mac" = "Pair Typeforme on Mac";
+"Paste the pairing JSON from the Mac app, then refresh Dictation Settings so iOS has the current languages and default mode." = "Paste the pairing JSON from the Mac app, then refresh Dictation Settings so iOS has the current languages and default mode.";
 "Enable the keyboard" = "Enable the keyboard";
 "In iOS Settings, add Typeforme and allow Full Access. The keyboard needs that to talk to the host app." = "In iOS Settings, add Typeforme and allow Full Access. The keyboard needs that to talk to the host app.";
 "Dictate" = "Dictate";
@@ -159,7 +159,7 @@
 "Selection changed" = "Selection changed";
 "If iOS no longer reports the same selection when the result returns, Typeforme copies the result instead of guessing where to paste it." = "If iOS no longer reports the same selection when the result returns, Typeforme copies the result instead of guessing where to paste it.";
 
-// Server settings
+// Dictation settings
 "Speech" = "Speech";
 "ASR Engine" = "ASR Engine";
 "ASR Timeout" = "ASR Timeout";
@@ -171,11 +171,11 @@
 "Numbers" = "Numbers";
 "Punctuation" = "Punctuation";
 "Auto Commit" = "Auto Commit";
-"Loading server settings" = "Loading server settings";
-"Discard server settings changes?" = "Discard server settings changes?";
+"Loading dictation settings" = "Loading dictation settings";
+"Discard dictation settings changes?" = "Discard dictation settings changes?";
 "Discard Changes" = "Discard Changes";
 "Keep Editing" = "Keep Editing";
-"You have unsaved changes that won't be pushed to the server." = "You have unsaved changes that won't be pushed to the server.";
+"You have unsaved dictation changes that won't be pushed to the Mac." = "You have unsaved dictation changes that won't be pushed to the Mac.";
 
 // Language selection
 "Languages" = "Languages";
@@ -189,4 +189,7 @@
 "On-device preview availability is reported by iOS. Manage Dictation languages and system updates in iOS Settings." = "On-device preview availability is reported by iOS. Manage Dictation languages and system updates in iOS Settings.";
 "Changes apply immediately after Full Access is enabled." = "Changes apply immediately after Full Access is enabled.";
 "Changes apply immediately. Controls how long Typeforme keeps keyboard dictation ready after the host app is opened." = "Changes apply immediately. Controls how long Typeforme keeps keyboard dictation ready after the host app is opened.";
-"On-device Only keeps preview audio local. Cloud Fallback uses on-device when available and Apple servers otherwise. Preview punctuation follows Server Settings. Host audio session controls how long keyboard dictation stays ready." = "On-device Only keeps preview audio local. Cloud Fallback uses on-device when available and Apple servers otherwise. Preview punctuation follows Server Settings. Host audio session controls how long keyboard dictation stays ready.";
+"On-device Only keeps preview audio local. Cloud Fallback uses on-device when available and Apple servers otherwise. Preview punctuation follows Dictation Settings. Host audio session controls how long keyboard dictation stays ready." = "On-device Only keeps preview audio local. Cloud Fallback uses on-device when available and Apple servers otherwise. Preview punctuation follows Dictation Settings. Host audio session controls how long keyboard dictation stays ready.";
+"Dictation Vocabulary" = "Dictation Vocabulary";
+"Start Typeforme on Mac, then refresh before recording." = "Start Typeforme on Mac, then refresh before recording.";
+"Ready. Return to your previous app manually." = "Ready. Return to your previous app manually.";

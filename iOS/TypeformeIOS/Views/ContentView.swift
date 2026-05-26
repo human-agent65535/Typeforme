@@ -43,7 +43,7 @@ struct ContentView: View {
                             Button {
                                 showingMacSettings = true
                             } label: {
-                                Label("Server Settings", systemImage: "desktopcomputer")
+                                Label("Dictation Settings", systemImage: "waveform")
                             }
                             .disabled(!state.isConfigured)
                             Button {
@@ -655,7 +655,7 @@ private struct HeroRecordCard: View {
     private var accessibilityHint: String {
         state.canInteractWithHostDictation
             ? detail
-            : "Start the Mac app or Server, then refresh before recording."
+            : NSLocalizedString("Start Typeforme on Mac, then refresh before recording.", comment: "Host recording disabled accessibility hint")
     }
 
     /// Gradient only shifts color for states the user actively triggered. A
@@ -963,7 +963,7 @@ private struct KeyboardSettingsView: View {
             } header: {
                 Text("Audio")
             } footer: {
-                Text("On-device Only keeps preview audio local. Cloud Fallback uses on-device when available and Apple servers otherwise. Preview punctuation follows Server Settings. Host audio session controls how long keyboard dictation stays ready.")
+                Text("On-device Only keeps preview audio local. Cloud Fallback uses on-device when available and Apple servers otherwise. Preview punctuation follows Dictation Settings. Host audio session controls how long keyboard dictation stays ready.")
             }
         }
         .navigationTitle("Keyboard Settings")
@@ -1216,8 +1216,8 @@ private struct KeyboardGuideView: View {
             Section("Setup") {
                 GuideStepRow(
                     icon: "desktopcomputer",
-                    title: "Pair the Mac Server",
-                    detail: "Paste the pairing JSON from the Mac app, then refresh Server Settings so iOS has the current languages and default mode."
+                    title: "Pair Typeforme on Mac",
+                    detail: "Paste the pairing JSON from the Mac app, then refresh Dictation Settings so iOS has the current languages and default mode."
                 )
                 GuideStepRow(
                     icon: "keyboard",
@@ -1518,7 +1518,7 @@ private struct MacSettingsView: View {
                         ServerVocabularyView(entries: userDictionaryBinding)
                     } label: {
                         HStack {
-                            Text("Server Vocabulary")
+                            Text("Dictation Vocabulary")
                             Spacer()
                             Text(vocabularySummary(for: draft.userDictionary))
                                 .foregroundStyle(.secondary)
@@ -1531,7 +1531,7 @@ private struct MacSettingsView: View {
                 Section {
                     HStack {
                         ProgressView()
-                        Text("Loading server settings")
+                        Text("Loading dictation settings")
                     }
                 }
             }
@@ -1561,7 +1561,7 @@ private struct MacSettingsView: View {
                 }
             }
         }
-        .navigationTitle("Server Settings")
+        .navigationTitle("Dictation Settings")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
@@ -1578,8 +1578,8 @@ private struct MacSettingsView: View {
                                 .scaleEffect(0.72)
                         }
                         Text(isSaving
-                            ? NSLocalizedString("Saving…", comment: "Server settings save in progress")
-                            : NSLocalizedString("Save", comment: "Save server settings button"))
+                            ? NSLocalizedString("Saving…", comment: "Dictation settings save in progress")
+                            : NSLocalizedString("Save", comment: "Save dictation settings button"))
                     }
                 }
                 .disabled(draft == nil || isSaving || !hasUnsavedChanges)
@@ -1587,14 +1587,14 @@ private struct MacSettingsView: View {
         }
         .interactiveDismissDisabled(hasUnsavedChanges)
         .confirmationDialog(
-            "Discard server settings changes?",
+            "Discard dictation settings changes?",
             isPresented: $showingDiscardConfirmation,
             titleVisibility: .visible
         ) {
             Button("Discard Changes", role: .destructive) { dismiss() }
             Button("Keep Editing", role: .cancel) { }
         } message: {
-            Text("You have unsaved changes that won't be pushed to the server.")
+            Text("You have unsaved dictation changes that won't be pushed to the Mac.")
         }
         .task {
             await load(force: false)
@@ -1827,7 +1827,7 @@ private struct ServerVocabularyView: View {
                 }
             }
         }
-        .navigationTitle("Server Vocabulary")
+        .navigationTitle("Dictation Vocabulary")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
