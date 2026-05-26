@@ -238,19 +238,49 @@ swift scripts/benchmark-correctors.swift
 
 ## 隐私
 
-代码层面可证明的本地优先：
+代码层面可证明的本地优先；下列每项措施均附其用途：
 
-- **全管道本地化运行**：在 WhisperKit 与本地 Qwen3.5 组合下，`DictationCoordinator` 依次执行 `asr.transcribe` 与 `corrector.correct`，整个流程位于进程内，音频与文本不离开本机（`Sources/Typeforme/App/DictationCoordinator.swift:324-334`）。
+- **全管道本地化运行**：在 WhisperKit 与本地 Qwen3.5 组合下，`DictationCoordinator` 依次执行 `asr.transcribe` 与 `corrector.correct`，整个流程位于进程内（`Sources/Typeforme/App/DictationCoordinator.swift:324-334`）。
+  - *用途*：保证完全离线工作流下，音频与文本无任何外发路径。
 - **无第三方分析 / Crash 上报 / Telemetry SDK**：仓库内未引用 Mixpanel、Amplitude、Segment、PostHog、Sentry、Crashlytics 或 Firebase。
+  - *用途*：消除 SDK 自带的隐形外发与采样上报。
 - **无 IDFA / `identifierForVendor` / 设备指纹追踪**。
-- **网络出口仅三类，均由用户主动触发**：
-  1. 模型下载（HuggingFace，断点续传 + SHA256 校验，仅在首次安装时触发）
-  2. 用户配置的 Mac Bridge URL（Mac Client / iOS 键盘 → Mac Server）
-  3. 可选的 LM Studio / OpenAI-compatible endpoint（默认关闭）
+  - *用途*：阻断跨应用与跨会话的用户标识能力。
+- **网络出口仅三类，均由用户主动触发**：(1) HuggingFace 模型下载（断点续传 + SHA256 校验，仅在首次安装时触发）；(2) 用户配置的 Mac Bridge URL（Mac Client / iOS 键盘 → Mac Server）；(3) 可选的 LM Studio / OpenAI-compatible endpoint（默认关闭）。
+  - *用途*：将外发路径压缩至最小且可枚举的三种，便于审计。
 - **日志默认屏蔽正文**：常规日志通过 OSLog `privacy:` 注解屏蔽用户文本；仅在启用 Debug mode 后，原始音频与文本才会写入 `DebugCaptures/`，且仅落盘于本机用户目录。
+  - *用途*：即使第三方取得运行日志，也无法还原用户原话。
 - **凭据本地化**：iOS 配对 token 存储于 Keychain；Mac 端 token、prompt、词典与模型均位于本机用户目录，不参与 iCloud / 跨设备同步。
-- **iOS 键盘 Full Access 范围**：键盘扩展自身仅通过 `KeyboardLocalClient` 连接 `ws://127.0.0.1:18082/keyboard`（硬编码 localhost），与 iOS host app 之间走本地 WebSocket + App Group；对 Mac Bridge 的请求由 host app 发出，目标为用户配置的 URL（`iOS/TypeformeKeyboard/KeyboardLocalClient.swift:4`）。
+  - *用途*：避免 token 或个性化内容随云端同步扩散。
+- **iOS 键盘 Full Access 范围受限**：键盘扩展自身仅通过 `KeyboardLocalClient` 连接 `ws://127.0.0.1:18082/keyboard`（硬编码 localhost），与 iOS host app 之间走本地 WebSocket + App Group；对 Mac Bridge 的请求由 host app 发出，目标为用户配置的 URL（`iOS/TypeformeKeyboard/KeyboardLocalClient.swift:4`）。
+  - *用途*：使用户授予 Full Access 的实际效果限定为"键盘可达本机 host app"，外发完全由 host app 控制。
 - **代码以 Apache-2.0 开源**，可供审计；第三方依赖（SwiftNIO、Hummingbird、WhisperKit、librime、llama.cpp）均采用宽松许可。
+  - *用途*：上述所有断言可独立审计。
+
+## 平台约束与 workaround
+
+下列实现细节并非过度设计，而是 iOS 键盘扩展与 macOS 沙箱所施加的约束所致。直接简化会破坏对应功能：
+
+- **0.01-alpha 命中测试覆盖层**（`iOS/TypeformeKeyboard/KeyboardViewController.swift:391-394`）
+  - *原因*：iOS 自定义键盘扩展按像素 alpha 决定 hit-test 命中。若使用 `.clear`，键间空隙的触点会泄漏给 host app，键盘无法接管该区域。0.01 alpha 满足 iOS 的最小可命中阈值，又对用户不可见。
+- **键盘扩展真机测试使用 Release 构建**
+  - *原因*：Debug 构建会被 Swift 拆分为 stub + dylib，而 iOS 键盘扩展守护进程无法独立加载该 dylib，使用 Debug 构建会导致键盘加载失败。
+- **StandbyKeeper 后台静音音频循环**（`iOS/TypeformeIOS/Recording/StandbyKeeper.swift`）
+  - *原因*：iOS 不允许键盘扩展长时间维持后台；host app 通过播放 44.1kHz / Float32 / 0.001 音量的静音流维持 audio session 活跃，保证键盘需要录音或通讯时 host app 仍可即时响应。
+- **三条独立的 iOS 音频路径**（host UI `AudioRecorder` prewarm、键盘扩展 `StandbyAudioSession`、后台 `StandbyKeeper`）
+  - *原因*：iOS 设计上麦克风访问由 host app 持有，三条路径分别对应"host UI 直接录音"、"键盘扩展请求录音"、"键盘扩展后台维持可达"三种场景，合并会丢失其中至少一种触发能力。`AGENTS.md` 将此列为不变量。
+- **`typeforme://` URL scheme + Darwin notification + App Group 三段联动**（`iOS/TypeformeIOS/KeyboardHostHandoff.swift:252-294`、`iOS/TypeformeKeyboard/KeyboardViewController.swift:4658-4665`）
+  - *原因*：iOS 键盘扩展无法直接调用 host app API，跨进程协调只能通过 URL scheme 唤起、Darwin notification 同步状态、App Group 共享数据三者配合完成。
+- **键盘扩展不直接对外发起 HTTP**（`iOS/TypeformeKeyboard/KeyboardLocalClient.swift:4`）
+  - *原因*：键盘扩展自身仅连接本机 `ws://127.0.0.1:18082/keyboard`，对 Mac Bridge 的请求由 host app 转发。这同时降低了键盘扩展的攻击面，并使 Full Access 在实际效果上仅意味着"键盘可达本机 host app"。
+- **0.55s 最小按压时长 + 1.25s 选区 TTL**（`iOS/TypeformeKeyboard/KeyboardViewController.swift:297, 303`）
+  - *原因*：0.55s 用于区分 hold 与 tap；1.25s 选区 TTL 用于在键盘焦点暂时丢失时仍保留 selection 上下文，防止用户的选区被网络往返期间的事件清除。
+- **14pt drag rescue 阈值**（`iOS/TypeformeKeyboard/KeyboardViewController.swift:106`）
+  - *原因*：经验阈值；小于此距离视为手指抖动并维持首键，超过则视为有意拖动并切换至目标键。对应"首键粘性 vs 中途纠错"的取舍。
+- **ad-hoc 签名的内置 `llama-server`**
+  - *原因*：开发与个人分发场景下不强制 Developer ID 签名；首次运行可能被 macOS Gatekeeper 拦截，需要用户在系统设置中放行。正式分发应改为 Developer ID 签名。
+- **模型自动安装走断点续传 + SHA256 校验**（`Sources/Typeforme/Memory/ModelAutoInstaller.swift`）
+  - *原因*：HuggingFace 上的 GGUF 文件可达 GB 级，网络中断时全量重下成本高；安装过程使用 4 小时超时窗口并按 SHA256 校验完整性。
 
 ## 授权
 
@@ -269,7 +299,7 @@ Rime 集成基于 `librime`（BSD-3-Clause）与 Typeforme 自有 wrapper 代码
 ## 已知限制
 
 - iOS 键盘扩展须开启 Full Access 方可与 host app / Mac Bridge 通讯。
-- iOS 键盘扩展的真机测试建议使用 Release 构建。
 - Qwen3.5 9B、Qwen3-ASR 1.7B BF16 占用较高内存与磁盘空间。
 - 完整 iOS 构建需 Xcode。
-- ad-hoc 签名的内置 `llama-server` 首次运行可能被 Gatekeeper 拦截；正式分发应使用 Developer ID 签名。
+
+平台层面的约束与对应 workaround 见上文「平台约束与 workaround」。
