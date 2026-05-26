@@ -277,6 +277,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private var deleteRepeatTask: Task<Void, Never>?
     private var bridgeProbeTask: Task<Void, Never>?
     private var statusRefreshTask: Task<Void, Never>?
+    private var statusRefreshGeneration: UInt64 = 0
+    private var statusRefreshStartedAt: TimeInterval = 0
     private var bridgeCommandTasks: [String: Task<Void, Never>] = [:]
     private var styleRewriteTask: Task<Void, Never>?
     private var styleConfigureTask: Task<Void, Never>?
@@ -296,6 +298,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private static let textRewriteContextExpansionMaxSteps = 40
     private static let textTouchCorrectionWindow: TimeInterval = 2.25
     private static let textTouchPositiveTTL: TimeInterval = 12
+    private static let statusRefreshStaleTimeout: TimeInterval = 1.0
+    private static let fastStatusPollingInterval: TimeInterval = 0.12
+    private static let activeStatusPollingInterval: TimeInterval = 0.35
+    private static let idleStatusPollingInterval: TimeInterval = 1.0
     private static let textSpaceCursorPointsPerCharacter: CGFloat = 9
     private static let containingAppBundleIdentifier = "com.example.typeforme"
     private let deleteRepeatInitialDelay: UInt64 = 450_000_000
@@ -1345,6 +1351,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private func resetTextTouchLearning() {
         pendingTextTouchSample = nil
         pendingTextTouchCorrection = nil
+        textTouchLearner.flush()
         textTouchLearner.reset()
     }
 
@@ -1532,10 +1539,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         hostBundleWakeFallbackTask?.cancel()
         startupHostWakeTask?.cancel()
         stopStatusPolling()
+        textTouchLearner.flush()
         rimeInput.onStateChange = nil
         keyboardDarwinObservers.forEach { $0.stopObserving() }
         bridgeProbeTask?.cancel()
-        statusRefreshTask?.cancel()
+        cancelStatusRefresh()
         cancelBridgeCommandTasks()
         styleRewriteTask?.cancel()
         styleConfigureTask?.cancel()
@@ -1548,6 +1556,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             pendingRimeCharacters.removeAll()
             applyRimeState(rimeInput.commitComposition())
         }
+        textTouchLearner.flush()
         stopDeleteRepeat()
         clearTextShiftState()
         cancelHostWakeResetTask()
@@ -1558,8 +1567,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         deferredStartupWorkItem = nil
         bridgeProbeTask?.cancel()
         bridgeProbeTask = nil
-        statusRefreshTask?.cancel()
-        statusRefreshTask = nil
+        cancelStatusRefresh()
         cancelActiveRecordingForKeyboardDismissal()
         cancelBridgeCommandTasks()
         styleRewriteTask?.cancel()
@@ -3847,10 +3855,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             stopPulseRings()
         }
 
-        // Use the fast cadence while sending too — bridge transitions through
-        // Sending → Transcribing → Refining → Result in a couple hundred ms
-        // for short clips, and 350ms polling would skip the Refining stage.
-        let desiredInterval: TimeInterval = (isRecordingState || isSendingState) ? 0.12 : 0.35
+        let desiredInterval = statusPollingInterval(for: currentBridgeStatus?.state)
         if statusTimer != nil, abs(statusTimerInterval - desiredInterval) > 0.01 {
             stopStatusPolling()
             startStatusPolling(interval: desiredInterval)
@@ -6078,31 +6083,29 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             return true
         }
 
-        let currentRimeState = rimeInput.state()
-        if !currentRimeState.isReady,
-           currentRimeState.errorMessage != nil {
-            for queued in pendingRimeCharacters {
-                textDocumentProxy.insertText(queued)
-            }
-            pendingRimeCharacters.removeAll()
-            applyRimeState(currentRimeState)
-            textDocumentProxy.insertText(character)
-            resetShiftIfSticky()
-            renderRestyleSuggestionsIfIdle()
-            return true
-        }
-        if !currentRimeState.isReady {
-            queuePendingRimeCharacter(character, state: currentRimeState)
-            return true
-        }
-
-        let state = rimeInput.processCharacter(
+        let processResult = rimeInput.processCharacterIfReady(
             character,
             asciiPunctuation: chinesePunctuationStyle == .english,
             asciiMode: false
         )
-        applyRimeState(state)
-        return true
+        switch processResult {
+        case .notReady(let state) where state.errorMessage != nil:
+            for queued in pendingRimeCharacters {
+                textDocumentProxy.insertText(queued)
+            }
+            pendingRimeCharacters.removeAll()
+            applyRimeState(state)
+            textDocumentProxy.insertText(character)
+            resetShiftIfSticky()
+            renderRestyleSuggestionsIfIdle()
+            return true
+        case .notReady(let state):
+            queuePendingRimeCharacter(character, state: state)
+            return true
+        case .processed(let state):
+            applyRimeState(state)
+            return true
+        }
     }
 
     private func queuePendingRimeCharacter(_ character: String, state: RimeKeyboardState) {
@@ -6199,13 +6202,14 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             return
         }
 
-        let wasComposing = rimeInput.applyOptions(
+        let result = rimeInput.processKeyCode(
+            32,
             asciiPunctuation: chinesePunctuationStyle == .english,
             asciiMode: false
-        ).isComposing
-        let state = rimeInput.processKeyCode(32)
+        )
+        let state = result.state
         applyRimeState(state)
-        if !wasComposing, state.commitText.isEmpty, !state.isComposing {
+        if !result.wasComposing, state.commitText.isEmpty, !state.isComposing {
             textDocumentProxy.insertText(" ")
         }
         resetShiftIfSticky()
@@ -7654,6 +7658,26 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         statusTimerInterval = 0
     }
 
+    private func cancelStatusRefresh() {
+        statusRefreshGeneration &+= 1
+        statusRefreshTask?.cancel()
+        statusRefreshTask = nil
+        statusRefreshStartedAt = 0
+    }
+
+    private func statusPollingInterval(for state: KeyboardBridgeState?) -> TimeInterval {
+        switch state {
+        case .some(.recording), .some(.sending):
+            // Host stages can move Recording → Transcribing → Result in a few
+            // hundred ms; keep this cadence fast enough not to skip feedback.
+            return Self.fastStatusPollingInterval
+        case .some(.idle), .some(.standby):
+            return Self.idleStatusPollingInterval
+        case .some(.result), .some(.error), .none:
+            return Self.activeStatusPollingInterval
+        }
+    }
+
     private func scheduleDeferredStartupProbe() {
         deferredStartupWorkItem?.cancel()
         hasPresentedInitialFrame = false
@@ -7704,25 +7728,43 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func refreshBridgeStatus(captureSelection: Bool = true) {
+        guard hasFullAccess else {
+            cancelStatusRefresh()
+            return
+        }
+        let now = Date().timeIntervalSince1970
+        if statusRefreshTask != nil {
+            guard now - statusRefreshStartedAt >= Self.statusRefreshStaleTimeout else { return }
+            cancelStatusRefresh()
+        }
         if captureSelection {
             refreshSelectionSnapshot()
         }
-        guard hasFullAccess else { return }
-        statusRefreshTask?.cancel()
         let bridgeToken = hostKeyboardBridgeToken
+        statusRefreshGeneration &+= 1
+        let generation = statusRefreshGeneration
+        statusRefreshStartedAt = now
         statusRefreshTask = Task { [weak self] in
             guard let self else { return }
             do {
                 let status = try await localClient.status(bridgeToken: bridgeToken)
                 guard !Task.isCancelled else { return }
                 await MainActor.run {
-                    guard !Task.isCancelled else { return }
+                    guard !Task.isCancelled,
+                          self.statusRefreshGeneration == generation
+                    else { return }
+                    self.statusRefreshTask = nil
+                    self.statusRefreshStartedAt = 0
                     self.applyBridgeStatus(status)
                 }
             } catch {
                 guard !Task.isCancelled else { return }
                 await MainActor.run {
-                    guard !Task.isCancelled else { return }
+                    guard !Task.isCancelled,
+                          self.statusRefreshGeneration == generation
+                    else { return }
+                    self.statusRefreshTask = nil
+                    self.statusRefreshStartedAt = 0
                     self.lastBridgeContactAt = 0
                     self.updateUI()
                 }
@@ -8347,10 +8389,14 @@ private final class TextKeyTouchLearner {
     private static let maxObservationY = 0.75
     private static let maxMeanX = 0.34
     private static let maxMeanY = 0.28
+    private static let persistDebounceInterval: TimeInterval = 0.5
+    private static let persistSampleBatchSize = 5
 
     private let defaults: UserDefaults
     private let storageKey: String
     private var state: StoredState
+    private var pendingPersistWorkItem: DispatchWorkItem?
+    private var dirtySampleCount = 0
 
     init(defaults: UserDefaults, storageKey: String) {
         self.defaults = defaults
@@ -8358,9 +8404,22 @@ private final class TextKeyTouchLearner {
         self.state = Self.loadState(defaults: defaults, storageKey: storageKey)
     }
 
+    deinit {
+        flush()
+    }
+
     func reset() {
+        pendingPersistWorkItem?.cancel()
+        pendingPersistWorkItem = nil
+        dirtySampleCount = 0
         state = StoredState(version: Self.storageVersion, keys: [:])
         defaults.removeObject(forKey: storageKey)
+    }
+
+    func flush() {
+        pendingPersistWorkItem?.cancel()
+        pendingPersistWorkItem = nil
+        persistIfNeeded()
     }
 
     func areHorizontalNeighbors(_ first: CGRect, _ second: CGRect) -> Bool {
@@ -8411,7 +8470,7 @@ private final class TextKeyTouchLearner {
         let dxPercent = Int((observedX * 100).rounded())
         let dyPercent = Int((observedY * 100).rounded())
         kbLog.debug("touch gaussian learn kind=\(kind.logName, privacy: .public) key=\(character, privacy: .private) samples=\(sampleCount, privacy: .public) dxPct=\(dxPercent, privacy: .public) dyPct=\(dyPercent, privacy: .public)")
-        persist()
+        schedulePersist(immediate: kind == .correction)
     }
 
     func gutterWinner(
@@ -8459,6 +8518,27 @@ private final class TextKeyTouchLearner {
             x: Double((point.x - frame.midX) / frame.width),
             y: Double((point.y - frame.midY) / frame.height)
         )
+    }
+
+    private func schedulePersist(immediate: Bool) {
+        dirtySampleCount += 1
+        if immediate || dirtySampleCount >= Self.persistSampleBatchSize {
+            flush()
+            return
+        }
+        guard pendingPersistWorkItem == nil else { return }
+        let work = DispatchWorkItem { [weak self] in
+            self?.pendingPersistWorkItem = nil
+            self?.persistIfNeeded()
+        }
+        pendingPersistWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.persistDebounceInterval, execute: work)
+    }
+
+    private func persistIfNeeded() {
+        guard dirtySampleCount > 0 else { return }
+        persist()
+        dirtySampleCount = 0
     }
 
     private func persist() {

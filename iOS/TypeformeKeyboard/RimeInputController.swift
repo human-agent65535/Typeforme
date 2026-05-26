@@ -23,6 +23,16 @@ struct RimeKeyboardState {
     let errorMessage: String?
 }
 
+enum RimeCharacterProcessResult {
+    case processed(RimeKeyboardState)
+    case notReady(RimeKeyboardState)
+}
+
+struct RimeKeyCodeProcessResult {
+    let wasComposing: Bool
+    let state: RimeKeyboardState
+}
+
 /// Result of probing a candidate next letter against the live composition.
 enum RimeProbeValidity {
     /// The letter cleanly extended the current segment (e.g. typing "i" after
@@ -385,11 +395,51 @@ final class RimeInputController {
         }
     }
 
+    func processCharacterIfReady(
+        _ character: String,
+        asciiPunctuation: Bool,
+        asciiMode: Bool
+    ) -> RimeCharacterProcessResult {
+        setDesiredOptions(asciiPunctuation: asciiPunctuation, asciiMode: asciiMode)
+        guard startIfNeeded(),
+              let scalar = character.unicodeScalars.first
+        else { return .notReady(notReadyState()) }
+        return rimeQueue.sync {
+            guard isReadyOnQueue else { return .notReady(notReadyState()) }
+            applyOptionsOnQueue(asciiMode: asciiMode, asciiPunctuation: asciiPunctuation)
+            _ = api.processKeyCode(Int32(scalar.value), modifier: 0, andSession: session)
+            return .processed(stateOnQueue(commitText: drainCommit()))
+        }
+    }
+
     func processKeyCode(_ code: Int32) -> RimeKeyboardState {
         guard startIfNeeded() else { return notReadyState() }
         return rimeQueue.sync {
             _ = api.processKeyCode(code, modifier: 0, andSession: session)
             return stateOnQueue(commitText: drainCommit())
+        }
+    }
+
+    func processKeyCode(
+        _ code: Int32,
+        asciiPunctuation: Bool,
+        asciiMode: Bool
+    ) -> RimeKeyCodeProcessResult {
+        setDesiredOptions(asciiPunctuation: asciiPunctuation, asciiMode: asciiMode)
+        guard startIfNeeded() else {
+            return RimeKeyCodeProcessResult(wasComposing: false, state: notReadyState())
+        }
+        return rimeQueue.sync {
+            guard isReadyOnQueue else {
+                return RimeKeyCodeProcessResult(wasComposing: false, state: notReadyState())
+            }
+            applyOptionsOnQueue(asciiMode: asciiMode, asciiPunctuation: asciiPunctuation)
+            let wasComposing = isComposingOnQueue()
+            _ = api.processKeyCode(code, modifier: 0, andSession: session)
+            return RimeKeyCodeProcessResult(
+                wasComposing: wasComposing,
+                state: stateOnQueue(commitText: drainCommit())
+            )
         }
     }
 
@@ -508,6 +558,14 @@ final class RimeInputController {
             commitText: commitText,
             errorMessage: nil
         )
+    }
+
+    private func isComposingOnQueue() -> Bool {
+        guard isReadyOnQueue,
+              let status = api.getStatus(session)
+        else { return false }
+        let input = api.getInput(session) ?? ""
+        return status.isComposing || !input.isEmpty
     }
 
     private func notReadyState(commitText: String = "") -> RimeKeyboardState {
