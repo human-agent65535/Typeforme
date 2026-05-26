@@ -1096,13 +1096,24 @@ final class AppState: ObservableObject {
                         audioByteCount: recordingInfo.byteCount
                     )
                 }
+                let editJobID = "ios_\(UUID().uuidString.replacingOccurrences(of: "-", with: "_"))"
                 let editResponse = try await client.editText(
                     intent: editContext.intent.rawValue,
                     contextBefore: editContext.contextBefore,
                     targetText: editContext.targetText,
                     contextAfter: editContext.contextAfter,
                     spokenInstruction: spokenTranscript,
-                    languageIDs: activeLanguageIDs
+                    languageIDs: activeLanguageIDs,
+                    clientJobID: editJobID,
+                    onJobEvent: { [weak self] event in
+                        await MainActor.run {
+                            self?.applyBridgeJobStatus(
+                                event,
+                                keyboardCommandID: effectiveKeyboardCommandID,
+                                recordingInfo: recordingInfo
+                            )
+                        }
+                    }
                 )
                 text = editResponse.text.trimmingCharacters(in: .whitespacesAndNewlines)
                 correctionLatencyMs = editResponse.editLatencyMs ?? editResponse.latencyMs
@@ -1224,11 +1235,18 @@ final class AppState: ObservableObject {
         do {
             setPhase(.restyling)
             let client = BridgeClient(baseURL: baseURL, token: config.token)
+            let restyleJobID = "ios_\(UUID().uuidString.replacingOccurrences(of: "-", with: "_"))"
             let response = try await client.restyle(
                 sessionID: source.sessionID,
                 rawTranscript: source.rawTranscript,
                 languageIDs: activeLanguageIDs,
-                correctionMode: newMode
+                correctionMode: newMode,
+                clientJobID: restyleJobID,
+                onJobEvent: { [weak self] event in
+                    await MainActor.run {
+                        self?.applyBridgeJobStatus(event, keyboardCommandID: nil)
+                    }
+                }
             )
             let text = response.text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else {
@@ -2036,11 +2054,18 @@ final class AppState: ObservableObject {
         do {
             setPhase(.restyling)
             let client = BridgeClient(baseURL: baseURL, token: config.token)
+            let restyleJobID = "ios_\(UUID().uuidString.replacingOccurrences(of: "-", with: "_"))"
             let response = try await client.restyle(
                 sessionID: nil,
                 rawTranscript: source,
                 languageIDs: activeLanguageIDs,
-                correctionMode: requestedCorrectionMode
+                correctionMode: requestedCorrectionMode,
+                clientJobID: restyleJobID,
+                onJobEvent: { [weak self] event in
+                    await MainActor.run {
+                        self?.applyBridgeJobStatus(event, keyboardCommandID: command.id)
+                    }
+                }
             )
             let text = response.text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else {
@@ -2234,7 +2259,7 @@ final class AppState: ObservableObject {
     private func applyBridgeJobStatus(
         _ event: BridgeJobStatusEvent,
         keyboardCommandID: String?,
-        recordingInfo: RecordingFileInfo
+        recordingInfo: RecordingFileInfo? = nil
     ) {
         guard phase.isBusy else { return }
         let transcriptLength = event.rawTranscriptLength
@@ -2288,8 +2313,8 @@ final class AppState: ObservableObject {
                 keyboardState,
                 commandID: keyboardCommandID,
                 message: stageMessage,
-                audioDurationSeconds: recordingInfo.durationSeconds,
-                audioByteCount: recordingInfo.byteCount,
+                audioDurationSeconds: recordingInfo?.durationSeconds,
+                audioByteCount: recordingInfo?.byteCount,
                 rawTranscriptLength: transcriptLength
             )
         }

@@ -668,6 +668,7 @@ struct BridgeTextEditRequest: Encodable {
     let contextAfter: String
     let spokenInstruction: String
     let languageIDs: [String]
+    let clientJobID: String?
     let appName: String
     let appCategory: String
 
@@ -678,6 +679,7 @@ struct BridgeTextEditRequest: Encodable {
         case contextAfter = "context_after"
         case spokenInstruction = "spoken_instruction"
         case languageIDs = "language_ids"
+        case clientJobID = "client_job_id"
         case appName = "app_name"
         case appCategory = "app_category"
     }

@@ -503,6 +503,7 @@ final class BridgeService {
 
     func editText(_ request: BridgeTextEditRequest) async throws -> BridgeTextEditResponse {
         let start = Date()
+        let jobID = normalizedJobID(request.clientJobID)
         let intent = try resolveTextEditIntent(request.intent)
         let contextBefore = request.contextBefore ?? ""
         let targetText = request.targetText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -533,6 +534,12 @@ final class BridgeService {
             bundleID: request.bundleID,
             appCategory: appCategory
         )
+        await publishJobStatus(
+            jobID: jobID,
+            stage: .refining,
+            message: "Editing text",
+            rawTranscriptLength: targetText.count
+        )
         let editStarted = Date()
         let result: TextEditResult
         let editLatencyMs: Int
@@ -560,9 +567,17 @@ final class BridgeService {
                 request: editRequest,
                 timeoutMs: AppSettings.correctionTimeoutMs
             )
+            await publishJobStatus(
+                jobID: jobID,
+                stage: .failed,
+                message: "Edit failed",
+                rawTranscriptLength: targetText.count,
+                refineLatencyMs: latencyMs,
+                error: error.localizedDescription
+            )
             throw error
         }
-        return BridgeTextEditResponse(
+        let response = BridgeTextEditResponse(
             text: result.text,
             action: result.action.rawValue,
             languageIDs: languageIDs,
@@ -571,6 +586,16 @@ final class BridgeService {
             editStatus: "ok",
             editError: nil
         )
+        await publishJobStatus(
+            jobID: jobID,
+            stage: .resultReady,
+            message: "Edit complete",
+            rawTranscriptLength: targetText.count,
+            text: result.text,
+            latencyMs: response.latencyMs,
+            refineLatencyMs: editLatencyMs
+        )
+        return response
     }
 
     private func correct(

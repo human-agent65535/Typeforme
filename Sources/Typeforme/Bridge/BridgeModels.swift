@@ -103,6 +103,7 @@ struct BridgeTextEditRequest: Decodable {
     var appName: String?
     var bundleID: String?
     var appCategory: String?
+    var clientJobID: String?
 
     enum CodingKeys: String, CodingKey {
         case intent
@@ -115,6 +116,7 @@ struct BridgeTextEditRequest: Decodable {
         case appName = "app_name"
         case bundleID = "bundle_id"
         case appCategory = "app_category"
+        case clientJobID = "client_job_id"
     }
 }
 

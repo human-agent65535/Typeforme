@@ -181,8 +181,20 @@ struct BridgeClient {
         targetText: String,
         contextAfter: String,
         spokenInstruction: String,
-        languageIDs: [String]
+        languageIDs: [String],
+        clientJobID: String? = nil,
+        onJobEvent: (@Sendable (BridgeJobStatusEvent) async -> Void)? = nil
     ) async throws -> BridgeTextEditResponse {
+        let normalizedJobID = Self.normalizedClientJobID(clientJobID)
+        let eventTask: Task<Void, Never>? = {
+            guard let normalizedJobID, let onJobEvent else { return nil }
+            return Task {
+                try? await streamJobEvents(jobID: normalizedJobID, onEvent: onJobEvent)
+            }
+        }()
+        defer {
+            eventTask?.cancel()
+        }
         let payload = BridgeTextEditRequest(
             intent: intent,
             contextBefore: contextBefore,
@@ -190,6 +202,7 @@ struct BridgeClient {
             contextAfter: contextAfter,
             spokenInstruction: spokenInstruction,
             languageIDs: languageIDs,
+            clientJobID: normalizedJobID,
             appName: "iOS",
             appCategory: "chat"
         )
