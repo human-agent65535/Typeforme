@@ -52,6 +52,55 @@ struct PromptBuilderTests {
         #expect(repairPrompt.contains("Do not leave both A and B in the output"))
     }
 
+    @Test func userPromptThreadsAlternateTranscriptIntoInputJSON() {
+        // Regression: a prior version built `alternate_transcript` only for the
+        // debug-log copy of CorrectionRequest, and re-derived a fresh request
+        // for the corrector pipeline without it. The LLM never saw the second
+        // hypothesis. Pin the field down end-to-end here.
+        let request = CorrectionRequest(
+            correctionMode: .polish,
+            frontmostAppName: "Notes",
+            frontmostBundleID: "com.apple.Notes",
+            appCategory: .document,
+            languageIDs: ["zh-CN", "en-US"],
+            rawTranscript: "今天 ship 这个 feature",
+            userDictionary: [],
+            alternateTranscript: "今天 ship 这个 future"
+        )
+        let prompt = PromptBuilder.userPrompt(for: request)
+        #expect(prompt.contains("\"alternate_transcript\":\"今天 ship 这个 future\""))
+        #expect(BuiltInPrompts.baseSystem.contains("alternate_transcript, when present"))
+        #expect(BuiltInPrompts.baseSystem.contains("raw_transcript is the canonical text"))
+        #expect(BuiltInPrompts.baseSystem.contains("never paste alternate_transcript wholesale"))
+
+        // When no alternate is provided, the field is omitted from the JSON.
+        let bareRequest = CorrectionRequest(
+            correctionMode: .polish,
+            frontmostAppName: "Notes",
+            frontmostBundleID: "com.apple.Notes",
+            appCategory: .document,
+            languageIDs: ["zh-CN", "en-US"],
+            rawTranscript: "今天 ship 这个 feature",
+            userDictionary: []
+        )
+        let barePrompt = PromptBuilder.userPrompt(for: bareRequest)
+        #expect(!barePrompt.contains("\"alternate_transcript\""))
+
+        // An empty / whitespace-only alternate is also omitted.
+        let emptyRequest = CorrectionRequest(
+            correctionMode: .polish,
+            frontmostAppName: "Notes",
+            frontmostBundleID: "com.apple.Notes",
+            appCategory: .document,
+            languageIDs: ["zh-CN", "en-US"],
+            rawTranscript: "今天 ship 这个 feature",
+            userDictionary: [],
+            alternateTranscript: "   "
+        )
+        let emptyPrompt = PromptBuilder.userPrompt(for: emptyRequest)
+        #expect(!emptyPrompt.contains("\"alternate_transcript\""))
+    }
+
     @Test func userPromptEscapesEmbeddedClosingInputJSONTag() {
         let request = CorrectionRequest(
             correctionMode: .polish,

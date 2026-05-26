@@ -267,7 +267,8 @@ final class BridgeService {
                 bundleID: request.bundleID,
                 appCategory: appCategory,
                 contextBefore: contextBefore,
-                contextAfter: contextAfter
+                contextAfter: contextAfter,
+                alternateTranscript: request.alternateTranscript?.trimmingCharacters(in: .whitespacesAndNewlines)
             )
             correctionLatencyMs = elapsedMs(since: correctionStarted)
         } catch {
@@ -609,7 +610,8 @@ final class BridgeService {
         bundleID: String?,
         appCategory: AppCategory,
         contextBefore: String = "",
-        contextAfter: String = ""
+        contextAfter: String = "",
+        alternateTranscript: String? = nil
     ) async throws -> BridgeCorrectionOutput {
         let request = correctionRequest(
             rawTranscript: rawTranscript,
@@ -619,7 +621,8 @@ final class BridgeService {
             bundleID: bundleID,
             appCategory: appCategory,
             contextBefore: contextBefore,
-            contextAfter: contextAfter
+            contextAfter: contextAfter,
+            alternateTranscript: alternateTranscript
         )
 
         var result = try await CorrectorFactory.shared.make().correct(
