@@ -244,7 +244,6 @@ final class AppState: ObservableObject {
     private var phaseResetTask: Task<Void, Never>?
     private var transientMessageTask: Task<Void, Never>?
     private var initialRenderDelayTask: Task<Void, Never>?
-    private var modelStatusPollingTask: Task<Void, Never>?
     private var recorderPreWarmTask: Task<Void, Never>?
     private var lifecycleObservers: [NSObjectProtocol] = []
     private var keyboardDarwinObservers: [KeyboardDarwinNotificationObserver] = []
@@ -379,7 +378,6 @@ final class AppState: ObservableObject {
     deinit {
         hostAudioSessionExpiryTask?.cancel()
         keyboardStandbyRefreshTask?.cancel()
-        modelStatusPollingTask?.cancel()
         recorderPreWarmTask?.cancel()
         networkPathMonitor.cancel()
         for token in lifecycleObservers {
@@ -418,7 +416,6 @@ final class AppState: ObservableObject {
     }
 
     func unpair() {
-        stopModelStatusPolling()
         let empty = PairingConfig.empty
         config = empty
         correctionMode = empty.correctionMode
@@ -693,34 +690,6 @@ final class AppState: ObservableObject {
         if config.localBridgeURLCandidates != previous {
             store.save(config)
         }
-    }
-
-    private func refreshMacModelStatuses() async throws {
-        let client = try await activeBridgeClient()
-        var settings = try await client.macSettings(timeout: 3)
-        settings.normalize()
-        if var current = macSettings {
-            current.modelStatuses = settings.modelStatuses
-            macSettings = current
-        } else {
-            macSettings = settings
-        }
-    }
-
-    private func startModelStatusPolling() {
-        modelStatusPollingTask?.cancel()
-        modelStatusPollingTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: 350_000_000)
-            while !Task.isCancelled {
-                _ = try? await self?.refreshMacModelStatuses()
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
-            }
-        }
-    }
-
-    private func stopModelStatusPolling() {
-        modelStatusPollingTask?.cancel()
-        modelStatusPollingTask = nil
     }
 
     private func activeBridgeClient() async throws -> BridgeClient {
@@ -1086,8 +1055,6 @@ final class AppState: ObservableObject {
             )
         }
         do {
-            startModelStatusPolling()
-            defer { stopModelStatusPolling() }
             let dictationContext = keyboardTextEditContext == nil ? keyboardDictationContext : nil
             let response = try await dictateWithRouteRetry(
                 initialBaseURL: baseURL,
@@ -1102,7 +1069,6 @@ final class AppState: ObservableObject {
                 recordingInfo: recordingInfo
             )
             let client = BridgeClient(baseURL: routeStatus.activeURL ?? baseURL, token: config.token)
-            _ = try? await refreshMacModelStatuses()
             let spokenTranscript = response.rawTranscript?
                 .trimmingCharacters(in: .whitespacesAndNewlines)
                 ?? response.text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1208,9 +1174,6 @@ final class AppState: ObservableObject {
                 return
             }
         } catch {
-            Task { @MainActor [weak self] in
-                _ = try? await self?.refreshMacModelStatuses()
-            }
             if isBenignEmptyTranscript(error) {
                 setPhase(.idle)
                 if let effectiveKeyboardCommandID {
@@ -1261,15 +1224,12 @@ final class AppState: ObservableObject {
         do {
             setPhase(.restyling)
             let client = BridgeClient(baseURL: baseURL, token: config.token)
-            startModelStatusPolling()
-            defer { stopModelStatusPolling() }
             let response = try await client.restyle(
                 sessionID: source.sessionID,
                 rawTranscript: source.rawTranscript,
                 languageIDs: activeLanguageIDs,
                 correctionMode: newMode
             )
-            _ = try? await refreshMacModelStatuses()
             let text = response.text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else {
                 setFailure("Mac returned an empty result.")
@@ -1290,9 +1250,6 @@ final class AppState: ObservableObject {
             errorMessage = nil
             applyCorrectionMetadata(status: response.correctionStatus, error: response.correctionError)
         } catch {
-            Task { @MainActor [weak self] in
-                _ = try? await self?.refreshMacModelStatuses()
-            }
             // Invalidate the route cache on both auth and network errors so
             // the next Restyle tap re-probes instead of reusing a dead route.
             if shouldRetryBridgeRequest(after: error) {
