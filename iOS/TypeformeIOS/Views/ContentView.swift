@@ -848,7 +848,8 @@ private struct LanguagesRow: View {
         NavigationLink {
             LanguageSelectionView(
                 selection: $state.selectedLanguageIDs,
-                options: state.config.supportedLanguageOptions
+                options: state.config.supportedLanguageOptions,
+                showsPreviewSupport: state.keyboardLivePreviewEnabled
             )
             .onChange(of: state.selectedLanguageIDs) { _, _ in
                 state.persistLanguageSelection()
@@ -934,6 +935,7 @@ private struct KeyboardSettingsView: View {
                 Text("Changes apply immediately after Full Access is enabled.")
             }
             Section {
+                Toggle("Live Preview", isOn: livePreviewBinding)
                 Picker("Host audio session", selection: hostAudioSessionLengthBinding) {
                     ForEach(HostAudioSessionLength.allCases) { length in
                         Text(length.title).tag(length)
@@ -943,7 +945,7 @@ private struct KeyboardSettingsView: View {
             } header: {
                 Text("Audio")
             } footer: {
-                Text("Changes apply immediately. Controls how long Typeforme keeps keyboard dictation ready after the host app is opened.")
+                Text("Live Preview uses Apple on-device speech for supported primary languages. Preview punctuation follows Server Settings. Host audio session controls how long Typeforme keeps keyboard dictation ready after the host app is opened.")
             }
         }
         .navigationTitle("Keyboard Settings")
@@ -968,6 +970,14 @@ private struct KeyboardSettingsView: View {
             state.keyboardCharacterPreviewEnabled
         } set: { enabled in
             state.setKeyboardCharacterPreviewEnabled(enabled)
+        }
+    }
+
+    private var livePreviewBinding: Binding<Bool> {
+        Binding {
+            state.keyboardLivePreviewEnabled
+        } set: { enabled in
+            state.setKeyboardLivePreviewEnabled(enabled)
         }
     }
 

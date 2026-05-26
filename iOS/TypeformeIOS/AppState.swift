@@ -141,6 +141,16 @@ enum KeyboardDefaultTextInputLanguage: String, CaseIterable, Identifiable {
     }
 }
 
+enum AppleSpeechPreviewSupport {
+    static func supportsOnDevicePreview(languageID: String) -> Bool {
+        let locale = Locale(identifier: languageID)
+        guard SFSpeechRecognizer.supportedLocales().contains(where: { $0.identifier == locale.identifier }),
+              let recognizer = SFSpeechRecognizer(locale: locale)
+        else { return false }
+        return recognizer.supportsOnDeviceRecognition
+    }
+}
+
 struct ServerTimingSummary: Equatable {
     var transcriptionLatencyMs: Int?
     var correctionLatencyMs: Int?
@@ -178,6 +188,7 @@ final class AppState: ObservableObject {
     @Published var hostAudioSessionLength: HostAudioSessionLength
     @Published var keyboardAutoCapitalizationEnabled: Bool
     @Published var keyboardCharacterPreviewEnabled: Bool
+    @Published var keyboardLivePreviewEnabled: Bool
     @Published var keyboardChinesePunctuationStyle: KeyboardChinesePunctuationStyle
     @Published var keyboardRimeDictionaryTier: KeyboardRimeDictionaryTier
     @Published var keyboardDefaultTextInputLanguage: KeyboardDefaultTextInputLanguage
@@ -220,6 +231,7 @@ final class AppState: ObservableObject {
     private static let hostAudioSessionLengthKey = "keyboard.hostAudioSessionLength"
     private static let keyboardAutoCapitalizationKey = "keyboard.autoCapitalizationEnabled"
     private static let keyboardCharacterPreviewKey = "keyboard.characterPreviewEnabled"
+    private static let keyboardLivePreviewKey = "keyboard.livePreviewEnabled"
     private static let keyboardChinesePunctuationStyleKey = "keyboard.chinesePunctuationStyle"
     private static let keyboardRimeDictionaryTierKey = "keyboard.rimeDictionaryTier"
     private static let keyboardDefaultTextInputLanguageKey = "keyboard.defaultTextInputLanguage"
@@ -364,6 +376,8 @@ final class AppState: ObservableObject {
             .map { _ in UserDefaults.standard.bool(forKey: Self.keyboardAutoCapitalizationKey) } ?? true
         self.keyboardCharacterPreviewEnabled = UserDefaults.standard.object(forKey: Self.keyboardCharacterPreviewKey)
             .map { _ in UserDefaults.standard.bool(forKey: Self.keyboardCharacterPreviewKey) } ?? false
+        self.keyboardLivePreviewEnabled = UserDefaults.standard.object(forKey: Self.keyboardLivePreviewKey)
+            .map { _ in UserDefaults.standard.bool(forKey: Self.keyboardLivePreviewKey) } ?? true
         self.keyboardChinesePunctuationStyle = UserDefaults.standard.string(forKey: Self.keyboardChinesePunctuationStyleKey)
             .flatMap(KeyboardChinesePunctuationStyle.init(rawValue:)) ?? .chinese
         self.keyboardRimeDictionaryTier = UserDefaults.standard.string(forKey: Self.keyboardRimeDictionaryTierKey)
@@ -477,6 +491,15 @@ final class AppState: ObservableObject {
         keyboardCharacterPreviewEnabled = enabled
         UserDefaults.standard.set(enabled, forKey: Self.keyboardCharacterPreviewKey)
         publishKeyboardDefaults()
+    }
+
+    func setKeyboardLivePreviewEnabled(_ enabled: Bool) {
+        guard enabled != keyboardLivePreviewEnabled else { return }
+        keyboardLivePreviewEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: Self.keyboardLivePreviewKey)
+        if !enabled {
+            teardownLivePartialPreview(clearText: true)
+        }
     }
 
     func setKeyboardChinesePunctuationStyle(_ style: KeyboardChinesePunctuationStyle) {
@@ -1696,17 +1719,18 @@ final class AppState: ObservableObject {
     // never replaces the Mac result — it's just a fast preview. The same
     // text is also shipped to Mac as `alternate_transcript` (see Step 5/6).
     //
-    // Gating: this only runs when the selected primary locale is one Apple
-    // Speech actually supports on this device. Unsupported locales / denied
-    // permission silently degrade to the previous "no preview" behaviour.
+    // Gating: this only runs when the user enables live preview and the selected
+    // primary locale supports Apple on-device recognition. Unsupported locales /
+    // denied permission silently degrade to the previous no-preview behaviour.
 
     private func startLivePartialPreviewIfAvailable() {
         // Tear down anything previous so re-press never leaks tasks.
         teardownLivePartialPreview(clearText: true)
 
+        guard keyboardLivePreviewEnabled else { return }
         let primaryID = activeLanguageIDs.first ?? "en-US"
+        guard AppleSpeechPreviewSupport.supportsOnDevicePreview(languageID: primaryID) else { return }
         let locale = Locale(identifier: primaryID)
-        guard SFSpeechRecognizer.supportedLocales().contains(locale) else { return }
         guard let recognizer = SFSpeechRecognizer(locale: locale), recognizer.isAvailable else { return }
 
         let status = SFSpeechRecognizer.authorizationStatus()
@@ -1727,12 +1751,9 @@ final class AppState: ObservableObject {
 
         let request = SFSpeechAudioBufferRecognitionRequest()
         request.shouldReportPartialResults = true
-        // Prefer on-device when the locale supports it — keeps the audio off
-        // Apple's servers. Falls back to the default (server-assisted) for
-        // languages Apple only handles server-side.
-        if recognizer.supportsOnDeviceRecognition {
-            request.requiresOnDeviceRecognition = true
-        }
+        request.taskHint = .dictation
+        request.requiresOnDeviceRecognition = true
+        request.addsPunctuation = (macSettings?.punctuationPreference ?? .normal) != .spaces
 
         liveSpeechRecognizer = recognizer
         liveSpeechRequest = request

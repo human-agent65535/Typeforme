@@ -45,7 +45,7 @@
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Typeforme checks whether your paired Mac is reachable on the local network before falling back to Cloud.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>Typeforme can show what you said in real time while recording. Recognition runs on device when supported; on languages without on-device support it briefly uses Apple's speech service.</string>
+	<string>Typeforme uses Apple Speech only for on-device live preview in supported languages while recording.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

@@ -32,6 +32,7 @@
 "Learning" = "学习";
 "Audio" = "音频";
 "Host audio session" = "宿主音频会话";
+"Live Preview" = "实时预览";
 "Auto-Capitalization" = "句首自动大写";
 "Character Preview" = "按键预览";
 "Dictionary" = "词库";
@@ -173,5 +174,9 @@
 "Matches" = "匹配结果";
 "None" = "无";
 "Input mode" = "输入模式";
+"Preview" = "支持预览";
+"No preview" = "不支持预览";
 "Changes apply immediately after Full Access is enabled." = "开启完全访问后,更改会立即生效。";
 "Changes apply immediately. Controls how long Typeforme keeps keyboard dictation ready after the host app is opened." = "更改会立即生效。用于控制从键盘打开宿主 app 后,Typeforme 保持听写就绪的时长。";
+"Live Preview uses Apple on-device speech for supported primary languages. Preview punctuation follows Server Settings." = "实时预览仅对支持的主语言使用 Apple 端上语音识别。预览标点跟随服务器设置。";
+"Live Preview uses Apple on-device speech for supported primary languages. Preview punctuation follows Server Settings. Host audio session controls how long Typeforme keeps keyboard dictation ready after the host app is opened." = "实时预览仅对支持的主语言使用 Apple 端上语音识别。预览标点跟随服务器设置。宿主音频会话用于控制从键盘打开宿主 app 后,Typeforme 保持听写就绪的时长。";

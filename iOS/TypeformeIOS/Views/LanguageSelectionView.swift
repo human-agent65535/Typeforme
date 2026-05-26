@@ -12,11 +12,28 @@ enum LanguageDisplay {
 struct LanguageSelectionView: View {
     @Binding var selection: Set<String>
     let options: [ASRLanguageOption]
+    let showsPreviewSupport: Bool
+    private let previewSupportByLanguageID: [String: Bool]
     @State private var searchText = ""
 
-    init(selection: Binding<Set<String>>, options: [ASRLanguageOption] = ASRLanguageSelection.all) {
+    init(
+        selection: Binding<Set<String>>,
+        options: [ASRLanguageOption] = ASRLanguageSelection.all,
+        showsPreviewSupport: Bool = false
+    ) {
+        let resolvedOptions = options.isEmpty ? ASRLanguageSelection.all : options
         self._selection = selection
-        self.options = options.isEmpty ? ASRLanguageSelection.all : options
+        self.options = resolvedOptions
+        self.showsPreviewSupport = showsPreviewSupport
+        if showsPreviewSupport {
+            self.previewSupportByLanguageID = Dictionary(
+                uniqueKeysWithValues: resolvedOptions.map { option in
+                    (option.id, AppleSpeechPreviewSupport.supportsOnDevicePreview(languageID: option.id))
+                }
+            )
+        } else {
+            self.previewSupportByLanguageID = [:]
+        }
     }
 
     var body: some View {
@@ -67,7 +84,8 @@ struct LanguageSelectionView: View {
     }
 
     private func languageRow(_ option: ASRLanguageOption) -> some View {
-        Button {
+        let supportsPreview = previewSupportByLanguageID[option.id] ?? false
+        return Button {
             toggle(option.id)
         } label: {
             HStack(spacing: 12) {
@@ -76,6 +94,9 @@ struct LanguageSelectionView: View {
                     Text(option.id)
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                    if showsPreviewSupport {
+                        previewBadge(supportsPreview: supportsPreview)
+                    }
                 }
                 Spacer()
                 if selection.contains(option.id) {
@@ -86,6 +107,19 @@ struct LanguageSelectionView: View {
             .contentShape(Rectangle())
         }
         .foregroundStyle(.primary)
+    }
+
+    private func previewBadge(supportsPreview: Bool) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: supportsPreview ? "waveform.circle.fill" : "waveform.circle")
+            if supportsPreview {
+                Text("Preview")
+            } else {
+                Text("No preview")
+            }
+        }
+        .font(.caption)
+        .foregroundStyle(supportsPreview ? .green : .secondary)
     }
 
     private func toggle(_ id: String) {

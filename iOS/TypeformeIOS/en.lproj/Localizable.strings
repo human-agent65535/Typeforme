@@ -32,6 +32,7 @@
 "Learning" = "Learning";
 "Audio" = "Audio";
 "Host audio session" = "Host audio session";
+"Live Preview" = "Live Preview";
 "Auto-Capitalization" = "Auto-Capitalization";
 "Character Preview" = "Character Preview";
 "Dictionary" = "Dictionary";
@@ -173,5 +174,9 @@
 "Matches" = "Matches";
 "None" = "None";
 "Input mode" = "Input mode";
+"Preview" = "Preview";
+"No preview" = "No preview";
 "Changes apply immediately after Full Access is enabled." = "Changes apply immediately after Full Access is enabled.";
 "Changes apply immediately. Controls how long Typeforme keeps keyboard dictation ready after the host app is opened." = "Changes apply immediately. Controls how long Typeforme keeps keyboard dictation ready after the host app is opened.";
+"Live Preview uses Apple on-device speech for supported primary languages. Preview punctuation follows Server Settings." = "Live Preview uses Apple on-device speech for supported primary languages. Preview punctuation follows Server Settings.";
+"Live Preview uses Apple on-device speech for supported primary languages. Preview punctuation follows Server Settings. Host audio session controls how long Typeforme keeps keyboard dictation ready after the host app is opened." = "Live Preview uses Apple on-device speech for supported primary languages. Preview punctuation follows Server Settings. Host audio session controls how long Typeforme keeps keyboard dictation ready after the host app is opened.";
