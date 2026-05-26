@@ -181,3 +181,5 @@ Typeforme 自有代码以 Apache License 2.0 授权，详见 `LICENSE`。
 第三方依赖、可选本地运行时、模型文件与用户提供的资产适用各自的上游授权。当前第三方授权摘要见 `THIRD_PARTY_NOTICES.md`。
 
 Rime 集成基于 `librime`（BSD-3-Clause）与 Typeforme 自有 wrapper 代码。Typeforme 不包含 Squirrel、ibus-rime 等 GPL-3.0 Rime 前端代码。
+
+感谢 Rime project 提供开放的输入法引擎与生态，Typeforme 的中文输入能力建立在 `librime` 之上。
