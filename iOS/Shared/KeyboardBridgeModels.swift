@@ -1,8 +1,46 @@
 import CryptoKit
 import Foundation
 
+enum TypeformeBundleConfiguration {
+    static let fallbackBundlePrefix = "com.example"
+    static let productIdentifier = "typeforme"
+
+    static var bundlePrefix: String {
+        infoString("TypeformeBundlePrefix") ?? fallbackBundlePrefix
+    }
+
+    static var hostBundleIdentifier: String {
+        infoString("TypeformeHostBundleIdentifier") ?? "\(bundlePrefix).\(productIdentifier)"
+    }
+
+    static var keyboardBundleIdentifier: String {
+        infoString("TypeformeKeyboardBundleIdentifier") ?? "\(hostBundleIdentifier).keyboard"
+    }
+
+    static var appGroupIdentifier: String {
+        infoString("TypeformeAppGroupIdentifier") ?? "group.\(hostBundleIdentifier)"
+    }
+
+    static var keyboardNotificationNamespace: String {
+        "\(hostBundleIdentifier).keyboard"
+    }
+
+    static func isOwnedBundleIdentifier(_ id: String) -> Bool {
+        let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed == hostBundleIdentifier
+            || trimmed == keyboardBundleIdentifier
+            || trimmed.hasPrefix("\(hostBundleIdentifier).")
+    }
+
+    private static func infoString(_ key: String) -> String? {
+        let value = Bundle.main.object(forInfoDictionaryKey: key) as? String
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
+    }
+}
+
 enum KeyboardSharedDefaults {
-    static let appGroupIdentifier = "group.com.example.typeforme"
+    static var appGroupIdentifier: String { TypeformeBundleConfiguration.appGroupIdentifier }
     static let keyboardDefaultsKey = "keyboard.defaults.v1"
     private static let hostHandoffKey = "keyboard.host-handoff.v1"
 
@@ -67,17 +105,18 @@ enum KeyboardSharedDefaults {
 }
 
 enum KeyboardDarwinNotificationName {
-    static let transcriptionReady = "com.example.typeforme.keyboard.transcriptionReady"
-    static let dictationStarted = "com.example.typeforme.keyboard.dictationStarted"
-    static let dictationStopped = "com.example.typeforme.keyboard.dictationStopped"
-    static let sessionStarted = "com.example.typeforme.keyboard.sessionStarted"
-    static let sessionEnded = "com.example.typeforme.keyboard.sessionEnded"
-    static let requestSessionStatus = "com.example.typeforme.keyboard.requestSessionStatus"
-    static let requestStartDictation = "com.example.typeforme.keyboard.requestStartDictation"
-    static let requestStopDictation = "com.example.typeforme.keyboard.requestStopDictation"
-    static let requestCancelDictation = "com.example.typeforme.keyboard.requestCancelDictation"
-    static let keyboardDefaultsChanged = "com.example.typeforme.keyboard.defaultsChanged"
-    static let fullAccessRequired = "com.example.typeforme.keyboard.fullAccessRequired"
+    private static let namespace = TypeformeBundleConfiguration.keyboardNotificationNamespace
+    static let transcriptionReady = "\(namespace).transcriptionReady"
+    static let dictationStarted = "\(namespace).dictationStarted"
+    static let dictationStopped = "\(namespace).dictationStopped"
+    static let sessionStarted = "\(namespace).sessionStarted"
+    static let sessionEnded = "\(namespace).sessionEnded"
+    static let requestSessionStatus = "\(namespace).requestSessionStatus"
+    static let requestStartDictation = "\(namespace).requestStartDictation"
+    static let requestStopDictation = "\(namespace).requestStopDictation"
+    static let requestCancelDictation = "\(namespace).requestCancelDictation"
+    static let keyboardDefaultsChanged = "\(namespace).defaultsChanged"
+    static let fullAccessRequired = "\(namespace).fullAccessRequired"
 
     static func authenticatedRequest(_ name: String, token: String?) -> String? {
         guard let token,

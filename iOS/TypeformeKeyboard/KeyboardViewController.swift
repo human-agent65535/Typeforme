@@ -4,7 +4,7 @@ import ObjectiveC
 import OSLog
 import QuartzCore
 
-private let kbLog = Logger(subsystem: "com.example.typeforme.keyboard", category: "ui")
+private let kbLog = Logger(subsystem: TypeformeBundleConfiguration.keyboardBundleIdentifier, category: "ui")
 
 private typealias CorrectionModePreset = CorrectionMode
 
@@ -326,7 +326,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private static let activeStatusPollingInterval: TimeInterval = 0.35
     private static let idleStatusPollingInterval: TimeInterval = 1.0
     private static let textSpaceCursorPointsPerCharacter: CGFloat = 9
-    private static let containingAppBundleIdentifier = "com.example.typeforme"
+    private static let containingAppBundleIdentifier = TypeformeBundleConfiguration.hostBundleIdentifier
     private let deleteRepeatInitialDelay: UInt64 = 450_000_000
     private let deleteRepeatInterval: UInt64 = 70_000_000
 
@@ -4988,7 +4988,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         guard !trimmed.isEmpty, trimmed != "<null>" else { return false }
         guard isBundleIdentifierShape(trimmed) else { return false }
         guard trimmed != Bundle.main.bundleIdentifier else { return false }
-        guard !trimmed.hasPrefix("com.example.typeforme") else { return false }
+        guard !TypeformeBundleConfiguration.isOwnedBundleIdentifier(trimmed) else { return false }
         return true
     }
 

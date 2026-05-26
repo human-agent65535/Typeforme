@@ -21,7 +21,7 @@ enum BridgeClientIdentity {
             forHTTPHeaderField: BridgeClientIdentityHeaders.platform
         )
         request.setValue(
-            Bundle.main.bundleIdentifier ?? "com.example.typeforme",
+            Bundle.main.bundleIdentifier ?? TypeformeBundleConfiguration.hostBundleIdentifier,
             forHTTPHeaderField: BridgeClientIdentityHeaders.bundleID
         )
     }

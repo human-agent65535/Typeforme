@@ -14,22 +14,25 @@
 		A10000000000000000000005 /* BridgeClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000005 /* BridgeClient.swift */; };
 		A10000000000000000000006 /* BridgeRouteResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000006 /* BridgeRouteResolver.swift */; };
 		A10000000000000000000007 /* BridgeClientIdentity.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000007 /* BridgeClientIdentity.swift */; };
-		A10000000000000000000010 /* BridgeMultipart.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000012 /* BridgeMultipart.swift */; };
 		A10000000000000000000008 /* AudioRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000008 /* AudioRecorder.swift */; };
 		A10000000000000000000009 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000009 /* ContentView.swift */; };
 		A1000000000000000000000A /* LanguageSelectionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000A /* LanguageSelectionView.swift */; };
 		A1000000000000000000000B /* PairingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000B /* PairingView.swift */; };
 		A1000000000000000000000C /* ../Sources/Typeforme/Models/ASRLanguageSelection.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000E /* ../Sources/Typeforme/Models/ASRLanguageSelection.swift */; };
-		A10000000000000000000011 /* ../Sources/Typeforme/Models/CorrectionMode.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000013 /* ../Sources/Typeforme/Models/CorrectionMode.swift */; };
-		A10000000000000000000012 /* ../Sources/Typeforme/Models/OutputPreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000014 /* ../Sources/Typeforme/Models/OutputPreferences.swift */; };
 		A1000000000000000000000D /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000F /* Assets.xcassets */; };
 		A1000000000000000000000E /* Shared/KeyboardBridgeModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000010 /* Shared/KeyboardBridgeModels.swift */; };
 		A1000000000000000000000F /* KeyboardLocalServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000011 /* KeyboardLocalServer.swift */; };
-		A10000000000000000000099 /* StandbyKeeper.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000099 /* StandbyKeeper.swift */; };
+		A10000000000000000000010 /* ../Sources/Typeforme/Bridge/BridgeMultipart.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000012 /* ../Sources/Typeforme/Bridge/BridgeMultipart.swift */; };
+		A10000000000000000000011 /* ../Sources/Typeforme/Models/CorrectionMode.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000013 /* ../Sources/Typeforme/Models/CorrectionMode.swift */; };
+		A10000000000000000000012 /* ../Sources/Typeforme/Models/OutputPreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000014 /* ../Sources/Typeforme/Models/OutputPreferences.swift */; };
+		A10000000000000000000020 /* Shared/DesignTokens.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000020 /* Shared/DesignTokens.swift */; };
+		A10000000000000000000030 /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = A40000000000000000000030 /* Localizable.strings */; };
+		A10000000000000000000040 /* PairingQRScannerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000040 /* PairingQRScannerView.swift */; };
 		A10000000000000000000041 /* AudioCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000041 /* AudioCoordinator.swift */; };
 		A10000000000000000000042 /* BridgeService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000042 /* BridgeService.swift */; };
 		A10000000000000000000043 /* KeyboardCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000043 /* KeyboardCoordinator.swift */; };
 		A10000000000000000000044 /* ReturnTracker.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000044 /* ReturnTracker.swift */; };
+		A10000000000000000000099 /* StandbyKeeper.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000099 /* StandbyKeeper.swift */; };
 		B10000000000000000000001 /* KeyboardViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000001 /* KeyboardViewController.swift */; };
 		B10000000000000000000002 /* TypeformeKeyboard.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = B20000000000000000000003 /* TypeformeKeyboard.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		B10000000000000000000003 /* Shared/KeyboardBridgeModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000010 /* Shared/KeyboardBridgeModels.swift */; };
@@ -38,11 +41,8 @@
 		B10000000000000000000006 /* RimeInputController.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000005 /* RimeInputController.swift */; };
 		B10000000000000000000007 /* RimeSharedSupport in Resources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000006 /* RimeSharedSupport */; };
 		B10000000000000000000008 /* LibrimeKit in Frameworks */ = {isa = PBXBuildFile; productRef = B00000000000000000000002 /* LibrimeKit */; };
-		A10000000000000000000020 /* Shared/DesignTokens.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000020 /* Shared/DesignTokens.swift */; };
 		B10000000000000000000020 /* Shared/DesignTokens.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000020 /* Shared/DesignTokens.swift */; };
-		A10000000000000000000030 /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = A40000000000000000000030 /* Localizable.strings */; };
 		B10000000000000000000030 /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = B40000000000000000000030 /* Localizable.strings */; };
-		A10000000000000000000040 /* PairingQRScannerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000040 /* PairingQRScannerView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -77,7 +77,6 @@
 		A20000000000000000000005 /* BridgeClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BridgeClient.swift; sourceTree = "<group>"; };
 		A20000000000000000000006 /* BridgeRouteResolver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BridgeRouteResolver.swift; sourceTree = "<group>"; };
 		A20000000000000000000007 /* BridgeClientIdentity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BridgeClientIdentity.swift; sourceTree = "<group>"; };
-		A20000000000000000000012 /* BridgeMultipart.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Sources/Typeforme/Bridge/BridgeMultipart.swift; sourceTree = SOURCE_ROOT; };
 		A20000000000000000000008 /* AudioRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioRecorder.swift; sourceTree = "<group>"; };
 		A20000000000000000000009 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		A2000000000000000000000A /* LanguageSelectionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LanguageSelectionView.swift; sourceTree = "<group>"; };
@@ -85,30 +84,32 @@
 		A2000000000000000000000C /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		A2000000000000000000000D /* Typeforme.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Typeforme.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A2000000000000000000000E /* ../Sources/Typeforme/Models/ASRLanguageSelection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Sources/Typeforme/Models/ASRLanguageSelection.swift; sourceTree = SOURCE_ROOT; };
-		A20000000000000000000013 /* ../Sources/Typeforme/Models/CorrectionMode.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Sources/Typeforme/Models/CorrectionMode.swift; sourceTree = SOURCE_ROOT; };
-		A20000000000000000000014 /* ../Sources/Typeforme/Models/OutputPreferences.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Sources/Typeforme/Models/OutputPreferences.swift; sourceTree = SOURCE_ROOT; };
 		A2000000000000000000000F /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		A20000000000000000000010 /* Shared/KeyboardBridgeModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Shared/KeyboardBridgeModels.swift; sourceTree = SOURCE_ROOT; };
 		A20000000000000000000011 /* KeyboardLocalServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardLocalServer.swift; sourceTree = "<group>"; };
-		A20000000000000000000099 /* StandbyKeeper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StandbyKeeper.swift; sourceTree = "<group>"; };
+		A20000000000000000000012 /* ../Sources/Typeforme/Bridge/BridgeMultipart.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Sources/Typeforme/Bridge/BridgeMultipart.swift; sourceTree = SOURCE_ROOT; };
+		A20000000000000000000013 /* ../Sources/Typeforme/Models/CorrectionMode.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Sources/Typeforme/Models/CorrectionMode.swift; sourceTree = SOURCE_ROOT; };
+		A20000000000000000000014 /* ../Sources/Typeforme/Models/OutputPreferences.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Sources/Typeforme/Models/OutputPreferences.swift; sourceTree = SOURCE_ROOT; };
+		A20000000000000000000020 /* Shared/DesignTokens.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Shared/DesignTokens.swift; sourceTree = SOURCE_ROOT; };
+		A20000000000000000000030 /* en */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = en; path = en.lproj/Localizable.strings; sourceTree = "<group>"; };
+		A20000000000000000000031 /* zh-Hans */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = "zh-Hans"; path = "zh-Hans.lproj/Localizable.strings"; sourceTree = "<group>"; };
+		A20000000000000000000040 /* PairingQRScannerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingQRScannerView.swift; sourceTree = "<group>"; };
 		A20000000000000000000041 /* AudioCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioCoordinator.swift; sourceTree = "<group>"; };
 		A20000000000000000000042 /* BridgeService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BridgeService.swift; sourceTree = "<group>"; };
 		A20000000000000000000043 /* KeyboardCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardCoordinator.swift; sourceTree = "<group>"; };
 		A20000000000000000000044 /* ReturnTracker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReturnTracker.swift; sourceTree = "<group>"; };
 		A20000000000000000000045 /* TypeformeIOS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = TypeformeIOS.entitlements; sourceTree = "<group>"; };
+		A20000000000000000000099 /* StandbyKeeper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StandbyKeeper.swift; sourceTree = "<group>"; };
 		B20000000000000000000001 /* KeyboardViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardViewController.swift; sourceTree = "<group>"; };
 		B20000000000000000000002 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		B20000000000000000000003 /* TypeformeKeyboard.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = TypeformeKeyboard.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		B20000000000000000000004 /* KeyboardLocalClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardLocalClient.swift; sourceTree = "<group>"; };
 		B20000000000000000000005 /* RimeInputController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RimeInputController.swift; sourceTree = "<group>"; };
 		B20000000000000000000006 /* RimeSharedSupport */ = {isa = PBXFileReference; lastKnownFileType = folder; path = RimeSharedSupport; sourceTree = "<group>"; };
-		B20000000000000000000045 /* TypeformeKeyboard.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = TypeformeKeyboard.entitlements; sourceTree = "<group>"; };
-		A20000000000000000000020 /* Shared/DesignTokens.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Shared/DesignTokens.swift; sourceTree = SOURCE_ROOT; };
-		A20000000000000000000030 /* en */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = en; path = en.lproj/Localizable.strings; sourceTree = "<group>"; };
-		A20000000000000000000031 /* zh-Hans */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = "zh-Hans"; path = "zh-Hans.lproj/Localizable.strings"; sourceTree = "<group>"; };
 		B20000000000000000000030 /* en */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = en; path = en.lproj/Localizable.strings; sourceTree = "<group>"; };
 		B20000000000000000000031 /* zh-Hans */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = "zh-Hans"; path = "zh-Hans.lproj/Localizable.strings"; sourceTree = "<group>"; };
-		A20000000000000000000040 /* PairingQRScannerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingQRScannerView.swift; sourceTree = "<group>"; };
+		B20000000000000000000045 /* TypeformeKeyboard.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = TypeformeKeyboard.entitlements; sourceTree = "<group>"; };
+		C20000000000000000000070 /* Typeforme.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Typeforme.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -135,6 +136,7 @@
 			children = (
 				A40000000000000000000002 /* TypeformeIOS */,
 				A40000000000000000000008 /* Shared */,
+				C40000000000000000000070 /* Config */,
 				B40000000000000000000001 /* TypeformeKeyboard */,
 				A40000000000000000000007 /* Products */,
 			);
@@ -165,7 +167,7 @@
 				A20000000000000000000005 /* BridgeClient.swift */,
 				A20000000000000000000007 /* BridgeClientIdentity.swift */,
 				A20000000000000000000006 /* BridgeRouteResolver.swift */,
-				A20000000000000000000012 /* BridgeMultipart.swift */,
+				A20000000000000000000012 /* ../Sources/Typeforme/Bridge/BridgeMultipart.swift */,
 				A20000000000000000000011 /* KeyboardLocalServer.swift */,
 				A20000000000000000000043 /* KeyboardCoordinator.swift */,
 				A20000000000000000000044 /* ReturnTracker.swift */,
@@ -228,6 +230,14 @@
 			);
 			path = TypeformeKeyboard;
 			sourceTree = "<group>";
+		};
+		C40000000000000000000070 /* Config */ = {
+			isa = PBXGroup;
+			children = (
+				C20000000000000000000070 /* Typeforme.xcconfig */,
+			);
+			path = Config;
+			sourceTree = SOURCE_ROOT;
 		};
 /* End PBXGroup section */
 
@@ -305,12 +315,12 @@
 			);
 			mainGroup = A40000000000000000000001;
 			minimizedProjectReferenceProxies = 1;
-			preferredProjectObjectVersion = 77;
-			productRefGroup = A40000000000000000000007 /* Products */;
-			projectDirPath = "";
 			packageReferences = (
 				B00000000000000000000001 /* XCLocalSwiftPackageReference "../vendor/LibrimeKit" */,
 			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = A40000000000000000000007 /* Products */;
+			projectDirPath = "";
 			projectRoot = "";
 			targets = (
 				A50000000000000000000001 /* TypeformeIOS */,
@@ -376,7 +386,7 @@
 				A10000000000000000000005 /* BridgeClient.swift in Sources */,
 				A10000000000000000000007 /* BridgeClientIdentity.swift in Sources */,
 				A10000000000000000000006 /* BridgeRouteResolver.swift in Sources */,
-				A10000000000000000000010 /* BridgeMultipart.swift in Sources */,
+				A10000000000000000000010 /* ../Sources/Typeforme/Bridge/BridgeMultipart.swift in Sources */,
 				A10000000000000000000008 /* AudioRecorder.swift in Sources */,
 				A10000000000000000000041 /* AudioCoordinator.swift in Sources */,
 				A10000000000000000000099 /* StandbyKeeper.swift in Sources */,
@@ -562,12 +572,13 @@
 		};
 		A90000000000000000000005 /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = C20000000000000000000070 /* Typeforme.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = TypeformeIOS/TypeformeIOS.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 291;
+				CURRENT_PROJECT_VERSION = 292;
 				DEVELOPMENT_ASSET_PATHS = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = TypeformeIOS/Info.plist;
@@ -576,8 +587,8 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.1.284;
-				PRODUCT_BUNDLE_IDENTIFIER = com.example.typeforme;
+				MARKETING_VERSION = 0.1.285;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(TYPEFORME_HOST_BUNDLE_IDENTIFIER)";
 				PRODUCT_NAME = Typeforme;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SUPPORTS_MACCATALYST = NO;
@@ -590,12 +601,13 @@
 		};
 		A90000000000000000000006 /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = C20000000000000000000070 /* Typeforme.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = TypeformeIOS/TypeformeIOS.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 291;
+				CURRENT_PROJECT_VERSION = 292;
 				DEVELOPMENT_ASSET_PATHS = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = TypeformeIOS/Info.plist;
@@ -604,8 +616,8 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.1.284;
-				PRODUCT_BUNDLE_IDENTIFIER = com.example.typeforme;
+				MARKETING_VERSION = 0.1.285;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(TYPEFORME_HOST_BUNDLE_IDENTIFIER)";
 				PRODUCT_NAME = Typeforme;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SUPPORTS_MACCATALYST = NO;
@@ -618,11 +630,12 @@
 		};
 		B90000000000000000000001 /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = C20000000000000000000070 /* Typeforme.xcconfig */;
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = TypeformeKeyboard/TypeformeKeyboard.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 291;
+				CURRENT_PROJECT_VERSION = 292;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = TypeformeKeyboard/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
@@ -631,8 +644,8 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 0.1.284;
-				PRODUCT_BUNDLE_IDENTIFIER = com.example.typeforme.keyboard;
+				MARKETING_VERSION = 0.1.285;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(TYPEFORME_KEYBOARD_BUNDLE_IDENTIFIER)";
 				PRODUCT_NAME = TypeformeKeyboard;
 				SKIP_INSTALL = YES;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
@@ -646,11 +659,12 @@
 		};
 		B90000000000000000000002 /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = C20000000000000000000070 /* Typeforme.xcconfig */;
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = TypeformeKeyboard/TypeformeKeyboard.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 291;
+				CURRENT_PROJECT_VERSION = 292;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = TypeformeKeyboard/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
@@ -659,8 +673,8 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 0.1.284;
-				PRODUCT_BUNDLE_IDENTIFIER = com.example.typeforme.keyboard;
+				MARKETING_VERSION = 0.1.285;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(TYPEFORME_KEYBOARD_BUNDLE_IDENTIFIER)";
 				PRODUCT_NAME = TypeformeKeyboard;
 				SKIP_INSTALL = YES;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";

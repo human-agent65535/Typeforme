@@ -4,7 +4,7 @@ import os
 /// Central log categories. Normal logs must never include full user text; log
 /// provider, latency, text length, hash, and error code instead.
 enum Log {
-    private static let subsystem = "com.example.typeforme.mac"
+    private static let subsystem = Bundle.main.bundleIdentifier ?? "com.example.typeforme.mac"
     static let app          = Logger(subsystem: subsystem, category: "app")
     static let coordinator  = Logger(subsystem: subsystem, category: "coordinator")
     static let audio        = Logger(subsystem: subsystem, category: "audio")

@@ -32,8 +32,19 @@ Usage:
 Environment:
   IDENTITY=...     Codesigning identity. Defaults to Typeforme Local Dev or adhoc.
   INSTALL_DIR=...  Install destination directory. Defaults to /Applications.
+  TYPEFORME_BUNDLE_PREFIX=...         Bundle prefix. Defaults to com.example.
+  TYPEFORME_MAC_BUNDLE_IDENTIFIER=... Full macOS bundle id override.
 EOF
 }
+
+if [ -f "$ROOT/.env" ]; then
+    set -a
+    # shellcheck disable=SC1091
+    . "$ROOT/.env"
+    set +a
+fi
+TYPEFORME_BUNDLE_PREFIX="${TYPEFORME_BUNDLE_PREFIX:-com.example}"
+TYPEFORME_MAC_BUNDLE_IDENTIFIER="${TYPEFORME_MAC_BUNDLE_IDENTIFIER:-$TYPEFORME_BUNDLE_PREFIX.typeforme.mac}"
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -225,6 +236,7 @@ mkdir -p "$BIN_DIR" "$RES_DIR" "$LLAMA_DIR"
 
 cp "$BIN_SRC" "$BIN_DIR/${BINARY_NAME}"
 cp "$ROOT/Resources/Info.plist" "$APP_DIR/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $TYPEFORME_MAC_BUNDLE_IDENTIFIER" "$APP_DIR/Contents/Info.plist"
 
 # SwiftPM dependencies can generate resource bundles even when they are linked
 # statically. KeyboardShortcuts uses this for localized UI strings; omitting it

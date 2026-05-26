@@ -933,13 +933,25 @@ private struct KeyboardSettingsView: View {
                 Text("Only active when the keyboard is in English mode.")
             }
             Section {
-                LabeledContent("Self-learning") {
-                    Text("On")
+                LabeledContent("Chinese self-learning") {
+                    Group {
+                        if state.keyboardChineseInputEnabled {
+                            Text("On")
+                        } else {
+                            Text("Off")
+                        }
+                    }
+                        .foregroundStyle(.secondary)
                 }
                 Button(role: .destructive) {
                     state.resetKeyboardRimeLearning()
                 } label: {
                     Text("Reset Chinese Learning")
+                }
+                .disabled(!state.keyboardChineseInputEnabled)
+                LabeledContent("Touch learning") {
+                    Text("Automatic")
+                        .foregroundStyle(.secondary)
                 }
                 Button(role: .destructive) {
                     state.resetKeyboardTouchLearning()
@@ -949,7 +961,7 @@ private struct KeyboardSettingsView: View {
             } header: {
                 Text("Learning")
             } footer: {
-                Text("Chinese learning clears the Rime user dictionary. Touch learning clears the per-key tap-position model. Both apply once Full Access is enabled.")
+                Text("Chinese self-learning is Rime's user dictionary. Touch learning automatically adapts per-key tap offsets after corrections and stores no text. Reset Touch Learning only clears the tap-position model.")
             }
             Section {
                 Toggle("Live Preview", isOn: livePreviewBinding)

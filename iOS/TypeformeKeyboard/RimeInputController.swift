@@ -3,7 +3,7 @@ import Foundation
 import LibrimeKit
 import OSLog
 
-private let rimeLog = Logger(subsystem: "com.example.typeforme.keyboard", category: "rime")
+private let rimeLog = Logger(subsystem: TypeformeBundleConfiguration.keyboardBundleIdentifier, category: "rime")
 
 struct RimeKeyboardCandidate {
     let text: String
@@ -93,7 +93,7 @@ final class RimeInputController {
     private static var didInitialize = false
 
     private let api = IRimeAPI()
-    private let rimeQueue = DispatchQueue(label: "com.example.typeforme.keyboard.rime", qos: .userInitiated)
+    private let rimeQueue = DispatchQueue(label: "\(TypeformeBundleConfiguration.keyboardBundleIdentifier).rime", qos: .userInitiated)
     private let stateLock = NSLock()
     private var startupState: StartupState = .idle
     private var selectedSchemaID: String?

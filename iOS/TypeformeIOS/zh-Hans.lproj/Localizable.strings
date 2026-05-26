@@ -46,8 +46,11 @@
 "Large" = "大词库";
 "Default text input" = "默认文本输入";
 "Chinese punctuation" = "中文标点";
-"Self-learning" = "自学习";
+"Chinese self-learning" = "中文自学习";
+"Touch learning" = "触控学习";
+"Automatic" = "自动";
 "On" = "开启";
+"Off" = "关闭";
 "Reset Learning" = "重置学习";
 "Learning reset requested" = "已请求重置学习";
 "Reset Chinese Learning" = "重置中文学习";
@@ -61,7 +64,7 @@
 "Turn off to make the text keyboard English-only and hide the Chinese/English switch key." = "关闭后文本键盘只使用英文,并隐藏中英切换键。";
 "Controls how long Typeforme keeps keyboard dictation ready after the host app is opened." = "控制从键盘打开宿主 app 后,Typeforme 保持听写就绪的时长。";
 "Only active when the keyboard is in English mode." = "仅在键盘处于英文模式时生效。";
-"Chinese learning clears the Rime user dictionary. Touch learning clears the per-key tap-position model. Both apply once Full Access is enabled." = "中文学习会清除 Rime 用户词典。触控学习会清除每个按键的触点模型。两者都需要开启完全访问后生效。";
+"Chinese self-learning is Rime's user dictionary. Touch learning automatically adapts per-key tap offsets after corrections and stores no text. Reset Touch Learning only clears the tap-position model." = "中文自学习是 Rime 用户词典。触控学习会在纠错后自动适配每个按键的触点偏移,不保存输入文本。重置触控学习只会清除触点模型。";
 
 // VoiceInputMode (与键盘扩展共享)
 "Hold" = "按住";

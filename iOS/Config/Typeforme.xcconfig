@@ -1,0 +1,9 @@
+// Public defaults only. Put personal signing and bundle identifiers in
+// ../LocalSigning.xcconfig, which is ignored by git.
+
+TYPEFORME_BUNDLE_PREFIX = com.example
+TYPEFORME_HOST_BUNDLE_IDENTIFIER = $(TYPEFORME_BUNDLE_PREFIX).typeforme
+TYPEFORME_KEYBOARD_BUNDLE_IDENTIFIER = $(TYPEFORME_HOST_BUNDLE_IDENTIFIER).keyboard
+TYPEFORME_APP_GROUP_IDENTIFIER = group.$(TYPEFORME_HOST_BUNDLE_IDENTIFIER)
+
+#include? "../LocalSigning.xcconfig"

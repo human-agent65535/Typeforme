@@ -46,8 +46,11 @@
 "Large" = "Large";
 "Default text input" = "Default text input";
 "Chinese punctuation" = "Chinese punctuation";
-"Self-learning" = "Self-learning";
+"Chinese self-learning" = "Chinese self-learning";
+"Touch learning" = "Touch learning";
+"Automatic" = "Automatic";
 "On" = "On";
+"Off" = "Off";
 "Reset Learning" = "Reset Learning";
 "Learning reset requested" = "Learning reset requested";
 "Reset Chinese Learning" = "Reset Chinese Learning";
@@ -61,7 +64,7 @@
 "Turn off to make the text keyboard English-only and hide the Chinese/English switch key." = "Turn off to make the text keyboard English-only and hide the Chinese/English switch key.";
 "Controls how long Typeforme keeps keyboard dictation ready after the host app is opened." = "Controls how long Typeforme keeps keyboard dictation ready after the host app is opened.";
 "Only active when the keyboard is in English mode." = "Only active when the keyboard is in English mode.";
-"Chinese learning clears the Rime user dictionary. Touch learning clears the per-key tap-position model. Both apply once Full Access is enabled." = "Chinese learning clears the Rime user dictionary. Touch learning clears the per-key tap-position model. Both apply once Full Access is enabled.";
+"Chinese self-learning is Rime's user dictionary. Touch learning automatically adapts per-key tap offsets after corrections and stores no text. Reset Touch Learning only clears the tap-position model." = "Chinese self-learning is Rime's user dictionary. Touch learning automatically adapts per-key tap offsets after corrections and stores no text. Reset Touch Learning only clears the tap-position model.";
 
 // VoiceInputMode (shared with keyboard)
 "Hold" = "Hold";

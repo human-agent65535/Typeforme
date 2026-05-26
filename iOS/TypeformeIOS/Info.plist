@@ -22,7 +22,7 @@
 	<array>
 		<dict>
 			<key>CFBundleURLName</key>
-			<string>com.example.typeforme</string>
+			<string>$(TYPEFORME_HOST_BUNDLE_IDENTIFIER)</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
 				<string>typeforme</string>
@@ -31,6 +31,14 @@
 	</array>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>TypeformeAppGroupIdentifier</key>
+	<string>$(TYPEFORME_APP_GROUP_IDENTIFIER)</string>
+	<key>TypeformeBundlePrefix</key>
+	<string>$(TYPEFORME_BUNDLE_PREFIX)</string>
+	<key>TypeformeHostBundleIdentifier</key>
+	<string>$(TYPEFORME_HOST_BUNDLE_IDENTIFIER)</string>
+	<key>TypeformeKeyboardBundleIdentifier</key>
+	<string>$(TYPEFORME_KEYBOARD_BUNDLE_IDENTIFIER)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>NSAppTransportSecurity</key>

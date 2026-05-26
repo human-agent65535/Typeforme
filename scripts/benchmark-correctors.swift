@@ -74,7 +74,9 @@ struct BackendSpec {
 }
 
 let defaultBenchmarkLanguageIDs = ["zh-CN", "en-US", "ja", "ko", "vi"]
-let appDefaultsDomains = ["com.example.typeforme.mac"]
+let appDefaultsDomains = [
+    ProcessInfo.processInfo.environment["TYPEFORME_MAC_BUNDLE_IDENTIFIER"] ?? "com.example.typeforme.mac"
+]
 let warmupSample = EvalSample(
     name: "warmup_not_measured",
     rawTranscript: "今天测试 Typeforme correction warm path，请保留 Typeforme 和 correction"

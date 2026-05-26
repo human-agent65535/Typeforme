@@ -5,7 +5,7 @@ import Foundation
 /// Keys are grouped by feature area; Settings UI may present them under a
 /// different sidebar structure.
 enum AppSettings {
-    private static let currentMacDefaultsDomain = "com.example.typeforme.mac"
+    private static let currentMacDefaultsDomain = Bundle.main.bundleIdentifier ?? "com.example.typeforme.mac"
 
     enum Keys {
         // Recording

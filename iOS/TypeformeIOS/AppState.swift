@@ -7,7 +7,7 @@ import OSLog
 import Speech
 import UIKit
 
-private let appLog = Logger(subsystem: "com.example.typeforme", category: "app")
+private let appLog = Logger(subsystem: TypeformeBundleConfiguration.hostBundleIdentifier, category: "app")
 
 /// Top-level UI phase for the iOS host app. Drives the hero record card,
 /// busy/disabled gating, and the keyboard bridge status. Keep user-facing
@@ -304,7 +304,7 @@ final class AppState: ObservableObject {
         enabledKey: "debug.returnTraceEnabled"
     )
     private let networkPathMonitor = NWPathMonitor()
-    private let networkPathQueue = DispatchQueue(label: "com.example.typeforme.network-path")
+    private let networkPathQueue = DispatchQueue(label: "\(TypeformeBundleConfiguration.hostBundleIdentifier).network-path")
     private static let inputModeKey = "keyboard.inputMode"
     private static let hostAudioSessionLengthKey = "keyboard.hostAudioSessionLength"
     private static let keyboardAutoCapitalizationKey = "keyboard.autoCapitalizationEnabled"
@@ -2018,7 +2018,7 @@ final class AppState: ObservableObject {
         guard !trimmed.isEmpty, trimmed != "<null>" else { return false }
         guard isBundleIdentifierShape(trimmed) else { return false }
         guard trimmed != Bundle.main.bundleIdentifier else { return false }
-        guard !trimmed.hasPrefix("com.example.typeforme") else { return false }
+        guard !TypeformeBundleConfiguration.isOwnedBundleIdentifier(trimmed) else { return false }
         return true
     }
 

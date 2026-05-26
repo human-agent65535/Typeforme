@@ -4,7 +4,7 @@ import OSLog
 final class ReturnTracker {
     private let logName: String
     private let enabledKey: String
-    private let logger = Logger(subsystem: "com.example.typeforme", category: "return")
+    private let logger = Logger(subsystem: TypeformeBundleConfiguration.hostBundleIdentifier, category: "return")
 
     init(logName: String, enabledKey: String) {
         self.logName = logName

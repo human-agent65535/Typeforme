@@ -34,7 +34,7 @@ struct PairingStore {
 
 struct PairingTokenStore {
     static let keyboardBridge = PairingTokenStore(
-        service: "com.example.typeforme.keyboard",
+        service: TypeformeBundleConfiguration.keyboardBundleIdentifier,
         account: "keyboard-bridge-token"
     )
 

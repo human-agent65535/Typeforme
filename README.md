@@ -98,7 +98,20 @@ scripts/build-rime-ios-data.sh
 scripts/deploy-ios.sh
 ```
 
-亦可在 Xcode 中打开 `iOS/TypeformeIOS.xcodeproj` 构建。键盘扩展的真机验证建议使用 Release 构建。
+公开仓库默认使用非个人化 bundle prefix `com.example`。本机真机签名请创建被 git 忽略的 `iOS/LocalSigning.xcconfig`：
+
+```xcconfig
+DEVELOPMENT_TEAM = <your-team-id>
+TYPEFORME_BUNDLE_PREFIX = <your-reverse-dns-prefix>
+```
+
+也可以在脚本环境变量中注入：
+
+```sh
+TEAM=<your-team-id> TYPEFORME_BUNDLE_PREFIX=<your-reverse-dns-prefix> scripts/deploy-ios.sh
+```
+
+亦可在 Xcode 中打开 `iOS/TypeformeIOS.xcodeproj` 构建；项目会自动读取 `iOS/LocalSigning.xcconfig`。键盘扩展的真机验证建议使用 Release 构建。
 
 ## 配对 iOS
 
@@ -114,7 +127,7 @@ scripts/deploy-ios.sh
 
 缺少 `vendor/llama-server-arm64` 时，相关本地 GGUF 功能将报告不可用。
 
-设置存放于 `UserDefaults` 域 `com.example.typeforme.mac`。运行数据默认位于：
+设置存放于当前 app bundle identifier 对应的 `UserDefaults` 域。运行数据默认位于：
 
 ```text
 ~/Library/Application Support/Typeforme/

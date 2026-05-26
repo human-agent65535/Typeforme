@@ -46,3 +46,4 @@ iOS/TypeformeKeyboard/RimeSharedSupport/user.yaml
 .env
 *.local
 .cloudflared/
+iOS/LocalSigning.xcconfig

@@ -16,18 +16,30 @@
 #   scripts/deploy-ios.sh                     # Release build + install
 #   scripts/deploy-ios.sh launch              # + launch (phone must be unlocked)
 #   CONFIG=Debug scripts/deploy-ios.sh        # only useful when Xcode runs it
-#   TEAM=... DEVICE_ID=... scripts/deploy-ios.sh  # TEAM is an explicit override
+#   TEAM=... TYPEFORME_BUNDLE_PREFIX=... DEVICE_ID=... scripts/deploy-ios.sh
 #   DEVICE_NAME="Example iPhone" scripts/deploy-ios.sh
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PROJECT="$ROOT/iOS/TypeformeIOS.xcodeproj"
 SCHEME="TypeformeIOS"
-BUNDLE_ID="com.example.typeforme"
-KEYBOARD_BUNDLE_ID="com.example.typeforme.keyboard"
 CONFIG="${CONFIG:-Release}"
 DERIVED="${DERIVED:-/tmp/TypeformeIOS-DD-${CONFIG}}"
+
+if [ -f "$ROOT/.env" ]; then
+    set -a
+    # shellcheck disable=SC1091
+    . "$ROOT/.env"
+    set +a
+fi
+
 TEAM="${TEAM:-}"
+TYPEFORME_BUNDLE_PREFIX="${TYPEFORME_BUNDLE_PREFIX:-com.example}"
+TYPEFORME_HOST_BUNDLE_IDENTIFIER="${TYPEFORME_HOST_BUNDLE_IDENTIFIER:-$TYPEFORME_BUNDLE_PREFIX.typeforme}"
+TYPEFORME_KEYBOARD_BUNDLE_IDENTIFIER="${TYPEFORME_KEYBOARD_BUNDLE_IDENTIFIER:-$TYPEFORME_HOST_BUNDLE_IDENTIFIER.keyboard}"
+TYPEFORME_APP_GROUP_IDENTIFIER="${TYPEFORME_APP_GROUP_IDENTIFIER:-group.$TYPEFORME_HOST_BUNDLE_IDENTIFIER}"
+BUNDLE_ID="$TYPEFORME_HOST_BUNDLE_IDENTIFIER"
+KEYBOARD_BUNDLE_ID="$TYPEFORME_KEYBOARD_BUNDLE_IDENTIFIER"
 RIME_DIR="$ROOT/iOS/TypeformeKeyboard/RimeSharedSupport"
 RIME_BUILD_DIR="$RIME_DIR/build"
 
@@ -152,6 +164,12 @@ if [ -n "$TEAM" ]; then
     echo "→ Overriding project DEVELOPMENT_TEAM with TEAM=$TEAM"
     BUILD_ARGS+=(DEVELOPMENT_TEAM="$TEAM")
 fi
+BUILD_ARGS+=(
+    TYPEFORME_BUNDLE_PREFIX="$TYPEFORME_BUNDLE_PREFIX"
+    TYPEFORME_HOST_BUNDLE_IDENTIFIER="$TYPEFORME_HOST_BUNDLE_IDENTIFIER"
+    TYPEFORME_KEYBOARD_BUNDLE_IDENTIFIER="$TYPEFORME_KEYBOARD_BUNDLE_IDENTIFIER"
+    TYPEFORME_APP_GROUP_IDENTIFIER="$TYPEFORME_APP_GROUP_IDENTIFIER"
+)
 
 XCODEBUILD_ARGS=(
     -project "$PROJECT"

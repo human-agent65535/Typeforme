@@ -1,7 +1,7 @@
 // swift-tools-version:6.0
 //
 // Typeforme — macOS local voice dictation helper.
-// Bundle ID: com.example.typeforme.mac. Apple Silicon, macOS 14+.
+// Bundle ID defaults to com.example.typeforme.mac. Apple Silicon, macOS 14+.
 //
 // Build and test through the Xcode-backed scripts in scripts/.
 // `scripts/build-app.sh` wraps the built executable into Typeforme.app with the
