@@ -3279,18 +3279,18 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         button.layer.cornerCurve = .continuous
         button.layer.masksToBounds = false
         button.layer.shadowColor = UIColor.black.cgColor
-        button.layer.shadowOffset = CGSize(width: 0, height: isPressed ? 0.4 : 1.1)
-        button.layer.shadowRadius = isPressed ? 0 : 0.2
+        button.layer.shadowOffset = CGSize(width: 0, height: isPressed ? 0 : 0.3)
+        button.layer.shadowRadius = 0
         let baseOpacity: Float = {
             switch weight {
             case .normal, .primary:
-                return isKeyboardDark ? 0.48 : 0.24
+                return isKeyboardDark ? 0.22 : 0.12
             case .utility:
-                return isKeyboardDark ? 0.54 : 0.30
+                return isKeyboardDark ? 0.24 : 0.14
             }
         }()
-        button.layer.shadowOpacity = isPressed ? baseOpacity * 0.35 : baseOpacity
-        button.layer.borderWidth = isPressed ? 0.35 : 0
+        button.layer.shadowOpacity = isPressed ? baseOpacity * 0.4 : baseOpacity
+        button.layer.borderWidth = isPressed ? 0.5 : 0
         button.layer.borderColor = UIColor.label.withAlphaComponent(isKeyboardDark ? 0.08 : 0.05).cgColor
     }
 
