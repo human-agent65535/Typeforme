@@ -268,6 +268,7 @@ final class AppState: ObservableObject {
     @Published var keyboardRimeDictionaryTier: KeyboardRimeDictionaryTier
     @Published var keyboardDefaultTextInputLanguage: KeyboardDefaultTextInputLanguage
     @Published private(set) var keyboardRimeLearningResetGeneration: Int
+    @Published private(set) var keyboardTouchLearningResetGeneration: Int
     @Published var keyboardBridgeStatus = KeyboardBridgeStatus.idle
     /// True once the keyboard extension has successfully contacted the host
     /// (via the local bridge server or a Darwin notification). A successful
@@ -312,6 +313,7 @@ final class AppState: ObservableObject {
     private static let keyboardRimeDictionaryTierKey = "keyboard.rimeDictionaryTier"
     private static let keyboardDefaultTextInputLanguageKey = "keyboard.defaultTextInputLanguage"
     private static let keyboardRimeLearningResetGenerationKey = "keyboard.rimeLearningResetGeneration"
+    private static let keyboardTouchLearningResetGenerationKey = "keyboard.touchLearningResetGeneration"
     private static let keyboardEverContactedKey = "keyboard.everContacted"
     private static let keyboardFullAccessRequiredKey = "keyboard.fullAccessRequired"
     private static let serverRimeUserPhrasesKey = "server.rimeUserPhrases"
@@ -463,6 +465,7 @@ final class AppState: ObservableObject {
         self.keyboardDefaultTextInputLanguage = UserDefaults.standard.string(forKey: Self.keyboardDefaultTextInputLanguageKey)
             .flatMap(KeyboardDefaultTextInputLanguage.init(rawValue:)) ?? .lastUsed
         self.keyboardRimeLearningResetGeneration = UserDefaults.standard.integer(forKey: Self.keyboardRimeLearningResetGenerationKey)
+        self.keyboardTouchLearningResetGeneration = UserDefaults.standard.integer(forKey: Self.keyboardTouchLearningResetGenerationKey)
         self.keyboardEverContacted = UserDefaults.standard.bool(forKey: Self.keyboardEverContactedKey)
         self.keyboardFullAccessRequired = UserDefaults.standard.bool(forKey: Self.keyboardFullAccessRequiredKey)
         self.cachedServerRimeUserPhrases = Self.loadCachedServerRimeUserPhrases()
@@ -614,7 +617,17 @@ final class AppState: ObservableObject {
             forKey: Self.keyboardRimeLearningResetGenerationKey
         )
         publishKeyboardDefaults(force: true)
-        showTransient(NSLocalizedString("Learning reset requested", comment: "Rime learning reset toast"))
+        showTransient(NSLocalizedString("Chinese learning reset requested", comment: "Rime learning reset toast"))
+    }
+
+    func resetKeyboardTouchLearning() {
+        keyboardTouchLearningResetGeneration += 1
+        UserDefaults.standard.set(
+            keyboardTouchLearningResetGeneration,
+            forKey: Self.keyboardTouchLearningResetGenerationKey
+        )
+        publishKeyboardDefaults(force: true)
+        showTransient(NSLocalizedString("Touch learning reset requested", comment: "Touch learning reset toast"))
     }
 
     func refreshRoute(
@@ -782,6 +795,7 @@ final class AppState: ObservableObject {
             rimeUserPhrases: macSettings?.rimeUserPhrases ?? cachedServerRimeUserPhrases,
             defaultTextInputLanguage: keyboardDefaultTextInputLanguage,
             rimeLearningResetGeneration: keyboardRimeLearningResetGeneration,
+            touchLearningResetGeneration: keyboardTouchLearningResetGeneration,
             force: force
         )
     }

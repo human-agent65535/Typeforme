@@ -23,6 +23,7 @@ final class KeyboardCoordinator {
         rimeUserPhrases: [String],
         defaultTextInputLanguage: KeyboardDefaultTextInputLanguage,
         rimeLearningResetGeneration: Int,
+        touchLearningResetGeneration: Int,
         force: Bool = false
     ) {
         let normalizedRimeUserPhrases = Self.normalizedRimeUserPhrases(rimeUserPhrases)
@@ -38,6 +39,7 @@ final class KeyboardCoordinator {
             "rime_user_phrases_revision": rimeUserPhrasesRevision(normalizedRimeUserPhrases),
             "default_text_input_language": defaultTextInputLanguage.rawValue,
             "rime_learning_reset_generation": rimeLearningResetGeneration,
+            "touch_learning_reset_generation": touchLearningResetGeneration,
         ]
         let signature = stableKeyboardDefaultsSignature(stablePayload)
         guard force || signature != lastDefaultsSignature else { return }
