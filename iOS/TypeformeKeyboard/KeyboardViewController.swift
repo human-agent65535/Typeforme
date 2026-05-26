@@ -7094,7 +7094,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         case .recording:
             return NSLocalizedString("Recording", comment: "Status active recording")
         case .sending:
-            return NSLocalizedString("Sending", comment: "Status during transcription/sending")
+            return NSLocalizedString("Transcribing", comment: "Status during transcription/sending")
         case .result:
             return NSLocalizedString("Inserted", comment: "Status after result inserted")
         case .error:
@@ -7107,12 +7107,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private var sendingStatusTitle: String {
-        // The host publishes the curated stage label (Sending / Transcribing /
-        // Refining / Inserted / error text) directly in `status.message`, so
-        // show it verbatim — no inference, no rewriting.
+        // The host publishes the curated stage label (Transcribing / Refining /
+        // Inserted / error text) directly in `status.message`, so show it
+        // verbatim — no inference, no rewriting.
         let message = currentBridgeStatus?.message.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if !message.isEmpty { return message }
-        return NSLocalizedString("Sending", comment: "Bridge job stage")
+        return NSLocalizedString("Transcribing", comment: "Bridge job stage")
     }
 
     private func syncKeyboardSettingsToHost() {
@@ -7171,7 +7171,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             bridgeStatus = KeyboardBridgeStatus(
                 commandID: command.id,
                 state: command.action == .start ? .standby : (command.action == .cancel ? .standby : .sending),
-                message: command.action == .start ? "Starting recording" : (command.action == .cancel ? "Ready" : "Sending")
+                message: command.action == .start ? "Starting recording" : (command.action == .cancel ? "Ready" : "Transcribing")
             )
             lastBridgeContactAt = Date().timeIntervalSince1970
             updateUI()
@@ -7240,7 +7240,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             bridgeStatus = KeyboardBridgeStatus(
                 commandID: commandID,
                 state: action == .start ? .standby : .sending,
-                message: action == .start ? "Starting recording" : "Sending"
+                message: action == .start ? "Starting recording" : "Transcribing"
             )
             lastBridgeContactAt = Date().timeIntervalSince1970
             updateUI()

@@ -598,12 +598,12 @@ private struct HeroRecordCard: View {
         }
         switch state.phase {
         case .sending:
-            return NSLocalizedString("Sending", comment: "Bridge job stage")
+            return NSLocalizedString("Transcribing", comment: "Bridge job stage")
         case .restyling:
             return NSLocalizedString("Refining", comment: "Bridge job stage")
         default:
             return state.isRefreshingRoute
-                ? NSLocalizedString("Sending", comment: "Bridge job stage")
+                ? NSLocalizedString("Transcribing", comment: "Bridge job stage")
                 : state.inputMode.idleTitle
         }
     }
@@ -622,7 +622,8 @@ private struct HeroRecordCard: View {
         switch state.phase {
         case .sending, .restyling:
             // Title now carries the live stage label — leave detail empty so
-            // the orb doesn't show "Sending" twice on two lines.
+            // the orb doesn't show "Transcribing" / "Refining" twice on two
+            // lines.
             return ""
         case .success(.ready): return "Result ready."
         case .success(.copied): return "Result copied to the clipboard."

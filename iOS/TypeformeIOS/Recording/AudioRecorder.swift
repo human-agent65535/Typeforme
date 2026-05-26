@@ -435,6 +435,13 @@ final class AudioRecorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
 
 @MainActor
 final class StandbyAudioSession: ObservableObject {
+    /// Optional second consumer of the input PCM tap. Used by the live-preview
+    /// SFSpeechRecognizer feed so we don't need a parallel AVAudioEngine
+    /// pulling from the same mic. Set BEFORE recording starts; cleared on stop.
+    /// Read on the audio thread; the storage itself is a Sendable closure so
+    /// there's no shared-state mutation inside the tap.
+    var onPCMBuffer: (@Sendable (AVAudioPCMBuffer) -> Void)?
+
     @Published private(set) var isActive = false
     @Published private(set) var level: Float = 0
 
@@ -610,6 +617,10 @@ final class StandbyAudioSession: ObservableObject {
             guard fileWriter.isRecording else { return }
             let level = Self.normalizedLevel(from: buffer)
             fileWriter.write(buffer)
+            // Fan the same buffer out to any live-preview consumer (e.g.
+            // SFSpeechRecognizer). Read the handler off `self` each call so
+            // late-attached handlers also receive frames.
+            self?.onPCMBuffer?(buffer)
             guard levelThrottler.shouldPublish() else { return }
             Task { @MainActor [weak self] in
                 self?.level = level

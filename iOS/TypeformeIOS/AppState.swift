@@ -4,6 +4,7 @@ import Foundation
 import Network
 import ObjectiveC
 import OSLog
+import Speech
 import UIKit
 
 private let appLog = Logger(subsystem: "com.example.typeforme", category: "app")
@@ -46,7 +47,7 @@ enum AppPhase: Equatable {
         case .idle: return "Ready"
         case .preparing: return "Preparing"
         case .recording: return "Recording"
-        case .sending: return "Sending"
+        case .sending: return "Transcribing"
         case .restyling: return "Refining"
         case .success(.ready): return "Result ready"
         case .success(.copied): return "Copied"
@@ -245,6 +246,14 @@ final class AppState: ObservableObject {
     private var transientMessageTask: Task<Void, Never>?
     private var initialRenderDelayTask: Task<Void, Never>?
     private var recorderPreWarmTask: Task<Void, Never>?
+    /// Live-preview transcript fed by SFSpeechRecognizer while the user is
+    /// recording (and held in place until the Mac final result replaces it).
+    /// Empty string = no preview surfaced (unsupported language, denied
+    /// permission, or no recording in progress).
+    @Published private(set) var livePartialTranscript: String = ""
+    private var liveSpeechRecognizer: SFSpeechRecognizer?
+    private var liveSpeechRequest: SFSpeechAudioBufferRecognitionRequest?
+    private var liveSpeechTask: SFSpeechRecognitionTask?
     private var lifecycleObservers: [NSObjectProtocol] = []
     private var keyboardDarwinObservers: [KeyboardDarwinNotificationObserver] = []
     private var routeRefreshInFlightCount = 0
@@ -771,7 +780,7 @@ final class AppState: ObservableObject {
                 publishKeyboardStatus(
                     .sending,
                     commandID: keyboardCommandID,
-                    message: NSLocalizedString("Sending", comment: "Bridge job stage"),
+                    message: NSLocalizedString("Transcribing", comment: "Bridge job stage"),
                     audioDurationSeconds: recordingInfo.durationSeconds,
                     audioByteCount: recordingInfo.byteCount
                 )
@@ -898,6 +907,7 @@ final class AppState: ObservableObject {
             path = "keyboard-session"
             _ = try await keyboardAudioSession.beginRecording()
             hostRecordingUsesKeyboardAudioSession = true
+            startLivePartialPreviewIfAvailable()
             logSlowHostRecordingStart(
                 startedAt: startedAt,
                 path: path,
@@ -967,13 +977,17 @@ final class AppState: ObservableObject {
         // already behave as stopped/sending.
         setPhase(.sending)
         if shouldPublishKeyboardProgress {
-            publishKeyboardStatus(.sending, commandID: effectiveKeyboardCommandID, message: NSLocalizedString("Sending", comment: "Bridge job stage"))
+            publishKeyboardStatus(.sending, commandID: effectiveKeyboardCommandID, message: NSLocalizedString("Transcribing", comment: "Bridge job stage"))
         }
         KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.dictationStopped)
         try? await Task.sleep(nanoseconds: Self.recordingTailBufferNanoseconds)
         let fileURL = isKeyboardCapture
             ? keyboardAudioSession.finishRecording()
             : recorder.stop(deactivateSession: true)
+        // Close the SFSpeechRecognizer audio side so it finalizes its last
+        // partial. We intentionally do NOT clear livePartialTranscript yet —
+        // keep the user's preview visible until Mac returns the final text.
+        endLivePartialPreviewAudio()
         hostRecordingUsesKeyboardAudioSession = false
         let keyboardTextEditContext = shouldPublishKeyboardProgress ? activeKeyboardTextEditContext : nil
         let keyboardDictationContext = shouldPublishKeyboardProgress ? activeKeyboardDictationContext : nil
@@ -1025,7 +1039,7 @@ final class AppState: ObservableObject {
         }()
         if isKeyboardPath {
             if let effectiveKeyboardCommandID {
-                publishKeyboardStatus(.sending, commandID: effectiveKeyboardCommandID, message: NSLocalizedString("Sending", comment: "Bridge job stage"))
+                publishKeyboardStatus(.sending, commandID: effectiveKeyboardCommandID, message: NSLocalizedString("Transcribing", comment: "Bridge job stage"))
             }
             if !routeIsFresh {
                 await preflightActiveBridgeRoute()
@@ -1143,6 +1157,8 @@ final class AppState: ObservableObject {
             if !shouldPublishKeyboardProgress {
                 resultText = text
             }
+            // Mac final result is now the source of truth; preview is done.
+            teardownLivePartialPreview(clearText: true)
             lastGeneratedResultText = text
             if keyboardTextEditContext == nil {
                 rawTranscript = response.rawTranscript ?? rawTranscript
@@ -1201,6 +1217,8 @@ final class AppState: ObservableObject {
             if shouldRetryBridgeRequest(after: error) {
                 routeFetchedAt = nil
             }
+            // Bridge failed — drop any in-flight live-preview state.
+            teardownLivePartialPreview(clearText: true)
             setFailure(error.localizedDescription)
             if let effectiveKeyboardCommandID {
                 publishKeyboardStatus(.error, commandID: effectiveKeyboardCommandID, message: error.localizedDescription)
@@ -1665,6 +1683,98 @@ final class AppState: ObservableObject {
         _ = await UIApplication.shared.open(url)
     }
 
+    // MARK: - Live partial preview (Apple Speech)
+    //
+    // Starts an `SFSpeechRecognizer` alongside the keyboard audio session so
+    // the user sees their words appear as they speak. The recognized text
+    // never replaces the Mac result — it's just a fast preview. The same
+    // text is also shipped to Mac as `alternate_transcript` (see Step 5/6).
+    //
+    // Gating: this only runs when the selected primary locale is one Apple
+    // Speech actually supports on this device. Unsupported locales / denied
+    // permission silently degrade to the previous "no preview" behaviour.
+
+    private func startLivePartialPreviewIfAvailable() {
+        // Tear down anything previous so re-press never leaks tasks.
+        teardownLivePartialPreview(clearText: true)
+
+        let primaryID = activeLanguageIDs.first ?? "en-US"
+        let locale = Locale(identifier: primaryID)
+        guard SFSpeechRecognizer.supportedLocales().contains(locale) else { return }
+        guard let recognizer = SFSpeechRecognizer(locale: locale), recognizer.isAvailable else { return }
+
+        let status = SFSpeechRecognizer.authorizationStatus()
+        switch status {
+        case .authorized:
+            break
+        case .notDetermined:
+            // First use: request silently. We do not block the current recording
+            // on the prompt — preview just stays off this session. Subsequent
+            // recordings benefit if the user grants.
+            SFSpeechRecognizer.requestAuthorization { _ in }
+            return
+        case .denied, .restricted:
+            return
+        @unknown default:
+            return
+        }
+
+        let request = SFSpeechAudioBufferRecognitionRequest()
+        request.shouldReportPartialResults = true
+        // Prefer on-device when the locale supports it — keeps the audio off
+        // Apple's servers. Falls back to the default (server-assisted) for
+        // languages Apple only handles server-side.
+        if recognizer.supportsOnDeviceRecognition {
+            request.requiresOnDeviceRecognition = true
+        }
+
+        liveSpeechRecognizer = recognizer
+        liveSpeechRequest = request
+        liveSpeechTask = recognizer.recognitionTask(with: request) { [weak self] result, error in
+            // The task callback runs off the main actor — hop back before
+            // touching @Published state.
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if let result {
+                    let text = result.bestTranscription.formattedString
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !text.isEmpty {
+                        self.livePartialTranscript = text
+                    }
+                }
+                if error != nil {
+                    self.teardownLivePartialPreview(clearText: false)
+                }
+            }
+        }
+
+        // Fan the audio session's PCM tap into the recognition request. Capture
+        // a weak request so we never retain the recognizer after teardown.
+        keyboardAudioSession.onPCMBuffer = { [weak request] buffer in
+            request?.append(buffer)
+        }
+    }
+
+    /// Called when the user stops recording. We close the audio side of the
+    /// request so the recognizer finalises its last partial, but keep the
+    /// resulting text on screen until the Mac final result replaces it.
+    private func endLivePartialPreviewAudio() {
+        keyboardAudioSession.onPCMBuffer = nil
+        liveSpeechRequest?.endAudio()
+    }
+
+    /// Called after the Mac final result is applied. Tears down the recognizer
+    /// task and clears the on-screen partial — the keyboard / host now show
+    /// the Mac final text.
+    private func teardownLivePartialPreview(clearText: Bool) {
+        keyboardAudioSession.onPCMBuffer = nil
+        liveSpeechTask?.cancel()
+        liveSpeechTask = nil
+        liveSpeechRequest = nil
+        liveSpeechRecognizer = nil
+        if clearText { livePartialTranscript = "" }
+    }
+
     private func resolvedReturnBundleID(
         explicitBundleID: String?,
         sourceApplication: String?,
@@ -2004,14 +2114,14 @@ final class AppState: ObservableObject {
                 publishKeyboardStatus(
                     .sending,
                     commandID: queuedKeyboardStopCommandID ?? commandID,
-                    message: NSLocalizedString("Sending", comment: "Bridge job stage")
+                    message: NSLocalizedString("Transcribing", comment: "Bridge job stage")
                 )
             }
             return keyboardBridgeStatus
         }
 
         queuedKeyboardStopCommandID = commandID
-        publishKeyboardStatus(.sending, commandID: commandID, message: NSLocalizedString("Sending", comment: "Bridge job stage"))
+        publishKeyboardStatus(.sending, commandID: commandID, message: NSLocalizedString("Transcribing", comment: "Bridge job stage"))
         Task { @MainActor [weak self] in
             guard let self else { return }
             await self.stopAndSend(keyboardCommandID: commandID)
@@ -2158,6 +2268,7 @@ final class AppState: ObservableObject {
         do {
             _ = try await keyboardAudioSession.beginRecording()
             keyboardCaptureStartedFromKeyboard = true
+            startLivePartialPreviewIfAvailable()
             acquireIdleTimer()
             setPhase(.recording)
             publishKeyboardStatus(.recording, commandID: commandID, message: "Recording")
@@ -2284,7 +2395,7 @@ final class AppState: ObservableObject {
         let keyboardState: KeyboardBridgeState
         switch event.stage {
         case .audioReceived:
-            stageMessage = NSLocalizedString("Sending", comment: "Bridge job stage")
+            stageMessage = NSLocalizedString("Transcribing", comment: "Bridge job stage")
             keyboardState = .sending
         case .transcribing:
             stageMessage = NSLocalizedString("Transcribing", comment: "Bridge job stage")
