@@ -1044,15 +1044,26 @@ final class AppState: ObservableObject {
         defer { releaseIdleTimer() }
 
         var baseURL = routeStatus.activeURL
-        let shouldPreflightBridge = shouldPublishKeyboardProgress || isKeyboardCapture
-        if shouldPreflightBridge {
+        let isKeyboardPath = shouldPublishKeyboardProgress || isKeyboardCapture
+        // Happy-path: only spend the GET /v1/health round-trip when we don't
+        // already trust the cached route. A fresh route within its cache TTL
+        // (5s local / 30s cloud) was just validated successfully, so the next
+        // POST will tell us if anything changed faster than a probe would.
+        let routeIsFresh: Bool = {
+            guard let routeFetchedAt, baseURL != nil else { return false }
+            let cacheTTL = routeStatus.activeKind == .local ? Self.localRouteCacheTTL : Self.routeCacheTTL
+            return Date().timeIntervalSince(routeFetchedAt) < cacheTTL
+        }()
+        if isKeyboardPath {
             if let effectiveKeyboardCommandID {
                 publishKeyboardStatus(.sending, commandID: effectiveKeyboardCommandID, message: NSLocalizedString("Sending", comment: "Bridge job stage"))
             }
-            await preflightActiveBridgeRoute()
-            baseURL = routeStatus.activeURL
+            if !routeIsFresh {
+                await preflightActiveBridgeRoute()
+                baseURL = routeStatus.activeURL
+            }
         } else if baseURL == nil {
-            await refreshRoute(force: true, probeAllEndpoints: false, showIndicator: false)
+            await refreshRoute(force: false, probeAllEndpoints: false, showIndicator: false)
             baseURL = routeStatus.activeURL
         }
         guard let baseURL else {
@@ -1209,11 +1220,11 @@ final class AppState: ObservableObject {
                 await resumeKeyboardStandbyAfterCommand()
                 return
             }
-            // A stale route is the most common cause of `.unauthorizedOrUnavailable`
-            // after the public Bridge URL was unavailable for a while. Force a
-            // single re-probe so the next press doesn't need a manual refresh.
-            if let bridgeError = error as? BridgeClientError,
-               case .unauthorizedOrUnavailable = bridgeError {
+            // Stale routes are the most common cause of bridge failures —
+            // auth errors *and* network errors (timeout, cannotConnectToHost,
+            // networkConnectionLost, etc.) both indicate the cached route may
+            // be bad. Invalidate so the next press re-probes naturally.
+            if shouldRetryBridgeRequest(after: error) {
                 routeFetchedAt = nil
             }
             setFailure(error.localizedDescription)
@@ -1238,7 +1249,11 @@ final class AppState: ObservableObject {
             return
         }
         correctionMode = newMode
-        await refreshRoute(force: true, probeAllEndpoints: false, showIndicator: false)
+        // Happy-path: reuse the cached route (5-30s TTL) instead of re-probing
+        // local + cloud before every Restyle tap. If the cache is stale,
+        // refreshRoute does a full resolve; if it's fresh we go straight to
+        // POST. Errors below invalidate the cache so the next attempt re-probes.
+        await refreshRoute(force: false, probeAllEndpoints: false, showIndicator: false)
         guard let baseURL = routeStatus.activeURL else {
             setFailure("Bridge unavailable. Check pairing, Local URL, or Cloud URL.")
             return
@@ -1278,8 +1293,9 @@ final class AppState: ObservableObject {
             Task { @MainActor [weak self] in
                 _ = try? await self?.refreshMacModelStatuses()
             }
-            if let bridgeError = error as? BridgeClientError,
-               case .unauthorizedOrUnavailable = bridgeError {
+            // Invalidate the route cache on both auth and network errors so
+            // the next Restyle tap re-probes instead of reusing a dead route.
+            if shouldRetryBridgeRequest(after: error) {
                 routeFetchedAt = nil
             }
             setFailure(error.localizedDescription)
@@ -2051,7 +2067,9 @@ final class AppState: ObservableObject {
         correctionMode = requestedCorrectionMode
 
         publishKeyboardStatus(.sending, commandID: command.id, message: NSLocalizedString("Refining", comment: "Bridge job stage"))
-        await refreshRoute(force: true, probeAllEndpoints: false, showIndicator: false)
+        // Happy-path: reuse cached route. Errors invalidate the cache below so
+        // the next attempt re-probes naturally.
+        await refreshRoute(force: false, probeAllEndpoints: false, showIndicator: false)
         guard let baseURL = routeStatus.activeURL else {
             setFailure("Bridge unavailable. Check pairing, Local URL, or Cloud URL.")
             publishKeyboardStatus(.error, commandID: command.id, message: errorMessage ?? "Bridge unavailable")
@@ -2099,8 +2117,9 @@ final class AppState: ObservableObject {
                     : nil
             )
         } catch {
-            if let bridgeError = error as? BridgeClientError,
-               case .unauthorizedOrUnavailable = bridgeError {
+            // Invalidate the route cache on both auth and network errors so
+            // the next keyboard-edit attempt re-probes.
+            if shouldRetryBridgeRequest(after: error) {
                 routeFetchedAt = nil
             }
             setFailure(error.localizedDescription)
