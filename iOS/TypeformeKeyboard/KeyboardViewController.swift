@@ -104,6 +104,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         // (first-touch sticking), but a deliberate drag past this distance that
         // ends on a different text key commits the new key instead.
         static let dragRescueThreshold: CGFloat = 14
+        // Tap within this distance of a key/key midpoint triggers a librime
+        // probe between the two candidate letters; outside the gutter we keep
+        // the unambiguous midpoint resolution.
+        static let gutterRadius: CGFloat = 6
     }
 
     private struct TextKeyboardLayoutModel {
@@ -1027,10 +1031,61 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             }
             let isLastButton = index == buttons.index(before: buttons.endIndex)
             if point.x >= leftBoundary && (point.x < rightBoundary || (isLastButton && point.x <= rightBoundary)) {
-                return buttons[index].button
+                return resolveGutterCandidate(
+                    buttons: buttons,
+                    index: index,
+                    leftBoundary: leftBoundary,
+                    rightBoundary: rightBoundary,
+                    point: point
+                )
             }
         }
         return nil
+    }
+
+    private func resolveGutterCandidate(
+        buttons: [TextKeyboardHitButton],
+        index: Int,
+        leftBoundary: CGFloat,
+        rightBoundary: CGFloat,
+        point: CGPoint
+    ) -> UIButton {
+        let gutter = TextKeyboardTouchModel.gutterRadius
+        if index > buttons.startIndex,
+           point.x - leftBoundary < gutter,
+           let chosen = gutterProbeWinner(left: index - 1, right: index, buttons: buttons) {
+            return chosen
+        }
+        if index < buttons.index(before: buttons.endIndex),
+           rightBoundary - point.x < gutter,
+           let chosen = gutterProbeWinner(left: index, right: index + 1, buttons: buttons) {
+            return chosen
+        }
+        return buttons[index].button
+    }
+
+    private func gutterProbeWinner(left: Int, right: Int, buttons: [TextKeyboardHitButton]) -> UIButton? {
+        guard textInputLanguage == .chinese, !isTextShiftEnabled else { return nil }
+        guard let leftLetter = pinyinProbeLetter(for: buttons[left].button),
+              let rightLetter = pinyinProbeLetter(for: buttons[right].button)
+        else { return nil }
+        let result = rimeInput.probeGutterValidity(left: leftLetter, right: rightLetter)
+        if result.left == .extend && result.right == .split {
+            return buttons[left].button
+        }
+        if result.right == .extend && result.left == .split {
+            return buttons[right].button
+        }
+        return nil
+    }
+
+    private func pinyinProbeLetter(for button: UIButton) -> Character? {
+        guard let value = textKeyCommitCharacters[ObjectIdentifier(button)],
+              value.count == 1,
+              let scalar = value.unicodeScalars.first,
+              scalar.value >= 0x61 && scalar.value <= 0x7A
+        else { return nil }
+        return Character(scalar)
     }
 
     private func bottomTextControlTopLimit() -> CGFloat {

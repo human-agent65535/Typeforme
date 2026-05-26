@@ -23,6 +23,19 @@ struct RimeKeyboardState {
     let errorMessage: String?
 }
 
+/// Result of probing a candidate next letter against the live composition.
+enum RimeProbeValidity {
+    /// The letter cleanly extended the current segment (e.g. typing "i" after
+    /// "zh" to form "zhi"). Strong evidence the user intended this letter.
+    case extend
+    /// The letter forced a segment break (e.g. typing "b" after "zh" yielding
+    /// "zh|b" or "zh'b"). Strong evidence the user did not intend this letter.
+    case split
+    /// Probe could not produce a useful signal (rime not ready, input empty,
+    /// commit happened, schema mismatch). Caller should fall back to geometry.
+    case unknown
+}
+
 enum RimeKeyboardDictionaryTier: String {
     case standard
     case extended
@@ -74,6 +87,7 @@ final class RimeInputController {
     private var startupState: StartupState = .idle
     private var selectedSchemaID: String?
     private var session: RimeSessionId = 0
+    private var probeSession: RimeSessionId = 0
     private var lastErrorMessage: String?
     private var lastStartupAttemptAt: TimeInterval = 0
     private var desiredProfile = RimeKeyboardProfile()
@@ -203,6 +217,7 @@ final class RimeInputController {
             }
 
             applyDesiredOptionsOnQueue()
+            ensureProbeSessionOnQueue()
             finishStartupOnQueue(.ready, errorMessage: nil)
             return true
         } catch {
@@ -481,6 +496,7 @@ final class RimeInputController {
             if session != 0 {
                 api.cleanAllSession()
                 session = 0
+                probeSession = 0
             }
             selectedSchemaID = nil
         }
@@ -488,6 +504,97 @@ final class RimeInputController {
         startupState = nextState
         lastErrorMessage = errorMessage
         stateLock.unlock()
+    }
+
+    private func ensureProbeSessionOnQueue() {
+        guard probeSession == 0 else { return }
+        let created = api.createSession()
+        guard created != 0 else {
+            rimeLog.error("Rime probe session creation failed")
+            return
+        }
+        let schemaID = desiredProfileOnQueue.schemaID
+        guard api.selectSchema(created, andSchameId: schemaID) else {
+            rimeLog.error("Rime probe schema select failed")
+            return
+        }
+        _ = api.setOption(created, andOption: "ascii_mode", andValue: false)
+        _ = api.setOption(created, andOption: "ascii_punct", andValue: false)
+        probeSession = created
+    }
+
+    /// Ask librime whether `left` and `right` candidate letters cleanly extend
+    /// the current main-session composition or force a segment split. Used by
+    /// the keyboard's hit-test to resolve gutter taps in favour of the
+    /// linguistically valid pinyin continuation.
+    ///
+    /// Runs synchronously on the rime serial queue. Total cost is roughly
+    /// `(len(input) + 2) * 2` processKey calls — typically under 2 ms.
+    /// Returns `(.unknown, .unknown)` whenever the probe cannot give a useful
+    /// signal so the caller can fall back to geometric midpoint resolution.
+    func probeGutterValidity(left: Character, right: Character) -> (left: RimeProbeValidity, right: RimeProbeValidity) {
+        guard isReady, probeSession != 0 else {
+            return (.unknown, .unknown)
+        }
+        return rimeQueue.sync {
+            guard isReadyOnQueue, probeSession != 0 else {
+                return (.unknown, .unknown)
+            }
+            let input = api.getInput(session) ?? ""
+            guard !input.isEmpty else {
+                return (.unknown, .unknown)
+            }
+            api.cleanComposition(probeSession)
+            for scalar in input.unicodeScalars {
+                _ = api.processKeyCode(Int32(scalar.value), modifier: 0, andSession: probeSession)
+            }
+            let baselinePreedit = api.getContext(probeSession)?.composition?.preedit ?? input
+            let baselineInput = api.getInput(probeSession) ?? input
+            let leftValidity = probeCandidateOnQueue(
+                letter: left,
+                baselineInput: baselineInput,
+                baselinePreedit: baselinePreedit
+            )
+            let rightValidity = probeCandidateOnQueue(
+                letter: right,
+                baselineInput: baselineInput,
+                baselinePreedit: baselinePreedit
+            )
+            return (leftValidity, rightValidity)
+        }
+    }
+
+    private func probeCandidateOnQueue(
+        letter: Character,
+        baselineInput: String,
+        baselinePreedit: String
+    ) -> RimeProbeValidity {
+        guard let scalar = letter.unicodeScalars.first else { return .unknown }
+        _ = api.processKeyCode(Int32(scalar.value), modifier: 0, andSession: probeSession)
+        let inputAfter = api.getInput(probeSession) ?? ""
+        let preeditAfter = api.getContext(probeSession)?.composition?.preedit ?? ""
+        // Restore probe to the baseline before returning so the next candidate
+        // sees the same starting state.
+        api.cleanComposition(probeSession)
+        for scalar in baselineInput.unicodeScalars {
+            _ = api.processKeyCode(Int32(scalar.value), modifier: 0, andSession: probeSession)
+        }
+        // The character must have appended cleanly to the input buffer. Any
+        // other transition (commit, schema-driven rewrite) is treated as
+        // unknown so we do not overweight strange Rime states.
+        guard inputAfter.count == baselineInput.count + 1 else {
+            return .unknown
+        }
+        // Rime emits a segment delimiter — usually `'` or space — into the
+        // preedit when an incoming letter cannot continue the current
+        // syllable. Defensively detect any of the common delimiter glyphs.
+        let delimiters: Set<Character> = ["'", "\\", " ", "|", "`"]
+        let baselineDelimiters = baselinePreedit.filter { delimiters.contains($0) }.count
+        let afterDelimiters = preeditAfter.filter { delimiters.contains($0) }.count
+        if afterDelimiters > baselineDelimiters {
+            return .split
+        }
+        return .extend
     }
 
     private func applyDesiredOptionsOnQueue() {
