@@ -1871,6 +1871,8 @@ struct CorrectionSettingsView: View {
     @State private var lmStudioStatus = "Not checked"
     @State private var lmStudioDetail = "Start LM Studio's OpenAI-compatible server, then check the connection."
     @State private var lmStudioModels: [String] = []
+    @State private var lmStudioCheckTask: Task<Void, Never>?
+    @State private var lmStudioCheckID = UUID()
 
     private let selectableBackends: [CorrectionBackendKind] = [
         .qwen35_2B,
@@ -1977,7 +1979,7 @@ struct CorrectionSettingsView: View {
 
                     HStack {
                         Button {
-                            Task { await checkLMStudio(selectFirstModel: lmStudioModel.isEmpty) }
+                            startLMStudioCheck(selectFirstModel: lmStudioModel.isEmpty)
                         } label: {
                             Label(isCheckingLMStudio ? "Checking" : "Refresh Models", systemImage: "arrow.clockwise")
                         }
@@ -2036,22 +2038,21 @@ struct CorrectionSettingsView: View {
         .onAppear {
             normalizeBackendSelection()
             if backendRaw == CorrectionBackendKind.externalLMStudio.rawValue {
-                Task { await checkLMStudio(selectFirstModel: lmStudioModel.isEmpty) }
+                startLMStudioCheck(selectFirstModel: lmStudioModel.isEmpty)
             }
+        }
+        .onDisappear {
+            cancelLMStudioCheck()
         }
         .onChange(of: backendRaw) { _, _ in
             normalizeBackendSelection()
             preloadSelectedBackend()
         }
         .onChange(of: lmStudioBaseURL) { _, _ in
-            lmStudioModels = []
-            lmStudioStatus = "Not checked"
-            lmStudioDetail = "Refresh models after changing the server URL."
+            resetLMStudioCheck(detail: "Refresh models after changing the server URL.")
         }
         .onChange(of: lmStudioAPIKey) { _, _ in
-            lmStudioModels = []
-            lmStudioStatus = "Not checked"
-            lmStudioDetail = "Refresh models after changing the API key."
+            resetLMStudioCheck(detail: "Refresh models after changing the API key.")
         }
     }
 
@@ -2106,7 +2107,7 @@ struct CorrectionSettingsView: View {
                 loadingBackendRaw = nil
                 applyLMStudioReport(report, selectFirstModel: lmStudioModel.isEmpty)
                 modelLoadIsError = !report.ok
-                modelLoadStatus = report.ok ? "LM Studio is reachable." : "LM Studio is not reachable."
+                modelLoadStatus = report.ok ? "LM Studio is reachable." : "LM Studio is not ready."
                 return
             }
             if let path = localModelPath(for: kind),
@@ -2152,14 +2153,47 @@ struct CorrectionSettingsView: View {
     }
 
     @MainActor
-    private func checkLMStudio(selectFirstModel: Bool) async {
+    private func startLMStudioCheck(selectFirstModel: Bool) {
+        lmStudioCheckTask?.cancel()
+        let checkID = UUID()
+        let baseURL = lmStudioBaseURL
+        let apiKey = lmStudioAPIKey
+        let model = lmStudioModel
+        lmStudioCheckID = checkID
         isCheckingLMStudio = true
         lmStudioStatus = "Checking"
-        lmStudioDetail = lmStudioBaseURL
-        let report = await LMStudioCorrectorService.checkConfiguration()
+        lmStudioDetail = baseURL
+        lmStudioCheckTask = Task {
+            let report = await LMStudioCorrectorService.checkConfiguration(
+                baseURL: baseURL,
+                apiKey: apiKey,
+                selectedModel: model
+            )
+            await MainActor.run {
+                guard lmStudioCheckID == checkID else { return }
+                lmStudioCheckTask = nil
+                isCheckingLMStudio = false
+                applyLMStudioReport(report, selectFirstModel: selectFirstModel)
+                modelLoadIsError = !report.ok
+                modelLoadStatus = report.ok ? "LM Studio is reachable." : "LM Studio is not ready."
+            }
+        }
+    }
+
+    @MainActor
+    private func resetLMStudioCheck(detail: String) {
+        cancelLMStudioCheck()
+        lmStudioModels = []
+        lmStudioStatus = "Not checked"
+        lmStudioDetail = detail
+    }
+
+    @MainActor
+    private func cancelLMStudioCheck() {
+        lmStudioCheckTask?.cancel()
+        lmStudioCheckTask = nil
+        lmStudioCheckID = UUID()
         isCheckingLMStudio = false
-        applyLMStudioReport(report, selectFirstModel: selectFirstModel)
-        modelLoadStatus = report.ok ? "LM Studio is reachable." : "LM Studio is not reachable."
     }
 
     private func applyLMStudioReport(_ report: LMStudioCheckReport, selectFirstModel: Bool) {

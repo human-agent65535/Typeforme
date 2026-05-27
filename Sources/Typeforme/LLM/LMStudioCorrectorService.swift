@@ -62,21 +62,20 @@ final class LMStudioCorrectorService: CorrectorService {
         max(configuredTimeoutMs, minimumRequestTimeoutMs)
     }
 
-    static func checkConfiguration() async -> LMStudioCheckReport {
+    static func checkConfiguration(
+        baseURL: String = AppSettings.lmStudioBaseURL,
+        apiKey: String = AppSettings.lmStudioAPIKey,
+        selectedModel: String = AppSettings.lmStudioModel
+    ) async -> LMStudioCheckReport {
         do {
-            let endpoint = try modelsEndpoint(baseURL: AppSettings.lmStudioBaseURL)
+            let endpoint = try modelsEndpoint(baseURL: baseURL)
 
             let modelIDs = try await OpenAICompatibleClient.modelIDs(
                 endpoint: endpoint,
-                apiKey: AppSettings.lmStudioAPIKey,
+                apiKey: apiKey,
                 timeout: 5
             )
-            return LMStudioCheckReport(
-                ok: true,
-                status: "Ready",
-                detail: modelListSummary(modelIDs: modelIDs),
-                modelIDs: modelIDs
-            )
+            return availabilityReport(modelIDs: modelIDs, selectedModel: selectedModel)
         } catch {
             return LMStudioCheckReport(ok: false, status: "Failed", detail: error.localizedDescription, modelIDs: [])
         }
@@ -145,8 +144,36 @@ final class LMStudioCorrectorService: CorrectorService {
         return available.contains(trimmedCurrent) ? trimmedCurrent : first
     }
 
+    static func availabilityReport(modelIDs: [String], selectedModel: String) -> LMStudioCheckReport {
+        let selected = selectedModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !modelIDs.isEmpty else {
+            let hint = selected.isEmpty
+                ? "Load a model in LM Studio before using correction."
+                : "Load \(selected) in LM Studio before using correction."
+            return LMStudioCheckReport(
+                ok: false,
+                status: "Failed",
+                detail: "LM Studio is reachable, but no models are loaded. \(hint)",
+                modelIDs: []
+            )
+        }
+        guard selected.isEmpty || modelIDs.contains(selected) else {
+            return LMStudioCheckReport(
+                ok: false,
+                status: "Failed",
+                detail: "Selected model \(selected) is not loaded. \(modelListSummary(modelIDs: modelIDs))",
+                modelIDs: modelIDs
+            )
+        }
+        return LMStudioCheckReport(
+            ok: true,
+            status: "Ready",
+            detail: modelListSummary(modelIDs: modelIDs),
+            modelIDs: modelIDs
+        )
+    }
+
     private static func modelListSummary(modelIDs: [String]) -> String {
-        guard !modelIDs.isEmpty else { return "Server responded to /v1/models, but no model IDs were listed." }
         let preview = modelIDs.prefix(4).joined(separator: ", ")
         return modelIDs.count > 4 ? "\(modelIDs.count) models: \(preview), ..." : "\(modelIDs.count) models: \(preview)"
     }
