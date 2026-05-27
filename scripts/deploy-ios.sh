@@ -34,14 +34,20 @@ if [ -f "$ROOT/.env" ]; then
 fi
 
 TEAM="${TEAM:-}"
-TYPEFORME_BUNDLE_PREFIX="${TYPEFORME_BUNDLE_PREFIX:-com.example}"
-TYPEFORME_HOST_BUNDLE_IDENTIFIER="${TYPEFORME_HOST_BUNDLE_IDENTIFIER:-$TYPEFORME_BUNDLE_PREFIX.typeforme}"
-TYPEFORME_KEYBOARD_BUNDLE_IDENTIFIER="${TYPEFORME_KEYBOARD_BUNDLE_IDENTIFIER:-$TYPEFORME_HOST_BUNDLE_IDENTIFIER.keyboard}"
-TYPEFORME_APP_GROUP_IDENTIFIER="${TYPEFORME_APP_GROUP_IDENTIFIER:-group.$TYPEFORME_HOST_BUNDLE_IDENTIFIER}"
-BUNDLE_ID="$TYPEFORME_HOST_BUNDLE_IDENTIFIER"
-KEYBOARD_BUNDLE_ID="$TYPEFORME_KEYBOARD_BUNDLE_IDENTIFIER"
 RIME_DIR="$ROOT/iOS/TypeformeKeyboard/RimeSharedSupport"
 RIME_BUILD_DIR="$RIME_DIR/build"
+
+env_setting_is_present() {
+    local name="$1"
+    [ "${!name+x}" = "x" ] && [ -n "${!name}" ]
+}
+
+add_build_setting_from_env() {
+    local name="$1"
+    if env_setting_is_present "$name"; then
+        BUILD_ARGS+=("$name=${!name}")
+    fi
+}
 
 export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
 if [ ! -d "$DEVELOPER_DIR" ]; then
@@ -164,12 +170,13 @@ if [ -n "$TEAM" ]; then
     echo "→ Overriding project DEVELOPMENT_TEAM with TEAM=$TEAM"
     BUILD_ARGS+=(DEVELOPMENT_TEAM="$TEAM")
 fi
-BUILD_ARGS+=(
-    TYPEFORME_BUNDLE_PREFIX="$TYPEFORME_BUNDLE_PREFIX"
-    TYPEFORME_HOST_BUNDLE_IDENTIFIER="$TYPEFORME_HOST_BUNDLE_IDENTIFIER"
-    TYPEFORME_KEYBOARD_BUNDLE_IDENTIFIER="$TYPEFORME_KEYBOARD_BUNDLE_IDENTIFIER"
-    TYPEFORME_APP_GROUP_IDENTIFIER="$TYPEFORME_APP_GROUP_IDENTIFIER"
-)
+# Only command-line override identifiers when the user explicitly supplied
+# them via the environment or .env. Otherwise, let Typeforme.xcconfig and the
+# ignored LocalSigning.xcconfig provide the effective bundle/app-group settings.
+add_build_setting_from_env TYPEFORME_BUNDLE_PREFIX
+add_build_setting_from_env TYPEFORME_HOST_BUNDLE_IDENTIFIER
+add_build_setting_from_env TYPEFORME_KEYBOARD_BUNDLE_IDENTIFIER
+add_build_setting_from_env TYPEFORME_APP_GROUP_IDENTIFIER
 
 XCODEBUILD_ARGS=(
     -project "$PROJECT"
@@ -200,10 +207,28 @@ HOST_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "
 HOST_BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PATH/Info.plist")"
 KEYBOARD_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$KEYBOARD_APPEX_PATH/Info.plist")"
 KEYBOARD_BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$KEYBOARD_APPEX_PATH/Info.plist")"
+BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP_PATH/Info.plist")"
+HOST_CONFIGURED_BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print :TypeformeHostBundleIdentifier' "$APP_PATH/Info.plist")"
+KEYBOARD_BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print :TypeformeKeyboardBundleIdentifier' "$APP_PATH/Info.plist")"
 KEYBOARD_BUILT_BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$KEYBOARD_APPEX_PATH/Info.plist")"
+KEYBOARD_CONFIGURED_BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print :TypeformeKeyboardBundleIdentifier' "$KEYBOARD_APPEX_PATH/Info.plist")"
+HOST_APP_GROUP_ID="$(/usr/libexec/PlistBuddy -c 'Print :TypeformeAppGroupIdentifier' "$APP_PATH/Info.plist")"
+KEYBOARD_APP_GROUP_ID="$(/usr/libexec/PlistBuddy -c 'Print :TypeformeAppGroupIdentifier' "$KEYBOARD_APPEX_PATH/Info.plist")"
 KEYBOARD_EXTENSION_POINT="$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$KEYBOARD_APPEX_PATH/Info.plist")"
+if [ "$HOST_CONFIGURED_BUNDLE_ID" != "$BUNDLE_ID" ]; then
+    echo "Built host bundle id mismatch: CFBundleIdentifier=$BUNDLE_ID, TypeformeHostBundleIdentifier=$HOST_CONFIGURED_BUNDLE_ID" >&2
+    exit 1
+fi
 if [ "$KEYBOARD_BUILT_BUNDLE_ID" != "$KEYBOARD_BUNDLE_ID" ]; then
-    echo "Built keyboard extension bundle id mismatch: $KEYBOARD_BUILT_BUNDLE_ID" >&2
+    echo "Built keyboard extension bundle id mismatch: CFBundleIdentifier=$KEYBOARD_BUILT_BUNDLE_ID, host expects $KEYBOARD_BUNDLE_ID" >&2
+    exit 1
+fi
+if [ "$KEYBOARD_CONFIGURED_BUNDLE_ID" != "$KEYBOARD_BUNDLE_ID" ]; then
+    echo "Built keyboard configuration mismatch: extension TypeformeKeyboardBundleIdentifier=$KEYBOARD_CONFIGURED_BUNDLE_ID, host expects $KEYBOARD_BUNDLE_ID" >&2
+    exit 1
+fi
+if [ "$HOST_APP_GROUP_ID" != "$KEYBOARD_APP_GROUP_ID" ]; then
+    echo "Built app group mismatch: host=$HOST_APP_GROUP_ID, keyboard=$KEYBOARD_APP_GROUP_ID" >&2
     exit 1
 fi
 if [ "$KEYBOARD_EXTENSION_POINT" != "com.apple.keyboard-service" ]; then
@@ -214,6 +239,7 @@ if [ "$KEYBOARD_VERSION" != "$HOST_VERSION" ] || [ "$KEYBOARD_BUILD" != "$HOST_B
     echo "Built host and keyboard versions diverged: host $HOST_VERSION ($HOST_BUILD), keyboard $KEYBOARD_VERSION ($KEYBOARD_BUILD)" >&2
     exit 1
 fi
+echo "→ Built bundle ids: host $BUNDLE_ID, keyboard $KEYBOARD_BUNDLE_ID"
 
 echo "→ Verifying packaged host app and keyboard extension"
 /usr/bin/codesign --verify --deep --strict --verbose=1 "$APP_PATH"
