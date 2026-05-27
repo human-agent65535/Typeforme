@@ -264,9 +264,17 @@ struct PairingView: View {
         parseError = nil
         Task {
             let route = await BridgeRouteResolver().resolve(config: config, probeAllEndpoints: true)
+            let refreshedConfig: PairingConfig?
+            if let activeURL = route.activeURL {
+                refreshedConfig = try? await BridgeClient(baseURL: activeURL, token: config.token).pairing(timeout: 4)
+            } else {
+                refreshedConfig = nil
+            }
             await MainActor.run {
                 routeStatus = route
-                if route.activeKind == .local, let activeURL = route.activeURL?.absoluteString {
+                if let refreshedConfig {
+                    config.bridgeEndpoints = refreshedConfig.bridgeEndpoints
+                } else if route.activeKind == .local, let activeURL = route.activeURL?.absoluteString {
                     config.promoteLocalBridgeURL(activeURL)
                 }
                 isPulling = false
@@ -351,11 +359,14 @@ struct PairingView: View {
             }
             let client = BridgeClient(baseURL: activeURL, token: token)
             do {
+                let refreshedConfig = try? await client.pairing(timeout: 4)
                 var settings = try await client.macSettings()
                 settings.normalize()
                 await MainActor.run {
                     routeStatus = route
-                    if route.activeKind == .local {
+                    if let refreshedConfig {
+                        config.bridgeEndpoints = refreshedConfig.bridgeEndpoints
+                    } else if route.activeKind == .local {
                         config.promoteLocalBridgeURL(activeURL.absoluteString)
                     }
                     applyMacSettings(settings)

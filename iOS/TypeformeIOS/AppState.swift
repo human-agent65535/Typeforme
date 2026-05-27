@@ -687,6 +687,12 @@ final class AppState: ObservableObject {
         routeStatus = await routeResolver.resolve(config: config, probeAllEndpoints: probeAllEndpoints)
         persistActiveLocalRouteIfNeeded(routeStatus)
         routeFetchedAt = Date()
+        if shouldRefreshPairingEndpointsAfterRouteRefresh(force: force, status: routeStatus),
+           await refreshPairingEndpointsFromActiveRoute(status: routeStatus) {
+            routeStatus = await routeResolver.resolve(config: config, probeAllEndpoints: probeAllEndpoints)
+            persistActiveLocalRouteIfNeeded(routeStatus)
+            routeFetchedAt = Date()
+        }
     }
 
     private func preflightActiveBridgeRoute() async {
@@ -721,6 +727,36 @@ final class AppState: ObservableObject {
         let cloudConfigured = !config.publicBridgeURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         return (!localConfigured || routeStatus.localChecked) &&
             (!cloudConfigured || routeStatus.cloudChecked)
+    }
+
+    private func shouldRefreshPairingEndpointsAfterRouteRefresh(
+        force: Bool,
+        status: BridgeRouteStatus
+    ) -> Bool {
+        guard status.activeURL != nil else { return false }
+        return force || status.activeKind == .cloud || (status.localChecked && !status.localOK)
+    }
+
+    @discardableResult
+    private func refreshPairingEndpointsFromActiveRoute(
+        status: BridgeRouteStatus,
+        timeout: TimeInterval = 4
+    ) async -> Bool {
+        guard let activeURL = status.activeURL else { return false }
+        let previous = config.bridgeEndpoints
+        do {
+            let refreshed = try await BridgeClient(baseURL: activeURL, token: config.token).pairing(timeout: timeout)
+            config.bridgeEndpoints = refreshed.bridgeEndpoints
+            if config.bridgeEndpoints != previous {
+                store.save(config)
+                publishKeyboardDefaults()
+                routeFetchedAt = nil
+                return true
+            }
+        } catch {
+            appLog.notice("pairing endpoint refresh deferred: \(error.localizedDescription, privacy: .public)")
+        }
+        return false
     }
 
     func refreshMacSettings(timeout: TimeInterval = 10) async throws -> BridgeMacSettingsPayload {
