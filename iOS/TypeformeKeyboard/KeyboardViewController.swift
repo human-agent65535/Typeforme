@@ -251,7 +251,20 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private var statusTimerInterval: TimeInterval = 0
     private var lastStatusSignature = ""
     private var lastMissingAudioLevelLogAt: TimeInterval = 0
-    private var bridgeStatus: KeyboardBridgeStatus?
+    private var bridgeStatus: KeyboardBridgeStatus? {
+        didSet {
+            // Local/Darwin-only statuses do not know Mac route reachability.
+            // Keep the last host-probed value until a host status explicitly
+            // updates it, so the readiness dot does not flicker green between
+            // failed-route polls.
+            guard let status = bridgeStatus,
+                  status.state != .idle,
+                  status.backendReachable == nil,
+                  let reachable = oldValue?.backendReachable
+            else { return }
+            bridgeStatus = status.withBackendReachable(reachable)
+        }
+    }
     private var lastBridgeContactAt: TimeInterval = 0
     /// Wall-clock deadline for the post-insert "Inserted" flash on the text
     /// toolbar. While in window, the status label displays the inserted hint
@@ -382,6 +395,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     /// the rest of the orb.
     private var smoothedAudioLevel: Float = 0
     private let voiceSpinner = UIActivityIndicatorView(style: .large)
+    /// Small badge dot on the voice orb (top-right of the inner mic icon).
+    /// Green = bridge is awake / voice session ready; grey = host not
+    /// reachable or full access missing. Lets the user see at a glance whether
+    /// pressing the orb will actually start dictation. Mirrored by
+    /// `textToolsReadyDot` on the text-mode toolbar mic.
+    private let voiceReadyDot = UIView()
     private let voiceTitleLabel = UILabel()
     private let inputModeSwitch = VoiceInputModeSwitch()
     /// Driving-safe "send" button on the voice keyboard's left column,
@@ -391,6 +410,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     /// app's own send button so it's easier to hit one-handed.
     private let voiceSendButton = HitInsetButton(frame: .zero)
     private static let orbDiameter: CGFloat = 132
+    /// Voice-orb readiness badge — sized to read as a "status dot" rather
+    /// than a tappable affordance, so it doesn't compete with the orb itself.
+    private static let voiceReadyDotDiameter: CGFloat = 12
+    /// Smaller variant for the 32pt text-toolbar mic button.
+    private static let textToolsReadyDotDiameter: CGFloat = 8
     private static let portraitKeyboardContentHeight: CGFloat = 258
     private static let compactKeyboardContentHeight: CGFloat = 244
     private static let rootHorizontalInset: CGFloat = 20.0 / 3.0
@@ -448,6 +472,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private let textStylePickerButton = UIButton(type: .system)
     private let textUndoButton = UIButton(type: .system)
     private let textToolsButton = UIButton(type: .system)
+    /// Smaller variant of `voiceReadyDot` overlaid on the text-mode toolbar
+    /// mic so the readiness signal is visible without switching to voice mode.
+    private let textToolsReadyDot = UIView()
     private let textKeyboardSwitchButton = UIButton(type: .system)
     private let textHostSettingsButton = UIButton(type: .system)
     private let textCandidateGridButton = HitInsetButton(frame: .zero)
@@ -2431,6 +2458,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         voiceSpinner.translatesAutoresizingMaskIntoConstraints = false
         voiceButton.addSubview(voiceSpinner)
 
+        configureReadyDot(voiceReadyDot, diameter: Self.voiceReadyDotDiameter, borderWidth: 1.5)
+        voiceButton.addSubview(voiceReadyDot)
+
         configureCorrectionModePanel()
         configureInputModeSwitch()
         inputModeSwitch.onSelection = { [weak self] rawValue in
@@ -2487,6 +2517,14 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
             voiceSpinner.centerXAnchor.constraint(equalTo: voiceButton.centerXAnchor),
             voiceSpinner.centerYAnchor.constraint(equalTo: voiceButton.centerYAnchor),
+
+            // Badge sits on the top-right corner of the inner mic icon — the
+            // most natural "status of this thing" location. Half-overlap so
+            // the dot reads as attached to the icon, not a separate UI atom.
+            voiceReadyDot.centerXAnchor.constraint(equalTo: voiceIconView.trailingAnchor),
+            voiceReadyDot.centerYAnchor.constraint(equalTo: voiceIconView.topAnchor),
+            voiceReadyDot.widthAnchor.constraint(equalToConstant: Self.voiceReadyDotDiameter),
+            voiceReadyDot.heightAnchor.constraint(equalToConstant: Self.voiceReadyDotDiameter),
 
             // Left column: voiceSendButton on top, correctionModePanel
             // below. 8pt gap between them; whole column centered on the
@@ -2939,6 +2977,18 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         textToolsButton.addTarget(self, action: #selector(textVoiceTapped), for: .touchUpInside)
         textToolsButton.showsMenuAsPrimaryAction = false
         attachPressAnimation(textToolsButton)
+
+        // Readiness dot mirrors the orb's badge (top-right of the mic glyph).
+        // Toolbar mic glyph is system-sized inside a 32pt button, so a smaller
+        // diameter + thinner border keeps the dot from swallowing the icon.
+        configureReadyDot(textToolsReadyDot, diameter: Self.textToolsReadyDotDiameter, borderWidth: 1.0)
+        textToolsButton.addSubview(textToolsReadyDot)
+        NSLayoutConstraint.activate([
+            textToolsReadyDot.widthAnchor.constraint(equalToConstant: Self.textToolsReadyDotDiameter),
+            textToolsReadyDot.heightAnchor.constraint(equalToConstant: Self.textToolsReadyDotDiameter),
+            textToolsReadyDot.trailingAnchor.constraint(equalTo: textToolsButton.trailingAnchor, constant: -1),
+            textToolsReadyDot.topAnchor.constraint(equalTo: textToolsButton.topAnchor, constant: 1),
+        ])
 
         configureToolbarIconButton(textKeyboardSwitchButton, image: "waveform")
         textKeyboardSwitchButton.widthAnchor.constraint(equalToConstant: 32).isActive = true
@@ -3877,6 +3927,17 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             let voiceModeDim = (isRecordingState || isSendingState) && self.keyboardFocus == .voice
             self.correctionModePanel.alpha = voiceModeDim ? 0.48 : 1
             self.voiceButton.layer.shadowColor = self.voiceShadowColor.cgColor
+
+            // Readiness dots stay color-coded across all states. During
+            // recording/sending we hide the orb badge because the orb glyph
+            // morphs into stop/hourglass and a tiny dot on top would be
+            // noise. The toolbar badge stays visible because that mic is the
+            // entry point from text mode and the user needs a continuous
+            // readiness signal there.
+            let readyColor = self.readyDotColor
+            self.voiceReadyDot.backgroundColor = readyColor
+            self.voiceReadyDot.alpha = (isRecordingState || isSendingState) ? 0 : 1
+            self.textToolsReadyDot.backgroundColor = readyColor
 
             if showsSpinner {
                 self.voiceSpinner.startAnimating()
@@ -7670,6 +7731,36 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         case .error:     return isBridgeAwake ? .blocked : .idle
         default:         return .idle
         }
+    }
+
+    /// Common look for both readiness dots: filled circle + thin white ring so
+    /// the badge stays legible over either the saturated orb gradient or the
+    /// toolbar's translucent material.
+    private func configureReadyDot(_ dot: UIView, diameter: CGFloat, borderWidth: CGFloat) {
+        dot.translatesAutoresizingMaskIntoConstraints = false
+        dot.isUserInteractionEnabled = false
+        dot.layer.cornerRadius = diameter / 2
+        dot.layer.cornerCurve = .continuous
+        dot.layer.borderWidth = borderWidth
+        dot.layer.borderColor = UIColor.white.withAlphaComponent(0.9).cgColor
+        dot.backgroundColor = .systemGray3
+    }
+
+    /// Four-state readiness signal layered most-blocking-first:
+    ///   🔴 systemRed   — Full Access missing (setup, not connectivity).
+    ///   ⚪️ systemGray3 — Host iOS app not reachable (need wake).
+    ///   🟡 systemOrange— Host alive but last Mac probe failed (will retry on press; may fail).
+    ///   🟢 systemGreen — Host alive AND last Mac probe succeeded OR no probe yet (optimistic).
+    ///
+    /// `backendReachable == nil` (never probed this host session) maps to
+    /// green per the agreed UX — the orb's failure path will reveal a real
+    /// outage if the optimism is wrong, and the dot will flip amber on the
+    /// next poll cycle. Avoids flashing amber on every cold keyboard open.
+    private var readyDotColor: UIColor {
+        guard hasFullAccess else { return .systemRed }
+        guard isBridgeAwake else { return .systemGray3 }
+        if currentBridgeStatus?.backendReachable == false { return .systemOrange }
+        return .systemGreen
     }
 
     private var statusColor: UIColor {

@@ -234,7 +234,12 @@ final class HUDWindowController {
         let minY = visible.minY + Self.edgePadding
         let maxY = visible.maxY - size.height - Self.edgePadding
 
-        var x = rect.maxX - size.width
+        // Anchor the panel's left edge at the caret (`rect.maxX` is the end
+        // of the inserted voice-draft range, where the caret sits after
+        // insertion) so the toolbar sits to the lower-right of the caret —
+        // not centered under the whole input row, not right-aligned to the
+        // input width.
+        var x = rect.maxX
         if minX <= maxX {
             x = max(minX, min(maxX, x))
         }

@@ -469,6 +469,12 @@ struct KeyboardBridgeStatus: Codable, Equatable {
     /// final result later replaces it. `nil` / empty when no preview is
     /// available (unsupported locale, denied permission, or not recording).
     let livePartialTranscript: String?
+    /// Host's last-known Mac bridge reachability — `true` if the last route
+    /// probe found a usable bridge URL (local LAN or Cloudflare), `false` if
+    /// the last probe failed, `nil` if the host hasn't probed yet this
+    /// session. Keyboard treats `nil` optimistically (assume reachable) —
+    /// the orb's failure path surfaces the real error if dictation fails.
+    let backendReachable: Bool?
     let updatedAt: TimeInterval
 
     init(
@@ -482,6 +488,7 @@ struct KeyboardBridgeStatus: Codable, Equatable {
         defaultCorrectionMode: String? = nil,
         audioLevel: Float? = nil,
         livePartialTranscript: String? = nil,
+        backendReachable: Bool? = nil,
         updatedAt: TimeInterval = Date().timeIntervalSince1970
     ) {
         self.commandID = commandID
@@ -494,6 +501,7 @@ struct KeyboardBridgeStatus: Codable, Equatable {
         self.defaultCorrectionMode = defaultCorrectionMode
         self.audioLevel = audioLevel
         self.livePartialTranscript = livePartialTranscript
+        self.backendReachable = backendReachable
         self.updatedAt = updatedAt
     }
 
@@ -509,6 +517,7 @@ struct KeyboardBridgeStatus: Codable, Equatable {
             defaultCorrectionMode: defaultCorrectionMode,
             audioLevel: level,
             livePartialTranscript: livePartialTranscript,
+            backendReachable: backendReachable,
             updatedAt: updatedAt
         )
     }
@@ -525,7 +534,25 @@ struct KeyboardBridgeStatus: Codable, Equatable {
             defaultCorrectionMode: defaultCorrectionMode,
             audioLevel: audioLevel,
             livePartialTranscript: text?.isEmpty == true ? nil : text,
+            backendReachable: backendReachable,
             updatedAt: Date().timeIntervalSince1970
+        )
+    }
+
+    func withBackendReachable(_ reachable: Bool?) -> KeyboardBridgeStatus {
+        KeyboardBridgeStatus(
+            commandID: commandID,
+            state: state,
+            message: message,
+            resultText: resultText,
+            audioDurationSeconds: audioDurationSeconds,
+            audioByteCount: audioByteCount,
+            rawTranscriptLength: rawTranscriptLength,
+            defaultCorrectionMode: defaultCorrectionMode,
+            audioLevel: audioLevel,
+            livePartialTranscript: livePartialTranscript,
+            backendReachable: reachable,
+            updatedAt: updatedAt
         )
     }
 

@@ -267,8 +267,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func handleHoldStart() {
         Task { @MainActor in
-            if coordinator.state == .idle {
+            // Mirror toggleDictation's terminal-state handling: a fresh
+            // double-tap-hold while the preview / wand toolbar is still on
+            // screen must reset and start a new dictation, otherwise the
+            // hotkey appears dead and the user has to press Esc first.
+            switch coordinator.state {
+            case .idle:
                 await coordinator.startDictation()
+            case .preview, .success, .error:
+                coordinator.reset()
+                await coordinator.startDictation()
+            default:
+                break
             }
         }
     }

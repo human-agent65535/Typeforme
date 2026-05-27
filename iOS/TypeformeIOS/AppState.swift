@@ -2511,6 +2511,20 @@ final class AppState: ObservableObject {
         audioByteCount: Int? = nil,
             rawTranscriptLength: Int? = nil
     ) {
+        // Last-known Mac bridge reachability. `nil` (= never probed this
+        // session) is intentionally NOT mapped to `false` — the keyboard's
+        // ready dot treats `nil` optimistically (assume reachable) so a
+        // fresh-keyboard cold start doesn't flash amber before the first
+        // probe lands. A real failure flips this to `false` and the dot
+        // turns amber on the next poll.
+        let reachable: Bool? = {
+            switch routeStatus.activeKind {
+            case .local, .cloud: return true
+            case .unavailable:
+                return (routeStatus.localChecked || routeStatus.cloudChecked) ? false : nil
+            }
+        }()
+
         if keyboardAudioSession.isRecording,
            state == .standby || state == .idle,
            commandID == nil || commandID == activeKeyboardRecordingCommandID {
@@ -2526,7 +2540,8 @@ final class AppState: ObservableObject {
                 commandID: preservedCommandID,
                 state: .recording,
                 message: "Recording",
-                defaultCorrectionMode: config.correctionMode.rawValue
+                defaultCorrectionMode: config.correctionMode.rawValue,
+                backendReachable: reachable
             )
             return
         }
@@ -2541,7 +2556,8 @@ final class AppState: ObservableObject {
             audioByteCount: audioByteCount,
             rawTranscriptLength: rawTranscriptLength,
             defaultCorrectionMode: config.correctionMode.rawValue,
-            livePartialTranscript: partial
+            livePartialTranscript: partial,
+            backendReachable: reachable
         )
         keyboardBridgeStatus = status
     }
