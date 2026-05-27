@@ -1226,7 +1226,7 @@ final class AppState: ObservableObject {
             publishKeyboardStatus(
                 .sending,
                 commandID: effectiveKeyboardCommandID,
-                message: "Transcribing \(recordingInfo.durationLabel) audio",
+                message: NSLocalizedString("Transcribing", comment: "Bridge job stage"),
                 audioDurationSeconds: recordingInfo.durationSeconds,
                 audioByteCount: recordingInfo.byteCount
             )
@@ -1268,7 +1268,7 @@ final class AppState: ObservableObject {
                     publishKeyboardStatus(
                         .sending,
                         commandID: effectiveKeyboardCommandID,
-                        message: editContext.intent == .command ? "Editing selection" : "Repairing selection",
+                        message: NSLocalizedString("Refining", comment: "Bridge job stage"),
                         audioDurationSeconds: recordingInfo.durationSeconds,
                         audioByteCount: recordingInfo.byteCount
                     )

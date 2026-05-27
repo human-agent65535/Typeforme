@@ -438,6 +438,7 @@ final class DictationCoordinator: ObservableObject {
                         result,
                         target: editTarget,
                         appSnapshot: snapshot,
+                        intent: editIntent,
                         sessionID: sessionID,
                         cancelToken: cancelToken
                     )
@@ -893,8 +894,9 @@ final class DictationCoordinator: ObservableObject {
     //
     // Pattern mirrors iOS: SFSpeechRecognizer subscribes to the AudioRecorder
     // PCM tap and renders partial hypotheses into `livePartialTranscript` for
-    // the HUD. The Mac ASR + correction pipeline is unchanged — Apple Speech
-    // never replaces the canonical result. The last partial is captured into
+    // the HUD except command/wand edits, which keep the hypothesis internal.
+    // The Mac ASR + correction pipeline is unchanged — Apple Speech never
+    // replaces the canonical result. The last partial is captured into
     // `liveSnapshotAtCorrection` at stopDictation() time and threaded into
     // CorrectionRequest.alternateTranscript so the corrector LLM can use it
     // as a supplementary hypothesis (neutral framing — see baseSystem prompt).
@@ -939,6 +941,7 @@ final class DictationCoordinator: ObservableObject {
             request.addsPunctuation = true
         }
 
+        let displaysLivePartial = activeTextEditIntent != .command
         liveSpeechRecognizer = recognizer
         liveSpeechRequest = request
         liveSpeechTask = recognizer.recognitionTask(with: request) { [weak self] result, error in
@@ -950,7 +953,11 @@ final class DictationCoordinator: ObservableObject {
                     let text = result.bestTranscription.formattedString
                         .trimmingCharacters(in: .whitespacesAndNewlines)
                     if !text.isEmpty {
-                        self.livePartialTranscript = text
+                        if displaysLivePartial {
+                            self.livePartialTranscript = text
+                        } else {
+                            self.liveSnapshotAtCorrection = text
+                        }
                     }
                 }
                 if error != nil {
@@ -983,7 +990,9 @@ final class DictationCoordinator: ObservableObject {
     /// `livePartialTranscript` on screen until the Mac final replaces it.
     func endLivePartialPreviewAudio() {
         liveSpeechRequest?.endAudio()
-        liveSnapshotAtCorrection = livePartialTranscript
+        if !livePartialTranscript.isEmpty {
+            liveSnapshotAtCorrection = livePartialTranscript
+        }
     }
 
     /// Called after the Mac final result is applied (or on reset / error).
@@ -1133,6 +1142,7 @@ final class DictationCoordinator: ObservableObject {
                     TextEditResult(action: .replaceTarget, text: editResponse.text),
                     target: editTarget,
                     appSnapshot: snapshot,
+                    intent: editIntent,
                     sessionID: sessionID,
                     cancelToken: cancelToken
                 )
@@ -1274,6 +1284,7 @@ final class DictationCoordinator: ObservableObject {
         _ result: TextEditResult,
         target: TextEditTargetSnapshot,
         appSnapshot: FrontmostAppSnapshot?,
+        intent: TextEditIntent,
         sessionID: UUID,
         cancelToken: CommitCancellationToken
     ) async {
@@ -1285,7 +1296,8 @@ final class DictationCoordinator: ObservableObject {
             return
         }
 
-        let shouldAutoCommit = AppSettings.autoCommit && AppSettings.voiceUXMode == .classic
+        let shouldAutoCommit = intent == .command
+            || (AppSettings.autoCommit && AppSettings.voiceUXMode == .classic)
         if shouldAutoCommit {
             previewKind = .dictation
             previewTextEditTarget = nil
