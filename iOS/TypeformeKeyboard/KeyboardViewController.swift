@@ -178,6 +178,15 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 return before + after
             }
         }
+
+        var restyleUndoScope: RestyleUndoScope {
+            switch self {
+            case .selection:
+                return .selection
+            case .context:
+                return .context
+            }
+        }
     }
 
     private struct PendingRecordingTextTarget {
@@ -185,7 +194,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let target: TextRewriteTarget
     }
 
+    private enum RestyleUndoScope: String, Codable {
+        case selection
+        case context
+    }
+
     private struct RestyleUndoTarget: Codable {
+        let scope: RestyleUndoScope
         let text: String
         let contextBefore: String
         let contextAfter: String
@@ -213,7 +228,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private let touchLearningResetGenerationKey = "keyboard.touchLearningResetGeneration"
     private let rimeUserPhrasesRevisionKey = "keyboard.rimeUserPhrasesRevision"
     private let lastInsertedCommandIDKey = "keyboard.lastInsertedCommandID"
-    private let restyleUndoStateKey = "keyboard.restyleUndoState.v1"
+    private let restyleUndoStateKey = "keyboard.restyleUndoState.v2"
     private let textTouchLearningStatsKey = "keyboard.textTouchGaussianStats.v1"
     private let keyboardTouchTraceEnabledKey = "keyboard.touchTraceEnabled"
     private let keyPressOverlayTag = 0x74797065
@@ -696,6 +711,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             inputModeSwitch,
             voiceSendButton,
             commandButton,
+            voiceUndoButton,
             spaceButton,
             deleteButton,
             returnButton,
@@ -703,6 +719,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             candidateGridCollapseButton,
             textWandButton,
             textStylePickerButton,
+            textUndoButton,
             textToolsButton,
             textKeyboardSwitchButton,
             textHostSettingsButton,
@@ -903,6 +920,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         [
             textWandButton,
             textStylePickerButton,
+            textUndoButton,
             textToolsButton,
             textKeyboardSwitchButton,
             textHostSettingsButton,
@@ -5591,6 +5609,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             return captureSelectionTarget(selected)
         }
 
+        if let undoTarget = currentTextRewriteTargetFromActiveRestyleUndo() {
+            return undoTarget
+        }
+
         if let recentSelection = recentSelectionTargetIfFresh() {
             kbLog.notice("using cached selection target for command")
             return recentSelection
@@ -5598,6 +5620,59 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
         if let contextTarget = currentExpandedContextRewriteTarget() {
             return contextTarget
+        }
+
+        return nil
+    }
+
+    private func currentTextRewriteTargetFromActiveRestyleUndo() -> TextRewriteTarget? {
+        guard let undo = freshRestyleUndoState(),
+              let target = textRewriteTarget(matching: undo.current)
+        else { return nil }
+        kbLog.notice("using active restyle undo target for chained rewrite")
+        return target
+    }
+
+    private func textRewriteTarget(matching target: RestyleUndoTarget) -> TextRewriteTarget? {
+        let currentBefore = textDocumentProxy.documentContextBeforeInput ?? ""
+        let currentAfter = textDocumentProxy.documentContextAfterInput ?? ""
+
+        if textDocumentProxy.selectedText == target.text,
+           currentBefore == target.contextBefore,
+           currentAfter.hasPrefix(target.contextAfter) {
+            return .selection(
+                text: target.text,
+                contextBefore: target.contextBefore,
+                contextAfter: target.contextAfter
+            )
+        }
+
+        if currentBefore == target.contextBefore + target.text,
+           currentAfter.hasPrefix(target.contextAfter) {
+            switch target.scope {
+            case .selection:
+                return .selection(
+                    text: target.text,
+                    contextBefore: target.contextBefore,
+                    contextAfter: target.contextAfter
+                )
+            case .context:
+                return .context(before: target.text, after: "")
+            }
+        }
+
+        if currentBefore == target.contextBefore,
+           currentAfter.hasPrefix(target.text + target.contextAfter) {
+            switch target.scope {
+            case .selection:
+                return .selection(
+                    text: target.text,
+                    contextBefore: target.contextBefore,
+                    contextAfter: target.contextAfter
+                )
+            case .context:
+                return .context(before: "", after: target.text)
+            }
         }
 
         return nil
@@ -5841,7 +5916,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     private func recordRestyleUndoState(originalTarget: TextRewriteTarget, rewrittenText: String) {
         let now = Date().timeIntervalSince1970
-        let current = currentRestyleUndoTarget(for: rewrittenText)
+        let current = currentRestyleUndoTarget(
+            for: rewrittenText,
+            scope: originalTarget.restyleUndoScope
+        )
             ?? expectedRestyleUndoTarget(originalTarget: originalTarget, rewrittenText: rewrittenText)
 
         let restoredText: String
@@ -5871,12 +5949,14 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         switch originalTarget {
         case .selection(_, let contextBefore, let contextAfter):
             return RestyleUndoTarget(
+                scope: .selection,
                 text: rewrittenText,
                 contextBefore: contextBefore,
                 contextAfter: contextAfter
             )
         case .context:
             return RestyleUndoTarget(
+                scope: .context,
                 text: rewrittenText,
                 contextBefore: "",
                 contextAfter: ""
@@ -5884,9 +5964,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
     }
 
-    private func currentRestyleUndoTarget(for text: String) -> RestyleUndoTarget? {
+    private func currentRestyleUndoTarget(for text: String, scope: RestyleUndoScope) -> RestyleUndoTarget? {
         if textDocumentProxy.selectedText == text {
             return RestyleUndoTarget(
+                scope: scope,
                 text: text,
                 contextBefore: textDocumentProxy.documentContextBeforeInput ?? "",
                 contextAfter: textDocumentProxy.documentContextAfterInput ?? ""
@@ -5900,6 +5981,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
 
         return RestyleUndoTarget(
+            scope: scope,
             text: text,
             contextBefore: String(currentBefore.dropLast(text.count)),
             contextAfter: textDocumentProxy.documentContextAfterInput ?? ""
@@ -5907,12 +5989,14 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func targetsBelongToSameRestyleSession(_ lhs: RestyleUndoTarget, _ rhs: TextRewriteTarget) -> Bool {
-        guard lhs.text == rhs.text else { return false }
+        guard lhs.scope == rhs.restyleUndoScope,
+              lhs.text == rhs.text
+        else { return false }
         switch rhs {
         case .selection(_, let contextBefore, let contextAfter):
             return lhs.contextBefore == contextBefore && lhs.contextAfter == contextAfter
         case .context(let before, let after):
-            return lhs.contextBefore.isEmpty && lhs.contextAfter.isEmpty && lhs.text == before + after
+            return lhs.text == before + after
         }
     }
 
