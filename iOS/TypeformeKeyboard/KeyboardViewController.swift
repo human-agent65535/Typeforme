@@ -185,13 +185,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let target: TextRewriteTarget
     }
 
-    private struct RestyleUndoTarget {
+    private struct RestyleUndoTarget: Codable {
         let text: String
         let contextBefore: String
         let contextAfter: String
     }
 
-    private struct RestyleUndoState {
+    private struct RestyleUndoState: Codable {
         let restoredText: String
         let current: RestyleUndoTarget
         let updatedAt: TimeInterval
@@ -212,8 +212,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private let rimeLearningResetGenerationKey = "keyboard.rimeLearningResetGeneration"
     private let touchLearningResetGenerationKey = "keyboard.touchLearningResetGeneration"
     private let rimeUserPhrasesRevisionKey = "keyboard.rimeUserPhrasesRevision"
-    private let lastInsertedTextKey = "keyboard.lastInsertedText"
     private let lastInsertedCommandIDKey = "keyboard.lastInsertedCommandID"
+    private let restyleUndoStateKey = "keyboard.restyleUndoState.v1"
     private let textTouchLearningStatsKey = "keyboard.textTouchGaussianStats.v1"
     private let keyboardTouchTraceEnabledKey = "keyboard.touchTraceEnabled"
     private let keyPressOverlayTag = 0x74797065
@@ -395,12 +395,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     /// the rest of the orb.
     private var smoothedAudioLevel: Float = 0
     private let voiceSpinner = UIActivityIndicatorView(style: .large)
-    /// Small badge dot on the voice orb (top-right of the inner mic icon).
-    /// Green = bridge is awake / voice session ready; grey = host not
-    /// reachable or full access missing. Lets the user see at a glance whether
-    /// pressing the orb will actually start dictation. Mirrored by
-    /// `textToolsReadyDot` on the text-mode toolbar mic.
-    private let voiceReadyDot = UIView()
     private let voiceTitleLabel = UILabel()
     private let inputModeSwitch = VoiceInputModeSwitch()
     /// Driving-safe "send" button on the voice keyboard's left column,
@@ -410,9 +404,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     /// app's own send button so it's easier to hit one-handed.
     private let voiceSendButton = HitInsetButton(frame: .zero)
     private static let orbDiameter: CGFloat = 132
-    /// Voice-orb readiness badge — sized to read as a "status dot" rather
-    /// than a tappable affordance, so it doesn't compete with the orb itself.
-    private static let voiceReadyDotDiameter: CGFloat = 12
     /// Smaller variant for the 32pt text-toolbar mic button.
     private static let textToolsReadyDotDiameter: CGFloat = 8
     private static let portraitKeyboardContentHeight: CGFloat = 258
@@ -472,8 +463,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private let textStylePickerButton = UIButton(type: .system)
     private let textUndoButton = UIButton(type: .system)
     private let textToolsButton = UIButton(type: .system)
-    /// Smaller variant of `voiceReadyDot` overlaid on the text-mode toolbar
-    /// mic so the readiness signal is visible without switching to voice mode.
+    /// Text-mode toolbar mic readiness signal; voice mode uses the top-left
+    /// status dot instead of adding chrome to the orb.
     private let textToolsReadyDot = UIView()
     private let textKeyboardSwitchButton = UIButton(type: .system)
     private let textHostSettingsButton = UIButton(type: .system)
@@ -2458,9 +2449,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         voiceSpinner.translatesAutoresizingMaskIntoConstraints = false
         voiceButton.addSubview(voiceSpinner)
 
-        configureReadyDot(voiceReadyDot, diameter: Self.voiceReadyDotDiameter, borderWidth: 1.5)
-        voiceButton.addSubview(voiceReadyDot)
-
         configureCorrectionModePanel()
         configureInputModeSwitch()
         inputModeSwitch.onSelection = { [weak self] rawValue in
@@ -2517,14 +2505,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
             voiceSpinner.centerXAnchor.constraint(equalTo: voiceButton.centerXAnchor),
             voiceSpinner.centerYAnchor.constraint(equalTo: voiceButton.centerYAnchor),
-
-            // Badge sits on the top-right corner of the inner mic icon — the
-            // most natural "status of this thing" location. Half-overlap so
-            // the dot reads as attached to the icon, not a separate UI atom.
-            voiceReadyDot.centerXAnchor.constraint(equalTo: voiceIconView.trailingAnchor),
-            voiceReadyDot.centerYAnchor.constraint(equalTo: voiceIconView.topAnchor),
-            voiceReadyDot.widthAnchor.constraint(equalToConstant: Self.voiceReadyDotDiameter),
-            voiceReadyDot.heightAnchor.constraint(equalToConstant: Self.voiceReadyDotDiameter),
 
             // Left column: voiceSendButton on top, correctionModePanel
             // below. 8pt gap between them; whole column centered on the
@@ -3873,7 +3853,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let showsTopRowVoicePrint = isHoldRecording
         let updates = {
             self.statusLabel.text = self.statusText
-            self.statusDot.backgroundColor = self.statusColor
+            self.statusDot.backgroundColor = self.statusDotColor
 
             if self.keyboardFocus == .text {
                 self.voiceTitleLabel.text = NSLocalizedString("中文键盘", comment: "Title for Chinese keyboard focus")
@@ -3928,15 +3908,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             self.correctionModePanel.alpha = voiceModeDim ? 0.48 : 1
             self.voiceButton.layer.shadowColor = self.voiceShadowColor.cgColor
 
-            // Readiness dots stay color-coded across all states. During
-            // recording/sending we hide the orb badge because the orb glyph
-            // morphs into stop/hourglass and a tiny dot on top would be
-            // noise. The toolbar badge stays visible because that mic is the
-            // entry point from text mode and the user needs a continuous
-            // readiness signal there.
+            // Voice-first readiness lives in the top-left status dot. Text
+            // mode mirrors the same readiness signal on the toolbar mic.
             let readyColor = self.readyDotColor
-            self.voiceReadyDot.backgroundColor = readyColor
-            self.voiceReadyDot.alpha = (isRecordingState || isSendingState) ? 0 : 1
             self.textToolsReadyDot.backgroundColor = readyColor
 
             if showsSpinner {
@@ -4363,9 +4337,43 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             endCommandPress()
             return
         }
+        lightHaptic()
+        guard hasFullAccess else {
+            openHostForFullAccessSetup(showTextNotice: true)
+            return
+        }
+        guard !isStartRequestInFlight else {
+            showTextKeyboardNotice(NSLocalizedString("Opening Typeforme…", comment: "Inline status while dictation handoff is starting"))
+            return
+        }
+        if tapRecordingActive || currentBridgeStatus?.state == .recording {
+            cancelScheduledStop()
+            tapRecordingActive = false
+            sendBridgeCommand(.stop)
+            return
+        }
+        guard currentBridgeStatus?.state != .sending else {
+            showTextKeyboardNotice(NSLocalizedString("Transcribing", comment: "Inline status while dictation result is being processed"))
+            return
+        }
+        guard let target = currentTextRewriteTarget(),
+              !target.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else {
+            bridgeStatus = KeyboardBridgeStatus(state: .error, message: "Select text first.")
+            lastBridgeContactAt = Date().timeIntervalSince1970
+            showTextKeyboardNotice(NSLocalizedString("Select text first.", comment: "Inline status when command edit has no target"), color: .systemRed)
+            updateUI()
+            return
+        }
         isCommandPressActive = true
         voicePressBeganAt = Date().timeIntervalSince1970
-        handleCommandTapModePress()
+        cancelScheduledStop()
+        tapRecordingActive = true
+        beginDictationFromKeyboard(
+            textEditContext: keyboardTextEditContext(intent: .command, target: target),
+            target: target,
+            continuesAfterRelease: true
+        )
     }
 
     @objc private func commandPressDown() {
@@ -5181,6 +5189,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         activeRecordingTextTarget = target.map {
             PendingRecordingTextTarget(commandID: command.id, target: $0)
         }
+        if textEditContext != nil, activeMarkedTextOwner == .livePartial {
+            replaceMarkedText("")
+        }
         sendBridgeCommand(command)
     }
 
@@ -5312,10 +5323,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     @objc private func undoRestyleTapped() {
         lightHaptic()
-        guard let undo = restyleUndoState,
-              canApplyRestyleUndo,
+        guard let undo = freshRestyleUndoState(),
               replaceRestyleUndoTarget(undo.current, with: undo.restoredText)
         else {
+            clearRestyleUndoState(updateButtons: false)
             showTextKeyboardNotice(
                 NSLocalizedString("Undo unavailable", comment: "Inline status when restyle undo cannot be applied"),
                 color: .systemRed
@@ -5324,10 +5335,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             return
         }
 
-        restyleUndoState = nil
+        clearRestyleUndoState(updateButtons: false)
         recentSelectionTarget = nil
         defaults.removeObject(forKey: lastInsertedCommandIDKey)
-        defaults.removeObject(forKey: lastInsertedTextKey)
         showTextKeyboardNotice(
             NSLocalizedString("Restored", comment: "Inline status after undoing a restyle"),
             color: .systemGreen
@@ -5428,7 +5438,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             || currentBridgeStatus?.state == .sending
             || isStartRequestInFlight
             || styleRewriteCommandID != nil
-        let canUndo = !isBlocked && canApplyRestyleUndo
+        let canUndo = !isBlocked && freshRestyleUndoState() != nil
+        if canUndo {
+            textUndoButton.isHidden = false
+        }
         voiceUndoButton.isEnabled = canUndo
         voiceUndoButton.alpha = canUndo ? 1 : 0.45
         textUndoButton.isEnabled = canUndo
@@ -5436,9 +5449,17 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func clearRestyleUndoStateForManualEdit() {
-        guard restyleUndoState != nil else { return }
-        restyleUndoState = nil
+        guard restyleUndoState != nil || defaults.data(forKey: restyleUndoStateKey) != nil else { return }
+        clearRestyleUndoState(updateButtons: false)
         updateRestyleUndoButtons()
+    }
+
+    private func clearRestyleUndoState(updateButtons: Bool = true) {
+        restyleUndoState = nil
+        defaults.removeObject(forKey: restyleUndoStateKey)
+        if updateButtons {
+            updateRestyleUndoButtons()
+        }
     }
 
     /// Builds the trigger button's compact "current preset + chevron"
@@ -5579,25 +5600,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             return contextTarget
         }
 
-        if let recentResult = recentInsertedTextRewriteTarget() {
-            kbLog.notice("using recent inserted result as rewrite target")
-            return recentResult
-        }
-
         return nil
-    }
-
-    private func recentInsertedTextRewriteTarget() -> TextRewriteTarget? {
-        guard let text = defaults.string(forKey: lastInsertedTextKey),
-              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        else { return nil }
-
-        let before = textDocumentProxy.documentContextBeforeInput ?? ""
-        guard before.hasSuffix(text) else { return nil }
-
-        let contextBefore = String(before.dropLast(text.count))
-        let contextAfter = textDocumentProxy.documentContextAfterInput ?? ""
-        return .selection(text: text, contextBefore: contextBefore, contextAfter: contextAfter)
     }
 
     private func currentExpandedContextRewriteTarget() -> TextRewriteTarget? {
@@ -5784,7 +5787,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
         recordRestyleUndoState(originalTarget: target, rewrittenText: text)
         defaults.set(commandID, forKey: lastInsertedCommandIDKey)
-        defaults.set(text, forKey: lastInsertedTextKey)
         recentSelectionTarget = nil
         applyDefaultCorrectionModeFromHost(status.defaultCorrectionMode)
         bridgeStatus = KeyboardBridgeStatus(commandID: commandID, state: .result, message: "Refined", resultText: text)
@@ -5809,40 +5811,77 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 contextAfter: contextAfter
             ) else { return false }
         case .context(let before, let after):
-            replaceContextText(text, before: before, after: after)
+            guard replaceContextText(text, before: before, after: after) else { return false }
         }
         return true
     }
 
-    private var canApplyRestyleUndo: Bool {
-        guard let undo = restyleUndoState else { return false }
-        guard Date().timeIntervalSince1970 - undo.updatedAt <= restyleUndoStateTTL else { return false }
-        return canReplaceRestyleUndoTarget(undo.current)
+    private func freshRestyleUndoState() -> RestyleUndoState? {
+        let now = Date().timeIntervalSince1970
+        if let undo = restyleUndoState {
+            guard now - undo.updatedAt <= restyleUndoStateTTL else {
+                clearRestyleUndoState(updateButtons: false)
+                return nil
+            }
+            return undo
+        }
+
+        guard let data = defaults.data(forKey: restyleUndoStateKey) else { return nil }
+        guard let undo = try? JSONDecoder().decode(RestyleUndoState.self, from: data) else {
+            defaults.removeObject(forKey: restyleUndoStateKey)
+            return nil
+        }
+        guard now - undo.updatedAt <= restyleUndoStateTTL else {
+            defaults.removeObject(forKey: restyleUndoStateKey)
+            return nil
+        }
+        restyleUndoState = undo
+        return undo
     }
 
     private func recordRestyleUndoState(originalTarget: TextRewriteTarget, rewrittenText: String) {
         let now = Date().timeIntervalSince1970
-        guard let current = currentRestyleUndoTarget(for: rewrittenText) else {
-            restyleUndoState = nil
-            updateRestyleUndoButtons()
-            return
-        }
+        let current = currentRestyleUndoTarget(for: rewrittenText)
+            ?? expectedRestyleUndoTarget(originalTarget: originalTarget, rewrittenText: rewrittenText)
 
         let restoredText: String
-        if let previous = restyleUndoState,
-           now - previous.updatedAt <= restyleUndoStateTTL,
+        if let previous = freshRestyleUndoState(),
            targetsBelongToSameRestyleSession(previous.current, originalTarget) {
             restoredText = previous.restoredText
         } else {
             restoredText = originalTarget.text
         }
 
-        restyleUndoState = RestyleUndoState(
+        let next = RestyleUndoState(
             restoredText: restoredText,
             current: current,
             updatedAt: now
         )
+        restyleUndoState = next
+        if let data = try? JSONEncoder().encode(next) {
+            defaults.set(data, forKey: restyleUndoStateKey)
+        }
         updateRestyleUndoButtons()
+    }
+
+    private func expectedRestyleUndoTarget(
+        originalTarget: TextRewriteTarget,
+        rewrittenText: String
+    ) -> RestyleUndoTarget {
+        switch originalTarget {
+        case .selection(_, let contextBefore, let contextAfter):
+            return RestyleUndoTarget(
+                text: rewrittenText,
+                contextBefore: contextBefore,
+                contextAfter: contextAfter
+            )
+        case .context:
+            return RestyleUndoTarget(
+                text: rewrittenText,
+                contextBefore: "",
+                contextAfter: ""
+            )
+        }
     }
 
     private func currentRestyleUndoTarget(for text: String) -> RestyleUndoTarget? {
@@ -5877,25 +5916,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
     }
 
-    private func canReplaceRestyleUndoTarget(_ target: RestyleUndoTarget) -> Bool {
-        let currentBefore = textDocumentProxy.documentContextBeforeInput ?? ""
-        let currentAfter = textDocumentProxy.documentContextAfterInput ?? ""
-
-        if textDocumentProxy.selectedText == target.text,
-           currentBefore == target.contextBefore,
-           currentAfter.hasPrefix(target.contextAfter) {
-            return true
-        }
-
-        if currentBefore == target.contextBefore + target.text,
-           currentAfter.hasPrefix(target.contextAfter) {
-            return true
-        }
-
-        return currentBefore == target.contextBefore
-            && currentAfter.hasPrefix(target.text + target.contextAfter)
-    }
-
     private func replaceRestyleUndoTarget(_ target: RestyleUndoTarget, with text: String) -> Bool {
         if !activeMarkedText.isEmpty {
             replaceMarkedText("")
@@ -5913,15 +5933,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
         if currentBefore == target.contextBefore + target.text,
            currentAfter.hasPrefix(target.contextAfter) {
-            deleteBackward(characterCount: target.text.count)
-            textDocumentProxy.insertText(text)
-            return true
+            return replaceTextBeforeCursor(target.text, with: text)
         }
 
         if currentBefore == target.contextBefore,
            currentAfter.hasPrefix(target.text + target.contextAfter) {
-            replaceContextText(text, before: "", after: target.text)
-            return true
+            return replaceContextText(text, before: "", after: target.text)
         }
 
         kbLog.notice("restyle undo skipped: current text no longer matches undo target")
@@ -5947,30 +5964,51 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let currentBefore = textDocumentProxy.documentContextBeforeInput ?? ""
         let currentAfter = textDocumentProxy.documentContextAfterInput ?? ""
         if currentBefore.hasSuffix(original) {
-            deleteBackward(characterCount: original.count)
-            textDocumentProxy.insertText(text)
-            return true
+            return replaceTextBeforeCursor(original, with: text)
         }
 
         if currentBefore == contextBefore, currentAfter.hasPrefix(original) {
-            replaceContextText(text, before: "", after: original)
-            return true
+            return replaceContextText(text, before: "", after: original)
         }
 
         kbLog.notice("selection replacement skipped: originalLen=\(original.count, privacy: .public), beforeLen=\(currentBefore.count, privacy: .public), afterLen=\(currentAfter.count, privacy: .public)")
         return false
     }
 
-    private func replaceContextText(_ text: String, before: String, after: String) {
+    private func replaceContextText(_ text: String, before: String, after: String) -> Bool {
         guard !after.isEmpty else {
-            deleteBackward(characterCount: before.count)
-            textDocumentProxy.insertText(text)
-            return
+            return replaceTextBeforeCursor(before, with: text)
         }
 
+        guard (textDocumentProxy.documentContextAfterInput ?? "").hasPrefix(after) else {
+            return false
+        }
         textDocumentProxy.adjustTextPosition(byCharacterOffset: after.count)
-        deleteBackward(characterCount: before.count + after.count)
-        textDocumentProxy.insertText(text)
+        guard (textDocumentProxy.documentContextBeforeInput ?? "").hasSuffix(before + after) else {
+            textDocumentProxy.adjustTextPosition(byCharacterOffset: -after.count)
+            return false
+        }
+        return replaceTextBeforeCursor(before + after, with: text)
+    }
+
+    private func replaceTextBeforeCursor(_ target: String, with replacement: String) -> Bool {
+        let currentBefore = textDocumentProxy.documentContextBeforeInput ?? ""
+        guard currentBefore.hasSuffix(target) else { return false }
+        let expectedPrefix = String(currentBefore.dropLast(target.count))
+
+        deleteBackward(characterCount: target.count)
+        var afterDelete = textDocumentProxy.documentContextBeforeInput ?? ""
+        if afterDelete != expectedPrefix {
+            guard afterDelete.hasPrefix(expectedPrefix) else { return false }
+            let leftover = String(afterDelete.dropFirst(expectedPrefix.count))
+            guard !leftover.isEmpty, target.hasPrefix(leftover) else { return false }
+            deleteBackward(characterCount: leftover.count)
+            afterDelete = textDocumentProxy.documentContextBeforeInput ?? ""
+        }
+
+        guard afterDelete == expectedPrefix else { return false }
+        textDocumentProxy.insertText(replacement)
+        return true
     }
 
     private func deleteBackward(characterCount: Int) {
@@ -6730,7 +6768,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         textWandButton.isHidden = !showAllIdleIcons
         textToolsButton.isHidden = !showAllIdleIcons // mic
         textStylePickerButton.isHidden = !showAllIdleIcons
-        textUndoButton.isHidden = !showAllIdleIcons
+        textUndoButton.isHidden = !(showAllIdleIcons || freshRestyleUndoState() != nil)
         textKeyboardSwitchButton.isHidden = !showAllIdleIcons
         textHostSettingsButton.isHidden = !showAllIdleIcons || isRunningInsideHostApp
     }
@@ -7733,9 +7771,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
     }
 
-    /// Common look for both readiness dots: filled circle + thin white ring so
-    /// the badge stays legible over either the saturated orb gradient or the
-    /// toolbar's translucent material.
+    /// Common look for readiness dots: filled circle + thin white ring so the
+    /// badge stays legible over toolbar material and light/dark backgrounds.
     private func configureReadyDot(_ dot: UIView, diameter: CGFloat, borderWidth: CGFloat) {
         dot.translatesAutoresizingMaskIntoConstraints = false
         dot.isUserInteractionEnabled = false
@@ -7763,16 +7800,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         return .systemGreen
     }
 
-    private var statusColor: UIColor {
-        if !hasFullAccess { return .systemOrange }
+    private var statusDotColor: UIColor {
         if isOpeningHostApp { return .systemBlue }
-        guard isBridgeAwake else { return .systemGray3 }
         switch currentBridgeStatus?.state {
-        case .standby, .result: return .systemGreen
         case .recording: return .systemRed
         case .sending: return .systemBlue
-        case .error: return .systemOrange
-        default: return .systemGray3
+        case .error where isBridgeAwake: return .systemOrange
+        default: return readyDotColor
         }
     }
 
@@ -8214,8 +8248,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         // text it created. Rime composition also uses marked text; bridge idle
         // polls must not clear the user's in-progress Pinyin preedit.
         let partial = status.livePartialTranscript?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let showsPartial = (status.state == .recording || status.state == .sending) && !partial.isEmpty
-        if showsPartial {
+        let suppressesPartialPreview = suppressesLivePartialPreview(for: status)
+        let showsPartial = !suppressesPartialPreview
+            && (status.state == .recording || status.state == .sending)
+            && !partial.isEmpty
+        if suppressesPartialPreview, activeMarkedTextOwner == .livePartial {
+            replaceMarkedText("")
+        } else if showsPartial {
             replaceMarkedText(partial, owner: .livePartial)
         } else if status.state != .result, activeMarkedTextOwner == .livePartial {
             // .result is handled below — don't clear here or the commit step
@@ -8258,14 +8297,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 if let appliedRewriteTarget {
                     recordRestyleUndoState(originalTarget: appliedRewriteTarget, rewrittenText: text)
                 } else {
-                    restyleUndoState = nil
+                    clearRestyleUndoState(updateButtons: false)
                 }
                 defaults.set(commandID, forKey: lastInsertedCommandIDKey)
-                defaults.set(text, forKey: lastInsertedTextKey)
                 recentSelectionTarget = nil
             } else {
                 defaults.set(commandID, forKey: lastInsertedCommandIDKey)
-                defaults.set(text, forKey: lastInsertedTextKey)
                 copyFallbackText(text)
                 bridgeStatus = KeyboardBridgeStatus(commandID: commandID, state: .error, message: "Selection changed; result copied.")
             }
@@ -8308,6 +8345,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         guard signature != lastStatusSignature else { return }
         lastStatusSignature = signature
         updateUI(animated: hasPresentedInitialFrame)
+    }
+
+    private func suppressesLivePartialPreview(for status: KeyboardBridgeStatus) -> Bool {
+        guard status.state == .recording || status.state == .sending else { return false }
+        guard let activeRecordingTextTarget else { return false }
+        guard let commandID = status.commandID else { return true }
+        return commandID == activeRecordingTextTarget.commandID
     }
 
     private func shouldIgnoreRecordingStatusAfterStop(_ status: KeyboardBridgeStatus) -> Bool {
