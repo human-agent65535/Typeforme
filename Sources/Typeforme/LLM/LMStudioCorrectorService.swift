@@ -10,7 +10,7 @@ struct LMStudioCheckReport: Sendable {
 final class LMStudioCorrectorService: CorrectorService {
     let kind: CorrectionBackendKind = .externalLMStudio
 
-    static let minimumRequestTimeoutMs = 30_000
+    static let minimumRequestTimeoutMs = 100
 
     func correct(_ request: CorrectionRequest, timeoutMs: Int) async throws -> CorrectionResult {
         let (system, user) = PromptBuilder.build(for: request)

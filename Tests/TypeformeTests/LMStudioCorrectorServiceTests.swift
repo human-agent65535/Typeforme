@@ -33,7 +33,8 @@ struct LMStudioCorrectorServiceTests {
     }
 
     @Test func enforcesLMStudioMinimumTimeout() {
-        #expect(LMStudioCorrectorService.effectiveTimeoutMs(1500) == LMStudioCorrectorService.minimumRequestTimeoutMs)
+        #expect(LMStudioCorrectorService.effectiveTimeoutMs(50) == LMStudioCorrectorService.minimumRequestTimeoutMs)
+        #expect(LMStudioCorrectorService.effectiveTimeoutMs(1500) == 1500)
         #expect(LMStudioCorrectorService.effectiveTimeoutMs(45_000) == 45_000)
     }
 

@@ -2691,7 +2691,7 @@ final class AppState: ObservableObject {
         // Collapse the bridge's 6 raw stages into the 5 user-meaningful ones:
         //   audio_received    → Sending
         //   transcribing      → Transcribing
-        //   transcript_ready  → (skip; still in Transcribing, refining starts next)
+        //   transcript_ready  → Refining
         //   refining          → Refining
         //   result_ready      → Inserted
         //   failed            → <error reason>
@@ -2713,7 +2713,7 @@ final class AppState: ObservableObject {
             stageMessage = NSLocalizedString("Transcribing", comment: "Bridge job stage")
             keyboardState = .sending
         case .transcriptReady:
-            stageMessage = nil
+            stageMessage = NSLocalizedString("Refining", comment: "Bridge job stage")
             keyboardState = .sending
         case .refining:
             stageMessage = NSLocalizedString("Refining", comment: "Bridge job stage")

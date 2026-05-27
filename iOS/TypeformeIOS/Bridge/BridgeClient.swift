@@ -120,9 +120,7 @@ struct BridgeClient {
         let normalizedJobID = Self.normalizedClientJobID(clientJobID)
         let eventTask: Task<Void, Never>? = {
             guard let normalizedJobID, let onJobEvent else { return nil }
-            return Task {
-                try? await streamJobEvents(jobID: normalizedJobID, onEvent: onJobEvent)
-            }
+            return jobEventTask(jobID: normalizedJobID, onEvent: onJobEvent)
         }()
         defer {
             eventTask?.cancel()
@@ -158,9 +156,7 @@ struct BridgeClient {
         let normalizedJobID = Self.normalizedClientJobID(clientJobID)
         let eventTask: Task<Void, Never>? = {
             guard let normalizedJobID, let onJobEvent else { return nil }
-            return Task {
-                try? await streamJobEvents(jobID: normalizedJobID, onEvent: onJobEvent)
-            }
+            return jobEventTask(jobID: normalizedJobID, onEvent: onJobEvent)
         }()
         defer {
             eventTask?.cancel()
@@ -190,9 +186,7 @@ struct BridgeClient {
         let normalizedJobID = Self.normalizedClientJobID(clientJobID)
         let eventTask: Task<Void, Never>? = {
             guard let normalizedJobID, let onJobEvent else { return nil }
-            return Task {
-                try? await streamJobEvents(jobID: normalizedJobID, onEvent: onJobEvent)
-            }
+            return jobEventTask(jobID: normalizedJobID, onEvent: onJobEvent)
         }()
         defer {
             eventTask?.cancel()
@@ -211,10 +205,36 @@ struct BridgeClient {
         return try await request(path: "/v1/edit-text", method: "POST", json: payload, timeout: 30)
     }
 
+    private func jobEventTask(
+        jobID: String,
+        onEvent: @escaping @Sendable (BridgeJobStatusEvent) async -> Void
+    ) -> Task<Void, Never> {
+        Task {
+            var attempt = 0
+            while !Task.isCancelled {
+                do {
+                    if try await streamJobEvents(jobID: jobID, onEvent: onEvent) {
+                        return
+                    }
+                } catch is CancellationError {
+                    return
+                } catch {
+                    // The paired POST still returns the final result. Keep the
+                    // progress channel best-effort by reconnecting; the Mac
+                    // side replays recent job events for this client job id.
+                }
+                attempt += 1
+                let delayMs = min(1_000, 150 * attempt)
+                try? await Task.sleep(nanoseconds: UInt64(delayMs) * 1_000_000)
+            }
+        }
+    }
+
+    @discardableResult
     func streamJobEvents(
         jobID: String,
         onEvent: @Sendable (BridgeJobStatusEvent) async -> Void
-    ) async throws {
+    ) async throws -> Bool {
         guard let safeJobID = Self.normalizedClientJobID(jobID),
               let encodedJobID = safeJobID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
               let url = URL(string: "/v1/jobs/\(encodedJobID)/events", relativeTo: baseURL)?.absoluteURL
@@ -256,7 +276,7 @@ struct BridgeClient {
                 }
                 await onEvent(event)
                 if event.stage.isTerminal {
-                    return
+                    return true
                 }
                 continue
             }
@@ -268,6 +288,7 @@ struct BridgeClient {
                 dataLines.append(String(value).trimmingCharacters(in: .whitespaces))
             }
         }
+        return false
     }
 
     private func request<T: Decodable, Body: Encodable>(

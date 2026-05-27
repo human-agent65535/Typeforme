@@ -2080,7 +2080,7 @@ struct CorrectionSettingsView: View {
     private var effectiveTimeoutHint: String? {
         if backendRaw == CorrectionBackendKind.externalLMStudio.rawValue,
            timeoutMs < LMStudioCorrectorService.minimumRequestTimeoutMs {
-            return "LM Studio requests use at least \(LMStudioCorrectorService.minimumRequestTimeoutMs) ms so large local models can finish."
+            return "LM Studio requests use at least \(LMStudioCorrectorService.minimumRequestTimeoutMs) ms."
         }
         return nil
     }
