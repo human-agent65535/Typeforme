@@ -340,6 +340,7 @@ final class AppState: ObservableObject {
     private var transientMessageTask: Task<Void, Never>?
     private var initialRenderDelayTask: Task<Void, Never>?
     private var recorderPreWarmTask: Task<Void, Never>?
+    private var bridgeRefiningStatusTask: Task<Void, Never>?
     /// Live-preview transcript fed by SFSpeechRecognizer while the user is
     /// recording (and held in place until the Mac final result replaces it).
     /// Empty string = no preview surfaced (unsupported language, denied
@@ -365,6 +366,7 @@ final class AppState: ObservableObject {
     private static let localRouteCacheTTL: TimeInterval = 5
     private static let networkPathSameSignatureRefreshInterval: TimeInterval = 2
     private static let canceledKeyboardCommandTTL: TimeInterval = 10
+    private static let bridgeRefiningStatusDelay: TimeInterval = 1.2
     /// How long a `.success` / `.failure` phase sticks before reverting to
     /// `.idle`. Long enough to read, short enough not to block the next press.
     private static let phaseAutoResetDelay: TimeInterval = 2.4
@@ -1268,6 +1270,11 @@ final class AppState: ObservableObject {
             )
         }
         do {
+            scheduleBridgeRefiningStatusDelay(
+                keyboardCommandID: effectiveKeyboardCommandID,
+                recordingInfo: recordingInfo
+            )
+            defer { cancelBridgeRefiningStatusDelay() }
             let dictationContext = keyboardTextEditContext == nil ? keyboardDictationContext : nil
             let response = try await dictateWithRouteRetry(
                 initialBaseURL: baseURL,
@@ -1361,7 +1368,7 @@ final class AppState: ObservableObject {
                 rawTranscript = response.rawTranscript ?? rawTranscript
                 sessionID = response.sessionID
             } else {
-                rawTranscript = ""
+                rawTranscript = spokenTranscript
                 sessionID = nil
             }
             latestServerTiming = ServerTimingSummary(
@@ -2728,6 +2735,9 @@ final class AppState: ObservableObject {
         }
 
         guard let stageMessage else { return }
+        if (event.stage == .transcriptReady || event.stage == .refining), phase == .sending {
+            setPhase(.restyling)
+        }
         processingStatusMessage = stageMessage
         if event.stage != .resultReady, let keyboardCommandID {
             // `.resultReady` is a host-only transient — the final keyboard
@@ -2741,6 +2751,34 @@ final class AppState: ObservableObject {
                 rawTranscriptLength: transcriptLength
             )
         }
+    }
+
+    private func scheduleBridgeRefiningStatusDelay(
+        keyboardCommandID: String?,
+        recordingInfo: RecordingFileInfo
+    ) {
+        bridgeRefiningStatusTask?.cancel()
+        bridgeRefiningStatusTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(Self.bridgeRefiningStatusDelay * 1_000_000_000))
+            guard !Task.isCancelled, let self, self.phase == .sending else { return }
+            let message = NSLocalizedString("Refining", comment: "Bridge job stage")
+            self.setPhase(.restyling)
+            self.processingStatusMessage = message
+            if let keyboardCommandID {
+                self.publishKeyboardStatus(
+                    .sending,
+                    commandID: keyboardCommandID,
+                    message: message,
+                    audioDurationSeconds: recordingInfo.durationSeconds,
+                    audioByteCount: recordingInfo.byteCount
+                )
+            }
+        }
+    }
+
+    private func cancelBridgeRefiningStatusDelay() {
+        bridgeRefiningStatusTask?.cancel()
+        bridgeRefiningStatusTask = nil
     }
 
     private func applyCorrectionMetadata(
@@ -2791,6 +2829,7 @@ final class AppState: ObservableObject {
         phase = next
         if !next.isBusy {
             processingStatusMessage = nil
+            cancelBridgeRefiningStatusDelay()
         }
         phaseResetTask?.cancel()
         phaseResetTask = nil
