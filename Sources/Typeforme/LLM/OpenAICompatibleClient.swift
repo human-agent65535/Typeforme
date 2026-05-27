@@ -129,13 +129,8 @@ enum OpenAICompatibleClient {
         if let apiKey = normalizedAPIKey(apiKey) {
             request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         }
-        let (data, response): (Data, URLResponse)
-        do {
-            (data, response) = try await session.data(for: request)
-        } catch {
-            throw OpenAICompatibleClientError.unavailable(error.localizedDescription)
-        }
-        try validateHTTP(response, data: data)
+        let timeoutMs = max(1, Int((timeout * 1000).rounded()))
+        let data = try await data(for: request, timeoutMs: timeoutMs, onTimeout: nil)
         return modelIDs(data: data)
     }
 

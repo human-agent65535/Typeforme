@@ -65,4 +65,33 @@ struct LMStudioCorrectorServiceTests {
             selectFirstModel: true
         ) == "qwen3.6-27b")
     }
+
+    @Test func reportsNoLoadedModelsAsUnavailable() {
+        let report = LMStudioCorrectorService.availabilityReport(
+            modelIDs: [],
+            selectedModel: "qwen3.6-27b"
+        )
+        #expect(report.ok == false)
+        #expect(report.status == "Failed")
+        #expect(report.detail.contains("no models are loaded"))
+    }
+
+    @Test func reportsMissingSelectedModelAsUnavailable() {
+        let report = LMStudioCorrectorService.availabilityReport(
+            modelIDs: ["qwen3.6-35b"],
+            selectedModel: "qwen3.6-27b"
+        )
+        #expect(report.ok == false)
+        #expect(report.status == "Failed")
+        #expect(report.detail.contains("Selected model qwen3.6-27b is not loaded"))
+    }
+
+    @Test func reportsLoadedSelectedModelAsReady() {
+        let report = LMStudioCorrectorService.availabilityReport(
+            modelIDs: ["qwen3.6-27b"],
+            selectedModel: "qwen3.6-27b"
+        )
+        #expect(report.ok)
+        #expect(report.status == "Ready")
+    }
 }
