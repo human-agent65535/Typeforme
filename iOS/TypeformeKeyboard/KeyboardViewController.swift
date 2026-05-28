@@ -364,6 +364,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private var statusRefreshTask: Task<Void, Never>?
     private var statusRefreshGeneration: UInt64 = 0
     private var statusRefreshStartedAt: TimeInterval = 0
+    private var lastSlowUpdateUILogAt: TimeInterval = 0
+    private var lastStatusRefreshFailureLogAt: TimeInterval = 0
     private var bridgeCommandTasks: [String: Task<Void, Never>] = [:]
     private var styleRewriteTask: Task<Void, Never>?
     private var styleConfigureTask: Task<Void, Never>?
@@ -3906,10 +3908,15 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func updateUI(animated: Bool = true) {
+        let updateStartedAt = CACurrentMediaTime()
+        let state = currentBridgeStatus?.state
+        defer {
+            logSlowUpdateUI(startedAt: updateStartedAt, animated: animated, state: state)
+        }
+
         updateCorrectionModeButtons()
         configureInputModeSwitch()
 
-        let state = currentBridgeStatus?.state
         let isRecordingState = state == .recording
         let isSendingState = state == .sending
 
@@ -4053,6 +4060,17 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             stopStatusPolling()
         }
         updateTextRecordingStatus(isRecording: isRecordingState, isSending: isSendingState)
+    }
+
+    private func logSlowUpdateUI(startedAt: CFTimeInterval, animated: Bool, state: KeyboardBridgeState?) {
+        let elapsedMS = Int((CACurrentMediaTime() - startedAt) * 1_000)
+        guard elapsedMS >= 16 else { return }
+        let now = Date().timeIntervalSince1970
+        guard now - lastSlowUpdateUILogAt >= 2 else { return }
+        lastSlowUpdateUILogAt = now
+        kbLog.notice(
+            "slow updateUI elapsedMs=\(elapsedMS, privacy: .public), animated=\(animated, privacy: .public), state=\(state?.rawValue ?? "nil", privacy: .public), focus=\(self.keyboardFocus.rawValue, privacy: .public)"
+        )
     }
 
     /// Fades the regular text-toolbar items out while the voiceprint overlay
@@ -8286,7 +8304,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         stopStatusPolling()
         statusTimerInterval = interval
         statusTimer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
-            self?.refreshBridgeStatus()
+            self?.refreshBridgeStatus(captureSelection: false)
         }
         if let statusTimer {
             RunLoop.current.add(statusTimer, forMode: .common)
@@ -8408,11 +8426,22 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                     else { return }
                     self.statusRefreshTask = nil
                     self.statusRefreshStartedAt = 0
+                    let hadRecentBridgeContact = self.lastBridgeContactAt > 0
                     self.lastBridgeContactAt = 0
-                    self.updateUI()
+                    self.logStatusRefreshFailureIfNeeded(error)
+                    if hadRecentBridgeContact {
+                        self.updateUI()
+                    }
                 }
             }
         }
+    }
+
+    private func logStatusRefreshFailureIfNeeded(_ error: Error) {
+        let now = Date().timeIntervalSince1970
+        guard now - lastStatusRefreshFailureLogAt >= 2 else { return }
+        lastStatusRefreshFailureLogAt = now
+        kbLog.notice("status refresh failed: \(error.localizedDescription, privacy: .public)")
     }
 
     private func beginInsertedFlash() {
