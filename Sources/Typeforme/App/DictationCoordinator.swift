@@ -390,15 +390,13 @@ final class DictationCoordinator: ObservableObject {
                         timeoutMs: AppSettings.correctionTimeoutMs
                     )
                     previewCorrectionMode = selectedCorrectionMode
-                    previewKind = .dictation
                     lastCorrected = result.text
                     try await replaceVoiceDraftIfNeeded(result.text, sessionID: sessionID, cancelToken: cancelToken)
-                    previewRestyleSourceText = stableRestyleText(result.text)
-                    activeSessionID = nil
-                    activeCancelToken = nil
-                    PasteboardTextCommitter.copyForManualPaste(result.text)
-                    transition(to: .preview)
-                    schedulePreviewResetIfNeeded()
+                    enterPreview(
+                        text: result.text,
+                        kind: .dictation,
+                        restyleSourceText: stableRestyleText(result.text)
+                    )
                 } catch {
                     try await ensureActive(sessionID: sessionID, token: cancelToken)
                     reportError("Draft command failed: \(error.localizedDescription)")
@@ -1091,19 +1089,17 @@ final class DictationCoordinator: ObservableObject {
                     timeoutMs: AppSettings.correctionTimeoutMs
                 )
                 previewCorrectionMode = selectedCorrectionMode
-                previewKind = .dictation
                 lastCorrected = editResponse.text
                 try await replaceVoiceDraftIfNeeded(
                     editResponse.text,
                     sessionID: sessionID,
                     cancelToken: cancelToken
                 )
-                previewRestyleSourceText = stableRestyleText(editResponse.text)
-                activeSessionID = nil
-                activeCancelToken = nil
-                PasteboardTextCommitter.copyForManualPaste(editResponse.text)
-                transition(to: .preview)
-                schedulePreviewResetIfNeeded()
+                enterPreview(
+                    text: editResponse.text,
+                    kind: .dictation,
+                    restyleSourceText: stableRestyleText(editResponse.text)
+                )
                 return
             }
 
@@ -1268,15 +1264,7 @@ final class DictationCoordinator: ObservableObject {
                 scheduleAutoReset(after: Self.errorResetDelay)
             }
         } else {
-            activeSessionID = nil
-            activeCancelToken = nil
-            previewKind = .dictation
-            previewTextEditTarget = nil
-            previewTextEditAppSnapshot = nil
-            previewRestyleSourceText = nil
-            copyPreviewToPasteboard(result)
-            transition(to: .preview)
-            scheduleAutoReset(after: Self.previewResetDelay)
+            enterPreview(text: result.text, kind: .dictation)
         }
     }
 
@@ -1339,17 +1327,14 @@ final class DictationCoordinator: ObservableObject {
                 return
             }
 
-            activeSessionID = nil
-            activeCancelToken = nil
-            activeTextEditTarget = nil
-            activeTextEditIntent = nil
-            previewKind = .textEdit
-            previewTextEditTarget = target
-            previewTextEditAppSnapshot = appSnapshot
-            previewRestyleSourceText = stableRestyleText(text)
-            PasteboardTextCommitter.copyForManualPaste(text)
-            transition(to: .preview)
-            scheduleAutoReset(after: Self.previewResetDelay)
+            enterPreview(
+                text: text,
+                kind: .textEdit,
+                textEditTarget: target,
+                textEditAppSnapshot: appSnapshot,
+                restyleSourceText: stableRestyleText(text),
+                clearsTextEditRequest: true
+            )
         }
     }
 
@@ -1379,21 +1364,13 @@ final class DictationCoordinator: ObservableObject {
                 cancelToken: cancelToken
             )
             try await ensureActive(sessionID: sessionID, token: cancelToken)
-            activeSessionID = nil
-            activeCancelToken = nil
-            activeTextEditTarget = nil
-            activeTextEditIntent = nil
-            activeVoiceDraftTarget = nil
-            previewKind = kind
-            previewTextEditTarget = nil
-            previewTextEditAppSnapshot = nil
-            previewVoiceDraft = draft
-            previewVoiceDraftAppSnapshot = appSnapshot
-            previewRestyleSourceText = stableRestyleText(restyleSource, fallback: trimmed)
-            previewAnchorRect = draft.anchorRect
-            lastCorrected = trimmed
-            PasteboardTextCommitter.copyForManualPaste(trimmed)
-            transition(to: .preview)
+            enterVoiceDraftPreview(
+                draft: draft,
+                text: trimmed,
+                appSnapshot: appSnapshot,
+                kind: kind,
+                restyleSource: restyleSource
+            )
         } catch is CancellationError {
             transition(to: .idle)
         } catch TextCommitterError.cancelled {
@@ -1403,6 +1380,53 @@ final class DictationCoordinator: ObservableObject {
             reportError(error.localizedDescription)
             scheduleAutoReset(after: Self.errorResetDelay)
         }
+    }
+
+    private func enterPreview(
+        text: String,
+        kind: VoicePreviewKind,
+        textEditTarget: TextEditTargetSnapshot? = nil,
+        textEditAppSnapshot: FrontmostAppSnapshot? = nil,
+        restyleSourceText: String? = nil,
+        clearsTextEditRequest: Bool = false
+    ) {
+        activeSessionID = nil
+        activeCancelToken = nil
+        if clearsTextEditRequest {
+            activeTextEditTarget = nil
+            activeTextEditIntent = nil
+        }
+        previewKind = kind
+        previewTextEditTarget = textEditTarget
+        previewTextEditAppSnapshot = textEditAppSnapshot
+        previewRestyleSourceText = restyleSourceText
+        copyPreviewTextToPasteboard(text)
+        transition(to: .preview)
+        schedulePreviewResetIfNeeded()
+    }
+
+    private func enterVoiceDraftPreview(
+        draft: VoiceDraftTextSnapshot,
+        text: String,
+        appSnapshot: FrontmostAppSnapshot?,
+        kind: VoicePreviewKind,
+        restyleSource: String?
+    ) {
+        activeSessionID = nil
+        activeCancelToken = nil
+        activeTextEditTarget = nil
+        activeTextEditIntent = nil
+        activeVoiceDraftTarget = nil
+        previewKind = kind
+        previewTextEditTarget = nil
+        previewTextEditAppSnapshot = nil
+        previewVoiceDraft = draft
+        previewVoiceDraftAppSnapshot = appSnapshot
+        previewRestyleSourceText = stableRestyleText(restyleSource, fallback: text)
+        previewAnchorRect = draft.anchorRect
+        lastCorrected = text
+        copyPreviewTextToPasteboard(text)
+        transition(to: .preview)
     }
 
     private func replaceVoiceDraftIfNeeded(
@@ -1462,7 +1486,11 @@ final class DictationCoordinator: ObservableObject {
     }
 
     private func copyPreviewToPasteboard(_ result: CorrectionResult) {
-        let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        copyPreviewTextToPasteboard(result.text)
+    }
+
+    private func copyPreviewTextToPasteboard(_ rawText: String) {
+        let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         PasteboardTextCommitter.copyForManualPaste(text)
     }
