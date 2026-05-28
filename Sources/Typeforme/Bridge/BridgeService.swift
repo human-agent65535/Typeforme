@@ -295,18 +295,11 @@ final class BridgeService {
                 )
                 throw error
             }
-            // Correction backend failed (timeout / network / validation /
-            // unavailable). Keep the dictation usable by surfacing the raw
-            // transcript — user can copy/edit instead of losing the audio.
-            let fallbackResult = normalize(
-                CorrectionResult(action: .commit, text: trimmed, risk: .medium),
+            correction = fallbackCorrectionOutput(
+                rawTranscript: trimmed,
                 languageIDs: languageIDs,
-                correctionMode: correctionMode
-            )
-            correction = BridgeCorrectionOutput(
-                result: fallbackResult,
-                status: Self.fallbackCorrectionStatus(error),
-                error: error.localizedDescription
+                correctionMode: correctionMode,
+                error: error
             )
             correctionLatencyMs = latencyMs
         }
@@ -421,15 +414,11 @@ final class BridgeService {
                 )
                 throw error
             }
-            let fallbackResult = normalize(
-                CorrectionResult(action: .commit, text: rawTranscript, risk: .medium),
+            correction = fallbackCorrectionOutput(
+                rawTranscript: rawTranscript,
                 languageIDs: languageIDs,
-                correctionMode: correctionMode
-            )
-            correction = BridgeCorrectionOutput(
-                result: fallbackResult,
-                status: Self.fallbackCorrectionStatus(error),
-                error: error.localizedDescription
+                correctionMode: correctionMode,
+                error: error
             )
             correctionLatencyMs = latencyMs
         }
@@ -503,6 +492,26 @@ final class BridgeService {
             return "timeout"
         }
         return "fallback"
+    }
+
+    private func fallbackCorrectionOutput(
+        rawTranscript: String,
+        languageIDs: [String],
+        correctionMode: CorrectionMode,
+        error: Error
+    ) -> BridgeCorrectionOutput {
+        // Correction backend failed after ASR succeeded. Keep dictation usable
+        // by returning normalized raw text instead of dropping the audio result.
+        let fallbackResult = normalize(
+            CorrectionResult(action: .commit, text: rawTranscript, risk: .medium),
+            languageIDs: languageIDs,
+            correctionMode: correctionMode
+        )
+        return BridgeCorrectionOutput(
+            result: fallbackResult,
+            status: Self.fallbackCorrectionStatus(error),
+            error: error.localizedDescription
+        )
     }
 
     func editText(_ request: BridgeTextEditRequest) async throws -> BridgeTextEditResponse {
