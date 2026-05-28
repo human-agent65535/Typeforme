@@ -109,16 +109,7 @@ final class DictationCoordinator: ObservableObject {
         let cancelToken = CommitCancellationToken()
         activeSessionID = sessionID
         activeCancelToken = cancelToken
-        previewCorrectionMode = nil
-        previewKind = .dictation
-        previewAnchorRect = nil
-        previewTextEditTarget = nil
-        previewTextEditAppSnapshot = nil
-        activeVoiceDraftTarget = nil
-        previewVoiceDraft = nil
-        previewVoiceDraftAppSnapshot = nil
-        previewRestyleSourceText = nil
-        activeDraftCommandTargetText = nil
+        clearPreviewState()
         startInProgress = true
         stopAfterStart = false
         resetTask?.cancel(); resetTask = nil
@@ -134,9 +125,8 @@ final class DictationCoordinator: ObservableObject {
             )
             guard activeTextEditTarget != nil else {
                 startInProgress = false
-                activeSessionID = nil
-                activeCancelToken = nil
-                activeTextEditIntent = nil
+                clearActiveSession()
+                clearTextEditRequest()
                 reportError("Select text or focus a text field first")
                 scheduleAutoReset(after: Self.errorResetDelay)
                 return
@@ -148,13 +138,11 @@ final class DictationCoordinator: ObservableObject {
             )
             activeTextEditIntent = activeTextEditTarget == nil ? nil : .repairSelection
         } else {
-            activeTextEditTarget = nil
-            activeTextEditIntent = nil
+            clearTextEditRequest()
             activeVoiceDraftTarget = TextEditTargetCapture.draftInsertionTarget(in: frontmostSnapshot)
             guard activeVoiceDraftTarget != nil else {
                 startInProgress = false
-                activeSessionID = nil
-                activeCancelToken = nil
+                clearActiveSession()
                 reportError("Focus an editable text field first")
                 scheduleAutoReset(after: Self.errorResetDelay)
                 return
@@ -185,8 +173,7 @@ final class DictationCoordinator: ObservableObject {
             startInProgress = false
             stopAfterStart = false
             guard activeSessionID == sessionID else { return }
-            activeSessionID = nil
-            activeCancelToken = nil
+            clearActiveSession()
             reportError(error.localizedDescription)
             scheduleAutoReset(after: Self.errorResetDelay)
         }
@@ -242,10 +229,8 @@ final class DictationCoordinator: ObservableObject {
         activeSessionID = sessionID
         activeCancelToken = cancelToken
         activeDraftCommandTargetText = targetText
-        activeTextEditTarget = nil
-        activeTextEditIntent = nil
-        activeDictationContextBefore = ""
-        activeDictationContextAfter = ""
+        clearTextEditRequest()
+        clearDictationContext()
         startInProgress = true
         stopAfterStart = false
         resetTask?.cancel(); resetTask = nil
@@ -275,8 +260,7 @@ final class DictationCoordinator: ObservableObject {
             stopAfterStart = false
             activeDraftCommandTargetText = nil
             guard activeSessionID == sessionID else { return }
-            activeSessionID = nil
-            activeCancelToken = nil
+            clearActiveSession()
             reportError(error.localizedDescription)
             scheduleAutoReset(after: Self.errorResetDelay)
         }
@@ -353,13 +337,10 @@ final class DictationCoordinator: ObservableObject {
             let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else {
                 Log.asr.notice("empty transcript — returning to idle without commit")
-                activeSessionID = nil
-                activeCancelToken = nil
+                clearActiveSession()
                 activeDraftCommandTargetText = nil
-                activeDictationContextBefore = ""
-                activeDictationContextAfter = ""
-                activeTextEditTarget = nil
-                activeTextEditIntent = nil
+                clearDictationContext()
+                clearTextEditRequest()
                 transition(to: .idle)
                 return
             }
@@ -479,12 +460,9 @@ final class DictationCoordinator: ObservableObject {
                 )
                 try await ensureActive(sessionID: sessionID, token: cancelToken)
                 Log.coordinator.notice("corrector returned empty — back to idle")
-                activeSessionID = nil
-                activeCancelToken = nil
-                activeTextEditTarget = nil
-                activeTextEditIntent = nil
-                activeDictationContextBefore = ""
-                activeDictationContextAfter = ""
+                clearActiveSession()
+                clearTextEditRequest()
+                clearDictationContext()
                 transition(to: .idle)
             } catch let correctorError as CorrectorError where
                 correctorError == .timeout
@@ -586,26 +564,46 @@ final class DictationCoordinator: ObservableObject {
         }
     }
 
-    func reportError(_ message: String) {
-        if let token = activeCancelToken {
-            Task { await token.cancel() }
-        }
+    private func clearActiveSession() {
         activeSessionID = nil
         activeCancelToken = nil
+    }
+
+    private func clearTextEditRequest() {
         activeTextEditTarget = nil
         activeTextEditIntent = nil
+    }
+
+    private func clearDictationContext() {
         activeDictationContextBefore = ""
         activeDictationContextAfter = ""
-        previewCorrectionMode = nil
+    }
+
+    private func clearPreviewTargetState() {
         previewKind = .dictation
         previewAnchorRect = nil
         previewTextEditTarget = nil
         previewTextEditAppSnapshot = nil
-        activeVoiceDraftTarget = nil
         previewVoiceDraft = nil
         previewVoiceDraftAppSnapshot = nil
         previewRestyleSourceText = nil
+    }
+
+    private func clearPreviewState() {
+        previewCorrectionMode = nil
+        clearPreviewTargetState()
+        activeVoiceDraftTarget = nil
         activeDraftCommandTargetText = nil
+    }
+
+    func reportError(_ message: String) {
+        if let token = activeCancelToken {
+            Task { await token.cancel() }
+        }
+        clearActiveSession()
+        clearTextEditRequest()
+        clearDictationContext()
+        clearPreviewState()
         startInProgress = false
         stopAfterStart = false
         recordingStartedAt = nil
@@ -623,30 +621,18 @@ final class DictationCoordinator: ObservableObject {
         if let token = activeCancelToken {
             Task { await token.cancel() }
         }
-        activeSessionID = nil
-        activeCancelToken = nil
+        clearActiveSession()
         startInProgress = false
         stopAfterStart = false
         recordingStartedAt = nil
         lastError = nil
         lastTranscript = ""
         lastCorrected = ""
-        previewCorrectionMode = nil
-        previewKind = .dictation
-        previewAnchorRect = nil
+        clearPreviewState()
         frontmostSnapshot = nil
         remoteBridgeSessionID = nil
-        activeTextEditTarget = nil
-        activeTextEditIntent = nil
-        previewTextEditTarget = nil
-        previewTextEditAppSnapshot = nil
-        activeVoiceDraftTarget = nil
-        previewVoiceDraft = nil
-        previewVoiceDraftAppSnapshot = nil
-        previewRestyleSourceText = nil
-        activeDraftCommandTargetText = nil
-        activeDictationContextBefore = ""
-        activeDictationContextAfter = ""
+        clearTextEditRequest()
+        clearDictationContext()
         audioLevel = 0
         teardownLivePartialPreview(clearText: true)
         state = .idle
@@ -658,24 +644,12 @@ final class DictationCoordinator: ObservableObject {
         autoStopTask?.cancel(); autoStopTask = nil
         resetTask?.cancel();     resetTask = nil
         await activeCancelToken?.cancel()
-        activeSessionID = nil
-        activeCancelToken = nil
-        activeTextEditTarget = nil
-        activeTextEditIntent = nil
-        activeDictationContextBefore = ""
-        activeDictationContextAfter = ""
-        previewCorrectionMode = nil
-        previewKind = .dictation
-        previewAnchorRect = nil
-        previewTextEditTarget = nil
-        previewTextEditAppSnapshot = nil
         let draftToRemove = previewVoiceDraft
         let draftAppSnapshot = previewVoiceDraftAppSnapshot
-        activeVoiceDraftTarget = nil
-        previewVoiceDraft = nil
-        previewVoiceDraftAppSnapshot = nil
-        previewRestyleSourceText = nil
-        activeDraftCommandTargetText = nil
+        clearActiveSession()
+        clearTextEditRequest()
+        clearDictationContext()
+        clearPreviewState()
         startInProgress = false
         stopAfterStart = false
         recordingStartedAt = nil
@@ -709,22 +683,10 @@ final class DictationCoordinator: ObservableObject {
         autoStopTask?.cancel()
         resetTask?.cancel()
         Task { await activeCancelToken?.cancel() }
-        activeSessionID = nil
-        activeCancelToken = nil
-        activeTextEditTarget = nil
-        activeTextEditIntent = nil
-        activeDictationContextBefore = ""
-        activeDictationContextAfter = ""
-        previewCorrectionMode = nil
-        previewKind = .dictation
-        previewAnchorRect = nil
-        previewTextEditTarget = nil
-        previewTextEditAppSnapshot = nil
-        activeVoiceDraftTarget = nil
-        previewVoiceDraft = nil
-        previewVoiceDraftAppSnapshot = nil
-        previewRestyleSourceText = nil
-        activeDraftCommandTargetText = nil
+        clearActiveSession()
+        clearTextEditRequest()
+        clearDictationContext()
+        clearPreviewState()
         recordingStartedAt = nil
         _ = recorder.stop()
     }
@@ -825,32 +787,14 @@ final class DictationCoordinator: ObservableObject {
                 try await committer.commit(text, to: snapshot, cancelToken: cancelToken)
             }
             try await ensureActive(sessionID: sessionID, token: cancelToken)
-            previewKind = .dictation
-            previewAnchorRect = nil
-            previewTextEditTarget = nil
-            previewTextEditAppSnapshot = nil
-            previewVoiceDraft = nil
-            previewVoiceDraftAppSnapshot = nil
-            previewRestyleSourceText = nil
+            clearPreviewTargetState()
             transition(to: .success)
             scheduleAutoReset(after: 0.8)
         } catch is CancellationError {
-            previewKind = .dictation
-            previewAnchorRect = nil
-            previewTextEditTarget = nil
-            previewTextEditAppSnapshot = nil
-            previewVoiceDraft = nil
-            previewVoiceDraftAppSnapshot = nil
-            previewRestyleSourceText = nil
+            clearPreviewTargetState()
             transition(to: .idle)
         } catch TextCommitterError.cancelled {
-            previewKind = .dictation
-            previewAnchorRect = nil
-            previewTextEditTarget = nil
-            previewTextEditAppSnapshot = nil
-            previewVoiceDraft = nil
-            previewVoiceDraftAppSnapshot = nil
-            previewRestyleSourceText = nil
+            clearPreviewTargetState()
             transition(to: .idle)
         } catch {
             reportError(error.localizedDescription)
@@ -1245,9 +1189,7 @@ final class DictationCoordinator: ObservableObject {
 
         let shouldAutoCommit = AppSettings.autoCommit && AppSettings.voiceUXMode == .classic
         if shouldAutoCommit {
-            previewKind = .dictation
-            previewTextEditTarget = nil
-            previewTextEditAppSnapshot = nil
+            clearPreviewTargetState()
             transition(to: .inserting)
             do {
                 try await ensureActive(sessionID: sessionID, token: cancelToken)
@@ -1278,8 +1220,7 @@ final class DictationCoordinator: ObservableObject {
     ) async {
         let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else {
-            activeSessionID = nil
-            activeCancelToken = nil
+            clearActiveSession()
             transition(to: .idle)
             return
         }
@@ -1287,9 +1228,7 @@ final class DictationCoordinator: ObservableObject {
         let shouldAutoCommit = intent == .command
             || (AppSettings.autoCommit && AppSettings.voiceUXMode == .classic)
         if shouldAutoCommit {
-            previewKind = .dictation
-            previewTextEditTarget = nil
-            previewTextEditAppSnapshot = nil
+            clearPreviewTargetState()
             transition(to: .inserting)
             do {
                 try await ensureActive(sessionID: sessionID, token: cancelToken)
@@ -1300,8 +1239,7 @@ final class DictationCoordinator: ObservableObject {
                     cancelToken: cancelToken
                 )
                 try await ensureActive(sessionID: sessionID, token: cancelToken)
-                activeTextEditTarget = nil
-                activeTextEditIntent = nil
+                clearTextEditRequest()
                 transition(to: .success)
                 scheduleAutoReset(after: 0.8)
             } catch is CancellationError {
@@ -1349,8 +1287,7 @@ final class DictationCoordinator: ObservableObject {
     ) async {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, let target else {
-            activeSessionID = nil
-            activeCancelToken = nil
+            clearActiveSession()
             transition(to: .idle)
             return
         }
@@ -1390,11 +1327,9 @@ final class DictationCoordinator: ObservableObject {
         restyleSourceText: String? = nil,
         clearsTextEditRequest: Bool = false
     ) {
-        activeSessionID = nil
-        activeCancelToken = nil
+        clearActiveSession()
         if clearsTextEditRequest {
-            activeTextEditTarget = nil
-            activeTextEditIntent = nil
+            clearTextEditRequest()
         }
         previewKind = kind
         previewTextEditTarget = textEditTarget
@@ -1412,10 +1347,8 @@ final class DictationCoordinator: ObservableObject {
         kind: VoicePreviewKind,
         restyleSource: String?
     ) {
-        activeSessionID = nil
-        activeCancelToken = nil
-        activeTextEditTarget = nil
-        activeTextEditIntent = nil
+        clearActiveSession()
+        clearTextEditRequest()
         activeVoiceDraftTarget = nil
         previewKind = kind
         previewTextEditTarget = nil
