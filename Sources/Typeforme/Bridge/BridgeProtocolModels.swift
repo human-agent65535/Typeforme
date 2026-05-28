@@ -14,6 +14,45 @@ enum BridgeClientJobID {
     }
 }
 
+enum BridgeBaseURLNormalizer {
+    static func uniqueBridgeURLs(_ rawValues: [String]) -> [String] {
+        var seen = Set<String>()
+        var urls: [String] = []
+        for rawValue in rawValues {
+            let normalized = normalizedBaseURL(rawValue)
+            guard !normalized.isEmpty, URL(string: normalized) != nil else { continue }
+            guard seen.insert(normalized).inserted else { continue }
+            urls.append(normalized)
+        }
+        return urls
+    }
+
+    static func normalizedBaseURL(_ rawValue: String) -> String {
+        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+        if trimmed.hasPrefix("http://") || trimmed.hasPrefix("https://") {
+            return trimmed
+        }
+        if isLocalBridgeHost(trimmed) {
+            return "http://\(trimmed)"
+        }
+        return "https://\(trimmed)"
+    }
+
+    private static func isLocalBridgeHost(_ value: String) -> Bool {
+        if value.hasPrefix("[::1]") || value.hasPrefix("::1") {
+            return true
+        }
+        let host = URLComponents(string: "http://\(value)")?.host ?? value
+        return host == "localhost"
+            || host.hasPrefix("127.")
+            || host.hasPrefix("192.168.")
+            || host.hasPrefix("10.")
+            || host.range(of: #"^172\.(1[6-9]|2[0-9]|3[0-1])\."#, options: .regularExpression) != nil
+            || host == "::1"
+    }
+}
+
 struct BridgeSettingOption: Codable, Sendable, Identifiable, Hashable {
     let id: String
     let displayName: String

@@ -40,15 +40,7 @@ struct ClientBridgeConfiguration: Sendable, Equatable {
     }
 
     static func uniqueBridgeURLs(_ rawValues: [String]) -> [String] {
-        var seen = Set<String>()
-        var urls: [String] = []
-        for rawValue in rawValues {
-            let trimmed = normalizedBaseURL(rawValue)
-            guard !trimmed.isEmpty, URL(string: trimmed) != nil else { continue }
-            guard seen.insert(trimmed).inserted else { continue }
-            urls.append(trimmed)
-        }
-        return urls
+        BridgeBaseURLNormalizer.uniqueBridgeURLs(rawValues)
     }
 
     static func rawValue(for urls: [String]) -> String {
@@ -56,28 +48,7 @@ struct ClientBridgeConfiguration: Sendable, Equatable {
     }
 
     static func normalizedBaseURL(_ rawValue: String) -> String {
-        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return "" }
-        if trimmed.hasPrefix("http://") || trimmed.hasPrefix("https://") {
-            return trimmed
-        }
-        if isLocalBridgeHost(trimmed) {
-            return "http://\(trimmed)"
-        }
-        return "https://\(trimmed)"
-    }
-
-    private static func isLocalBridgeHost(_ value: String) -> Bool {
-        if value.hasPrefix("[::1]") || value.hasPrefix("::1") {
-            return true
-        }
-        let host = URLComponents(string: "http://\(value)")?.host ?? value
-        return host == "localhost"
-            || host.hasPrefix("127.")
-            || host.hasPrefix("192.168.")
-            || host.hasPrefix("10.")
-            || host.range(of: #"^172\.(1[6-9]|2[0-9]|3[0-1])\."#, options: .regularExpression) != nil
-            || host == "::1"
+        BridgeBaseURLNormalizer.normalizedBaseURL(rawValue)
     }
 
     static func fromPairingPayload(_ payload: BridgePairingPayload) -> ClientBridgeConfiguration {
