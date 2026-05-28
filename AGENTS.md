@@ -31,6 +31,12 @@
 
 - Use the Xcode-backed scripts for project verification.
 - Do not rely on bare `xcodebuild` or `xcrun`; local `xcode-select` may point to Command Line Tools. Use `/Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild` directly, or set `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer` for direct `xcodebuild` / `xcrun` commands.
+- To classify required checks for the current diff:
+
+```sh
+scripts/agent-required-checks.sh
+```
+
 - macOS tests:
 
 ```sh
