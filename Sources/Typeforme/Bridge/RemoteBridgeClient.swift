@@ -313,28 +313,34 @@ struct RemoteBridgeClient {
     }
 
     private func validate(_ response: BridgeDictateResponse) throws {
-        if response.correctionStatus == "error" {
-            throw RemoteBridgeClientError.correctionFailed(response.correctionError ?? "")
-        }
-        if response.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            throw RemoteBridgeClientError.emptyResult
-        }
+        try validateTextResponse(
+            text: response.text,
+            status: response.correctionStatus,
+            error: response.correctionError
+        )
     }
 
     private func validate(_ response: BridgeRestyleResponse) throws {
-        if response.correctionStatus == "error" {
-            throw RemoteBridgeClientError.correctionFailed(response.correctionError ?? "")
-        }
-        if response.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            throw RemoteBridgeClientError.emptyResult
-        }
+        try validateTextResponse(
+            text: response.text,
+            status: response.correctionStatus,
+            error: response.correctionError
+        )
     }
 
     private func validate(_ response: BridgeTextEditResponse) throws {
-        if response.editStatus == "error" {
-            throw RemoteBridgeClientError.correctionFailed(response.editError ?? "")
+        try validateTextResponse(
+            text: response.text,
+            status: response.editStatus,
+            error: response.editError
+        )
+    }
+
+    private func validateTextResponse(text: String, status: String, error: String?) throws {
+        if status == "error" {
+            throw RemoteBridgeClientError.correctionFailed(error ?? "")
         }
-        if response.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             throw RemoteBridgeClientError.emptyResult
         }
     }
@@ -356,18 +362,7 @@ struct RemoteBridgeClient {
         contentType: String? = nil,
         timeout: TimeInterval
     ) async throws -> T {
-        guard let url = URL(string: path, relativeTo: baseURL)?.absoluteURL else {
-            throw RemoteBridgeClientError.invalidURL
-        }
-        var request = URLRequest(url: url)
-        request.httpMethod = method
-        request.timeoutInterval = timeout
-        request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.setValue("gzip", forHTTPHeaderField: "Accept-Encoding")
-        request.setValue("no-store", forHTTPHeaderField: "Cache-Control")
-        BridgeClientIdentity.apply(to: &request)
+        var request = try makeRequest(path: path, method: method, timeout: timeout)
         if let body {
             request.httpBody = body
             request.setValue(contentType ?? "application/octet-stream", forHTTPHeaderField: "Content-Type")
@@ -385,6 +380,16 @@ struct RemoteBridgeClient {
         contentType: String,
         timeout: TimeInterval
     ) async throws -> T {
+        var request = try makeRequest(path: path, method: method, timeout: timeout)
+        request.setValue(contentType, forHTTPHeaderField: "Content-Type")
+        request.setValue(String(contentLength), forHTTPHeaderField: "Content-Length")
+        request.httpBodyStream = InputStream(url: bodyFileURL)
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        return try decodeResponse(data: data, response: response)
+    }
+
+    private func makeRequest(path: String, method: String, timeout: TimeInterval) throws -> URLRequest {
         guard let url = URL(string: path, relativeTo: baseURL)?.absoluteURL else {
             throw RemoteBridgeClientError.invalidURL
         }
@@ -396,13 +401,8 @@ struct RemoteBridgeClient {
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("gzip", forHTTPHeaderField: "Accept-Encoding")
         request.setValue("no-store", forHTTPHeaderField: "Cache-Control")
-        request.setValue(contentType, forHTTPHeaderField: "Content-Type")
-        request.setValue(String(contentLength), forHTTPHeaderField: "Content-Length")
-        request.httpBodyStream = InputStream(url: bodyFileURL)
         BridgeClientIdentity.apply(to: &request)
-
-        let (data, response) = try await URLSession.shared.data(for: request)
-        return try decodeResponse(data: data, response: response)
+        return request
     }
 
     private func decodeResponse<T: Decodable>(data: Data, response: URLResponse) throws -> T {
