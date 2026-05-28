@@ -37,6 +37,7 @@ final class HUDWindowController {
     private static let idleSize: CGFloat = 40
     private static let previewMaxHeight: CGFloat = 420
     private static let previewWidth: CGFloat = 620
+    private static let degradedSuccessWidth: CGFloat = 220
     private static let voiceDraftBarSize = NSSize(width: 552, height: 48)
     private static let bottomMargin: CGFloat = 80
     private static let entranceLift: CGFloat = 14
@@ -45,6 +46,7 @@ final class HUDWindowController {
     ///   top padding (14) + bottom padding (6) + VStack spacing (20) + chip row (~28) + small safety buffer (4).
     /// Matches `HUDView.expandedPreviewBody`'s natural height exactly.
     private static let previewChromeHeight: CGFloat = 14 + 6 + 20 + 28 + 4
+    private static let previewWarningHeight: CGFloat = 36
     /// The anchor `y` is the BOTTOM edge of the panel. Persisted to disk in
     /// this key; older builds wrote the panel center, but bottom-anchoring
     /// stops the HUD from sliding lower whenever the preview grows tall.
@@ -86,13 +88,14 @@ final class HUDWindowController {
         // partial changes — the corrected text grows / shrinks the preview
         // panel; the live partial grows / shrinks the compact body while the
         // user is actively dictating.
-        Publishers.CombineLatest3(
+        Publishers.CombineLatest4(
             coordinator.$state.removeDuplicates(),
             coordinator.$lastCorrected.removeDuplicates(),
-            coordinator.$livePartialTranscript.removeDuplicates()
+            coordinator.$livePartialTranscript.removeDuplicates(),
+            coordinator.$lastWarning.removeDuplicates()
         )
         .receive(on: DispatchQueue.main)
-        .sink { [weak self] state, _, _ in
+        .sink { [weak self] state, _, _, _ in
             self?.applyWidth(for: state, animated: true)
         }
         .store(in: &cancellables)
@@ -369,6 +372,8 @@ final class HUDWindowController {
             return previewSize()
         case .correcting:
             return livePartialSize(for: state) ?? NSSize(width: Self.width(for: state), height: Self.compactHeight)
+        case .success where coordinator.lastWarning?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false:
+            return NSSize(width: Self.degradedSuccessWidth, height: Self.compactHeight)
         default:
             return NSSize(width: Self.width(for: state), height: Self.compactHeight)
         }
@@ -387,13 +392,18 @@ final class HUDWindowController {
         // a 200pt-tall panel with empty material below the chips.
         let raw = coordinator.lastCorrected.trimmingCharacters(in: .whitespacesAndNewlines)
         let text = raw.isEmpty ? "Preview" : raw
-        if cachedPreviewText == text, let cachedPreviewSize {
+        let warning = coordinator.lastWarning?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let cacheKey = warning.isEmpty ? text : "\(text)|warning:\(warning)"
+        if cachedPreviewText == cacheKey, let cachedPreviewSize {
             return cachedPreviewSize
         }
         let textHeight = Self.measuredTextHeight(for: text, inWidth: Self.previewWidth - 36)
-        let height = min(textHeight + Self.previewChromeHeight, Self.previewMaxHeight)
+        let warningHeight: CGFloat = !warning.isEmpty
+            ? Self.previewWarningHeight
+            : 0
+        let height = min(textHeight + warningHeight + Self.previewChromeHeight, Self.previewMaxHeight)
         let size = NSSize(width: Self.previewWidth, height: height)
-        cachedPreviewText = text
+        cachedPreviewText = cacheKey
         cachedPreviewSize = size
         return size
     }

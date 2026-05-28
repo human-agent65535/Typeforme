@@ -76,6 +76,13 @@ struct HUDView: View {
                     .lineLimit(2)
                     .truncationMode(.middle)
                     .frame(maxWidth: .infinity, alignment: .leading)
+            } else if coordinator.state == .success, let warningText {
+                Text(warningText)
+                    .font(.system(size: 13, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             } else if showsLivePartial {
                 Text(coordinator.livePartialTranscript)
                     .font(.system(size: 13.5, weight: .medium, design: .rounded))
@@ -126,6 +133,12 @@ struct HUDView: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .textSelection(.enabled)
+            if let warningText {
+                Label(warningText, systemImage: "exclamationmark.triangle.fill")
+                    .font(.system(size: 11.5, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.orange)
+                    .lineLimit(1)
+            }
             // Bottom: tone chips on the left, primary commit on the right.
             HStack(spacing: 8) {
                 ModeChipRow(coordinator: coordinator, disabled: coordinator.state == .correcting)
@@ -158,6 +171,11 @@ struct HUDView: View {
     private var previewText: String {
         let trimmed = coordinator.lastCorrected.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? "Preview" : trimmed
+    }
+
+    private var warningText: String? {
+        let trimmed = coordinator.lastWarning?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     private var isVoiceDraftMode: Bool {
@@ -240,6 +258,9 @@ struct HUDView: View {
     // MARK: - State helpers
 
     private var iconSymbol: String {
+        if coordinator.state == .success, warningText != nil {
+            return "exclamationmark.triangle.fill"
+        }
         switch coordinator.state {
         case .idle:         return "mic"
         case .transcribing: return "waveform"
@@ -253,6 +274,9 @@ struct HUDView: View {
     }
 
     private var stateColor: Color {
+        if warningText != nil, coordinator.state == .preview || coordinator.state == .success {
+            return .orange
+        }
         switch coordinator.state {
         case .idle:         return .clear
         case .recording:    return .red
@@ -283,7 +307,7 @@ struct HUDView: View {
                 ? NSLocalizedString("Preview", comment: "HUD status")
                 : coordinator.lastCorrected
         case .inserting:    return NSLocalizedString("Inserting…", comment: "HUD status")
-        case .success:      return NSLocalizedString("Done", comment: "HUD status")
+        case .success:      return warningText ?? NSLocalizedString("Done", comment: "HUD status")
         case .error:        return coordinator.lastError ?? NSLocalizedString("Error", comment: "HUD error fallback")
         }
     }

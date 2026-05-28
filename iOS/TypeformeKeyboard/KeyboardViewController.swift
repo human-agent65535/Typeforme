@@ -325,6 +325,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private var isCommandPressActive = false
     private var activeRecordingCommandID: String?
     private var activeRecordingTextTarget: PendingRecordingTextTarget?
+    private var activeRecordingTextEditIntent: KeyboardTextEditIntent?
     private var pendingStopCommandID: String?
     private var recentSelectionTarget: TextRewriteTarget?
     private var recentSelectionCapturedAt: TimeInterval = 0
@@ -3991,8 +3992,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         textToolbarVoicePrint.alpha = showsTextToolbarVoicePrint ? 1 : 0
         if showsTextToolbarStatus {
             if isInsertedFlash {
-                textToolbarStatusLabel.text = NSLocalizedString("Inserted", comment: "Bridge job stage")
-                textToolbarStatusLabel.textColor = .systemGreen
+                textToolbarStatusLabel.text = insertedStatusTitle
+                textToolbarStatusLabel.textColor = isCurrentResultWithoutRefine ? .systemOrange : .systemGreen
             } else if isErrorState {
                 textToolbarStatusLabel.text = currentBridgeStatus?.message
                 textToolbarStatusLabel.textColor = .systemRed
@@ -4366,7 +4367,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             return
         }
         guard currentBridgeStatus?.state != .sending else {
-            showTextKeyboardNotice(NSLocalizedString("Transcribing", comment: "Inline status while dictation result is being processed"))
+            showTextKeyboardNotice(sendingStatusTitle)
             return
         }
 
@@ -4408,7 +4409,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             return
         }
         guard currentBridgeStatus?.state != .sending else {
-            showTextKeyboardNotice(NSLocalizedString("Transcribing", comment: "Inline status while dictation result is being processed"))
+            showTextKeyboardNotice(sendingStatusTitle)
             return
         }
         guard let target = currentTextRewriteTarget(),
@@ -4742,6 +4743,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         shouldStopWhenStartCompletes = false
         shouldCancelWhenStartCompletes = false
         tapRecordingActive = false
+        activeRecordingTextEditIntent = nil
         activeRecordingTextTarget = nil
         return false
     }
@@ -4759,6 +4761,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
         isVoicePressActive = false
         isCommandPressActive = false
+        activeRecordingTextEditIntent = nil
         activeRecordingTextTarget = nil
         cancelScheduledHostOpen()
         // Intentional product workaround: third-party keyboard extensions
@@ -5249,6 +5252,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             dictationContext: textEditContext == nil ? currentDictationContext() : nil
         )
         activeRecordingCommandID = command.id
+        activeRecordingTextEditIntent = textEditContext?.intent
         activeRecordingTextTarget = target.map {
             PendingRecordingTextTarget(commandID: command.id, target: $0)
         }
@@ -5266,6 +5270,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             if status?.state == .recording || currentBridgeStatus?.state == .recording {
                 sendBridgeCommand(.cancel)
             }
+            activeRecordingTextEditIntent = nil
             activeRecordingTextTarget = nil
             return
         }
@@ -5304,6 +5309,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         isCommandPressActive = false
         tapRecordingActive = false
         activeRecordingCommandID = nil
+        activeRecordingTextEditIntent = nil
         activeRecordingTextTarget = nil
         pendingStopCommandID = nil
         cancelScheduledHostOpen()
@@ -5333,6 +5339,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             sendBridgeCommand(.cancel)
         }
         activeRecordingTextTarget = nil
+        activeRecordingTextEditIntent = nil
         activeRecordingCommandID = nil
         pendingStopCommandID = nil
     }
@@ -5909,7 +5916,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         defaults.set(commandID, forKey: lastInsertedCommandIDKey)
         recentSelectionTarget = nil
         applyDefaultCorrectionModeFromHost(status.defaultCorrectionMode)
-        bridgeStatus = KeyboardBridgeStatus(commandID: commandID, state: .result, message: "Refined", resultText: text)
+        let resultMessage = status.message
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .contains("without refine")
+            ? status.message
+            : "Refined"
+        bridgeStatus = KeyboardBridgeStatus(commandID: commandID, state: .result, message: resultMessage, resultText: text)
         lastBridgeContactAt = Date().timeIntervalSince1970
         updateUI()
     }
@@ -8073,10 +8086,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     /// Top-left status pill is a *bridge session indicator*: a coarse-grained
-    /// view of where the keyboard session is in its lifecycle (Ready /
-    /// Recording / Sending / Inserted / Issue). The granular per-stage label
-    /// (Transcribing / Refining / …) lives on the voice orb title; text mode
-    /// only uses the toolbar overlay while recording, sending, or showing an error.
+    /// view of where the keyboard session is in its lifecycle. Idle/standby
+    /// copy mirrors the readiness dot so gray/orange states are not labeled
+    /// "Ready". While sending, it mirrors the host's live stage label so text
+    /// actions can distinguish plain dictation from command editing.
     private var statusText: String {
         if !hasFullAccess {
             return NSLocalizedString("Full Access", comment: "Status when keyboard full access is missing")
@@ -8084,25 +8097,35 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         if isOpeningHostApp {
             return NSLocalizedString("Opening", comment: "Status while host opens")
         }
-        let ready = NSLocalizedString("Ready", comment: "Status idle/standby")
-        if !isBridgeAwake { return ready }
-        guard let status = currentBridgeStatus else { return ready }
+        guard let status = currentBridgeStatus else { return readinessStatusText }
         switch status.state {
         case .standby:
-            return ready
+            return readinessStatusText
         case .recording:
             return NSLocalizedString("Recording", comment: "Status active recording")
         case .sending:
-            return NSLocalizedString("Transcribing", comment: "Status during transcription/sending")
+            return sendingStatusTitle
         case .result:
-            return NSLocalizedString("Inserted", comment: "Status after result inserted")
+            return isCurrentResultWithoutRefine
+                ? NSLocalizedString("No refine", comment: "Status after result inserted without refinement")
+                : NSLocalizedString("Inserted", comment: "Status after result inserted")
         case .error:
             return isBridgeAwake
                 ? NSLocalizedString("Issue", comment: "Status when bridge errored")
-                : ready
+                : readinessStatusText
         case .idle:
-            return ready
+            return readinessStatusText
         }
+    }
+
+    private var readinessStatusText: String {
+        if !isBridgeAwake {
+            return NSLocalizedString("Open app", comment: "Status when host app is not reachable")
+        }
+        if currentBridgeStatus?.backendReachable == false {
+            return NSLocalizedString("Mac offline", comment: "Status when paired Mac Bridge is not reachable")
+        }
+        return NSLocalizedString("Ready", comment: "Status idle/standby")
     }
 
     private var sendingStatusTitle: String {
@@ -8112,6 +8135,28 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let message = currentBridgeStatus?.message.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if !message.isEmpty { return message }
         return NSLocalizedString("Transcribing", comment: "Bridge job stage")
+    }
+
+    private var stopProcessingStatusTitle: String {
+        activeRecordingTextEditIntent == .command
+            ? NSLocalizedString("Understanding", comment: "Bridge job stage while understanding a voice command")
+            : NSLocalizedString("Transcribing", comment: "Bridge job stage")
+    }
+
+    private var isCurrentResultWithoutRefine: Bool {
+        guard currentBridgeStatus?.state == .result else { return false }
+        let message = currentBridgeStatus?.message.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        return message.contains("without refine")
+    }
+
+    private var insertedStatusTitle: String {
+        guard isCurrentResultWithoutRefine else {
+            return NSLocalizedString("Inserted", comment: "Bridge job stage")
+        }
+        let message = currentBridgeStatus?.message.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return message.isEmpty
+            ? NSLocalizedString("Inserted without refine", comment: "Bridge job stage")
+            : message
     }
 
     private func syncKeyboardSettingsToHost() {
@@ -8151,6 +8196,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     private func sendLocalBridgeCommand(_ command: KeyboardBridgeCommand) {
         if command.action == .start || command.action == .stop || command.action == .cancel {
+            if command.action == .start {
+                activeRecordingTextEditIntent = command.textEditContext?.intent
+            }
             if command.action == .start, inputMode == .tap {
                 tapRecordingActive = true
             }
@@ -8164,13 +8212,25 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             if command.action == .cancel {
                 pendingStopCommandID = nil
                 activeRecordingCommandID = nil
+                activeRecordingTextEditIntent = nil
                 activeRecordingTextTarget = nil
                 cancelScheduledHostOpen()
+            }
+            let message: String
+            switch command.action {
+            case .start:
+                message = "Starting recording"
+            case .cancel:
+                message = "Ready"
+            case .stop:
+                message = stopProcessingStatusTitle
+            case .configure, .restyleText:
+                message = "Ready"
             }
             bridgeStatus = KeyboardBridgeStatus(
                 commandID: command.id,
                 state: command.action == .start ? .standby : (command.action == .cancel ? .standby : .sending),
-                message: command.action == .start ? "Starting recording" : (command.action == .cancel ? "Ready" : "Transcribing")
+                message: message
             )
             lastBridgeContactAt = Date().timeIntervalSince1970
             updateUI()
@@ -8209,6 +8269,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                             return
                         }
                         self.isStartRequestInFlight = false
+                        self.activeRecordingTextEditIntent = nil
                         self.activeRecordingTextTarget = nil
                         self.openHostForDictation()
                         return
@@ -8239,7 +8300,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             bridgeStatus = KeyboardBridgeStatus(
                 commandID: commandID,
                 state: action == .start ? .standby : .sending,
-                message: action == .start ? "Starting recording" : "Transcribing"
+                message: action == .start ? "Starting recording" : stopProcessingStatusTitle
             )
             lastBridgeContactAt = Date().timeIntervalSince1970
             updateUI()
@@ -8264,6 +8325,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             tapRecordingActive = false
             pendingStopCommandID = nil
             activeRecordingCommandID = nil
+            activeRecordingTextEditIntent = nil
             activeRecordingTextTarget = nil
             cancelScheduledHostOpen()
             _ = postAuthenticatedKeyboardRequest(KeyboardDarwinNotificationName.requestCancelDictation)
@@ -8292,6 +8354,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         isCommandPressActive = false
         tapRecordingActive = false
         activeRecordingCommandID = nil
+        activeRecordingTextEditIntent = nil
         pendingStopCommandID = nil
     }
 
@@ -8519,6 +8582,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 didApply = applyRewrittenText(text, replacing: pendingTarget.target)
                 appliedRewriteTarget = pendingTarget.target
                 activeRecordingTextTarget = nil
+                activeRecordingTextEditIntent = nil
             } else if activeRecordingTextTarget != nil {
                 didApply = false
                 appliedRewriteTarget = nil
@@ -8546,10 +8610,15 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 copyFallbackText(text)
                 bridgeStatus = KeyboardBridgeStatus(commandID: commandID, state: .error, message: "Selection changed; result copied.")
             }
+            if activeRecordingTextTarget?.commandID == commandID {
+                activeRecordingTextTarget = nil
+            }
+            activeRecordingTextEditIntent = nil
         }
 
         if status.state == .error || status.state == .idle {
             activeRecordingTextTarget = nil
+            activeRecordingTextEditIntent = nil
             recentSelectionTarget = nil
         }
 

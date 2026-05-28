@@ -106,6 +106,8 @@
 "Sending" = "发送中";
 "Transcribing" = "转写中";
 "Refining" = "优化中";
+"Understanding" = "理解中";
+"Editing" = "编辑中";
 "Inserted" = "已插入";
 
 // 配对和路由

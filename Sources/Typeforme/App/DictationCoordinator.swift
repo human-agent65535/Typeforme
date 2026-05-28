@@ -12,6 +12,7 @@ import Speech
 final class DictationCoordinator: ObservableObject {
     @Published private(set) var state: DictationState = .idle
     @Published private(set) var lastError: String?
+    @Published private(set) var lastWarning: String?
     @Published private(set) var lastTranscript: String = ""
     @Published private(set) var lastCorrected: String = ""
     @Published private(set) var audioLevel: Float = 0
@@ -60,8 +61,11 @@ final class DictationCoordinator: ObservableObject {
     private var liveSnapshotAtCorrection: String = ""
 
     private static let errorResetDelay: TimeInterval = 4.0
+    private static let degradedSuccessResetDelay: TimeInterval = 1.8
     private static let previewResetDelay: TimeInterval = 12.0
     private static let minimumToggleStopInterval: TimeInterval = 0.6
+    private static let previewWithoutRefineMessage = "Preview without refine"
+    private static let insertedWithoutRefineMessage = "Inserted without refine"
 
     init(dictionary: UserDictionaryStore) {
         self.dictionary = dictionary
@@ -446,6 +450,7 @@ final class DictationCoordinator: ObservableObject {
                     timeoutMs: AppSettings.correctionTimeoutMs
                 )
                 previewCorrectionMode = request.correctionMode
+                lastWarning = nil
                 lastCorrected = normalizedResult.text
                 await finish(with: normalizedResult, sessionID: sessionID, cancelToken: cancelToken)
             } catch CorrectorError.empty {
@@ -490,6 +495,7 @@ final class DictationCoordinator: ObservableObject {
                     timeoutMs: AppSettings.correctionTimeoutMs
                 )
                 previewCorrectionMode = request.correctionMode
+                lastWarning = Self.previewWithoutRefineMessage
                 lastCorrected = fallbackResult.text
                 await finish(with: fallbackResult, sessionID: sessionID, cancelToken: cancelToken)
             }
@@ -564,6 +570,15 @@ final class DictationCoordinator: ObservableObject {
         }
     }
 
+    private static func isCorrectionDegradedStatus(_ status: String?) -> Bool {
+        switch status?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "fallback", "timeout":
+            return true
+        default:
+            return false
+        }
+    }
+
     private func clearActiveSession() {
         activeSessionID = nil
         activeCancelToken = nil
@@ -594,6 +609,7 @@ final class DictationCoordinator: ObservableObject {
         clearPreviewTargetState()
         activeVoiceDraftTarget = nil
         activeDraftCommandTargetText = nil
+        lastWarning = nil
     }
 
     func reportError(_ message: String) {
@@ -609,6 +625,7 @@ final class DictationCoordinator: ObservableObject {
         recordingStartedAt = nil
         teardownLivePartialPreview(clearText: true)
         lastError = message
+        lastWarning = nil
         Log.coordinator.error("\(message, privacy: .public)")
         state = .error
     }
@@ -626,6 +643,7 @@ final class DictationCoordinator: ObservableObject {
         stopAfterStart = false
         recordingStartedAt = nil
         lastError = nil
+        lastWarning = nil
         lastTranscript = ""
         lastCorrected = ""
         clearPreviewState()
@@ -728,6 +746,7 @@ final class DictationCoordinator: ObservableObject {
             let result = try await corrector.correct(request, timeoutMs: AppSettings.correctionTimeoutMs)
             try await ensureActive(sessionID: sessionID, token: cancelToken)
             let normalizedResult = normalizeResult(result, correctionMode: request.correctionMode)
+            lastWarning = nil
             lastCorrected = normalizedResult.text
             try await replaceVoiceDraftIfNeeded(
                 normalizedResult.text,
@@ -788,8 +807,10 @@ final class DictationCoordinator: ObservableObject {
             }
             try await ensureActive(sessionID: sessionID, token: cancelToken)
             clearPreviewTargetState()
+            let warning = lastWarning == nil ? nil : Self.insertedWithoutRefineMessage
+            lastWarning = warning
             transition(to: .success)
-            scheduleAutoReset(after: 0.8)
+            scheduleAutoReset(after: warning == nil ? 0.8 : Self.degradedSuccessResetDelay)
         } catch is CancellationError {
             clearPreviewTargetState()
             transition(to: .idle)
@@ -1104,6 +1125,9 @@ final class DictationCoordinator: ObservableObject {
                 timeoutMs: AppSettings.correctionTimeoutMs
             )
             previewCorrectionMode = selectedCorrectionMode
+            lastWarning = Self.isCorrectionDegradedStatus(response.correctionStatus)
+                ? Self.previewWithoutRefineMessage
+                : nil
             lastCorrected = result.text
             await finish(with: result, sessionID: sessionID, cancelToken: cancelToken)
         } catch is CancellationError {
@@ -1152,6 +1176,9 @@ final class DictationCoordinator: ObservableObject {
             )
             remoteBridgeSessionID = response.sessionID
             previewCorrectionMode = newMode
+            lastWarning = Self.isCorrectionDegradedStatus(response.correctionStatus)
+                ? Self.previewWithoutRefineMessage
+                : nil
             lastCorrected = result.text
             try await replaceVoiceDraftIfNeeded(result.text, sessionID: sessionID, cancelToken: cancelToken)
             copyPreviewToPasteboard(result)
@@ -1195,8 +1222,10 @@ final class DictationCoordinator: ObservableObject {
                 try await ensureActive(sessionID: sessionID, token: cancelToken)
                 try await committer.commit(result.text, to: frontmostSnapshot, cancelToken: cancelToken)
                 try await ensureActive(sessionID: sessionID, token: cancelToken)
+                let warning = lastWarning == nil ? nil : Self.insertedWithoutRefineMessage
+                lastWarning = warning
                 transition(to: .success)
-                scheduleAutoReset(after: 0.8)
+                scheduleAutoReset(after: warning == nil ? 0.8 : Self.degradedSuccessResetDelay)
             } catch is CancellationError {
                 transition(to: .idle)
             } catch TextCommitterError.cancelled {

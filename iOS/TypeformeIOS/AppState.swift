@@ -91,6 +91,38 @@ enum AppPhase: Equatable {
     }
 }
 
+private struct BridgeStageLabels {
+    let transcribing: String
+    let refining: String
+    let resultReady: String
+
+    static var dictation: BridgeStageLabels {
+        BridgeStageLabels(
+            transcribing: NSLocalizedString("Transcribing", comment: "Bridge job stage"),
+            refining: NSLocalizedString("Refining", comment: "Bridge job stage"),
+            resultReady: NSLocalizedString("Inserted", comment: "Bridge job stage")
+        )
+    }
+
+    static var commandRecognition: BridgeStageLabels {
+        let understanding = NSLocalizedString("Understanding", comment: "Bridge job stage while understanding a voice command")
+        return BridgeStageLabels(
+            transcribing: understanding,
+            refining: understanding,
+            resultReady: understanding
+        )
+    }
+
+    static var commandEditing: BridgeStageLabels {
+        let editing = NSLocalizedString("Editing", comment: "Bridge job stage while applying a voice command")
+        return BridgeStageLabels(
+            transcribing: editing,
+            refining: editing,
+            resultReady: NSLocalizedString("Inserted", comment: "Bridge job stage")
+        )
+    }
+}
+
 enum HostAudioSessionLength: String, CaseIterable, Identifiable {
     case fiveMinutes = "5m"
     case fifteenMinutes = "15m"
@@ -354,6 +386,14 @@ final class AppState: ObservableObject {
     /// How long a `.success` / `.failure` phase sticks before reverting to
     /// `.idle`. Long enough to read, short enough not to block the next press.
     private static let phaseAutoResetDelay: TimeInterval = 2.4
+
+    private static func recognitionStageLabels(for context: KeyboardTextEditContext?) -> BridgeStageLabels {
+        context?.intent == .command ? .commandRecognition : .dictation
+    }
+
+    private static func editingStageLabels(for context: KeyboardTextEditContext) -> BridgeStageLabels {
+        context.intent == .command ? .commandEditing : .dictation
+    }
 
     private struct RestyleSource {
         let sessionID: String?
@@ -967,6 +1007,7 @@ final class AppState: ObservableObject {
         contextAfter: String,
         includeRawTranscript: Bool,
         keyboardCommandID: String?,
+        stageLabels: BridgeStageLabels,
         recordingInfo: RecordingFileInfo
     ) async throws -> BridgeDictateResponse {
         // Snapshot the live preview text *before* tearing down — Mac uses it
@@ -992,6 +1033,7 @@ final class AppState: ObservableObject {
                         self.applyBridgeJobStatus(
                             event,
                             keyboardCommandID: keyboardCommandID,
+                            stageLabels: stageLabels,
                             recordingInfo: recordingInfo
                         )
                     }
@@ -1008,7 +1050,7 @@ final class AppState: ObservableObject {
                 publishKeyboardStatus(
                     .sending,
                     commandID: keyboardCommandID,
-                    message: NSLocalizedString("Transcribing", comment: "Bridge job stage"),
+                    message: stageLabels.transcribing,
                     audioDurationSeconds: recordingInfo.durationSeconds,
                     audioByteCount: recordingInfo.byteCount
                 )
@@ -1196,6 +1238,8 @@ final class AppState: ObservableObject {
             || effectiveKeyboardCommandID != nil
             || keyboardCaptureWasStartedFromKeyboard
             || (isKeyboardCapture && !isHostStandbyCapture)
+        let pendingKeyboardTextEditContext = shouldPublishKeyboardProgress ? activeKeyboardTextEditContext : nil
+        let recognitionStageLabels = Self.recognitionStageLabels(for: pendingKeyboardTextEditContext)
         defer {
             if shouldPublishKeyboardProgress || isKeyboardCapture {
                 activeKeyboardRecordingCommandID = nil
@@ -1212,7 +1256,7 @@ final class AppState: ObservableObject {
         // already behave as stopped/sending.
         setPhase(.sending)
         if shouldPublishKeyboardProgress {
-            publishKeyboardStatus(.sending, commandID: effectiveKeyboardCommandID, message: NSLocalizedString("Transcribing", comment: "Bridge job stage"))
+            publishKeyboardStatus(.sending, commandID: effectiveKeyboardCommandID, message: recognitionStageLabels.transcribing)
         }
         KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.dictationStopped)
         try? await Task.sleep(nanoseconds: Self.recordingTailBufferNanoseconds)
@@ -1224,7 +1268,7 @@ final class AppState: ObservableObject {
         // keep the user's preview visible until Mac returns the final text.
         endLivePartialPreviewAudio()
         hostRecordingUsesKeyboardAudioSession = false
-        let keyboardTextEditContext = shouldPublishKeyboardProgress ? activeKeyboardTextEditContext : nil
+        let keyboardTextEditContext = pendingKeyboardTextEditContext
         let keyboardDictationContext = shouldPublishKeyboardProgress ? activeKeyboardDictationContext : nil
         activeKeyboardTextEditContext = nil
         activeKeyboardDictationContext = nil
@@ -1274,7 +1318,7 @@ final class AppState: ObservableObject {
         }()
         if isKeyboardPath {
             if let effectiveKeyboardCommandID {
-                publishKeyboardStatus(.sending, commandID: effectiveKeyboardCommandID, message: NSLocalizedString("Transcribing", comment: "Bridge job stage"))
+                publishKeyboardStatus(.sending, commandID: effectiveKeyboardCommandID, message: recognitionStageLabels.transcribing)
             }
             if !routeIsFresh {
                 await preflightActiveBridgeRoute()
@@ -1298,7 +1342,7 @@ final class AppState: ObservableObject {
             publishKeyboardStatus(
                 .sending,
                 commandID: effectiveKeyboardCommandID,
-                message: NSLocalizedString("Transcribing", comment: "Bridge job stage"),
+                message: recognitionStageLabels.transcribing,
                 audioDurationSeconds: recordingInfo.durationSeconds,
                 audioByteCount: recordingInfo.byteCount
             )
@@ -1306,6 +1350,7 @@ final class AppState: ObservableObject {
         do {
             scheduleBridgeRefiningStatusDelay(
                 keyboardCommandID: effectiveKeyboardCommandID,
+                message: recognitionStageLabels.refining,
                 recordingInfo: recordingInfo
             )
             defer { cancelBridgeRefiningStatusDelay() }
@@ -1320,6 +1365,7 @@ final class AppState: ObservableObject {
                 contextAfter: dictationContext?.contextAfter ?? "",
                 includeRawTranscript: true,
                 keyboardCommandID: effectiveKeyboardCommandID,
+                stageLabels: recognitionStageLabels,
                 recordingInfo: recordingInfo
             )
             let client = BridgeClient(baseURL: routeStatus.activeURL ?? baseURL, token: config.token)
@@ -1330,8 +1376,11 @@ final class AppState: ObservableObject {
             var resultMessage = "Inserted \(recordingInfo.durationLabel) audio"
             var correctionLatencyMs = response.correctionLatencyMs
             var totalLatencyMs = response.latencyMs
+            var finalCorrectionStatus = response.correctionStatus
+            var finalCorrectionError = response.correctionError
 
             if let editContext = keyboardTextEditContext {
+                let editingStageLabels = Self.editingStageLabels(for: editContext)
                 guard !spokenTranscript.isEmpty else {
                     setFailure("Mac returned an empty transcript.")
                     if let effectiveKeyboardCommandID {
@@ -1345,7 +1394,7 @@ final class AppState: ObservableObject {
                     publishKeyboardStatus(
                         .sending,
                         commandID: effectiveKeyboardCommandID,
-                        message: NSLocalizedString("Refining", comment: "Bridge job stage"),
+                        message: editingStageLabels.refining,
                         audioDurationSeconds: recordingInfo.durationSeconds,
                         audioByteCount: recordingInfo.byteCount
                     )
@@ -1363,6 +1412,7 @@ final class AppState: ObservableObject {
                         await self?.applyBridgeJobStatus(
                             event,
                             keyboardCommandID: effectiveKeyboardCommandID,
+                            stageLabels: editingStageLabels,
                             recordingInfo: recordingInfo
                         )
                     }
@@ -1375,6 +1425,8 @@ final class AppState: ObservableObject {
                 } else {
                     totalLatencyMs = editResponse.latencyMs ?? response.latencyMs
                 }
+                finalCorrectionStatus = editResponse.editStatus
+                finalCorrectionError = editResponse.editError
                 resultMessage = editContext.intent == .command ? "Edited selection" : "Repaired selection"
             }
             guard !text.isEmpty else {
@@ -1415,11 +1467,15 @@ final class AppState: ObservableObject {
                 || keyboardCaptureWasStartedFromKeyboard
                 || (isKeyboardCapture && !isHostStandbyCapture)
             let resultCommandID = effectiveKeyboardCommandID ?? (shouldPublishKeyboardResult ? "keyboard-\(UUID().uuidString)" : nil)
+            let successKind: AppPhase.SuccessKind = resultCommandID == nil ? .ready : .inserted
+            if Self.isCorrectionDegradedStatus(finalCorrectionStatus) {
+                resultMessage = Self.degradedCorrectionMessage(for: successKind)
+            }
             errorMessage = nil
             applyCorrectionMetadata(
-                status: response.correctionStatus,
-                error: response.correctionError,
-                successKind: resultCommandID == nil ? .ready : .inserted
+                status: finalCorrectionStatus,
+                error: finalCorrectionError,
+                successKind: successKind
             )
             if let resultCommandID {
                 publishKeyboardStatus(
@@ -2463,6 +2519,7 @@ final class AppState: ObservableObject {
     }
 
     private func beginKeyboardStopAndSend(commandID: String) -> KeyboardBridgeStatus {
+        let recognitionStageLabels = Self.recognitionStageLabels(for: activeKeyboardTextEditContext)
         guard keyboardAudioSession.isRecording || recorder.isRecording else {
             queuedKeyboardStopCommandID = nil
             publishKeyboardStatus(.standby, commandID: commandID, message: "Ready")
@@ -2474,14 +2531,14 @@ final class AppState: ObservableObject {
                 publishKeyboardStatus(
                     .sending,
                     commandID: queuedKeyboardStopCommandID ?? commandID,
-                    message: NSLocalizedString("Transcribing", comment: "Bridge job stage")
+                    message: recognitionStageLabels.transcribing
                 )
             }
             return keyboardBridgeStatus
         }
 
         queuedKeyboardStopCommandID = commandID
-        publishKeyboardStatus(.sending, commandID: commandID, message: NSLocalizedString("Transcribing", comment: "Bridge job stage"))
+        publishKeyboardStatus(.sending, commandID: commandID, message: recognitionStageLabels.transcribing)
         Task { @MainActor [weak self] in
             guard let self else { return }
             await self.stopAndSend(keyboardCommandID: commandID)
@@ -2561,7 +2618,9 @@ final class AppState: ObservableObject {
             publishKeyboardStatus(
                 .result,
                 commandID: command.id,
-                message: "Refined",
+                message: Self.isCorrectionDegradedStatus(response.correctionStatus)
+                    ? Self.degradedCorrectionMessage(for: .inserted)
+                    : "Refined",
                 resultText: text,
                 rawTranscriptLength: isRestylingCurrentDictationResult
                     ? preservedRawTranscript.trimmingCharacters(in: .whitespacesAndNewlines).count
@@ -2848,19 +2907,17 @@ final class AppState: ObservableObject {
     private func applyBridgeJobStatus(
         _ event: BridgeJobStatusEvent,
         keyboardCommandID: String?,
+        stageLabels: BridgeStageLabels = .dictation,
         recordingInfo: RecordingFileInfo? = nil
     ) {
         guard phase.isBusy else { return }
         let transcriptLength = event.rawTranscriptLength
             ?? event.rawTranscript?.trimmingCharacters(in: .whitespacesAndNewlines).count
 
-        // Collapse the bridge's 6 raw stages into the 5 user-meaningful ones:
-        //   audio_received    → Sending
-        //   transcribing      → Transcribing
-        //   transcript_ready  → Refining
-        //   refining          → Refining
-        //   result_ready      → Inserted
-        //   failed            → <error reason>
+        // Collapse the bridge's raw job stages into labels chosen by the
+        // current workflow. Plain dictation says Transcribing/Refining; voice
+        // commands say Understanding/Editing so the user sees what is actually
+        // happening to the selected text.
         // Same string drives `processingStatusMessage` (host orb detail) and
         // `publishKeyboardStatus(... message:)` (keyboard top label).
         if event.stage == .transcriptReady,
@@ -2873,19 +2930,19 @@ final class AppState: ObservableObject {
         let keyboardState: KeyboardBridgeState
         switch event.stage {
         case .audioReceived:
-            stageMessage = NSLocalizedString("Transcribing", comment: "Bridge job stage")
+            stageMessage = stageLabels.transcribing
             keyboardState = .sending
         case .transcribing:
-            stageMessage = NSLocalizedString("Transcribing", comment: "Bridge job stage")
+            stageMessage = stageLabels.transcribing
             keyboardState = .sending
         case .transcriptReady:
-            stageMessage = NSLocalizedString("Refining", comment: "Bridge job stage")
+            stageMessage = stageLabels.refining
             keyboardState = .sending
         case .refining:
-            stageMessage = NSLocalizedString("Refining", comment: "Bridge job stage")
+            stageMessage = stageLabels.refining
             keyboardState = .sending
         case .resultReady:
-            stageMessage = NSLocalizedString("Inserted", comment: "Bridge job stage")
+            stageMessage = stageLabels.resultReady
             keyboardState = .sending
         case .failed:
             let trimmedError = event.error?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -2914,13 +2971,13 @@ final class AppState: ObservableObject {
 
     private func scheduleBridgeRefiningStatusDelay(
         keyboardCommandID: String?,
+        message: String,
         recordingInfo: RecordingFileInfo
     ) {
         bridgeRefiningStatusTask?.cancel()
         bridgeRefiningStatusTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(Self.bridgeRefiningStatusDelay * 1_000_000_000))
             guard !Task.isCancelled, let self, self.phase == .sending else { return }
-            let message = NSLocalizedString("Refining", comment: "Bridge job stage")
             self.setPhase(.restyling)
             self.processingStatusMessage = message
             if let keyboardCommandID {
@@ -2945,22 +3002,16 @@ final class AppState: ObservableObject {
         error correctionError: String?,
         successKind: AppPhase.SuccessKind = .ready
     ) {
-        if correctionStatus == "error" {
+        let normalizedStatus = correctionStatus?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if normalizedStatus == "error" {
             let message = correctionError?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             setFailure(message.isEmpty ? "Mac refine failed." : message)
             return
         }
-        if correctionStatus == "timeout" {
+        if Self.isCorrectionDegradedStatus(normalizedStatus) {
             errorMessage = nil
             setPhase(.success(successKind))
-            switch successKind {
-            case .ready:
-                showTransient("Refine timed out; transcript ready")
-            case .copied:
-                showTransient("Refine timed out; copied transcript")
-            case .inserted:
-                showTransient("Refine timed out; inserted transcript")
-            }
+            showTransient(Self.degradedCorrectionMessage(for: successKind))
             return
         }
         errorMessage = nil
@@ -2972,6 +3023,26 @@ final class AppState: ObservableObject {
             showTransient("Copied")
         case .inserted:
             showTransient("Inserted")
+        }
+    }
+
+    private static func isCorrectionDegradedStatus(_ status: String?) -> Bool {
+        switch status?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "fallback", "timeout":
+            return true
+        default:
+            return false
+        }
+    }
+
+    private static func degradedCorrectionMessage(for successKind: AppPhase.SuccessKind) -> String {
+        switch successKind {
+        case .ready:
+            return "Ready without refine"
+        case .copied:
+            return "Copied without refine"
+        case .inserted:
+            return "Inserted without refine"
         }
     }
 

@@ -106,6 +106,8 @@
 "Sending" = "Sending";
 "Transcribing" = "Transcribing";
 "Refining" = "Refining";
+"Understanding" = "Understanding";
+"Editing" = "Editing";
 "Inserted" = "Inserted";
 
 // Pairing and routing

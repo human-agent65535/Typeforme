@@ -349,7 +349,7 @@ final class BridgeService {
         await publishJobStatus(
             jobID: jobID,
             stage: .resultReady,
-            message: correction.status == "ok" ? "Refine complete" : "Transcript ready",
+            message: Self.resultReadyMessage(correctionStatus: correction.status, okMessage: "Refine complete"),
             rawTranscriptLength: trimmed.count,
             text: correction.result.text,
             latencyMs: response.latencyMs,
@@ -455,7 +455,7 @@ final class BridgeService {
         await publishJobStatus(
             jobID: jobID,
             stage: .resultReady,
-            message: correction.status == "ok" ? "Refine complete" : "Text ready",
+            message: Self.resultReadyMessage(correctionStatus: correction.status, okMessage: "Refine complete"),
             rawTranscriptLength: rawTranscript.count,
             text: correction.result.text,
             latencyMs: response.latencyMs,
@@ -498,6 +498,11 @@ final class BridgeService {
             return "timeout"
         }
         return "fallback"
+    }
+
+    static func resultReadyMessage(correctionStatus: String, okMessage: String) -> String {
+        let normalized = correctionStatus.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return normalized == "ok" ? okMessage : "Without refine"
     }
 
     private func fallbackCorrectionOutput(
