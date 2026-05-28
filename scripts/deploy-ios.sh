@@ -54,13 +54,27 @@ if [ ! -d "$DEVELOPER_DIR" ]; then
     echo "Xcode not found at $DEVELOPER_DIR. Set DEVELOPER_DIR explicitly." >&2
     exit 1
 fi
+XCODEBUILD="$DEVELOPER_DIR/usr/bin/xcodebuild"
+XCRUN="/usr/bin/xcrun"
+if [ ! -x "$XCODEBUILD" ]; then
+    echo "xcodebuild not found at $XCODEBUILD. Set DEVELOPER_DIR to a full Xcode installation." >&2
+    exit 1
+fi
+if [ ! -x "$XCRUN" ]; then
+    echo "xcrun not found at $XCRUN." >&2
+    exit 1
+fi
+
+xcrun_tool() {
+    DEVELOPER_DIR="$DEVELOPER_DIR" "$XCRUN" "$@"
+}
 
 ACTION="${1:-install}"
 
 if [ -z "${DEVICE_ID:-}" ]; then
     DEVICE_LIST_JSON="$(mktemp -t typeforme-devices)"
     DEVICE_LIST_TEXT="$(mktemp -t typeforme-devices-text)"
-    if ! xcrun devicectl list devices --json-output "$DEVICE_LIST_JSON" >"$DEVICE_LIST_TEXT" 2>&1; then
+    if ! xcrun_tool devicectl list devices --json-output "$DEVICE_LIST_JSON" >"$DEVICE_LIST_TEXT" 2>&1; then
         cat "$DEVICE_LIST_TEXT" >&2
         rm -f "$DEVICE_LIST_JSON" "$DEVICE_LIST_TEXT"
         exit 1
@@ -153,7 +167,7 @@ PY
 fi
 if [ -z "$DEVICE_ID" ]; then
     echo "No paired iPhone found. Connect via cable or set DEVICE_ID." >&2
-    xcrun devicectl list devices >&2 || true
+    xcrun_tool devicectl list devices >&2 || true
     exit 1
 fi
 
@@ -190,7 +204,7 @@ if [ "${#BUILD_ARGS[@]}" -gt 0 ]; then
     XCODEBUILD_ARGS+=("${BUILD_ARGS[@]}")
 fi
 
-xcodebuild "${XCODEBUILD_ARGS[@]}" build
+"$XCODEBUILD" "${XCODEBUILD_ARGS[@]}" build
 
 APP_PRODUCTS_DIR="$DERIVED/Build/Products/${CONFIG}-iphoneos"
 APP_PATH="$APP_PRODUCTS_DIR/Typeforme.app"
@@ -246,14 +260,14 @@ echo "→ Verifying packaged host app and keyboard extension"
 /usr/bin/codesign --verify --strict --verbose=1 "$KEYBOARD_APPEX_PATH"
 
 echo "→ Installing $APP_PATH"
-xcrun devicectl device install app --device "$DEVICE_ID" "$APP_PATH"
+xcrun_tool devicectl device install app --device "$DEVICE_ID" "$APP_PATH"
 
 echo "→ Verifying installed host app"
 APP_INFO_JSON="$(mktemp -t typeforme-installed-apps)"
 APP_INFO_TEXT="$(mktemp -t typeforme-installed-apps-text)"
 VERIFY_OK=0
 for attempt in 1 2 3 4 5; do
-    if xcrun devicectl device info apps \
+    if xcrun_tool devicectl device info apps \
         --device "$DEVICE_ID" \
         --include-removable-apps \
         --json-output "$APP_INFO_JSON" >"$APP_INFO_TEXT" 2>&1 &&
@@ -345,7 +359,7 @@ rm -f "$APP_INFO_JSON" "$APP_INFO_TEXT"
 
 if [ "$ACTION" = "launch" ]; then
     echo "→ Launching $BUNDLE_ID"
-    xcrun devicectl device process launch --device "$DEVICE_ID" "$BUNDLE_ID" || {
+    xcrun_tool devicectl device process launch --device "$DEVICE_ID" "$BUNDLE_ID" || {
         echo "Launch failed — unlock the device and tap the app icon." >&2
         exit 1
     }
