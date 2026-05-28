@@ -117,32 +117,26 @@ struct BridgeClient {
         guard ["m4a", "aac"].contains(ext) else {
             throw BridgeClientError.unsupportedAudioFormat(ext.isEmpty ? "missing extension" : ext)
         }
-        let normalizedJobID = Self.normalizedClientJobID(clientJobID)
-        let eventTask: Task<Void, Never>? = {
-            guard let normalizedJobID, let onJobEvent else { return nil }
-            return jobEventTask(jobID: normalizedJobID, onEvent: onJobEvent)
-        }()
-        defer {
-            eventTask?.cancel()
+        return try await performWithJobEvents(clientJobID: clientJobID, onJobEvent: onJobEvent) { normalizedJobID in
+            let multipart = try Self.multipartDictateBody(
+                audioURL: audioURL,
+                audioExtension: ext,
+                languageIDs: languageIDs,
+                correctionMode: correctionMode.rawValue,
+                contextBefore: contextBefore,
+                contextAfter: contextAfter,
+                includeRawTranscript: includeRawTranscript,
+                clientJobID: normalizedJobID,
+                alternateTranscript: alternateTranscript
+            )
+            return try await request(
+                path: "/v1/dictate",
+                method: "POST",
+                body: multipart.body,
+                contentType: multipart.contentType,
+                timeout: 45
+            )
         }
-        let multipart = try Self.multipartDictateBody(
-            audioURL: audioURL,
-            audioExtension: ext,
-            languageIDs: languageIDs,
-            correctionMode: correctionMode.rawValue,
-            contextBefore: contextBefore,
-            contextAfter: contextAfter,
-            includeRawTranscript: includeRawTranscript,
-            clientJobID: normalizedJobID,
-            alternateTranscript: alternateTranscript
-        )
-        return try await request(
-            path: "/v1/dictate",
-            method: "POST",
-            body: multipart.body,
-            contentType: multipart.contentType,
-            timeout: 45
-        )
     }
 
     func restyle(
@@ -153,24 +147,18 @@ struct BridgeClient {
         clientJobID: String? = nil,
         onJobEvent: (@Sendable (BridgeJobStatusEvent) async -> Void)? = nil
     ) async throws -> BridgeRestyleResponse {
-        let normalizedJobID = Self.normalizedClientJobID(clientJobID)
-        let eventTask: Task<Void, Never>? = {
-            guard let normalizedJobID, let onJobEvent else { return nil }
-            return jobEventTask(jobID: normalizedJobID, onEvent: onJobEvent)
-        }()
-        defer {
-            eventTask?.cancel()
+        try await performWithJobEvents(clientJobID: clientJobID, onJobEvent: onJobEvent) { normalizedJobID in
+            let payload = BridgeRestyleRequest(
+                sessionID: sessionID,
+                rawTranscript: rawTranscript,
+                clientJobID: normalizedJobID,
+                languageIDs: languageIDs,
+                correctionMode: correctionMode.rawValue,
+                appName: "iOS",
+                appCategory: "chat"
+            )
+            return try await request(path: "/v1/restyle", method: "POST", json: payload, timeout: 20)
         }
-        let payload = BridgeRestyleRequest(
-            sessionID: sessionID,
-            rawTranscript: rawTranscript,
-            clientJobID: normalizedJobID,
-            languageIDs: languageIDs,
-            correctionMode: correctionMode.rawValue,
-            appName: "iOS",
-            appCategory: "chat"
-        )
-        return try await request(path: "/v1/restyle", method: "POST", json: payload, timeout: 20)
     }
 
     func editText(
@@ -183,6 +171,27 @@ struct BridgeClient {
         clientJobID: String? = nil,
         onJobEvent: (@Sendable (BridgeJobStatusEvent) async -> Void)? = nil
     ) async throws -> BridgeTextEditResponse {
+        try await performWithJobEvents(clientJobID: clientJobID, onJobEvent: onJobEvent) { normalizedJobID in
+            let payload = BridgeTextEditRequest(
+                intent: intent,
+                contextBefore: contextBefore,
+                targetText: targetText,
+                contextAfter: contextAfter,
+                spokenInstruction: spokenInstruction,
+                languageIDs: languageIDs,
+                clientJobID: normalizedJobID,
+                appName: "iOS",
+                appCategory: "chat"
+            )
+            return try await request(path: "/v1/edit-text", method: "POST", json: payload, timeout: 30)
+        }
+    }
+
+    private func performWithJobEvents<Response>(
+        clientJobID: String?,
+        onJobEvent: (@Sendable (BridgeJobStatusEvent) async -> Void)?,
+        operation: (String?) async throws -> Response
+    ) async throws -> Response {
         let normalizedJobID = Self.normalizedClientJobID(clientJobID)
         let eventTask: Task<Void, Never>? = {
             guard let normalizedJobID, let onJobEvent else { return nil }
@@ -191,18 +200,7 @@ struct BridgeClient {
         defer {
             eventTask?.cancel()
         }
-        let payload = BridgeTextEditRequest(
-            intent: intent,
-            contextBefore: contextBefore,
-            targetText: targetText,
-            contextAfter: contextAfter,
-            spokenInstruction: spokenInstruction,
-            languageIDs: languageIDs,
-            clientJobID: normalizedJobID,
-            appName: "iOS",
-            appCategory: "chat"
-        )
-        return try await request(path: "/v1/edit-text", method: "POST", json: payload, timeout: 30)
+        return try await operation(normalizedJobID)
     }
 
     private func jobEventTask(

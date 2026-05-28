@@ -50,23 +50,12 @@ enum KeyboardSharedDefaults {
     }
 
     static func loadPayload() -> KeyboardDefaultsPayload? {
-        guard let defaults = suite(),
-              let text = defaults.string(forKey: keyboardDefaultsKey),
-              let data = text.data(using: .utf8)
-        else { return nil }
-        return try? JSONDecoder().decode(KeyboardDefaultsPayload.self, from: data)
+        loadCodable(KeyboardDefaultsPayload.self, key: keyboardDefaultsKey)
     }
 
     @discardableResult
     static func savePayload(_ payload: KeyboardDefaultsPayload) -> Bool {
-        let encoder = JSONEncoder()
-        guard let data = try? encoder.encode(payload),
-              let text = String(data: data, encoding: .utf8),
-              let defaults = suite()
-        else { return false }
-        defaults.set(text, forKey: keyboardDefaultsKey)
-        defaults.synchronize()
-        return true
+        saveCodable(payload, key: keyboardDefaultsKey)
     }
 
     static func bridgeToken(from payload: KeyboardDefaultsPayload?) -> String? {
@@ -77,21 +66,11 @@ enum KeyboardSharedDefaults {
 
     @discardableResult
     static func saveStatusSnapshot(_ status: KeyboardBridgeStatus) -> Bool {
-        guard let data = try? JSONEncoder().encode(status.redactedForSharedDefaults),
-              let text = String(data: data, encoding: .utf8),
-              let defaults = suite()
-        else { return false }
-        defaults.set(text, forKey: keyboardStatusKey)
-        defaults.synchronize()
-        return true
+        saveCodable(status.redactedForSharedDefaults, key: keyboardStatusKey)
     }
 
     static func loadStatusSnapshot() -> KeyboardBridgeStatus? {
-        guard let defaults = suite(),
-              let text = defaults.string(forKey: keyboardStatusKey),
-              let data = text.data(using: .utf8)
-        else { return nil }
-        return try? JSONDecoder().decode(KeyboardBridgeStatus.self, from: data)
+        loadCodable(KeyboardBridgeStatus.self, key: keyboardStatusKey)
     }
 
     static func makeBridgeToken() -> String {
@@ -100,26 +79,37 @@ enum KeyboardSharedDefaults {
 
     @discardableResult
     static func saveHostHandoff(_ handoff: KeyboardHostHandoff) -> Bool {
-        guard let data = try? JSONEncoder().encode(handoff),
-              let text = String(data: data, encoding: .utf8),
-              let defaults = suite()
-        else { return false }
-        defaults.set(text, forKey: hostHandoffKey)
-        defaults.synchronize()
-        return true
+        saveCodable(handoff, key: hostHandoffKey)
     }
 
     static func consumeHostHandoff(id: String, now: TimeInterval = Date().timeIntervalSince1970) -> KeyboardHostHandoff? {
         guard let defaults = suite(),
-              let text = defaults.string(forKey: hostHandoffKey),
-              let data = text.data(using: .utf8),
-              let handoff = try? JSONDecoder().decode(KeyboardHostHandoff.self, from: data),
+              let handoff = loadCodable(KeyboardHostHandoff.self, key: hostHandoffKey),
               handoff.id == id,
               handoff.isFresh(now: now)
         else { return nil }
         defaults.removeObject(forKey: hostHandoffKey)
         defaults.synchronize()
         return handoff
+    }
+
+    private static func loadCodable<T: Decodable>(_ type: T.Type, key: String) -> T? {
+        guard let defaults = suite(),
+              let text = defaults.string(forKey: key),
+              let data = text.data(using: .utf8)
+        else { return nil }
+        return try? JSONDecoder().decode(type, from: data)
+    }
+
+    @discardableResult
+    private static func saveCodable<T: Encodable>(_ value: T, key: String) -> Bool {
+        guard let data = try? JSONEncoder().encode(value),
+              let text = String(data: data, encoding: .utf8),
+              let defaults = suite()
+        else { return false }
+        defaults.set(text, forKey: key)
+        defaults.synchronize()
+        return true
     }
 }
 
