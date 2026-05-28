@@ -103,29 +103,25 @@ enum BridgeMultipart {
     ) throws -> Body {
         let boundary = "Typeforme-\(UUID().uuidString)"
         var body = Data()
-
-        if let clientJobID = normalizedClientJobID(clientJobID) {
-            appendField("client_job_id", clientJobID, to: &body, boundary: boundary)
-        }
-        appendField("language_ids", jsonString(languageIDs), to: &body, boundary: boundary)
-        appendField("correction_mode", correctionMode, to: &body, boundary: boundary)
-        appendField("app_category", appCategory, to: &body, boundary: boundary)
-        appendField("context_before", contextBefore, to: &body, boundary: boundary)
-        appendField("context_after", contextAfter, to: &body, boundary: boundary)
-        appendField("include_raw_transcript", includeRawTranscript ? "true" : "false", to: &body, boundary: boundary)
-        if let appName, !appName.isEmpty {
-            appendField("app_name", appName, to: &body, boundary: boundary)
-        }
-        if let bundleID, !bundleID.isEmpty {
-            appendField("bundle_id", bundleID, to: &body, boundary: boundary)
-        }
-        if let alt = alternateTranscript?.trimmingCharacters(in: .whitespacesAndNewlines), !alt.isEmpty {
-            appendField("alternate_transcript", alt, to: &body, boundary: boundary)
-        }
-
         let explicitExtension = audioExtension?.trimmingCharacters(in: .whitespacesAndNewlines)
         let ext = try resolvedAudioExtension(for: audioURL, explicitExtension: explicitExtension)
-        appendField("audio_extension", ext, to: &body, boundary: boundary)
+
+        for (name, value) in dictateMetadataFields(
+            languageIDs: languageIDs,
+            correctionMode: correctionMode,
+            appName: appName,
+            bundleID: bundleID,
+            appCategory: appCategory,
+            contextBefore: contextBefore,
+            contextAfter: contextAfter,
+            includeRawTranscript: includeRawTranscript,
+            clientJobID: clientJobID,
+            alternateTranscript: alternateTranscript,
+            audioExtension: ext
+        ) {
+            appendField(name, value, to: &body, boundary: boundary)
+        }
+
         try appendFile(
             name: "audio",
             filename: "audio.\(ext)",
@@ -182,34 +178,30 @@ enum BridgeMultipart {
         alternateTranscript: String? = nil
     ) throws -> FileBody {
         let boundary = "Typeforme-\(UUID().uuidString)"
+        let explicitExtension = audioExtension?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let ext = try resolvedAudioExtension(for: audioURL, explicitExtension: explicitExtension)
         let bodyURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("typeforme-\(UUID().uuidString).multipart")
         FileManager.default.createFile(atPath: bodyURL.path, contents: nil)
         let handle = try FileHandle(forWritingTo: bodyURL)
 
         do {
-            if let clientJobID = normalizedClientJobID(clientJobID) {
-                try writeField("client_job_id", clientJobID, to: handle, boundary: boundary)
-            }
-            try writeField("language_ids", jsonString(languageIDs), to: handle, boundary: boundary)
-            try writeField("correction_mode", correctionMode, to: handle, boundary: boundary)
-            try writeField("app_category", appCategory, to: handle, boundary: boundary)
-            try writeField("context_before", contextBefore, to: handle, boundary: boundary)
-            try writeField("context_after", contextAfter, to: handle, boundary: boundary)
-            try writeField("include_raw_transcript", includeRawTranscript ? "true" : "false", to: handle, boundary: boundary)
-            if let appName, !appName.isEmpty {
-                try writeField("app_name", appName, to: handle, boundary: boundary)
-            }
-            if let bundleID, !bundleID.isEmpty {
-                try writeField("bundle_id", bundleID, to: handle, boundary: boundary)
-            }
-            if let alt = alternateTranscript?.trimmingCharacters(in: .whitespacesAndNewlines), !alt.isEmpty {
-                try writeField("alternate_transcript", alt, to: handle, boundary: boundary)
+            for (name, value) in dictateMetadataFields(
+                languageIDs: languageIDs,
+                correctionMode: correctionMode,
+                appName: appName,
+                bundleID: bundleID,
+                appCategory: appCategory,
+                contextBefore: contextBefore,
+                contextAfter: contextAfter,
+                includeRawTranscript: includeRawTranscript,
+                clientJobID: clientJobID,
+                alternateTranscript: alternateTranscript,
+                audioExtension: ext
+            ) {
+                try writeField(name, value, to: handle, boundary: boundary)
             }
 
-            let explicitExtension = audioExtension?.trimmingCharacters(in: .whitespacesAndNewlines)
-            let ext = try resolvedAudioExtension(for: audioURL, explicitExtension: explicitExtension)
-            try writeField("audio_extension", ext, to: handle, boundary: boundary)
             try writeFile(
                 name: "audio",
                 filename: "audio.\(ext)",
@@ -532,6 +524,42 @@ enum BridgeMultipart {
             return pair[1].trimmingCharacters(in: CharacterSet(charactersIn: "\""))
         }
         return nil
+    }
+
+    private static func dictateMetadataFields(
+        languageIDs: [String],
+        correctionMode: String,
+        appName: String?,
+        bundleID: String?,
+        appCategory: String,
+        contextBefore: String,
+        contextAfter: String,
+        includeRawTranscript: Bool,
+        clientJobID: String?,
+        alternateTranscript: String?,
+        audioExtension: String
+    ) -> [(name: String, value: String)] {
+        var fields: [(name: String, value: String)] = []
+        if let clientJobID = normalizedClientJobID(clientJobID) {
+            fields.append(("client_job_id", clientJobID))
+        }
+        fields.append(("language_ids", jsonString(languageIDs)))
+        fields.append(("correction_mode", correctionMode))
+        fields.append(("app_category", appCategory))
+        fields.append(("context_before", contextBefore))
+        fields.append(("context_after", contextAfter))
+        fields.append(("include_raw_transcript", includeRawTranscript ? "true" : "false"))
+        if let appName, !appName.isEmpty {
+            fields.append(("app_name", appName))
+        }
+        if let bundleID, !bundleID.isEmpty {
+            fields.append(("bundle_id", bundleID))
+        }
+        if let alt = alternateTranscript?.trimmingCharacters(in: .whitespacesAndNewlines), !alt.isEmpty {
+            fields.append(("alternate_transcript", alt))
+        }
+        fields.append(("audio_extension", audioExtension))
+        return fields
     }
 
     private static func appendField(_ name: String, _ value: String, to body: inout Data, boundary: String) {
