@@ -9,6 +9,40 @@ import UIKit
 
 private let appLog = Logger(subsystem: TypeformeBundleConfiguration.hostBundleIdentifier, category: "app")
 
+private final class LivePreviewTrace: @unchecked Sendable {
+    private let lock = NSLock()
+    private let startedAt: CFAbsoluteTime
+    private var firstPCMAt: CFAbsoluteTime?
+    private var firstPartialAt: CFAbsoluteTime?
+    private var pcmBufferCount = 0
+
+    init(startedAt: CFAbsoluteTime = CFAbsoluteTimeGetCurrent()) {
+        self.startedAt = startedAt
+    }
+
+    func recordPCM(at now: CFAbsoluteTime = CFAbsoluteTimeGetCurrent()) -> (isFirst: Bool, startToPCMMS: Int, count: Int) {
+        lock.lock()
+        defer { lock.unlock() }
+        pcmBufferCount += 1
+        let isFirst = firstPCMAt == nil
+        if isFirst {
+            firstPCMAt = now
+        }
+        return (isFirst, Int((now - startedAt) * 1_000), pcmBufferCount)
+    }
+
+    func recordPartial(at now: CFAbsoluteTime = CFAbsoluteTimeGetCurrent()) -> (isFirst: Bool, startToPartialMS: Int, firstPCMToPartialMS: Int?, pcmBufferCount: Int) {
+        lock.lock()
+        defer { lock.unlock() }
+        let isFirst = firstPartialAt == nil
+        if isFirst {
+            firstPartialAt = now
+        }
+        let pcmDelta = firstPCMAt.map { Int((now - $0) * 1_000) }
+        return (isFirst, Int((now - startedAt) * 1_000), pcmDelta, pcmBufferCount)
+    }
+}
+
 /// Top-level UI phase for the iOS host app. Drives the hero record card,
 /// busy/disabled gating, and the keyboard bridge status. Keep user-facing
 /// labels derived from this typed state rather than using strings as control
@@ -349,6 +383,7 @@ final class AppState: ObservableObject {
     private var liveSpeechRecognizer: SFSpeechRecognizer?
     private var liveSpeechRequest: SFSpeechAudioBufferRecognitionRequest?
     private var liveSpeechTask: SFSpeechRecognitionTask?
+    private var livePreviewTrace: LivePreviewTrace?
     private var lifecycleObservers: [NSObjectProtocol] = []
     private var keyboardDarwinObservers: [KeyboardDarwinNotificationObserver] = []
     private var routeRefreshInFlightCount = 0
@@ -1108,9 +1143,16 @@ final class AppState: ObservableObject {
         standbyKeeper.stop(deactivateSession: false)
         if keyboardAudioSession.isActive, !keyboardAudioSession.isRecording {
             path = "keyboard-session"
-            _ = try await keyboardAudioSession.beginRecording()
+            let didStartPreview = startLivePartialPreviewIfAvailable()
+            do {
+                _ = try await keyboardAudioSession.beginRecording()
+            } catch {
+                if didStartPreview {
+                    teardownLivePartialPreview(clearText: true)
+                }
+                throw error
+            }
             hostRecordingUsesKeyboardAudioSession = true
-            startLivePartialPreviewIfAvailable()
             logSlowHostRecordingStart(
                 startedAt: startedAt,
                 path: path,
@@ -1973,16 +2015,26 @@ final class AppState: ObservableObject {
     // Unsupported locales / denied permission silently degrade to the previous
     // no-preview behaviour.
 
-    private func startLivePartialPreviewIfAvailable() {
+    @discardableResult
+    private func startLivePartialPreviewIfAvailable() -> Bool {
         // Tear down anything previous so re-press never leaks tasks.
         teardownLivePartialPreview(clearText: true)
 
-        guard keyboardLivePreviewEnabled else { return }
+        guard keyboardLivePreviewEnabled else {
+            appLog.notice("live preview skipped: disabled")
+            return false
+        }
         let primaryID = activeLanguageIDs.first ?? "en-US"
         let capability = AppleSpeechPreviewSupport.capability(languageID: primaryID)
-        guard keyboardLivePreviewRecognitionMode.canUse(capability) else { return }
+        guard keyboardLivePreviewRecognitionMode.canUse(capability) else {
+            appLog.notice("live preview skipped: unsupported locale=\(primaryID, privacy: .public) mode=\(self.keyboardLivePreviewRecognitionMode.rawValue, privacy: .public)")
+            return false
+        }
         let locale = Locale(identifier: primaryID)
-        guard let recognizer = SFSpeechRecognizer(locale: locale), recognizer.isAvailable else { return }
+        guard let recognizer = SFSpeechRecognizer(locale: locale), recognizer.isAvailable else {
+            appLog.notice("live preview skipped: recognizer unavailable locale=\(primaryID, privacy: .public)")
+            return false
+        }
 
         let status = SFSpeechRecognizer.authorizationStatus()
         switch status {
@@ -1993,11 +2045,14 @@ final class AppState: ObservableObject {
             // on the prompt — preview just stays off this session. Subsequent
             // recordings benefit if the user grants.
             SFSpeechRecognizer.requestAuthorization { _ in }
-            return
+            appLog.notice("live preview skipped: speech permission not determined")
+            return false
         case .denied, .restricted:
-            return
+            appLog.notice("live preview skipped: speech permission denied or restricted")
+            return false
         @unknown default:
-            return
+            appLog.notice("live preview skipped: unknown speech permission")
+            return false
         }
 
         let request = SFSpeechAudioBufferRecognitionRequest()
@@ -2008,6 +2063,9 @@ final class AppState: ObservableObject {
 
         liveSpeechRecognizer = recognizer
         liveSpeechRequest = request
+        let trace = LivePreviewTrace()
+        livePreviewTrace = trace
+        appLog.notice("live preview started: locale=\(primaryID, privacy: .public), mode=\(self.keyboardLivePreviewRecognitionMode.rawValue, privacy: .public), onDevice=\(request.requiresOnDeviceRecognition, privacy: .public)")
         liveSpeechTask = recognizer.recognitionTask(with: request) { [weak self] result, error in
             // The task callback runs off the main actor — hop back before
             // touching @Published state.
@@ -2017,11 +2075,18 @@ final class AppState: ObservableObject {
                     let text = result.bestTranscription.formattedString
                         .trimmingCharacters(in: .whitespacesAndNewlines)
                     if !text.isEmpty {
+                        let timing = self.livePreviewTrace?.recordPartial()
+                        if timing?.isFirst == true {
+                            appLog.notice(
+                                "live preview first partial: startToPartialMs=\(timing?.startToPartialMS ?? -1, privacy: .public), firstPCMToPartialMs=\(timing?.firstPCMToPartialMS ?? -1, privacy: .public), pcmBuffers=\(timing?.pcmBufferCount ?? 0, privacy: .public), chars=\(text.count, privacy: .public)"
+                            )
+                        }
                         self.livePartialTranscript = text
                         self.publishLivePartialTranscriptToKeyboard()
                     }
                 }
                 if error != nil {
+                    appLog.notice("live preview stopped: error=\(error?.localizedDescription ?? "unknown", privacy: .public)")
                     self.teardownLivePartialPreview(clearText: false)
                 }
             }
@@ -2029,9 +2094,16 @@ final class AppState: ObservableObject {
 
         // Fan the audio session's PCM tap into the recognition request. Capture
         // a weak request so we never retain the recognizer after teardown.
-        keyboardAudioSession.onPCMBuffer = { [weak request] buffer in
+        keyboardAudioSession.onPCMBuffer = { [weak request, trace] buffer in
             request?.append(buffer)
+            let timing = trace.recordPCM()
+            if timing.isFirst {
+                appLog.notice(
+                    "live preview first pcm: startToPCMms=\(timing.startToPCMMS, privacy: .public), buffers=\(timing.count, privacy: .public), sampleRate=\(buffer.format.sampleRate, privacy: .public), frames=\(buffer.frameLength, privacy: .public)"
+                )
+            }
         }
+        return true
     }
 
     /// Called when the user stops recording. We close the audio side of the
@@ -2051,6 +2123,7 @@ final class AppState: ObservableObject {
         liveSpeechTask = nil
         liveSpeechRequest = nil
         liveSpeechRecognizer = nil
+        livePreviewTrace = nil
         if clearText {
             livePartialTranscript = ""
             publishLivePartialTranscriptToKeyboard()
@@ -2567,15 +2640,18 @@ final class AppState: ObservableObject {
         }
         // Keep the keyboard press-to-record path local-only for the same reason.
         // No correctionMode reset here either — match the host orb path.
+        let didStartPreview = startLivePartialPreviewIfAvailable()
         do {
             _ = try await keyboardAudioSession.beginRecording()
             keyboardCaptureStartedFromKeyboard = true
-            startLivePartialPreviewIfAvailable()
             acquireIdleTimer()
             setPhase(.recording)
             publishKeyboardStatus(.recording, commandID: commandID, message: "Recording")
             KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.dictationStarted)
         } catch {
+            if didStartPreview {
+                teardownLivePartialPreview(clearText: true)
+            }
             clearKeyboardCaptureContext()
             let message = keyboardAudioStatusMessage(for: error)
             if IOSRecordingAudioSession.isPriorityConflict(error) {
