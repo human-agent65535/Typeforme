@@ -374,6 +374,7 @@ final class AppState: ObservableObject {
     private var canceledKeyboardCommandIDs: [String: TimeInterval] = [:]
     private var lastHandledOpenURL: (value: String, time: TimeInterval)?
     private var keyboardAudioUnavailableMessage: String?
+    private var audioSessionInterruptionActive = false
 
     /// Force-refresh cloud/unavailable routes if cached probe is older than
     /// this. Local routes get a shorter TTL because stale LAN IPs hurt more
@@ -3177,6 +3178,105 @@ final class AppState: ObservableObject {
                 self?.handleWillEnterForeground()
             }
         })
+        lifecycleObservers.append(center.addObserver(
+            forName: AVAudioSession.interruptionNotification,
+            object: AVAudioSession.sharedInstance(),
+            queue: .main
+        ) { [weak self] notification in
+            Task { @MainActor [weak self] in
+                self?.handleAudioSessionInterruption(notification)
+            }
+        })
+    }
+
+    private func handleAudioSessionInterruption(_ notification: Notification) {
+        guard let rawType = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+              let type = AVAudioSession.InterruptionType(rawValue: rawType)
+        else { return }
+
+        switch type {
+        case .began:
+            handleAudioSessionInterruptionBegan()
+        case .ended:
+            let rawOptions = notification.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
+            let options = AVAudioSession.InterruptionOptions(rawValue: rawOptions)
+            handleAudioSessionInterruptionEnded(shouldResume: options.contains(.shouldResume))
+        @unknown default:
+            handleAudioSessionInterruptionBegan()
+        }
+    }
+
+    private func handleAudioSessionInterruptionBegan() {
+        let hadRecorderCapture = recorder.isRecording
+        let hadKeyboardCapture = keyboardAudioSession.isRecording
+        let hadInputStandby = keyboardAudioSession.isActive
+        let hadSilentStandby = standbyKeeper.isActive
+        let hadPreWarm = recorder.isPreWarmed
+        let wasPreparing = phase == .preparing
+        let affectedAudioSession = hadRecorderCapture
+            || hadKeyboardCapture
+            || hadInputStandby
+            || hadSilentStandby
+            || hadPreWarm
+            || wasPreparing
+        guard affectedAudioSession else { return }
+
+        audioSessionInterruptionActive = true
+        keyboardAudioUnavailableMessage = "Microphone is in use by another app."
+        appLog.notice("audio session interruption began; ending keyboard audio session")
+
+        hostAudioSessionExpiryTask?.cancel()
+        hostAudioSessionExpiryTask = nil
+        keyboardStandbyRefreshTask?.cancel()
+        keyboardStandbyRefreshTask = nil
+        recorderPreWarmTask?.cancel()
+        recorderPreWarmTask = nil
+
+        if let fileURL = recorder.stop(deactivateSession: false) {
+            try? FileManager.default.removeItem(at: fileURL)
+        }
+        recorder.discardPreWarm()
+        if hadInputStandby || hadKeyboardCapture {
+            keyboardAudioSession.stopForAudioInterruption()
+        }
+        standbyKeeper.stop(deactivateSession: false)
+        teardownLivePartialPreview(clearText: true)
+
+        let wasRecordingStatus = keyboardBridgeStatus.state == .recording
+        let hadCapture = hadRecorderCapture || hadKeyboardCapture || wasPreparing || wasRecordingStatus
+        let commandID = activeKeyboardRecordingCommandID ?? keyboardBridgeStatus.commandID
+        hostRecordingUsesKeyboardAudioSession = false
+        hostHoldReleasePending = false
+        queuedKeyboardStopCommandID = nil
+        clearKeyboardCaptureContext()
+
+        if hadCapture {
+            releaseIdleTimer()
+            setPhase(.failure("Recording stopped because another app is using the microphone."))
+            publishKeyboardStatus(
+                .idle,
+                commandID: commandID,
+                message: keyboardAudioUnavailableMessage
+            )
+            KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.dictationStopped)
+        } else if keyboardBridgeStatus.state != .sending, keyboardBridgeStatus.state != .result {
+            publishKeyboardStatus(.idle, message: keyboardAudioUnavailableMessage)
+        }
+        KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.sessionEnded)
+    }
+
+    private func handleAudioSessionInterruptionEnded(shouldResume: Bool) {
+        guard audioSessionInterruptionActive else { return }
+        audioSessionInterruptionActive = false
+        appLog.notice("audio session interruption ended shouldResume=\(shouldResume, privacy: .public)")
+
+        guard keyboardStandbyEnabled else {
+            scheduleHostRecorderPreWarm()
+            return
+        }
+        guard !keyboardAudioSession.isRecording, !recorder.isRecording else { return }
+        keyboardAudioUnavailableMessage = nil
+        scheduleKeyboardStandbyRefresh(delay: shouldResume ? 0.5 : 1.0)
     }
 
     private func startNetworkPathMonitor() {
@@ -3274,6 +3374,13 @@ final class AppState: ObservableObject {
                 message: "Recording stopped because the audio session ended.",
                 includePreparing: true
             )
+        }
+        if audioSessionInterruptionActive {
+            // iOS does not guarantee a matching `.ended` notification for every
+            // interruption. Foregrounding is the next safe point to attempt
+            // standby recovery; if the call still owns the mic, activation will
+            // fail and keep the keyboard in the unavailable state.
+            handleAudioSessionInterruptionEnded(shouldResume: false)
         }
         scheduleHostRecorderPreWarm()
         // Warm route status for the UI. Hot recording/rewrite paths request a
