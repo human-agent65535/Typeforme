@@ -1,9 +1,13 @@
 import AVFoundation
 import Foundation
+import OSLog
+
+private let recordingLog = Logger(subsystem: TypeformeBundleConfiguration.hostBundleIdentifier, category: "audio")
 
 enum IOSRecordingAudioSession {
-    enum Purpose {
+    enum Purpose: Sendable {
         case standby
+        case keyboardRecording
         case recording
     }
 
@@ -11,20 +15,47 @@ enum IOSRecordingAudioSession {
     static let mode: AVAudioSession.Mode = .voiceChat
     static let standbyOptions: AVAudioSession.CategoryOptions =
         [.mixWithOthers, .defaultToSpeaker, .allowBluetoothHFP]
+    static let keyboardRecordingOptions: AVAudioSession.CategoryOptions =
+        [.defaultToSpeaker, .allowBluetoothHFP]
     static let recordingOptions: AVAudioSession.CategoryOptions =
         [.defaultToSpeaker, .allowBluetoothHFP]
     static let options = standbyOptions
 
     static func activate(reuseActiveSession: Bool = false, purpose: Purpose = .standby) throws {
         let session = AVAudioSession.sharedInstance()
-        try session.setCategory(category, mode: mode, options: options(for: purpose))
+        try configureActiveSessionCategory(purpose: purpose)
         do {
             try session.setActive(true)
             try? session.setPreferredInputNumberOfChannels(1)
         } catch {
-            if !reuseActiveSession || purpose == .recording {
+            if !reuseActiveSession || purpose != .standby {
                 throw error
             }
+        }
+    }
+
+    static func configureActiveSessionCategory(purpose: Purpose) throws {
+        let session = AVAudioSession.sharedInstance()
+        try session.setCategory(category, mode: mode, options: options(for: purpose))
+        try? session.setPreferredInputNumberOfChannels(1)
+    }
+
+    static func configureActiveSessionCategoryEventually(purpose: Purpose) {
+        Task.detached(priority: .userInitiated) {
+            do {
+                try configureActiveSessionCategory(purpose: purpose)
+            } catch {
+                NSLog("typeforme audio session category async configure failed purpose=\(purpose) error=\(error.localizedDescription)")
+            }
+        }
+    }
+
+    static func activateKeyboardRecording(reuseActiveSession: Bool = false) async throws {
+        do {
+            try activate(reuseActiveSession: reuseActiveSession, purpose: .keyboardRecording)
+        } catch {
+            try? await Task.sleep(nanoseconds: 150_000_000)
+            try activate(reuseActiveSession: reuseActiveSession, purpose: .keyboardRecording)
         }
     }
 
@@ -41,6 +72,11 @@ enum IOSRecordingAudioSession {
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
 
+    static func shouldInterruptOtherAudioForKeyboardRecording() -> Bool {
+        let session = AVAudioSession.sharedInstance()
+        return session.isOtherAudioPlaying || session.secondaryAudioShouldBeSilencedHint
+    }
+
     static func isPriorityConflict(_ error: Error) -> Bool {
         let nsError = error as NSError
         if nsError.code == AVAudioSession.ErrorCode.insufficientPriority.rawValue {
@@ -54,6 +90,7 @@ enum IOSRecordingAudioSession {
     private static func options(for purpose: Purpose) -> AVAudioSession.CategoryOptions {
         switch purpose {
         case .standby: return standbyOptions
+        case .keyboardRecording: return keyboardRecordingOptions
         case .recording: return recordingOptions
         }
     }
@@ -73,6 +110,7 @@ final class AudioTapFileWriter {
     private var currentURL: URL?
     private var recordedFrameCount: AVAudioFramePosition = 0
     private var currentSampleRate: Double = 0
+    private var loggedFirstWrite = false
 
     var isRecording: Bool {
         lock.lock()
@@ -92,7 +130,9 @@ final class AudioTapFileWriter {
         currentURL = url
         recordedFrameCount = 0
         currentSampleRate = format.sampleRate
+        loggedFirstWrite = false
         lock.unlock()
+        NSLog("typeforme keyboard audio begin sampleRate=\(format.sampleRate) channels=\(format.channelCount)")
         return url
     }
 
@@ -130,14 +170,25 @@ final class AudioTapFileWriter {
             return
         }
 
+        var shouldLogFirstWrite = false
         lock.lock()
-        defer { lock.unlock() }
-        guard currentURL != nil else { return }
+        guard currentURL != nil else {
+            lock.unlock()
+            return
+        }
         if currentSampleRate <= 0 {
             currentSampleRate = buffer.format.sampleRate
         }
         audioData.append(chunk)
         recordedFrameCount += AVAudioFramePosition(buffer.frameLength)
+        if !loggedFirstWrite {
+            loggedFirstWrite = true
+            shouldLogFirstWrite = true
+        }
+        lock.unlock()
+        if shouldLogFirstWrite {
+            NSLog("typeforme keyboard audio first pcm frames=\(buffer.frameLength) sampleRate=\(buffer.format.sampleRate) channels=\(buffer.format.channelCount)")
+        }
     }
 
     func finish() -> URL? {
@@ -151,18 +202,35 @@ final class AudioTapFileWriter {
         currentURL = nil
         recordedFrameCount = 0
         currentSampleRate = 0
+        loggedFirstWrite = false
         lock.unlock()
-        if duration < 0.35, let url {
+        guard let url else {
+            NSLog("typeforme keyboard audio finish no_active_file")
+            recordingLog.notice("keyboard audio finish: no active file")
+            return nil
+        }
+        if duration < 0.35 {
+            NSLog("typeforme keyboard audio finish too_short duration=\(duration) frames=\(frames) bytes=\(data.count) sampleRate=\(sampleRate)")
+            recordingLog.notice(
+                "keyboard audio finish: too short duration=\(duration, privacy: .public) frames=\(frames, privacy: .public) bytes=\(data.count, privacy: .public) sampleRate=\(sampleRate, privacy: .public)"
+            )
             try? FileManager.default.removeItem(at: url)
             return nil
         }
-        if let url {
-            do {
-                try Self.writeM4A(data: data, sampleRate: sampleRate, frameCount: frames, to: url)
-            } catch {
-                try? FileManager.default.removeItem(at: url)
-                return nil
-            }
+        do {
+            try Self.writeM4A(data: data, sampleRate: sampleRate, frameCount: frames, to: url)
+            let fileBytes = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.intValue ?? 0
+            NSLog("typeforme keyboard audio finish m4a_written duration=\(duration) frames=\(frames) pcmBytes=\(data.count) fileBytes=\(fileBytes) sampleRate=\(sampleRate)")
+            recordingLog.notice(
+                "keyboard audio finish: m4a written duration=\(duration, privacy: .public) frames=\(frames, privacy: .public) pcmBytes=\(data.count, privacy: .public) fileBytes=\(fileBytes, privacy: .public) sampleRate=\(sampleRate, privacy: .public)"
+            )
+        } catch {
+            NSLog("typeforme keyboard audio finish m4a_failed duration=\(duration) frames=\(frames) pcmBytes=\(data.count) sampleRate=\(sampleRate) error=\(error.localizedDescription)")
+            recordingLog.error(
+                "keyboard audio finish: m4a failed duration=\(duration, privacy: .public) frames=\(frames, privacy: .public) pcmBytes=\(data.count, privacy: .public) sampleRate=\(sampleRate, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
+            )
+            try? FileManager.default.removeItem(at: url)
+            return nil
         }
         return url
     }
@@ -455,9 +523,6 @@ final class StandbyAudioSession: ObservableObject {
 
     @Published private(set) var isActive = false
     @Published private(set) var level: Float = 0
-    var onInterruptionBegan: ((Bool) -> Void)?
-    var onInterruptionEnded: ((Bool) -> Void)?
-    var onSessionInvalidated: ((Bool, String) -> Void)?
 
     private let engine = AVAudioEngine()
     private let fileWriter = AudioTapFileWriter()
@@ -465,6 +530,8 @@ final class StandbyAudioSession: ObservableObject {
     private var hasInstalledTap = false
     private var currentFormat: AVAudioFormat?
     private var needsEngineRestart = false
+    private var recordingDidActivateCaptureCategory = false
+    private var recordingShouldYieldOtherAudio = false
     private var notificationObservers: [NSObjectProtocol] = []
 
     init() {
@@ -510,9 +577,7 @@ final class StandbyAudioSession: ObservableObject {
     private func observeAudioSessionInvalidations() {
         let center = NotificationCenter.default
         let names: [Notification.Name] = [
-            AVAudioSession.interruptionNotification,
             AVAudioSession.routeChangeNotification,
-            AVAudioSession.mediaServicesWereResetNotification,
         ]
         notificationObservers = names.map { name in
             center.addObserver(
@@ -529,53 +594,10 @@ final class StandbyAudioSession: ObservableObject {
 
     private func handleAudioSessionNotification(_ notification: Notification) {
         switch notification.name {
-        case AVAudioSession.interruptionNotification:
-            handleInterruption(notification)
         case AVAudioSession.routeChangeNotification:
             handleRouteChange(notification)
-        case AVAudioSession.mediaServicesWereResetNotification:
-            invalidateEngine(message: "Audio services were reset.", notify: true)
         default:
             markEngineRestartNeeded()
-        }
-    }
-
-    private func handleInterruption(_ notification: Notification) {
-        guard let rawType = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
-              let type = AVAudioSession.InterruptionType(rawValue: rawType)
-        else {
-            invalidateEngine(message: "Audio session was interrupted.", notify: true)
-            return
-        }
-
-        switch type {
-        case .began:
-            let wasRecording = fileWriter.isRecording
-            invalidateEngine(message: "Microphone is in use by another app.", notify: false)
-            onInterruptionBegan?(wasRecording)
-        case .ended:
-            let rawOptions = notification.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
-            let options = AVAudioSession.InterruptionOptions(rawValue: rawOptions)
-            onInterruptionEnded?(options.contains(.shouldResume))
-        @unknown default:
-            invalidateEngine(message: "Audio session was interrupted.", notify: true)
-        }
-    }
-
-    private func invalidateEngine(message: String, notify: Bool) {
-        let wasRecording = fileWriter.isRecording
-        removeInputTap()
-        _ = fileWriter.cancel()
-        if engine.isRunning {
-            engine.stop()
-        }
-        onPCMBuffer = nil
-        isActive = false
-        level = 0
-        currentFormat = nil
-        needsEngineRestart = true
-        if notify {
-            onSessionInvalidated?(wasRecording, message)
         }
     }
 
@@ -722,25 +744,43 @@ final class StandbyAudioSession: ObservableObject {
         guard !fileWriter.isRecording else {
             throw NSError(domain: "Typeforme", code: 5, userInfo: [NSLocalizedDescriptionKey: "Keyboard dictation is already recording"])
         }
+        recordingDidActivateCaptureCategory = false
+        recordingShouldYieldOtherAudio = false
         do {
             return try await beginRecordingNow()
         } catch {
+            restoreAudioSessionAfterCapture()
             needsEngineRestart = true
             try? await Task.sleep(nanoseconds: 150_000_000)
-            return try await beginRecordingNow()
+            do {
+                return try await beginRecordingNow()
+            } catch {
+                restoreAudioSessionAfterCapture()
+                throw error
+            }
         }
     }
 
     private func beginRecordingNow() async throws -> URL {
-        if needsEngineRestart || !engine.isRunning || !hasInstalledTap {
-            try await IOSRecordingAudioSession.activateRecording(reuseActiveSession: true)
-            try restartEngine(purpose: .recording)
+        let needsRestart = needsEngineRestart || !engine.isRunning || !hasInstalledTap
+        let shouldInterruptOtherAudio = IOSRecordingAudioSession.shouldInterruptOtherAudioForKeyboardRecording()
+        if needsRestart {
+            recordingDidActivateCaptureCategory = true
+            recordingShouldYieldOtherAudio = shouldInterruptOtherAudio
+            try await IOSRecordingAudioSession.activateKeyboardRecording(reuseActiveSession: true)
+            try restartEngine(purpose: .keyboardRecording)
         } else {
+            if shouldInterruptOtherAudio {
+                recordingDidActivateCaptureCategory = true
+                recordingShouldYieldOtherAudio = true
+                IOSRecordingAudioSession.configureActiveSessionCategoryEventually(purpose: .keyboardRecording)
+            }
             currentFormat = currentFormat ?? engine.inputNode.outputFormat(forBus: 0)
             needsEngineRestart = false
         }
         level = 0
         let format = currentFormat ?? engine.inputNode.outputFormat(forBus: 0)
+        NSLog("typeforme keyboard audio beginRecording engineRunning=\(engine.isRunning) hasTap=\(hasInstalledTap) needsRestart=\(needsEngineRestart) sampleRate=\(format.sampleRate)")
         return try fileWriter.begin(format: format)
     }
 
@@ -761,22 +801,43 @@ final class StandbyAudioSession: ObservableObject {
     }
 
     private func restoreStandbyAfterRecording() {
-        guard isActive else {
+        restoreAudioSessionAfterCapture()
+    }
+
+    private func restoreAudioSessionAfterCapture() {
+        let shouldYieldOtherAudio = recordingShouldYieldOtherAudio
+        let shouldRestoreStandbyCategory = recordingDidActivateCaptureCategory
+        recordingDidActivateCaptureCategory = false
+        recordingShouldYieldOtherAudio = false
+        if shouldYieldOtherAudio {
+            removeInputTap()
+            if engine.isRunning {
+                engine.stop()
+            }
+            isActive = false
+            level = 0
+            currentFormat = nil
+            needsEngineRestart = true
             IOSRecordingAudioSession.deactivateAndNotifyOthers()
+            KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.sessionStarted)
             return
         }
-        removeInputTap()
-        engine.stop()
-        currentFormat = nil
-        IOSRecordingAudioSession.deactivateAndNotifyOthers()
-        do {
-            try startEngine(purpose: .standby, reuseActiveSession: true)
-            KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.sessionStarted)
-        } catch {
-            isActive = false
+        guard isActive else {
             needsEngineRestart = true
             KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.sessionEnded)
+            return
         }
+        if engine.isRunning, hasInstalledTap {
+            currentFormat = currentFormat ?? engine.inputNode.outputFormat(forBus: 0)
+            needsEngineRestart = false
+            if shouldRestoreStandbyCategory {
+                IOSRecordingAudioSession.configureActiveSessionCategoryEventually(purpose: .standby)
+            }
+            KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.sessionStarted)
+            return
+        }
+        needsEngineRestart = true
+        KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.sessionEnded)
     }
 
     private func requestPermission() async -> Bool {
