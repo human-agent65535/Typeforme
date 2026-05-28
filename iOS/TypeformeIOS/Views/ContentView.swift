@@ -1474,7 +1474,7 @@ private struct MacSettingsView: View {
                     TimeoutSecondsRow(
                         title: "ASR Timeout",
                         seconds: asrTimeoutSecondsBinding,
-                        range: 10...300
+                        range: BridgeMacSettingsPayload.asrTimeoutSecondsRange
                     )
 
                     NavigationLink {
@@ -1507,13 +1507,13 @@ private struct MacSettingsView: View {
                     TimeoutSecondsRow(
                         title: "Refine Timeout",
                         seconds: correctionTimeoutSecondsBinding,
-                        range: 0.1...30
+                        range: BridgeMacSettingsPayload.correctionTimeoutSecondsRange
                     )
 
                     TimeoutSecondsRow(
                         title: "Model Startup Timeout",
                         seconds: correctionColdTimeoutSecondsBinding,
-                        range: 1...60
+                        range: BridgeMacSettingsPayload.correctionColdTimeoutSecondsRange
                     )
 
                     Picker("Mode", selection: correctionModeBinding) {
@@ -1679,7 +1679,7 @@ private struct MacSettingsView: View {
         Binding {
             draft?.asrTimeoutSec ?? 120
         } set: { value in
-            draft?.asrTimeoutSec = min(max(value, 10), 300)
+            draft?.asrTimeoutSec = BridgeMacSettingsPayload.clampedASRTimeoutSec(value)
         }
     }
 
@@ -1687,8 +1687,7 @@ private struct MacSettingsView: View {
         Binding {
             Double(draft?.correctionTimeoutMs ?? 1500) / 1000
         } set: { value in
-            let clamped = min(max(value, 0.1), 30)
-            draft?.correctionTimeoutMs = Int((clamped * 1000).rounded())
+            draft?.correctionTimeoutMs = BridgeMacSettingsPayload.correctionTimeoutMs(fromSeconds: value)
         }
     }
 
@@ -1696,8 +1695,7 @@ private struct MacSettingsView: View {
         Binding {
             Double(draft?.correctionColdTimeoutMs ?? 8000) / 1000
         } set: { value in
-            let clamped = min(max(value, 1), 60)
-            draft?.correctionColdTimeoutMs = Int((clamped * 1000).rounded())
+            draft?.correctionColdTimeoutMs = BridgeMacSettingsPayload.correctionColdTimeoutMs(fromSeconds: value)
         }
     }
 

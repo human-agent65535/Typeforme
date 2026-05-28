@@ -258,6 +258,22 @@ struct BridgeSettingsPayload: Codable, Sendable {
         .externalLMStudio,
     ]
 
+    static let asrTimeoutRangeSec: ClosedRange<Double> = 10...300
+    static let correctionTimeoutRangeMs: ClosedRange<Int> = 100...30_000
+    static let correctionColdTimeoutRangeMs: ClosedRange<Int> = 1_000...60_000
+
+    static func clampedASRTimeoutSec(_ value: Double) -> Double {
+        min(max(value, asrTimeoutRangeSec.lowerBound), asrTimeoutRangeSec.upperBound)
+    }
+
+    static func clampedCorrectionTimeoutMs(_ value: Int) -> Int {
+        min(max(value, correctionTimeoutRangeMs.lowerBound), correctionTimeoutRangeMs.upperBound)
+    }
+
+    static func clampedCorrectionColdTimeoutMs(_ value: Int) -> Int {
+        min(max(value, correctionColdTimeoutRangeMs.lowerBound), correctionColdTimeoutRangeMs.upperBound)
+    }
+
     static func current(userDictionary: [DictionaryEntry] = []) -> BridgeSettingsPayload {
         let resolved = currentResolvedSettings()
         let sortedUserDictionary = normalizedUserDictionary(userDictionary)
@@ -494,9 +510,9 @@ struct BridgeSettingsPayload: Codable, Sendable {
         punctuationPreference = PunctuationOutputPreference.normalized(punctuationPreference).rawValue
         lmStudioBaseURL = lmStudioBaseURL?.trimmingCharacters(in: .whitespacesAndNewlines)
         lmStudioModel = lmStudioModel?.trimmingCharacters(in: .whitespacesAndNewlines)
-        asrTimeoutSec = min(max(asrTimeoutSec, 10), 300)
-        correctionTimeoutMs = min(max(correctionTimeoutMs, 100), 30_000)
-        correctionColdTimeoutMs = min(max(correctionColdTimeoutMs, 1_000), 60_000)
+        asrTimeoutSec = Self.clampedASRTimeoutSec(asrTimeoutSec)
+        correctionTimeoutMs = Self.clampedCorrectionTimeoutMs(correctionTimeoutMs)
+        correctionColdTimeoutMs = Self.clampedCorrectionColdTimeoutMs(correctionColdTimeoutMs)
         languageIDs = ASRLanguageSelection.validatedIDs(
             languageIDs,
             supportedOptions: supportedLanguageOptions(for: asrProvider)

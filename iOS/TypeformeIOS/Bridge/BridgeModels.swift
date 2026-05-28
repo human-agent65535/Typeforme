@@ -445,6 +445,38 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
         case settingsRevision = "settings_revision"
     }
 
+    static let asrTimeoutSecondsRange: ClosedRange<Double> = 10...300
+    static let correctionTimeoutMillisecondsRange: ClosedRange<Int> = 100...30_000
+    static let correctionColdTimeoutMillisecondsRange: ClosedRange<Int> = 1_000...60_000
+
+    static var correctionTimeoutSecondsRange: ClosedRange<Double> {
+        secondsRange(for: correctionTimeoutMillisecondsRange)
+    }
+
+    static var correctionColdTimeoutSecondsRange: ClosedRange<Double> {
+        secondsRange(for: correctionColdTimeoutMillisecondsRange)
+    }
+
+    static func clampedASRTimeoutSec(_ value: Double) -> Double {
+        clamped(value, to: asrTimeoutSecondsRange)
+    }
+
+    static func clampedCorrectionTimeoutMs(_ value: Int) -> Int {
+        clamped(value, to: correctionTimeoutMillisecondsRange)
+    }
+
+    static func clampedCorrectionColdTimeoutMs(_ value: Int) -> Int {
+        clamped(value, to: correctionColdTimeoutMillisecondsRange)
+    }
+
+    static func correctionTimeoutMs(fromSeconds value: Double) -> Int {
+        milliseconds(fromSeconds: value, range: correctionTimeoutMillisecondsRange)
+    }
+
+    static func correctionColdTimeoutMs(fromSeconds value: Double) -> Int {
+        milliseconds(fromSeconds: value, range: correctionColdTimeoutMillisecondsRange)
+    }
+
     init(
         asrProvider: String,
         asrProviderOptions: [BridgeSettingOption],
@@ -469,11 +501,11 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
         self.languageIDs = languageIDs
         self.supportedLanguages = supportedLanguages
         self.supportedLanguagesByASRProvider = supportedLanguagesByASRProvider
-        self.asrTimeoutSec = min(max(asrTimeoutSec, 10), 300)
+        self.asrTimeoutSec = Self.clampedASRTimeoutSec(asrTimeoutSec)
         self.correctionBackend = correctionBackend
         self.correctionBackendOptions = correctionBackendOptions
-        self.correctionTimeoutMs = min(max(correctionTimeoutMs, 100), 30_000)
-        self.correctionColdTimeoutMs = min(max(correctionColdTimeoutMs, 1_000), 60_000)
+        self.correctionTimeoutMs = Self.clampedCorrectionTimeoutMs(correctionTimeoutMs)
+        self.correctionColdTimeoutMs = Self.clampedCorrectionColdTimeoutMs(correctionColdTimeoutMs)
         self.correctionMode = correctionMode
         self.numberOutputPreference = numberOutputPreference
         self.punctuationPreference = punctuationPreference
@@ -512,9 +544,9 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
     mutating func normalize() {
         let supported = supportedLanguageOptions(for: asrProvider)
         languageIDs = ASRLanguageSelection.validatedIDs(languageIDs, supportedOptions: supported)
-        asrTimeoutSec = min(max(asrTimeoutSec, 10), 300)
-        correctionTimeoutMs = min(max(correctionTimeoutMs, 100), 30_000)
-        correctionColdTimeoutMs = min(max(correctionColdTimeoutMs, 1_000), 60_000)
+        asrTimeoutSec = Self.clampedASRTimeoutSec(asrTimeoutSec)
+        correctionTimeoutMs = Self.clampedCorrectionTimeoutMs(correctionTimeoutMs)
+        correctionColdTimeoutMs = Self.clampedCorrectionColdTimeoutMs(correctionColdTimeoutMs)
         userDictionary = Self.normalizedUserDictionary(userDictionary)
     }
 
@@ -556,6 +588,23 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
             output.append(cleaned)
         }
         return output.sorted()
+    }
+
+    private static func secondsRange(for range: ClosedRange<Int>) -> ClosedRange<Double> {
+        (Double(range.lowerBound) / 1000)...(Double(range.upperBound) / 1000)
+    }
+
+    private static func milliseconds(fromSeconds seconds: Double, range: ClosedRange<Int>) -> Int {
+        let clampedSeconds = clamped(seconds, to: secondsRange(for: range))
+        return clamped(Int((clampedSeconds * 1000).rounded()), to: range)
+    }
+
+    private static func clamped(_ value: Double, to range: ClosedRange<Double>) -> Double {
+        min(max(value, range.lowerBound), range.upperBound)
+    }
+
+    private static func clamped(_ value: Int, to range: ClosedRange<Int>) -> Int {
+        min(max(value, range.lowerBound), range.upperBound)
     }
 }
 

@@ -89,7 +89,7 @@ final class BridgeService {
             )
         }
         if let timeoutSec = request.asrTimeoutSec {
-            let clamped = min(max(timeoutSec, 10), 300)
+            let clamped = BridgeSettingsPayload.clampedASRTimeoutSec(timeoutSec)
             let key = provider == "whisperkit"
                 ? AppSettings.Keys.asrWhisperKitTimeoutSec
                 : AppSettings.Keys.asrQwenLlamaTimeoutSec
@@ -101,10 +101,16 @@ final class BridgeService {
             UserDefaults.standard.set(backend.rawValue, forKey: AppSettings.Keys.correctionBackend)
         }
         if let timeoutMs = request.correctionTimeoutMs {
-            UserDefaults.standard.set(min(max(timeoutMs, 100), 30_000), forKey: AppSettings.Keys.correctionTimeoutMs)
+            UserDefaults.standard.set(
+                BridgeSettingsPayload.clampedCorrectionTimeoutMs(timeoutMs),
+                forKey: AppSettings.Keys.correctionTimeoutMs
+            )
         }
         if let timeoutMs = request.correctionColdTimeoutMs {
-            UserDefaults.standard.set(min(max(timeoutMs, 1_000), 60_000), forKey: AppSettings.Keys.correctionColdTimeoutMs)
+            UserDefaults.standard.set(
+                BridgeSettingsPayload.clampedCorrectionColdTimeoutMs(timeoutMs),
+                forKey: AppSettings.Keys.correctionColdTimeoutMs
+            )
         }
         if let rawURL = request.lmStudioBaseURL {
             UserDefaults.standard.set(try normalizedLMStudioBaseURL(rawURL), forKey: AppSettings.Keys.lmStudioBaseURL)
