@@ -173,30 +173,12 @@ enum AppSettings {
            !["whisperkit", "qwen3-asr-llama"].contains(raw.lowercased()) {
             UserDefaults.standard.set("qwen3-asr-llama", forKey: Keys.asrProvider)
         }
-        if let raw = UserDefaults.standard.string(forKey: Keys.correctionBackend),
-           CorrectionBackendKind(rawValue: raw) == nil {
-            UserDefaults.standard.set(CorrectionBackendKind.qwen35_2B.rawValue, forKey: Keys.correctionBackend)
-        }
-        if let raw = UserDefaults.standard.string(forKey: Keys.correctionMode),
-                  CorrectionMode(rawValue: raw) == nil {
-            UserDefaults.standard.set(CorrectionMode.polish.rawValue, forKey: Keys.correctionMode)
-        }
-        if let raw = UserDefaults.standard.string(forKey: Keys.numberOutputPreference),
-           NumberOutputPreference(rawValue: raw) == nil {
-            UserDefaults.standard.set(NumberOutputPreference.automatic.rawValue, forKey: Keys.numberOutputPreference)
-        }
-        if let raw = UserDefaults.standard.string(forKey: Keys.punctuationPreference),
-           PunctuationOutputPreference(rawValue: raw) == nil {
-            UserDefaults.standard.set(PunctuationOutputPreference.normal.rawValue, forKey: Keys.punctuationPreference)
-        }
-        if let raw = UserDefaults.standard.string(forKey: Keys.processingMode),
-           ProcessingMode(rawValue: raw) == nil {
-            UserDefaults.standard.set(ProcessingMode.client.rawValue, forKey: Keys.processingMode)
-        }
-        if let raw = UserDefaults.standard.string(forKey: Keys.voiceUXMode),
-           VoiceUXMode(rawValue: raw) == nil {
-            UserDefaults.standard.set(VoiceUXMode.classic.rawValue, forKey: Keys.voiceUXMode)
-        }
+        repairInvalidRawSetting(forKey: Keys.correctionBackend, default: CorrectionBackendKind.qwen35_2B)
+        repairInvalidRawSetting(forKey: Keys.correctionMode, default: CorrectionMode.polish)
+        repairInvalidRawSetting(forKey: Keys.numberOutputPreference, default: NumberOutputPreference.automatic)
+        repairInvalidRawSetting(forKey: Keys.punctuationPreference, default: PunctuationOutputPreference.normal)
+        repairInvalidRawSetting(forKey: Keys.processingMode, default: ProcessingMode.client)
+        repairInvalidRawSetting(forKey: Keys.voiceUXMode, default: VoiceUXMode.classic)
         _ = ensureBridgeAuthToken()
     }
 
@@ -210,6 +192,34 @@ enum AppSettings {
     private static var ud: UserDefaults { .standard }
     private static let clientIdentityLock = NSLock()
     private static var cachedClientIdentityID: String?
+
+    private static func rawSetting<Value>(
+        forKey key: String,
+        default fallback: Value
+    ) -> Value where Value: RawRepresentable, Value.RawValue == String {
+        rawSetting(forKey: key, default: fallback, defaults: ud)
+    }
+
+    private static func rawSetting<Value>(
+        forKey key: String,
+        default fallback: Value,
+        defaults: UserDefaults
+    ) -> Value where Value: RawRepresentable, Value.RawValue == String {
+        guard let raw = defaults.string(forKey: key),
+              let value = Value(rawValue: raw)
+        else { return fallback }
+        return value
+    }
+
+    private static func repairInvalidRawSetting<Value>(
+        forKey key: String,
+        default fallback: Value
+    ) where Value: RawRepresentable, Value.RawValue == String {
+        guard let raw = UserDefaults.standard.string(forKey: key),
+              Value(rawValue: raw) == nil
+        else { return }
+        UserDefaults.standard.set(fallback.rawValue, forKey: key)
+    }
 
     static let serverScopedSettingKeys: [String] = [
         Keys.asrProvider,
@@ -269,11 +279,7 @@ enum AppSettings {
     static var alwaysShowHUD: Bool                    { ud.bool(forKey: Keys.alwaysShowHUD) }
     static var launchAtLogin: Bool                    { ud.bool(forKey: Keys.launchAtLogin) }
     static var voiceUXMode: VoiceUXMode {
-        if let raw = ud.string(forKey: Keys.voiceUXMode),
-           let value = VoiceUXMode(rawValue: raw) {
-            return value
-        }
-        return .classic
+        rawSetting(forKey: Keys.voiceUXMode, default: .classic)
     }
     /// When `true`, the recorder feeds PCM into Apple Speech on-device so the
     /// HUD can show a live transcript while the user is still speaking. The
@@ -285,9 +291,7 @@ enum AppSettings {
         ud.bool(forKey: Keys.voiceLivePreview)
     }
     static var holdModifier: HoldModifier {
-        if let raw = ud.string(forKey: Keys.holdModifier),
-           let m = HoldModifier(rawValue: raw) { return m }
-        return .rightOption
+        rawSetting(forKey: Keys.holdModifier, default: .rightOption)
     }
 
     static var asrProvider: String {
@@ -339,20 +343,14 @@ enum AppSettings {
     }
 
     static var correctionBackend: CorrectionBackendKind {
-        if let raw = ud.string(forKey: Keys.correctionBackend),
-           let kind = CorrectionBackendKind(rawValue: raw) { return kind }
-        return .qwen35_2B
+        rawSetting(forKey: Keys.correctionBackend, default: .qwen35_2B)
     }
     static var correctionTimeoutMs: Int     { max(100, ud.integer(forKey: Keys.correctionTimeoutMs)) }
     static var correctionColdTimeoutMs: Int { max(1000, ud.integer(forKey: Keys.correctionColdTimeoutMs)) }
     static var correctionMaxTokens: Int     { max(16, ud.integer(forKey: Keys.correctionMaxTokens)) }
     static var correctionContextSize: Int   { max(512, ud.integer(forKey: Keys.correctionContextSize)) }
     static var correctionMode: CorrectionMode {
-        if let raw = ud.string(forKey: Keys.correctionMode),
-           let value = CorrectionMode(rawValue: raw) {
-            return value
-        }
-        return .polish
+        rawSetting(forKey: Keys.correctionMode, default: .polish)
     }
     static var autoCommit: Bool         { ud.bool(forKey: Keys.correctionAutoCommit) }
     static var numberOutputPreference: NumberOutputPreference {
@@ -409,11 +407,7 @@ enum AppSettings {
     }
 
     private static func processingMode(in defaults: UserDefaults) -> ProcessingMode {
-        if let raw = defaults.string(forKey: Keys.processingMode),
-           let mode = ProcessingMode(rawValue: raw) {
-            return mode
-        }
-        return .client
+        rawSetting(forKey: Keys.processingMode, default: .client, defaults: defaults)
     }
 
     private static func saveScopedSettings(for mode: ProcessingMode, defaults: UserDefaults) {
