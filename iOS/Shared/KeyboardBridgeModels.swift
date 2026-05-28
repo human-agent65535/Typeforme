@@ -44,6 +44,7 @@ enum KeyboardSharedDefaults {
     static let keyboardDefaultsKey = "keyboard.defaults.v1"
     private static let keyboardStatusKey = "keyboard.status.v1"
     private static let hostHandoffKey = "keyboard.host-handoff.v1"
+    private static let hostForegroundKey = "keyboard.host-foreground.v1"
 
     static func suite() -> UserDefaults? {
         UserDefaults(suiteName: appGroupIdentifier)
@@ -71,6 +72,27 @@ enum KeyboardSharedDefaults {
 
     static func loadStatusSnapshot() -> KeyboardBridgeStatus? {
         loadCodable(KeyboardBridgeStatus.self, key: keyboardStatusKey)
+    }
+
+    @discardableResult
+    static func saveHostForegroundActive(_ active: Bool, now: TimeInterval = Date().timeIntervalSince1970) -> Bool {
+        guard let defaults = suite() else { return false }
+        if active {
+            defaults.set(now, forKey: hostForegroundKey)
+        } else {
+            defaults.removeObject(forKey: hostForegroundKey)
+        }
+        return defaults.synchronize()
+    }
+
+    static func isHostForegroundActive(
+        now: TimeInterval = Date().timeIntervalSince1970,
+        maxAge: TimeInterval = 45
+    ) -> Bool {
+        guard let timestamp = suite()?.object(forKey: hostForegroundKey) as? TimeInterval,
+              timestamp > 0
+        else { return false }
+        return now - timestamp <= maxAge
     }
 
     static func makeBridgeToken() -> String {

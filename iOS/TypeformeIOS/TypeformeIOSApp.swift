@@ -26,6 +26,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 struct TypeformeIOSApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var state = AppState()
+    @State private var foregroundPresenceTask: Task<Void, Never>?
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
@@ -33,6 +34,7 @@ struct TypeformeIOSApp: App {
             ContentView()
                 .environmentObject(state)
                 .task {
+                    updateHostForegroundPresence(for: scenePhase)
                     await state.bootstrap()
                 }
                 .onReceive(NotificationCenter.default.publisher(for: .typeformeOpenURL)) { notification in
@@ -44,6 +46,7 @@ struct TypeformeIOSApp: App {
                     Task { await state.handleOpenURL(url) }
                 }
                 .onChange(of: scenePhase) { _, phase in
+                    updateHostForegroundPresence(for: phase)
                     guard phase == .active else { return }
                     guard !state.isEditingMacSettings else { return }
                     // Refresh dictation settings whenever the app comes to the
@@ -54,6 +57,24 @@ struct TypeformeIOSApp: App {
                     // errorMessage banner without disrupting current input.
                     Task { try? await state.refreshMacSettings() }
                 }
+        }
+    }
+
+    private func updateHostForegroundPresence(for phase: ScenePhase) {
+        foregroundPresenceTask?.cancel()
+        foregroundPresenceTask = nil
+        guard phase == .active else {
+            KeyboardSharedDefaults.saveHostForegroundActive(false)
+            return
+        }
+
+        KeyboardSharedDefaults.saveHostForegroundActive(true)
+        foregroundPresenceTask = Task {
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 15_000_000_000)
+                guard !Task.isCancelled else { return }
+                KeyboardSharedDefaults.saveHostForegroundActive(true)
+            }
         }
     }
 }

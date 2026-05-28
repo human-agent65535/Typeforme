@@ -336,7 +336,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private var scheduledHostOpenTask: Task<Void, Never>?
     private var scheduledStopTask: Task<Void, Never>?
     private var hostWakeResetTask: Task<Void, Never>?
-    private var startupHostWakeTask: Task<Void, Never>?
     private var deleteRepeatTask: Task<Void, Never>?
     private var bridgeProbeTask: Task<Void, Never>?
     private var statusRefreshTask: Task<Void, Never>?
@@ -1614,7 +1613,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         scheduledHostOpenTask?.cancel()
         scheduledStopTask?.cancel()
         hostWakeResetTask?.cancel()
-        startupHostWakeTask?.cancel()
         stopStatusPolling()
         textTouchLearner.flush()
         rimeInput.onStateChange = nil
@@ -1637,7 +1635,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         stopDeleteRepeat()
         clearTextShiftState()
         cancelHostWakeResetTask()
-        cancelStartupHostWake()
         rimeInput.onStateChange = nil
         deferredStartupWorkItem?.cancel()
         deferredStartupWorkItem = nil
@@ -4803,6 +4800,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             updateUI()
             return
         }
+        if suppressDuplicateHostOpen(source: "keyboard-action:\(action)") { return }
         let requestedCorrectionMode = action == "record" ? currentDefaultCorrectionMode() : correctionMode
         let handoff = KeyboardHostHandoff(
             action: action,
@@ -4881,6 +4879,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             kbLog.notice("openHostForFullAccessSetup: already running inside host app; posted full access signal only")
             return
         }
+        if suppressDuplicateHostOpen(source: "full-access-setup") { return }
 
         var components = URLComponents()
         components.scheme = "typeforme"
@@ -6941,6 +6940,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     private var isRunningInsideHostApp: Bool {
         currentTextHostBundleID == Self.containingAppBundleIdentifier
+            || KeyboardSharedDefaults.isHostForegroundActive()
     }
 
     private func addCandidateSeparator() {
@@ -7866,6 +7866,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         openingHostUntil > Date().timeIntervalSince1970
     }
 
+    private func suppressDuplicateHostOpen(source: String) -> Bool {
+        guard isOpeningHostApp else { return false }
+        kbLog.notice("openHostApp: host open already pending; suppressing duplicate source=\(source, privacy: .public)")
+        updateUI()
+        return true
+    }
+
     private func showFullAccessRequiredStatus(showTextNotice: Bool = false) {
         KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.fullAccessRequired)
         bridgeStatus = KeyboardBridgeStatus(state: .error, message: "Enable Full Access in iOS keyboard settings.")
@@ -8256,11 +8263,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         scheduledHostOpenTask = nil
     }
 
-    private func cancelStartupHostWake() {
-        startupHostWakeTask?.cancel()
-        startupHostWakeTask = nil
-    }
-
     private func cancelBridgeCommandTasks() {
         bridgeCommandTasks.values.forEach { $0.cancel() }
         bridgeCommandTasks.removeAll()
@@ -8310,13 +8312,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         hasPresentedInitialFrame = false
         let workItem = DispatchWorkItem { [weak self] in
             guard let self, self.view.window != nil else { return }
-            let needsHostBootstrap = self.hasFullAccess && KeyboardSharedDefaults.loadPayload() == nil
             _ = self.applySharedBridgeStatusSnapshot()
             self.refreshBridgeStatus(captureSelection: false)
             self.postAuthenticatedKeyboardRequest(KeyboardDarwinNotificationName.requestSessionStatus)
-            if needsHostBootstrap {
-                self.scheduleStartupHostWakeIfNeeded(reason: "missing defaults", delay: 1.0)
-            }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.20) { [weak self] in
                 guard let self, self.view.window != nil else { return }
                 self.hasPresentedInitialFrame = true
@@ -8327,31 +8325,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         // Let iOS draw the first keyboard frame before touching localhost,
         // Darwin notifications, or textDocumentProxy selection APIs.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.18, execute: workItem)
-    }
-
-    private func scheduleStartupHostWakeIfNeeded(reason: String, delay: TimeInterval) {
-        guard hasFullAccess else { return }
-        guard !isBridgeAwake, !isOpeningHostApp else { return }
-        cancelStartupHostWake()
-        startupHostWakeTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: UInt64(max(delay, 0) * 1_000_000_000))
-            guard !Task.isCancelled else { return }
-            await MainActor.run {
-                guard let self else { return }
-                guard !Task.isCancelled else { return }
-                self.startupHostWakeTask = nil
-                guard self.view.window != nil,
-                      self.hasFullAccess,
-                      !self.isBridgeAwake,
-                      !self.isOpeningHostApp,
-                      !self.isStartRequestInFlight,
-                      self.currentBridgeStatus?.state != .recording,
-                      self.currentBridgeStatus?.state != .sending
-                else { return }
-                kbLog.notice("startup wake: opening host for standby reason=\(reason, privacy: .public)")
-                self.openStandbyInHostApp(returnToKeyboard: false, allowBundleFallback: false)
-            }
-        }
     }
 
     private func refreshBridgeStatus(captureSelection: Bool = true) {
