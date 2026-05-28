@@ -234,19 +234,17 @@ struct BridgeClient {
         onEvent: @Sendable (BridgeJobStatusEvent) async -> Void
     ) async throws -> Bool {
         guard let safeJobID = Self.normalizedClientJobID(jobID),
-              let encodedJobID = safeJobID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
-              let url = URL(string: "/v1/jobs/\(encodedJobID)/events", relativeTo: baseURL)?.absoluteURL
+              let encodedJobID = safeJobID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed)
         else {
             throw BridgeClientError.invalidURL
         }
-        var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        request.timeoutInterval = 60
-        request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
-        request.setValue("no-store", forHTTPHeaderField: "Cache-Control")
-        BridgeClientIdentity.apply(to: &request)
+        let request = try makeRequest(
+            path: "/v1/jobs/\(encodedJobID)/events",
+            method: "GET",
+            timeout: 60,
+            accept: "text/event-stream",
+            acceptEncoding: nil
+        )
 
         let (bytes, response) = try await URLSession.shared.bytes(for: request)
         guard let http = response as? HTTPURLResponse else {
@@ -306,18 +304,13 @@ struct BridgeClient {
         contentType: String? = nil,
         timeout: TimeInterval
     ) async throws -> T {
-        guard let url = URL(string: path, relativeTo: baseURL)?.absoluteURL else {
-            throw BridgeClientError.invalidURL
-        }
-        var request = URLRequest(url: url)
-        request.httpMethod = method
-        request.timeoutInterval = timeout
-        request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.setValue("gzip", forHTTPHeaderField: "Accept-Encoding")
-        request.setValue("no-store", forHTTPHeaderField: "Cache-Control")
-        BridgeClientIdentity.apply(to: &request)
+        var request = try makeRequest(
+            path: path,
+            method: method,
+            timeout: timeout,
+            accept: "application/json",
+            acceptEncoding: "gzip"
+        )
         if let body {
             request.httpBody = body
             request.setValue(contentType ?? "application/octet-stream", forHTTPHeaderField: "Content-Type")
@@ -337,6 +330,30 @@ struct BridgeClient {
             throw BridgeClientError.server(message)
         }
         return try JSONDecoder().decode(T.self, from: data)
+    }
+
+    private func makeRequest(
+        path: String,
+        method: String,
+        timeout: TimeInterval,
+        accept: String,
+        acceptEncoding: String?
+    ) throws -> URLRequest {
+        guard let url = URL(string: path, relativeTo: baseURL)?.absoluteURL else {
+            throw BridgeClientError.invalidURL
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        request.timeoutInterval = timeout
+        request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue(accept, forHTTPHeaderField: "Accept")
+        if let acceptEncoding {
+            request.setValue(acceptEncoding, forHTTPHeaderField: "Accept-Encoding")
+        }
+        request.setValue("no-store", forHTTPHeaderField: "Cache-Control")
+        BridgeClientIdentity.apply(to: &request)
+        return request
     }
 
     private static func multipartDictateBody(
