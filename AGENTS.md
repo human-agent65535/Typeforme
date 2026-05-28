@@ -49,7 +49,13 @@ scripts/build-app.sh debug
 scripts/deploy-ios.sh
 ```
 
-- For iOS simulator build checks, use the full Xcode `xcodebuild` path against `iOS/TypeformeIOS.xcodeproj` and the `TypeformeIOS` scheme.
+- iOS simulator verification:
+
+```sh
+scripts/verify-ios-simulator.sh
+```
+
+- For manual iOS simulator build checks, use the full Xcode `xcodebuild` path against `iOS/TypeformeIOS.xcodeproj` and the `TypeformeIOS` scheme.
 - Treat iOS simulator devices as user-configured local state. Before simulator UI checks, inspect existing devices; reuse an already booted simulator when possible, otherwise boot the configured `iPhone 17 Pro Max` simulator. Do not create, erase, delete, boot, or switch to a different simulator model unless the user explicitly asks. If the configured simulator is missing or unusable, stop and report that instead of choosing another simulator.
 - If you cannot run a relevant verification command, report the reason and the residual risk.
 
