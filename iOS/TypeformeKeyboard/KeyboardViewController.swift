@@ -126,6 +126,45 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
     }
 
+    private final class KeyboardHaptics {
+        private static let textKeyCooldown: CFTimeInterval = 0.035
+
+        private let textKeyImpactGenerator = UIImpactFeedbackGenerator(style: .light)
+        private let controlImpactGenerator = UIImpactFeedbackGenerator(style: .light)
+        private let selectionGenerator = UISelectionFeedbackGenerator()
+        private var lastTextKeyFeedbackAt: CFTimeInterval = 0
+
+        func prepareForKeyboardReady() {
+            textKeyImpactGenerator.prepare()
+            controlImpactGenerator.prepare()
+            selectionGenerator.prepare()
+        }
+
+        func prepareForTextInput() {
+            textKeyImpactGenerator.prepare()
+        }
+
+        func playTextKeyPress() {
+            let now = CACurrentMediaTime()
+            guard now - lastTextKeyFeedbackAt > Self.textKeyCooldown else { return }
+            lastTextKeyFeedbackAt = now
+            textKeyImpactGenerator.impactOccurred(intensity: 0.82)
+            textKeyImpactGenerator.prepare()
+        }
+
+        func playControlTap() {
+            controlImpactGenerator.impactOccurred(intensity: 0.82)
+            controlImpactGenerator.prepare()
+            textKeyImpactGenerator.prepare()
+        }
+
+        func playSelectionChanged() {
+            selectionGenerator.selectionChanged()
+            selectionGenerator.prepare()
+            textKeyImpactGenerator.prepare()
+        }
+    }
+
     private enum TextInputLanguage: String {
         case chinese
         case english
@@ -281,9 +320,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
     }
     private var lastBridgeContactAt: TimeInterval = 0
-    /// Wall-clock deadline for the post-insert "Inserted" flash on the text
-    /// toolbar. While in window, the status label displays the inserted hint
-    /// (green) in place of the normal toolbar icons, then auto-clears.
     private var insertedFlashUntil: TimeInterval = 0
     private var insertedFlashClearTask: DispatchWorkItem?
     private static let insertedFlashDuration: TimeInterval = 1.2
@@ -322,7 +358,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private var scheduledHostOpenTask: Task<Void, Never>?
     private var scheduledStopTask: Task<Void, Never>?
     private var hostWakeResetTask: Task<Void, Never>?
-    private var hostBundleWakeFallbackTask: Task<Void, Never>?
     private var startupHostWakeTask: Task<Void, Never>?
     private var deleteRepeatTask: Task<Void, Never>?
     private var bridgeProbeTask: Task<Void, Never>?
@@ -540,15 +575,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private var lastLetterCasingSnapshot: LetterCasingSnapshot?
     private var isTextShiftEnabled = false
     private var isTextShiftLocked = false
+    private var isTextAutoCapitalizationSuppressed = false
     private var lastShiftTapTime: TimeInterval = 0
     private var doubleQuoteOpen = true
     private var singleQuoteOpen = true
     private weak var activeTrackpadSourceView: UIView?
     private var textTrackpadLastStepX = 0
-    // Keyboard feedback needs to be crisp without feeling like a full control
-    // tap. .medium/0.9 was too strong; .soft/0.4 was too easy to miss.
-    private lazy var keyboardHapticGenerator = UIImpactFeedbackGenerator(style: .light)
-    private var lastKeyboardFeedbackTime: CFTimeInterval = 0
+    private let keyboardHaptics = KeyboardHaptics()
     private var keyboardFocusSwipeHandledUntil: CFTimeInterval = 0
     private var suppressTextKeyCommitUntil: CFTimeInterval = 0
     private var pendingKeyboardFocusAnimationIntent: CGFloat?
@@ -1464,6 +1497,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         updateKeyboardFocus(animated: false)
         _ = rimeInput.startIfNeeded()
         updateUI(animated: false)
+        keyboardHaptics.prepareForKeyboardReady()
         // Keyboard extensions receive the active input scene's appearance as
         // traits. Re-apply concrete colors whenever those traits move; layer
         // colors don't update automatically like UIColor-backed views do.
@@ -1513,6 +1547,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         // `viewDidLoad`; pick up whatever's current right before display.
         refreshDynamicAppearance()
         configureKeyboardDarwinBridge()
+        keyboardHaptics.prepareForKeyboardReady()
         logKeyboardPresentationLayout("viewWillAppear", force: true)
     }
 
@@ -1522,10 +1557,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
         disableGestureRecognizerDelays()
         revealKeyboardContentIfPresentationStable()
+        keyboardHaptics.prepareForKeyboardReady()
         logKeyboardPresentationLayout("viewDidAppear", force: true)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
             self?.disableGestureRecognizerDelays()
             self?.revealKeyboardContentIfPresentationStable()
+            self?.keyboardHaptics.prepareForKeyboardReady()
             self?.logKeyboardPresentationLayout("viewDidAppear+100ms", force: true)
         }
         scheduleDeferredStartupProbe()
@@ -1597,7 +1634,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         scheduledHostOpenTask?.cancel()
         scheduledStopTask?.cancel()
         hostWakeResetTask?.cancel()
-        hostBundleWakeFallbackTask?.cancel()
         startupHostWakeTask?.cancel()
         stopStatusPolling()
         textTouchLearner.flush()
@@ -1621,7 +1657,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         stopDeleteRepeat()
         clearTextShiftState()
         cancelHostWakeResetTask()
-        cancelHostBundleWakeFallback()
         cancelStartupHostWake()
         rimeInput.onStateChange = nil
         deferredStartupWorkItem?.cancel()
@@ -2213,7 +2248,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 DispatchQueue.main.async {
                     guard let self else { return }
                     self.cancelHostWakeResetTask()
-                    self.cancelHostBundleWakeFallback()
                     self.lastDarwinAwakeAt = Date().timeIntervalSince1970
                     if !self.hasActiveKeyboardRecordingOrStopIntent,
                        self.currentBridgeStatus?.state != .recording,
@@ -2236,7 +2270,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                     }
                     self.cancelScheduledHostOpen()
                     self.cancelHostWakeResetTask()
-                    self.cancelHostBundleWakeFallback()
                     self.openingHostUntil = 0
                     self.isStartRequestInFlight = false
                     self.tapRecordingActive = false
@@ -2252,7 +2285,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                     let status = KeyboardBridgeStatus(state: .recording, message: "Recording")
                     self.cancelScheduledHostOpen()
                     self.cancelHostWakeResetTask()
-                    self.cancelHostBundleWakeFallback()
                     self.lastDarwinAwakeAt = Date().timeIntervalSince1970
                     self.applyBridgeStatus(status)
                     self.finishStartRequestIfNeeded(status: status)
@@ -3426,12 +3458,20 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func makeTextShiftButton() -> UIButton {
-        let button = makeTextKeyButton(title: "", image: isTextShiftEnabled ? "shift.fill" : "shift", weight: .utility)
-        button.isSelected = isTextShiftEnabled || isTextShiftLocked
+        let autoCap = shouldAutoCapitalizeNextEnglishLetter()
+        let isShiftActive = effectiveTextShiftActive(autoCap: autoCap)
+        let button = makeTextKeyButton(
+            title: "",
+            image: isTextShiftLocked ? "capslock.fill" : (isShiftActive ? "shift.fill" : "shift"),
+            weight: .utility
+        )
+        button.isSelected = isShiftActive || isTextShiftLocked
         button.setNeedsUpdateConfiguration()
-        button.accessibilityLabel = isTextShiftEnabled
-            ? NSLocalizedString("Shift on", comment: "Accessibility label for active Shift key")
-            : NSLocalizedString("Shift", comment: "Accessibility label for Shift key")
+        button.accessibilityLabel = isTextShiftLocked
+            ? NSLocalizedString("Caps Lock on", comment: "Accessibility label for active Caps Lock key")
+            : (isShiftActive
+                ? NSLocalizedString("Shift on", comment: "Accessibility label for active Shift key")
+                : NSLocalizedString("Shift", comment: "Accessibility label for Shift key"))
         button.addTarget(self, action: #selector(toggleTextShift), for: .touchUpInside)
         textShiftButton = button
         return button
@@ -3446,7 +3486,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             return chinesePunctuationDisplayTitle(for: key)
         }
         if isAlphabeticTextKey(key),
-           isTextShiftEnabled || (textInputLanguage == .english && (autoCap ?? shouldAutoCapitalizeNextEnglishLetter())) {
+           effectiveTextShiftActive(autoCap: autoCap ?? shouldAutoCapitalizeNextEnglishLetter()) {
             return key.uppercased()
         }
         return key
@@ -3976,11 +4016,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             }
         }
         textToolbarStatusLabel.alpha = showsTextToolbarStatus ? 1 : 0
+        updateRestyleUndoButtons()
         applyTextToolbarRecordingOverlay(
             recording: showsTextToolbarVoicePrint,
-            sending: showsTextToolbarStatus
+            sending: isSendingState || isErrorState
         )
-        updateRestyleUndoButtons()
         if isRecordingState {
             let audioLevel = currentBridgeStatus?.audioLevel
             voicePrint.updateLevel(audioLevel)
@@ -4073,6 +4113,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         if isShowingTextRecordingStatus {
             isShowingTextRecordingStatus = false
             renderRimeState(rimeInput.state())
+            keyboardHaptics.prepareForTextInput()
         }
     }
 
@@ -4252,12 +4293,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func playKeyboardPressFeedbackIfNeeded(for control: UIControl) {
-        guard control.isDescendant(of: textKeyboardContainer) else { return }
-        let now = CACurrentMediaTime()
-        guard now - lastKeyboardFeedbackTime > 0.035 else { return }
-        lastKeyboardFeedbackTime = now
-        keyboardHapticGenerator.impactOccurred(intensity: 0.74)
-        keyboardHapticGenerator.prepare()
+        guard control.isDescendant(of: keyRowsStack) else { return }
+        keyboardHaptics.playTextKeyPress()
     }
 
     @objc private func voicePressDown() {
@@ -4761,7 +4798,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         if isRunningInsideHostApp {
             kbLog.notice("openHostAppForKeyboardAction: already running inside host app; suppressing self-open")
             cancelHostWakeResetTask()
-            cancelHostBundleWakeFallback()
             openingHostUntil = 0
             bridgeStatus = KeyboardBridgeStatus(state: .standby, message: "Ready")
             lastBridgeContactAt = Date().timeIntervalSince1970
@@ -4871,28 +4907,54 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         hostWakeResetTask = nil
     }
 
-    private func cancelHostBundleWakeFallback() {
-        hostBundleWakeFallbackTask?.cancel()
-        hostBundleWakeFallbackTask = nil
-    }
-
     private func openHostApp(
         _ url: URL,
         allowBundleFallback: Bool = true,
         completion: @escaping (Bool) -> Void
     ) {
-        // Non-public but deliberate: custom keyboards do not get a supported
-        // "open containing app" API for this microphone handoff. Keep all
-        // host-wake reflection in this method so an App Store build can replace
-        // it with a manual "open Typeforme" fallback without touching the
-        // dictation state machine.
-        kbLog.notice("openHostApp: opening URL via LSApplicationWorkspace")
+        if let extensionContext {
+            kbLog.notice("openHostApp: opening URL via extension context")
+            extensionContext.open(url) { [weak self] success in
+                DispatchQueue.main.async {
+                    guard let self else {
+                        completion(success)
+                        return
+                    }
+                    kbLog.notice("openHostApp: extension context open success=\(success, privacy: .public)")
+                    if success {
+                        completion(true)
+                        return
+                    }
+                    self.openHostAppViaWorkspaceFallbacks(
+                        url,
+                        allowBundleFallback: allowBundleFallback,
+                        completion: completion
+                    )
+                }
+            }
+            return
+        }
+
+        openHostAppViaWorkspaceFallbacks(
+            url,
+            allowBundleFallback: allowBundleFallback,
+            completion: completion
+        )
+    }
+
+    private func openHostAppViaWorkspaceFallbacks(
+        _ url: URL,
+        allowBundleFallback: Bool,
+        completion: @escaping (Bool) -> Void
+    ) {
+        // Non-public fallback: custom keyboards may not be allowed to open URLs
+        // through NSExtensionContext. Keep private host-wake reflection here so
+        // the primary path can still use the system URL opener that preserves
+        // the source app's iOS return affordance when the extension point allows it.
+        kbLog.notice("openHostApp: opening URL via LSApplicationWorkspace fallback")
         let didRequestURL = openHostAppViaApplicationWorkspace(url)
         if didRequestURL {
             completion(true)
-            if allowBundleFallback {
-                scheduleHostBundleWakeFallback()
-            }
             return
         }
 
@@ -4904,25 +4966,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
         kbLog.notice("openHostApp: URL open unavailable; opening bundle id fallback")
         completion(openHostAppViaBundleIdentifier())
-    }
-
-    private func scheduleHostBundleWakeFallback() {
-        cancelHostBundleWakeFallback()
-        hostBundleWakeFallbackTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 1_200_000_000)
-            guard !Task.isCancelled else { return }
-            await MainActor.run {
-                guard let self else { return }
-                guard !Task.isCancelled else { return }
-                self.hostBundleWakeFallbackTask = nil
-                guard self.isOpeningHostApp,
-                      self.lastDarwinAwakeAt == 0,
-                      self.currentBridgeStatus?.state == .standby
-                else { return }
-                kbLog.notice("openHostApp: URL wake did not signal; opening bundle id fallback")
-                _ = self.openHostAppViaBundleIdentifier()
-            }
-        }
     }
 
     private func openHostAppViaApplicationWorkspace(_ url: URL) -> Bool {
@@ -6298,6 +6341,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         voiceTitleLabel.text = isTextFocus
             ? NSLocalizedString("中文键盘", comment: "Title for Chinese keyboard focus")
             : voiceTitle
+        if isTextFocus {
+            keyboardHaptics.prepareForTextInput()
+        } else {
+            keyboardHaptics.prepareForKeyboardReady()
+        }
     }
 
     @objc private func toggleSymbolKeyboard() {
@@ -6322,15 +6370,26 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     @objc private func toggleTextShift() {
         guard !isSymbolKeyboard else { return }
         let now = CACurrentMediaTime()
+        let autoCap = shouldAutoCapitalizeNextEnglishLetter()
+        let isDoubleTap = now - lastShiftTapTime <= 0.42
         if isTextShiftLocked {
             isTextShiftEnabled = false
             isTextShiftLocked = false
-        } else if isTextShiftEnabled, now - lastShiftTapTime <= 0.42 {
+            isTextAutoCapitalizationSuppressed = autoCap
+        } else if isDoubleTap && (isTextShiftEnabled || autoCap) {
             isTextShiftEnabled = true
             isTextShiftLocked = true
-        } else {
-            isTextShiftEnabled.toggle()
+            isTextAutoCapitalizationSuppressed = false
+        } else if isTextShiftEnabled {
+            isTextShiftEnabled = false
             isTextShiftLocked = false
+            isTextAutoCapitalizationSuppressed = autoCap
+        } else if autoCap {
+            isTextAutoCapitalizationSuppressed.toggle()
+        } else {
+            isTextShiftEnabled = true
+            isTextShiftLocked = false
+            isTextAutoCapitalizationSuppressed = false
         }
         lastShiftTapTime = now
         refreshShiftButtonImage()
@@ -6381,25 +6440,37 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     private func refreshShiftButtonImage() {
         guard let textShiftButton else { return }
-        textShiftButton.isSelected = isTextShiftEnabled || isTextShiftLocked
+        let autoCap = shouldAutoCapitalizeNextEnglishLetter()
+        let isShiftActive = effectiveTextShiftActive(autoCap: autoCap)
+        textShiftButton.isSelected = isShiftActive || isTextShiftLocked
         configureTextKeyButton(
             textShiftButton,
             title: "",
-            image: isTextShiftLocked ? "capslock.fill" : (isTextShiftEnabled ? "shift.fill" : "shift"),
+            image: isTextShiftLocked ? "capslock.fill" : (isShiftActive ? "shift.fill" : "shift"),
             weight: .utility
         )
         textShiftButton.accessibilityLabel = isTextShiftLocked
             ? NSLocalizedString("Caps Lock on", comment: "Accessibility label for active Caps Lock key")
-            : (isTextShiftEnabled
+            : (isShiftActive
                 ? NSLocalizedString("Shift on", comment: "Accessibility label for active Shift key")
                 : NSLocalizedString("Shift", comment: "Accessibility label for Shift key"))
+    }
+
+    private func effectiveTextShiftActive(autoCap: Bool) -> Bool {
+        isTextShiftLocked
+            || isTextShiftEnabled
+            || (textInputLanguage == .english && autoCap && !isTextAutoCapitalizationSuppressed)
     }
 
     private func refreshLetterCasing() {
         guard !isSymbolKeyboard else { return }
         let autoCap = shouldAutoCapitalizeNextEnglishLetter()
+        if !autoCap, isTextAutoCapitalizationSuppressed {
+            isTextAutoCapitalizationSuppressed = false
+        }
+        let isShiftActive = effectiveTextShiftActive(autoCap: autoCap)
         let nextSnapshot = LetterCasingSnapshot(
-            shift: isTextShiftEnabled,
+            shift: isShiftActive,
             autoCap: autoCap,
             language: textInputLanguage
         )
@@ -6422,9 +6493,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func clearTextShiftState() {
-        guard isTextShiftEnabled || isTextShiftLocked else { return }
+        guard isTextShiftEnabled || isTextShiftLocked || isTextAutoCapitalizationSuppressed else { return }
         isTextShiftEnabled = false
         isTextShiftLocked = false
+        isTextAutoCapitalizationSuppressed = false
         lastShiftTapTime = 0
         refreshShiftButtonImage()
         refreshLetterCasing()
@@ -6487,13 +6559,18 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
         if textInputLanguage == .english {
             applyRimeState(rimeInput.commitComposition())
-            let shouldCapitalize = isAlphabeticTextKey(character)
-                && (isTextShiftEnabled || shouldAutoCapitalizeNextEnglishLetter())
+            let isAlphabetic = isAlphabeticTextKey(character)
+            let shouldCapitalize = isAlphabetic
+                && effectiveTextShiftActive(autoCap: shouldAutoCapitalizeNextEnglishLetter())
             let output = shouldCapitalize
                 ? character.uppercased()
                 : character
+            let consumesAutoCapSuppression = isAlphabetic && isTextAutoCapitalizationSuppressed
             clearRestyleUndoStateForManualEdit()
             textDocumentProxy.insertText(output)
+            if consumesAutoCapSuppression {
+                isTextAutoCapitalizationSuppressed = false
+            }
             if !resetShiftIfSticky() {
                 refreshEnglishLetterCasingIfNeeded()
             }
@@ -7383,19 +7460,34 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             return AutocapDecision(outcome: true, reason: "sentences-empty-context")
         }
 
+        var sawTrailingWhitespace = false
         var crossedLineBreak = false
-        for character in context.reversed() {
+        let characters = Array(context)
+        var index = characters.count - 1
+        while index >= 0 {
+            let character = characters[index]
             let text = String(character)
             if text.rangeOfCharacter(from: .whitespacesAndNewlines) != nil {
+                sawTrailingWhitespace = true
                 if text.rangeOfCharacter(from: .newlines) != nil {
                     crossedLineBreak = true
                 }
+                index -= 1
                 continue
+            }
+            guard sawTrailingWhitespace else {
+                return AutocapDecision(outcome: false, reason: "sentences-no-word-boundary")
             }
             if crossedLineBreak {
                 return AutocapDecision(outcome: true, reason: "sentences-after-newline")
             }
-            let isSentenceEnd = ".!?。？！".contains(character)
+            while index >= 0, "\"'”’)]}）】》」』".contains(characters[index]) {
+                index -= 1
+            }
+            guard index >= 0 else {
+                return AutocapDecision(outcome: false, reason: "sentences-after-closing-only")
+            }
+            let isSentenceEnd = ".!?。？！".contains(characters[index])
             return AutocapDecision(
                 outcome: isSentenceEnd,
                 reason: isSentenceEnd ? "sentences-after-punct" : "sentences-mid-sentence"
@@ -7409,6 +7501,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
               !isSymbolKeyboard,
               keyboardFocus == .text
         else { return }
+        refreshShiftButtonImage()
         refreshLetterCasing()
     }
 
@@ -7659,7 +7752,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             if rimeInput.state().isComposing {
                 applyRimeState(rimeInput.commitComposition())
             }
-            lightHaptic()
+            keyboardHaptics.playSelectionChanged()
             setTextTrackpadMode(true)
             keyView.layer.removeAllAnimations()
             keyView.alpha = 0.72
@@ -7731,7 +7824,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func lightHaptic() {
-        UIImpactFeedbackGenerator(style: .light).impactOccurred(intensity: 0.74)
+        keyboardHaptics.playControlTap()
     }
 
     private var currentBridgeStatus: KeyboardBridgeStatus? {
@@ -7897,8 +7990,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     /// Top-left status pill is a *bridge session indicator*: a coarse-grained
     /// view of where the keyboard session is in its lifecycle (Ready /
     /// Recording / Sending / Inserted / Issue). The granular per-stage label
-    /// (Transcribing / Refining / …) lives on the voice orb title and the
-    /// text-toolbar status overlay so the two surfaces don't duplicate.
+    /// (Transcribing / Refining / …) lives on the voice orb title; text mode
+    /// only uses the toolbar overlay while recording, sending, or showing an error.
     private var statusText: String {
         if !hasFullAccess {
             return NSLocalizedString("Full Access", comment: "Status when keyboard full access is missing")
@@ -8139,7 +8232,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private func cancelScheduledHostOpen() {
         scheduledHostOpenTask?.cancel()
         scheduledHostOpenTask = nil
-        cancelHostBundleWakeFallback()
     }
 
     private func cancelStartupHostWake() {
