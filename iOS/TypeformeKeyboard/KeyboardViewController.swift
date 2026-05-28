@@ -798,6 +798,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         case .textKey(let button):
             resetPressedControlState(button)
             guard let character = textKeyCommitCharacters[ObjectIdentifier(button)] else { return }
+            let shouldReturnToAlphabetKeyboard = shouldReturnToAlphabetKeyboardAfterSymbolInput(character)
             let sample = textKeyTouchSample(
                 button: button,
                 character: character,
@@ -808,6 +809,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                     registerCommittedTextTouch(sample)
                 } else {
                     finishNonLearnableTextTouch()
+                }
+                if shouldReturnToAlphabetKeyboard {
+                    returnToAlphabetKeyboardAfterSymbolInput()
                 }
             }
         case .candidateAction, .focusSurface:
@@ -6773,7 +6777,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             activeMarkedTextOwner = nil
         }
 
-        let composingText = state.isComposing ? (state.preedit.isEmpty ? state.input : state.preedit) : ""
+        let composingText = rimeMarkedText(for: state)
         if composingText.isEmpty {
             clearMarkedText(ifOwnedBy: .rimeComposition)
         } else {
@@ -6781,6 +6785,43 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
 
         renderRimeState(state)
+    }
+
+    private func returnToAlphabetKeyboardAfterSymbolInput() {
+        isSymbolKeyboard = false
+        isAlternateSymbolKeyboard = false
+        rebuildTextKeyboardRows()
+    }
+
+    private func shouldReturnToAlphabetKeyboardAfterSymbolInput(_ character: String) -> Bool {
+        guard isSymbolKeyboard else { return false }
+        return !isDigitTextKey(character)
+    }
+
+    private func isDigitTextKey(_ character: String) -> Bool {
+        guard character.count == 1,
+              let scalar = character.unicodeScalars.first
+        else { return false }
+        return CharacterSet.decimalDigits.contains(scalar)
+    }
+
+    private func rimeMarkedText(for state: RimeKeyboardState) -> String {
+        guard state.isComposing else { return "" }
+        if shouldUseRawRimeInputAsMarkedText(state.input) {
+            return state.input
+        }
+        return state.preedit.isEmpty ? state.input : state.preedit
+    }
+
+    private func shouldUseRawRimeInputAsMarkedText(_ input: String) -> Bool {
+        guard textInputLanguage == .chinese,
+              isSearchTextInputContext,
+              !input.isEmpty
+        else { return false }
+        return input.unicodeScalars.allSatisfy { scalar in
+            CharacterSet.alphanumerics.contains(scalar)
+                || "-_+.'@".unicodeScalars.contains(scalar)
+        }
     }
 
     private func renderRimeState(_ state: RimeKeyboardState) {
@@ -7580,6 +7621,21 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             return false
         default:
             return true
+        }
+    }
+
+    private var isSearchTextInputContext: Bool {
+        switch textDocumentProxy.keyboardType {
+        case .webSearch:
+            return true
+        default:
+            break
+        }
+        switch textDocumentProxy.returnKeyType {
+        case .search, .google, .yahoo:
+            return true
+        default:
+            return false
         }
     }
 
