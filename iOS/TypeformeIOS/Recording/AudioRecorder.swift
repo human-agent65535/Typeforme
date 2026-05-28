@@ -243,6 +243,20 @@ final class AudioTapFileWriter {
         return url
     }
 
+    func discard() {
+        lock.lock()
+        let url = currentURL
+        audioData = Data()
+        currentURL = nil
+        recordedFrameCount = 0
+        currentSampleRate = 0
+        loggedFirstWrite = false
+        lock.unlock()
+        if let url {
+            try? FileManager.default.removeItem(at: url)
+        }
+    }
+
     private static func writeM4A(
         data: Data,
         sampleRate: Double,
@@ -380,6 +394,14 @@ final class AudioRecorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
         recorder.prepareToRecord()
         preparedRecorder = recorder
         preparedURL = url
+    }
+
+    func discardPreWarm() {
+        if let preparedURL {
+            try? FileManager.default.removeItem(at: preparedURL)
+        }
+        preparedRecorder = nil
+        preparedURL = nil
     }
 
     func start(reuseActiveSession: Bool = false) async throws {
@@ -725,6 +747,9 @@ final class StandbyAudioSession: ObservableObject {
     }
 
     func stop(deactivateSession: Bool = true) {
+        recordingDidActivateCaptureCategory = false
+        recordingShouldYieldOtherAudio = false
+        onPCMBuffer = nil
         removeInputTap()
         _ = fileWriter.cancel()
         engine.stop()
@@ -735,6 +760,21 @@ final class StandbyAudioSession: ObservableObject {
             IOSRecordingAudioSession.deactivateAndNotifyOthers()
         }
         KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.sessionEnded)
+    }
+
+    func stopForAudioInterruption() {
+        recordingDidActivateCaptureCategory = false
+        recordingShouldYieldOtherAudio = false
+        onPCMBuffer = nil
+        removeInputTap()
+        fileWriter.discard()
+        if engine.isRunning {
+            engine.stop()
+        }
+        isActive = false
+        level = 0
+        currentFormat = nil
+        needsEngineRestart = true
     }
 
     func beginRecording() async throws -> URL {
