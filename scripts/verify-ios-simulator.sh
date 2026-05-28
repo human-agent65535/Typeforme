@@ -9,10 +9,12 @@ SCHEME="TypeformeIOS"
 CONFIG="${CONFIG:-Debug}"
 DERIVED="${DERIVED:-$ROOT/.build/ios-simulator-derived}"
 SCREENSHOT="${SCREENSHOT:-$ROOT/.build/ios-simulator-launch.png}"
+BUILD_LOG="${BUILD_LOG:-$ROOT/.build/ios-simulator-xcodebuild.log}"
 PREFERRED_SIMULATOR_NAME="${PREFERRED_SIMULATOR_NAME:-iPhone 17 Pro Max}"
 
 export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
 XCODEBUILD="$DEVELOPER_DIR/usr/bin/xcodebuild"
+XCRUN="/usr/bin/xcrun"
 if [ ! -x "$XCODEBUILD" ]; then
     cat >&2 <<EOF
 error: full Xcode is required for iOS simulator verification.
@@ -22,16 +24,52 @@ Set DEVELOPER_DIR to Xcode, for example:
 EOF
     exit 2
 fi
+if [ ! -x "$XCRUN" ]; then
+    echo "error: xcrun not found at $XCRUN." >&2
+    exit 2
+fi
 
 if ! command -v /usr/bin/python3 >/dev/null 2>&1; then
     echo "error: /usr/bin/python3 is required to parse simctl JSON." >&2
     exit 2
 fi
 
+simctl() {
+    DEVELOPER_DIR="$DEVELOPER_DIR" "$XCRUN" simctl "$@"
+}
+
+run_simctl_quiet() {
+    local description="$1"
+    shift
+    local output
+    if ! output="$(simctl "$@" 2>&1)"; then
+        echo "error: $description failed:" >&2
+        printf '%s\n' "$output" | sanitize_output >&2
+        exit 1
+    fi
+}
+
+display_path() {
+    case "$1" in
+        "$ROOT"/*) printf '.%s\n' "${1#$ROOT}" ;;
+        "$HOME"/*) printf '<home>%s\n' "${1#$HOME}" ;;
+        *) printf '%s\n' "$1" ;;
+    esac
+}
+
+sanitize_output() {
+    sed \
+        -e "s|$ROOT|<repo>|g" \
+        -e "s|$HOME|<home>|g" \
+        -E 's/group\.[A-Za-z0-9][A-Za-z0-9.-]*\.typeforme/<typeforme-app-group>/g' \
+        -E 's/[A-Za-z0-9][A-Za-z0-9.-]*\.typeforme(\.keyboard)?/<typeforme-bundle-id>/g' \
+        -E 's/[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}/<uuid>/g'
+}
+
 SIMCTL_LIST_JSON="$(mktemp -t typeforme-simulators)"
 trap 'rm -f "$SIMCTL_LIST_JSON"' EXIT
 
-xcrun simctl list devices available -j >"$SIMCTL_LIST_JSON"
+simctl list devices available -j >"$SIMCTL_LIST_JSON"
 
 select_simulator() {
     /usr/bin/python3 - "$SIMCTL_LIST_JSON" "$PREFERRED_SIMULATOR_NAME" "${SIMULATOR_ID:-}" <<'PY'
@@ -56,7 +94,7 @@ if explicit_id:
         if device.get("udid") == explicit_id:
             print(f"explicit\t{device['udid']}\t{device.get('name', '')}\t{device.get('state', '')}")
             raise SystemExit
-    raise SystemExit(f"error: SIMULATOR_ID={explicit_id} is not an available iOS simulator")
+    raise SystemExit("error: SIMULATOR_ID is not an available iOS simulator")
 
 booted = [device for device in devices if device.get("state") == "Booted"]
 if booted:
@@ -82,15 +120,15 @@ PY
 IFS=$'\t' read -r SIMULATOR_SOURCE SIMULATOR_ID SIMULATOR_NAME SIMULATOR_STATE < <(select_simulator)
 
 if [ "$SIMULATOR_STATE" != "Booted" ] && { [ "$SIMULATOR_SOURCE" = "preferred" ] || [ "$SIMULATOR_SOURCE" = "explicit" ]; }; then
-    echo "==> Booting simulator $SIMULATOR_NAME ($SIMULATOR_ID)"
-    xcrun simctl boot "$SIMULATOR_ID"
-    xcrun simctl bootstatus "$SIMULATOR_ID" -b >/dev/null
+    echo "==> Booting simulator $SIMULATOR_NAME"
+    run_simctl_quiet "boot simulator" boot "$SIMULATOR_ID"
+    run_simctl_quiet "wait for simulator boot" bootstatus "$SIMULATOR_ID" -b
 else
-    echo "==> Reusing simulator $SIMULATOR_NAME ($SIMULATOR_ID, $SIMULATOR_STATE)"
+    echo "==> Reusing simulator $SIMULATOR_NAME ($SIMULATOR_STATE)"
 fi
 
 echo "==> Building Typeforme iOS ($CONFIG) for simulator $SIMULATOR_NAME"
-"$XCODEBUILD" \
+XCODEBUILD_ARGS=(
     -project "$PROJECT" \
     -scheme "$SCHEME" \
     -configuration "$CONFIG" \
@@ -98,6 +136,18 @@ echo "==> Building Typeforme iOS ($CONFIG) for simulator $SIMULATOR_NAME"
     -derivedDataPath "$DERIVED" \
     build \
     "$@"
+)
+if [ "${VERBOSE_BUILD:-0}" = "1" ]; then
+    "$XCODEBUILD" "${XCODEBUILD_ARGS[@]}"
+else
+    mkdir -p "$(dirname "$BUILD_LOG")"
+    if ! "$XCODEBUILD" "${XCODEBUILD_ARGS[@]}" >"$BUILD_LOG" 2>&1; then
+        echo "error: xcodebuild failed. Last 200 sanitized log lines from $(display_path "$BUILD_LOG"):" >&2
+        tail -200 "$BUILD_LOG" | sanitize_output >&2 || true
+        exit 1
+    fi
+    echo "==> Build log: $(display_path "$BUILD_LOG")"
+fi
 
 APP_PATH="$DERIVED/Build/Products/${CONFIG}-iphonesimulator/Typeforme.app"
 if [ ! -d "$APP_PATH" ]; then
@@ -142,19 +192,24 @@ if [ "$KEYBOARD_VERSION" != "$HOST_VERSION" ] || [ "$KEYBOARD_BUILD" != "$HOST_B
     exit 1
 fi
 
-echo "==> Built bundle ids: host $BUNDLE_ID, keyboard $KEYBOARD_BUNDLE_ID"
-echo "==> Installing $APP_PATH"
-xcrun simctl install "$SIMULATOR_ID" "$APP_PATH"
+echo "==> Built identifiers verified"
+echo "==> Installing built app"
+run_simctl_quiet "install app" install "$SIMULATOR_ID" "$APP_PATH"
 
-echo "==> Launching $BUNDLE_ID"
-LAUNCH_OUTPUT="$(xcrun simctl launch --terminate-running-process "$SIMULATOR_ID" "$BUNDLE_ID")"
-echo "$LAUNCH_OUTPUT"
+echo "==> Launching Typeforme"
+LAUNCH_OUTPUT="$(simctl launch --terminate-running-process "$SIMULATOR_ID" "$BUNDLE_ID")"
+LAUNCH_PID="$(printf '%s\n' "$LAUNCH_OUTPUT" | awk -F': ' 'NF > 1 {print $NF; exit}')"
+if [ -n "$LAUNCH_PID" ]; then
+    echo "==> Launch pid: $LAUNCH_PID"
+else
+    printf '%s\n' "$LAUNCH_OUTPUT" | sanitize_output
+fi
 
 echo "==> Verifying installed app info"
-xcrun simctl appinfo "$SIMULATOR_ID" "$BUNDLE_ID" >/dev/null
+run_simctl_quiet "verify installed app container" get_app_container "$SIMULATOR_ID" "$BUNDLE_ID" app
 
 mkdir -p "$(dirname "$SCREENSHOT")"
-xcrun simctl io "$SIMULATOR_ID" screenshot "$SCREENSHOT" >/dev/null
-echo "==> Screenshot: $SCREENSHOT"
+run_simctl_quiet "capture screenshot" io "$SIMULATOR_ID" screenshot "$SCREENSHOT"
+echo "==> Screenshot: $(display_path "$SCREENSHOT")"
 
 echo "OK: iOS simulator verification passed."
