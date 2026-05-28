@@ -49,19 +49,18 @@ enum KeyboardSharedDefaults {
         UserDefaults(suiteName: appGroupIdentifier)
     }
 
-    static func loadPayload() -> [String: Any]? {
+    static func loadPayload() -> KeyboardDefaultsPayload? {
         guard let defaults = suite(),
               let text = defaults.string(forKey: keyboardDefaultsKey),
-              let data = text.data(using: .utf8),
-              let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+              let data = text.data(using: .utf8)
         else { return nil }
-        return payload
+        return try? JSONDecoder().decode(KeyboardDefaultsPayload.self, from: data)
     }
 
     @discardableResult
-    static func savePayload(_ payload: [String: Any]) -> Bool {
-        guard JSONSerialization.isValidJSONObject(payload),
-              let data = try? JSONSerialization.data(withJSONObject: payload, options: []),
+    static func savePayload(_ payload: KeyboardDefaultsPayload) -> Bool {
+        let encoder = JSONEncoder()
+        guard let data = try? encoder.encode(payload),
               let text = String(data: data, encoding: .utf8),
               let defaults = suite()
         else { return false }
@@ -70,8 +69,8 @@ enum KeyboardSharedDefaults {
         return true
     }
 
-    static func bridgeToken(from payload: [String: Any]?) -> String? {
-        guard let token = payload?["bridge_token"] as? String else { return nil }
+    static func bridgeToken(from payload: KeyboardDefaultsPayload?) -> String? {
+        guard let token = payload?.bridgeToken else { return nil }
         let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
     }
@@ -121,6 +120,205 @@ enum KeyboardSharedDefaults {
         defaults.removeObject(forKey: hostHandoffKey)
         defaults.synchronize()
         return handoff
+    }
+}
+
+enum KeyboardChinesePunctuationStyle: String, CaseIterable, Identifiable, Codable {
+    case chinese
+    case english
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .chinese:
+            return NSLocalizedString("Chinese", comment: "Chinese keyboard punctuation style")
+        case .english:
+            return NSLocalizedString("English", comment: "Chinese keyboard punctuation style")
+        }
+    }
+}
+
+enum KeyboardRimeDictionaryTier: String, CaseIterable, Identifiable, Codable {
+    case standard
+    case extended
+    case large
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .standard:
+            return NSLocalizedString("Standard", comment: "Rime dictionary tier")
+        case .extended:
+            return NSLocalizedString("Extended", comment: "Rime dictionary tier")
+        case .large:
+            return NSLocalizedString("Large", comment: "Rime dictionary tier")
+        }
+    }
+}
+
+enum KeyboardDefaultTextInputLanguage: String, CaseIterable, Identifiable, Codable {
+    case lastUsed = "last_used"
+    case chinese
+    case english
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .lastUsed:
+            return NSLocalizedString("Last Used", comment: "Default keyboard text input language")
+        case .chinese:
+            return NSLocalizedString("Chinese", comment: "Default keyboard text input language")
+        case .english:
+            return NSLocalizedString("English", comment: "Default keyboard text input language")
+        }
+    }
+}
+
+struct KeyboardDefaultsPayload: Codable, Equatable {
+    static let currentVersion = 1
+
+    var version: Int
+    var bridgeToken: String
+    var correctionMode: CorrectionMode
+    var autoCapitalizationEnabled: Bool
+    var characterPreviewEnabled: Bool
+    var chineseInputEnabled: Bool
+    var chinesePunctuationStyle: KeyboardChinesePunctuationStyle
+    var rimeDictionaryTier: KeyboardRimeDictionaryTier
+    var rimeCorrectionEnabled: Bool
+    var rimeUserPhrases: [String]
+    var rimeUserPhrasesRevision: String
+    var defaultTextInputLanguage: KeyboardDefaultTextInputLanguage
+    var rimeLearningResetGeneration: Int
+    var touchLearningResetGeneration: Int
+    var updatedAt: TimeInterval
+
+    init(
+        version: Int = Self.currentVersion,
+        bridgeToken: String,
+        correctionMode: CorrectionMode,
+        autoCapitalizationEnabled: Bool,
+        characterPreviewEnabled: Bool,
+        chineseInputEnabled: Bool,
+        chinesePunctuationStyle: KeyboardChinesePunctuationStyle,
+        rimeDictionaryTier: KeyboardRimeDictionaryTier,
+        rimeCorrectionEnabled: Bool,
+        rimeUserPhrases: [String],
+        rimeUserPhrasesRevision: String? = nil,
+        defaultTextInputLanguage: KeyboardDefaultTextInputLanguage,
+        rimeLearningResetGeneration: Int,
+        touchLearningResetGeneration: Int,
+        updatedAt: TimeInterval = Date().timeIntervalSince1970
+    ) {
+        let normalizedPhrases = Self.normalizedRimeUserPhrases(rimeUserPhrases)
+        self.version = version
+        self.bridgeToken = bridgeToken
+        self.correctionMode = correctionMode
+        self.autoCapitalizationEnabled = autoCapitalizationEnabled
+        self.characterPreviewEnabled = characterPreviewEnabled
+        self.chineseInputEnabled = chineseInputEnabled
+        self.chinesePunctuationStyle = chinesePunctuationStyle
+        self.rimeDictionaryTier = rimeDictionaryTier
+        self.rimeCorrectionEnabled = rimeCorrectionEnabled
+        self.rimeUserPhrases = normalizedPhrases
+        self.rimeUserPhrasesRevision = rimeUserPhrasesRevision ?? Self.rimeUserPhrasesRevision(normalizedPhrases)
+        self.defaultTextInputLanguage = defaultTextInputLanguage
+        self.rimeLearningResetGeneration = rimeLearningResetGeneration
+        self.touchLearningResetGeneration = touchLearningResetGeneration
+        self.updatedAt = updatedAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let phrases = try container.decodeIfPresent([String].self, forKey: .rimeUserPhrases) ?? []
+        let normalizedPhrases = Self.normalizedRimeUserPhrases(phrases)
+        version = try container.decodeIfPresent(Int.self, forKey: .version) ?? Self.currentVersion
+        bridgeToken = try container.decode(String.self, forKey: .bridgeToken)
+        correctionMode = try container.decode(CorrectionMode.self, forKey: .correctionMode)
+        autoCapitalizationEnabled = try container.decodeIfPresent(Bool.self, forKey: .autoCapitalizationEnabled) ?? true
+        characterPreviewEnabled = try container.decodeIfPresent(Bool.self, forKey: .characterPreviewEnabled) ?? true
+        chineseInputEnabled = try container.decodeIfPresent(Bool.self, forKey: .chineseInputEnabled) ?? true
+        chinesePunctuationStyle = try container.decodeIfPresent(
+            KeyboardChinesePunctuationStyle.self,
+            forKey: .chinesePunctuationStyle
+        ) ?? .chinese
+        rimeDictionaryTier = try container.decodeIfPresent(
+            KeyboardRimeDictionaryTier.self,
+            forKey: .rimeDictionaryTier
+        ) ?? .standard
+        rimeCorrectionEnabled = try container.decodeIfPresent(Bool.self, forKey: .rimeCorrectionEnabled) ?? true
+        rimeUserPhrases = normalizedPhrases
+        rimeUserPhrasesRevision = try container.decodeIfPresent(String.self, forKey: .rimeUserPhrasesRevision)
+            ?? Self.rimeUserPhrasesRevision(normalizedPhrases)
+        defaultTextInputLanguage = try container.decodeIfPresent(
+            KeyboardDefaultTextInputLanguage.self,
+            forKey: .defaultTextInputLanguage
+        ) ?? .lastUsed
+        rimeLearningResetGeneration = try container.decodeIfPresent(Int.self, forKey: .rimeLearningResetGeneration) ?? 0
+        touchLearningResetGeneration = try container.decodeIfPresent(Int.self, forKey: .touchLearningResetGeneration) ?? 0
+        updatedAt = try container.decodeIfPresent(TimeInterval.self, forKey: .updatedAt) ?? Date().timeIntervalSince1970
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case version
+        case bridgeToken = "bridge_token"
+        case correctionMode = "correction_mode"
+        case autoCapitalizationEnabled = "auto_capitalization_enabled"
+        case characterPreviewEnabled = "character_preview_enabled"
+        case chineseInputEnabled = "chinese_input_enabled"
+        case chinesePunctuationStyle = "chinese_punctuation_style"
+        case rimeDictionaryTier = "rime_dictionary_tier"
+        case rimeCorrectionEnabled = "rime_correction_enabled"
+        case rimeUserPhrases = "rime_user_phrases"
+        case rimeUserPhrasesRevision = "rime_user_phrases_revision"
+        case defaultTextInputLanguage = "default_text_input_language"
+        case rimeLearningResetGeneration = "rime_learning_reset_generation"
+        case touchLearningResetGeneration = "touch_learning_reset_generation"
+        case updatedAt = "updated_at"
+    }
+
+    var stableSignature: String {
+        var payload = self
+        payload.updatedAt = 0
+        guard let data = try? Self.sortedEncoder.encode(payload),
+              let text = String(data: data, encoding: .utf8)
+        else { return UUID().uuidString }
+        return text
+    }
+
+    private static var sortedEncoder: JSONEncoder {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return encoder
+    }
+
+    private static func normalizedRimeUserPhrases(_ phrases: [String]) -> [String] {
+        var seen = Set<String>()
+        var output: [String] = []
+        for phrase in phrases {
+            let cleaned = phrase
+                .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !cleaned.isEmpty else { continue }
+            let key = cleaned.folding(
+                options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
+                locale: .current
+            )
+            guard seen.insert(key).inserted else { continue }
+            output.append(cleaned)
+        }
+        return output.sorted()
+    }
+
+    private static func rimeUserPhrasesRevision(_ phrases: [String]) -> String {
+        guard let data = try? JSONSerialization.data(withJSONObject: phrases, options: [.sortedKeys]) else {
+            return ""
+        }
+        let digest = SHA256.hash(data: data)
+        return digest.map { String(format: "%02x", $0) }.joined()
     }
 }
 

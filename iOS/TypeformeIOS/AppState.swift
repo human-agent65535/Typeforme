@@ -121,60 +121,6 @@ enum HostAudioSessionLength: String, CaseIterable, Identifiable {
     }
 }
 
-enum KeyboardChinesePunctuationStyle: String, CaseIterable, Identifiable {
-    case chinese
-    case english
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .chinese:
-            return NSLocalizedString("Chinese", comment: "Chinese keyboard punctuation style")
-        case .english:
-            return NSLocalizedString("English", comment: "Chinese keyboard punctuation style")
-        }
-    }
-}
-
-enum KeyboardRimeDictionaryTier: String, CaseIterable, Identifiable {
-    case standard
-    case extended
-    case large
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .standard:
-            return NSLocalizedString("Standard", comment: "Rime dictionary tier")
-        case .extended:
-            return NSLocalizedString("Extended", comment: "Rime dictionary tier")
-        case .large:
-            return NSLocalizedString("Large", comment: "Rime dictionary tier")
-        }
-    }
-}
-
-enum KeyboardDefaultTextInputLanguage: String, CaseIterable, Identifiable {
-    case lastUsed = "last_used"
-    case chinese
-    case english
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .lastUsed:
-            return NSLocalizedString("Last Used", comment: "Default keyboard text input language")
-        case .chinese:
-            return NSLocalizedString("Chinese", comment: "Default keyboard text input language")
-        case .english:
-            return NSLocalizedString("English", comment: "Default keyboard text input language")
-        }
-    }
-}
-
 enum AppleSpeechPreviewCapability: Equatable {
     case unsupported
     case cloud
@@ -917,7 +863,7 @@ final class AppState: ObservableObject {
         if let phrases = UserDefaults.standard.stringArray(forKey: Self.serverRimeUserPhrasesKey) {
             return phrases
         }
-        if let phrases = KeyboardSharedDefaults.loadPayload()?["rime_user_phrases"] as? [String] {
+        if let phrases = KeyboardSharedDefaults.loadPayload()?.rimeUserPhrases {
             return phrases
         }
         return []

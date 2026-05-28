@@ -46,11 +46,7 @@ enum RimeProbeValidity {
     case unknown
 }
 
-enum RimeKeyboardDictionaryTier: String {
-    case standard
-    case extended
-    case large
-}
+typealias RimeKeyboardDictionaryTier = KeyboardRimeDictionaryTier
 
 struct RimeKeyboardProfile: Equatable {
     var dictionaryTier: RimeKeyboardDictionaryTier = .standard
