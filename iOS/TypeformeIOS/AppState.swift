@@ -366,6 +366,7 @@ final class AppState: ObservableObject {
     private var routeFetchedAt: Date?
     private var networkPathSignature: String?
     private var lastNetworkPathRefreshAt: Date?
+    private var lastForegroundRouteRefreshAt: Date?
     private var macSettingsFetchedAt: Date?
     private var macSettingsRevision: String?
     private var cachedServerRimeUserPhrases: [String]
@@ -400,7 +401,8 @@ final class AppState: ObservableObject {
     /// than the extra probe.
     private static let routeCacheTTL: TimeInterval = 30
     private static let localRouteCacheTTL: TimeInterval = 5
-    private static let networkPathSameSignatureRefreshInterval: TimeInterval = 2
+    private static let foregroundRouteRefreshTTL: TimeInterval = 20
+    private static let networkPathSameSignatureRefreshInterval: TimeInterval = 15
     private static let canceledKeyboardCommandTTL: TimeInterval = 10
     private static let bridgeRefiningStatusDelay: TimeInterval = 1.2
     /// How long a `.success` / `.failure` phase sticks before reverting to
@@ -3108,15 +3110,18 @@ final class AppState: ObservableObject {
                 let shouldRefreshSameSignature = !signatureChanged
                     && path.status == .satisfied
                     && path.usesInterfaceType(.wifi)
+                    && !path.isExpensive
+                    && !path.isConstrained
+                    && !ProcessInfo.processInfo.isLowPowerModeEnabled
                     && self.routeStatus.activeKind == .local
                     && self.shouldRefreshRouteForSameSignaturePathUpdate(at: now)
                 guard signatureChanged || shouldRefreshSameSignature else { return }
                 if signatureChanged {
                     self.networkPathSignature = signature
+                    self.routeStatus = BridgeRouteStatus()
                 }
                 self.lastNetworkPathRefreshAt = now
                 self.routeFetchedAt = nil
-                self.routeStatus = BridgeRouteStatus()
                 if self.isConfigured {
                     await self.refreshRoute(force: true, showIndicator: false)
                 }
@@ -3128,6 +3133,14 @@ final class AppState: ObservableObject {
     private func shouldRefreshRouteForSameSignaturePathUpdate(at now: Date) -> Bool {
         guard let lastNetworkPathRefreshAt else { return true }
         return now.timeIntervalSince(lastNetworkPathRefreshAt) >= Self.networkPathSameSignatureRefreshInterval
+    }
+
+    private func shouldRefreshRouteOnForeground(at now: Date = Date()) -> Bool {
+        guard isConfigured else { return false }
+        guard routeStatus.activeURL != nil, let routeFetchedAt else { return true }
+        guard now.timeIntervalSince(routeFetchedAt) >= Self.foregroundRouteRefreshTTL else { return false }
+        guard let lastForegroundRouteRefreshAt else { return true }
+        return now.timeIntervalSince(lastForegroundRouteRefreshAt) >= Self.foregroundRouteRefreshTTL
     }
 
     nonisolated private static func networkSignature(for path: NWPath) -> String {
@@ -3182,9 +3195,15 @@ final class AppState: ObservableObject {
         scheduleHostRecorderPreWarm()
         // Warm route status for the UI. Hot recording/rewrite paths request a
         // fast route separately so Cloud diagnostics never block input.
-        routeFetchedAt = nil
+        let shouldRefreshRoute = shouldRefreshRouteOnForeground()
+        if shouldRefreshRoute {
+            lastForegroundRouteRefreshAt = Date()
+            routeFetchedAt = nil
+        }
         Task {
-            await refreshRoute(force: true, showIndicator: false)
+            if shouldRefreshRoute {
+                await refreshRoute(force: true, showIndicator: false)
+            }
             _ = try? await refreshMacSettingsIfChanged()
             scheduleHostRecorderPreWarm()
         }
