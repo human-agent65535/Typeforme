@@ -555,80 +555,122 @@ final class AppState: ObservableObject {
     }
 
     func setInputMode(_ mode: VoiceInputMode) {
-        guard mode != inputMode else { return }
-        inputMode = mode
-        UserDefaults.standard.set(mode.rawValue, forKey: Self.inputModeKey)
+        updateStoredRawPreference(\.inputMode, to: mode, key: Self.inputModeKey)
     }
 
     func setHostAudioSessionLength(_ length: HostAudioSessionLength) {
-        guard length != hostAudioSessionLength else { return }
-        hostAudioSessionLength = length
-        UserDefaults.standard.set(length.rawValue, forKey: Self.hostAudioSessionLengthKey)
+        guard updateStoredRawPreference(
+            \.hostAudioSessionLength,
+            to: length,
+            key: Self.hostAudioSessionLengthKey
+        ) else { return }
         scheduleHostAudioSessionExpiry()
     }
 
     func setKeyboardAutoCapitalizationEnabled(_ enabled: Bool) {
-        guard enabled != keyboardAutoCapitalizationEnabled else { return }
-        keyboardAutoCapitalizationEnabled = enabled
-        UserDefaults.standard.set(enabled, forKey: Self.keyboardAutoCapitalizationKey)
+        guard updateStoredBoolPreference(
+            \.keyboardAutoCapitalizationEnabled,
+            to: enabled,
+            key: Self.keyboardAutoCapitalizationKey
+        ) else { return }
         publishKeyboardDefaults()
     }
 
     func setKeyboardCharacterPreviewEnabled(_ enabled: Bool) {
-        guard enabled != keyboardCharacterPreviewEnabled else { return }
-        keyboardCharacterPreviewEnabled = enabled
-        UserDefaults.standard.set(enabled, forKey: Self.keyboardCharacterPreviewKey)
+        guard updateStoredBoolPreference(
+            \.keyboardCharacterPreviewEnabled,
+            to: enabled,
+            key: Self.keyboardCharacterPreviewKey
+        ) else { return }
         publishKeyboardDefaults()
     }
 
     func setKeyboardLivePreviewEnabled(_ enabled: Bool) {
-        guard enabled != keyboardLivePreviewEnabled else { return }
-        keyboardLivePreviewEnabled = enabled
-        UserDefaults.standard.set(enabled, forKey: Self.keyboardLivePreviewKey)
+        guard updateStoredBoolPreference(
+            \.keyboardLivePreviewEnabled,
+            to: enabled,
+            key: Self.keyboardLivePreviewKey
+        ) else { return }
         if !enabled {
             teardownLivePartialPreview(clearText: true)
         }
     }
 
     func setKeyboardLivePreviewRecognitionMode(_ mode: KeyboardLivePreviewRecognitionMode) {
-        guard mode != keyboardLivePreviewRecognitionMode else { return }
-        keyboardLivePreviewRecognitionMode = mode
-        UserDefaults.standard.set(mode.rawValue, forKey: Self.keyboardLivePreviewRecognitionModeKey)
+        updateStoredRawPreference(
+            \.keyboardLivePreviewRecognitionMode,
+            to: mode,
+            key: Self.keyboardLivePreviewRecognitionModeKey
+        )
     }
 
     func setKeyboardChineseInputEnabled(_ enabled: Bool) {
-        guard enabled != keyboardChineseInputEnabled else { return }
-        keyboardChineseInputEnabled = enabled
-        UserDefaults.standard.set(enabled, forKey: Self.keyboardChineseInputEnabledKey)
+        guard updateStoredBoolPreference(
+            \.keyboardChineseInputEnabled,
+            to: enabled,
+            key: Self.keyboardChineseInputEnabledKey
+        ) else { return }
         publishKeyboardDefaults()
     }
 
     func setKeyboardChinesePunctuationStyle(_ style: KeyboardChinesePunctuationStyle) {
-        guard style != keyboardChinesePunctuationStyle else { return }
-        keyboardChinesePunctuationStyle = style
-        UserDefaults.standard.set(style.rawValue, forKey: Self.keyboardChinesePunctuationStyleKey)
+        guard updateStoredRawPreference(
+            \.keyboardChinesePunctuationStyle,
+            to: style,
+            key: Self.keyboardChinesePunctuationStyleKey
+        ) else { return }
         publishKeyboardDefaults()
     }
 
     func setKeyboardRimeDictionaryTier(_ tier: KeyboardRimeDictionaryTier) {
-        guard tier != keyboardRimeDictionaryTier else { return }
-        keyboardRimeDictionaryTier = tier
-        UserDefaults.standard.set(tier.rawValue, forKey: Self.keyboardRimeDictionaryTierKey)
+        guard updateStoredRawPreference(
+            \.keyboardRimeDictionaryTier,
+            to: tier,
+            key: Self.keyboardRimeDictionaryTierKey
+        ) else { return }
         publishKeyboardDefaults()
     }
 
     func setKeyboardRimeCorrectionEnabled(_ enabled: Bool) {
-        guard enabled != keyboardRimeCorrectionEnabled else { return }
-        keyboardRimeCorrectionEnabled = enabled
-        UserDefaults.standard.set(enabled, forKey: Self.keyboardRimeCorrectionKey)
+        guard updateStoredBoolPreference(
+            \.keyboardRimeCorrectionEnabled,
+            to: enabled,
+            key: Self.keyboardRimeCorrectionKey
+        ) else { return }
         publishKeyboardDefaults()
     }
 
     func setKeyboardDefaultTextInputLanguage(_ language: KeyboardDefaultTextInputLanguage) {
-        guard language != keyboardDefaultTextInputLanguage else { return }
-        keyboardDefaultTextInputLanguage = language
-        UserDefaults.standard.set(language.rawValue, forKey: Self.keyboardDefaultTextInputLanguageKey)
+        guard updateStoredRawPreference(
+            \.keyboardDefaultTextInputLanguage,
+            to: language,
+            key: Self.keyboardDefaultTextInputLanguageKey
+        ) else { return }
         publishKeyboardDefaults()
+    }
+
+    @discardableResult
+    private func updateStoredRawPreference<Value>(
+        _ keyPath: ReferenceWritableKeyPath<AppState, Value>,
+        to value: Value,
+        key: String
+    ) -> Bool where Value: Equatable & RawRepresentable, Value.RawValue == String {
+        guard self[keyPath: keyPath] != value else { return false }
+        self[keyPath: keyPath] = value
+        UserDefaults.standard.set(value.rawValue, forKey: key)
+        return true
+    }
+
+    @discardableResult
+    private func updateStoredBoolPreference(
+        _ keyPath: ReferenceWritableKeyPath<AppState, Bool>,
+        to value: Bool,
+        key: String
+    ) -> Bool {
+        guard self[keyPath: keyPath] != value else { return false }
+        self[keyPath: keyPath] = value
+        UserDefaults.standard.set(value, forKey: key)
+        return true
     }
 
     func resetKeyboardRimeLearning() {
