@@ -12,22 +12,10 @@ SCREENSHOT="${SCREENSHOT:-$ROOT/.build/ios-simulator-launch.png}"
 BUILD_LOG="${BUILD_LOG:-$ROOT/.build/ios-simulator-xcodebuild.log}"
 PREFERRED_SIMULATOR_NAME="${PREFERRED_SIMULATOR_NAME:-iPhone 17 Pro Max}"
 
-export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
-XCODEBUILD="$DEVELOPER_DIR/usr/bin/xcodebuild"
-XCRUN="/usr/bin/xcrun"
-if [ ! -x "$XCODEBUILD" ]; then
-    cat >&2 <<EOF
-error: full Xcode is required for iOS simulator verification.
-
-Set DEVELOPER_DIR to Xcode, for example:
-  export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
-EOF
-    exit 2
-fi
-if [ ! -x "$XCRUN" ]; then
-    echo "error: xcrun not found at $XCRUN." >&2
-    exit 2
-fi
+# shellcheck source=scripts/lib/xcode-tools.sh
+. "$ROOT/scripts/lib/xcode-tools.sh"
+typeforme_configure_xcode "run iOS simulator verification"
+typeforme_configure_xcrun
 
 if ! command -v /usr/bin/python3 >/dev/null 2>&1; then
     echo "error: /usr/bin/python3 is required to parse simctl JSON." >&2
@@ -35,7 +23,7 @@ if ! command -v /usr/bin/python3 >/dev/null 2>&1; then
 fi
 
 simctl() {
-    DEVELOPER_DIR="$DEVELOPER_DIR" "$XCRUN" simctl "$@"
+    typeforme_xcrun simctl "$@"
 }
 
 run_simctl_quiet() {

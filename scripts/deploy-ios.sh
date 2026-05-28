@@ -50,23 +50,13 @@ add_build_setting_from_env() {
 }
 
 export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
-if [ ! -d "$DEVELOPER_DIR" ]; then
-    echo "Xcode not found at $DEVELOPER_DIR. Set DEVELOPER_DIR explicitly." >&2
-    exit 1
-fi
-XCODEBUILD="$DEVELOPER_DIR/usr/bin/xcodebuild"
-XCRUN="/usr/bin/xcrun"
-if [ ! -x "$XCODEBUILD" ]; then
-    echo "xcodebuild not found at $XCODEBUILD. Set DEVELOPER_DIR to a full Xcode installation." >&2
-    exit 1
-fi
-if [ ! -x "$XCRUN" ]; then
-    echo "xcrun not found at $XCRUN." >&2
-    exit 1
-fi
+# shellcheck source=scripts/lib/xcode-tools.sh
+. "$ROOT/scripts/lib/xcode-tools.sh"
+typeforme_configure_xcode "deploy Typeforme iOS"
+typeforme_configure_xcrun
 
 xcrun_tool() {
-    DEVELOPER_DIR="$DEVELOPER_DIR" "$XCRUN" "$@"
+    typeforme_xcrun "$@"
 }
 
 ACTION="${1:-install}"
