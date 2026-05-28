@@ -42,6 +42,7 @@ enum TypeformeBundleConfiguration {
 enum KeyboardSharedDefaults {
     static var appGroupIdentifier: String { TypeformeBundleConfiguration.appGroupIdentifier }
     static let keyboardDefaultsKey = "keyboard.defaults.v1"
+    private static let keyboardStatusKey = "keyboard.status.v1"
     private static let hostHandoffKey = "keyboard.host-handoff.v1"
 
     static func suite() -> UserDefaults? {
@@ -73,6 +74,25 @@ enum KeyboardSharedDefaults {
         guard let token = payload?["bridge_token"] as? String else { return nil }
         let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
+    }
+
+    @discardableResult
+    static func saveStatusSnapshot(_ status: KeyboardBridgeStatus) -> Bool {
+        guard let data = try? JSONEncoder().encode(status.redactedForSharedDefaults),
+              let text = String(data: data, encoding: .utf8),
+              let defaults = suite()
+        else { return false }
+        defaults.set(text, forKey: keyboardStatusKey)
+        defaults.synchronize()
+        return true
+    }
+
+    static func loadStatusSnapshot() -> KeyboardBridgeStatus? {
+        guard let defaults = suite(),
+              let text = defaults.string(forKey: keyboardStatusKey),
+              let data = text.data(using: .utf8)
+        else { return nil }
+        return try? JSONDecoder().decode(KeyboardBridgeStatus.self, from: data)
     }
 
     static func makeBridgeToken() -> String {
@@ -557,4 +577,21 @@ struct KeyboardBridgeStatus: Codable, Equatable {
     }
 
     static let idle = KeyboardBridgeStatus(state: .idle, message: "Keyboard standby is off")
+
+    var redactedForSharedDefaults: KeyboardBridgeStatus {
+        KeyboardBridgeStatus(
+            commandID: commandID,
+            state: state,
+            message: message,
+            resultText: nil,
+            audioDurationSeconds: audioDurationSeconds,
+            audioByteCount: audioByteCount,
+            rawTranscriptLength: rawTranscriptLength,
+            defaultCorrectionMode: defaultCorrectionMode,
+            audioLevel: nil,
+            livePartialTranscript: nil,
+            backendReachable: backendReachable,
+            updatedAt: updatedAt
+        )
+    }
 }

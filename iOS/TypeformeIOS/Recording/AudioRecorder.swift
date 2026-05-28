@@ -41,6 +41,16 @@ enum IOSRecordingAudioSession {
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
 
+    static func isPriorityConflict(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        if nsError.code == AVAudioSession.ErrorCode.insufficientPriority.rawValue {
+            return true
+        }
+        let description = "\(nsError.domain) \(nsError.code) \(nsError.localizedDescription)"
+        return description.localizedCaseInsensitiveContains("priority")
+            || description.localizedCaseInsensitiveContains("insufficient")
+    }
+
     private static func options(for purpose: Purpose) -> AVAudioSession.CategoryOptions {
         switch purpose {
         case .standby: return standbyOptions
@@ -445,6 +455,9 @@ final class StandbyAudioSession: ObservableObject {
 
     @Published private(set) var isActive = false
     @Published private(set) var level: Float = 0
+    var onInterruptionBegan: ((Bool) -> Void)?
+    var onInterruptionEnded: ((Bool) -> Void)?
+    var onSessionInvalidated: ((Bool, String) -> Void)?
 
     private let engine = AVAudioEngine()
     private let fileWriter = AudioTapFileWriter()
@@ -516,10 +529,53 @@ final class StandbyAudioSession: ObservableObject {
 
     private func handleAudioSessionNotification(_ notification: Notification) {
         switch notification.name {
+        case AVAudioSession.interruptionNotification:
+            handleInterruption(notification)
         case AVAudioSession.routeChangeNotification:
             handleRouteChange(notification)
+        case AVAudioSession.mediaServicesWereResetNotification:
+            invalidateEngine(message: "Audio services were reset.", notify: true)
         default:
             markEngineRestartNeeded()
+        }
+    }
+
+    private func handleInterruption(_ notification: Notification) {
+        guard let rawType = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+              let type = AVAudioSession.InterruptionType(rawValue: rawType)
+        else {
+            invalidateEngine(message: "Audio session was interrupted.", notify: true)
+            return
+        }
+
+        switch type {
+        case .began:
+            let wasRecording = fileWriter.isRecording
+            invalidateEngine(message: "Microphone is in use by another app.", notify: false)
+            onInterruptionBegan?(wasRecording)
+        case .ended:
+            let rawOptions = notification.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
+            let options = AVAudioSession.InterruptionOptions(rawValue: rawOptions)
+            onInterruptionEnded?(options.contains(.shouldResume))
+        @unknown default:
+            invalidateEngine(message: "Audio session was interrupted.", notify: true)
+        }
+    }
+
+    private func invalidateEngine(message: String, notify: Bool) {
+        let wasRecording = fileWriter.isRecording
+        removeInputTap()
+        _ = fileWriter.cancel()
+        if engine.isRunning {
+            engine.stop()
+        }
+        onPCMBuffer = nil
+        isActive = false
+        level = 0
+        currentFormat = nil
+        needsEngineRestart = true
+        if notify {
+            onSessionInvalidated?(wasRecording, message)
         }
     }
 

@@ -358,6 +358,7 @@ final class AppState: ObservableObject {
     private var activeKeyboardDictationContext: KeyboardDictationContext?
     private var canceledKeyboardCommandIDs: [String: TimeInterval] = [:]
     private var lastHandledOpenURL: (value: String, time: TimeInterval)?
+    private var keyboardAudioUnavailableMessage: String?
 
     /// Force-refresh cloud/unavailable routes if cached probe is older than
     /// this. Local routes get a shorter TTL because stale LAN IPs hurt more
@@ -493,6 +494,7 @@ final class AppState: ObservableObject {
         self.cachedServerRimeUserPhrases = Self.loadCachedServerRimeUserPhrases()
         self.selectedLanguageIDs = Set(saved.validatedLanguageIDs)
         self.keyboardStandbyEnabled = true
+        configureKeyboardAudioCallbacks()
         configureKeyboardServer()
         configureKeyboardDarwinBridge()
         installLifecycleObservers()
@@ -1040,7 +1042,7 @@ final class AppState: ObservableObject {
             acquireIdleTimer()
             setPhase(.recording)
         } catch {
-            setFailure(error.localizedDescription)
+            setFailure(keyboardAudioStatusMessage(for: error))
             await resumeKeyboardStandbyAfterCommand()
         }
 
@@ -1087,7 +1089,7 @@ final class AppState: ObservableObject {
             acquireIdleTimer()
             setPhase(.recording)
         } catch {
-            setFailure(error.localizedDescription)
+            setFailure(keyboardAudioStatusMessage(for: error))
             await resumeKeyboardStandbyAfterCommand()
         }
     }
@@ -1681,18 +1683,24 @@ final class AppState: ObservableObject {
                 scheduleHostAudioSessionExpiry()
                 return isInputReady
             } catch {
-                let message = "Keyboard audio session unavailable: \(error.localizedDescription)"
+                let message = keyboardAudioStatusMessage(for: error)
                 if surfaceAudioSessionErrors {
-                    errorMessage = message
-                    appLog.error("setKeyboardStandby: \(message, privacy: .public)")
-                    publishKeyboardStatus(.error, message: message)
+                    if IOSRecordingAudioSession.isPriorityConflict(error) {
+                        appLog.notice("setKeyboardStandby: \(message, privacy: .public)")
+                        startSilentStandbyKeeperIfNeeded()
+                        publishKeyboardStatus(.idle, message: message)
+                    } else {
+                        errorMessage = "Keyboard audio session unavailable: \(message)"
+                        appLog.error("setKeyboardStandby: \(self.errorMessage ?? message, privacy: .public)")
+                        publishKeyboardStatus(.error, message: errorMessage)
+                    }
                 } else {
                     // App bootstrap uses keyboard standby as a best-effort
                     // prewarm. Audio-session activation can legitimately fail
                     // while iOS is settling routes after launch; keep the local
                     // bridge/silent standby available and let the keyboard mic
                     // handoff surface any real user-action failure.
-                    appLog.notice("setKeyboardStandby bootstrap deferred: \(error.localizedDescription, privacy: .public)")
+                    appLog.notice("setKeyboardStandby bootstrap deferred: \(message, privacy: .public)")
                     startSilentStandbyKeeperIfNeeded()
                     publishKeyboardStatus(.idle, message: keyboardMicrophonePreparationMessage)
                 }
@@ -1717,6 +1725,7 @@ final class AppState: ObservableObject {
 
     private func prepareKeyboardInputStandby(requestMicrophoneIfNeeded: Bool) async throws -> Bool {
         if keyboardAudioSession.isActive {
+            keyboardAudioUnavailableMessage = nil
             startKeyboardSessionKeepAlive()
             return true
         }
@@ -1730,6 +1739,7 @@ final class AppState: ObservableObject {
             let reuseActiveSession = standbyKeeper.isActive
             standbyKeeper.stop(deactivateSession: false)
             try await keyboardAudioSession.start(reuseActiveSession: reuseActiveSession)
+            keyboardAudioUnavailableMessage = nil
             startKeyboardSessionKeepAlive()
             return true
         case .undetermined:
@@ -1738,6 +1748,7 @@ final class AppState: ObservableObject {
             let reuseActiveSession = standbyKeeper.isActive
             standbyKeeper.stop(deactivateSession: false)
             try await keyboardAudioSession.start(reuseActiveSession: reuseActiveSession)
+            keyboardAudioUnavailableMessage = nil
             startKeyboardSessionKeepAlive()
             return true
         case .denied:
@@ -1762,6 +1773,7 @@ final class AppState: ObservableObject {
     private func startSilentStandbyKeeperIfNeeded() {
         guard !keyboardAudioSession.isActive else { return }
         standbyKeeper.start()
+        scheduleHostAudioSessionExpiry()
     }
 
     private func scheduleHostAudioSessionExpiry() {
@@ -1832,6 +1844,59 @@ final class AppState: ObservableObject {
         return granted ? .granted : .denied
     }
 
+    private func configureKeyboardAudioCallbacks() {
+        keyboardAudioSession.onInterruptionBegan = { [weak self] wasRecording in
+            self?.handleKeyboardAudioInterruptionBegan(wasRecording: wasRecording)
+        }
+        keyboardAudioSession.onInterruptionEnded = { [weak self] shouldResume in
+            self?.handleKeyboardAudioInterruptionEnded(shouldResume: shouldResume)
+        }
+        keyboardAudioSession.onSessionInvalidated = { [weak self] wasRecording, message in
+            self?.handleKeyboardAudioSessionInvalidated(wasRecording: wasRecording, message: message)
+        }
+    }
+
+    private func handleKeyboardAudioInterruptionBegan(wasRecording: Bool) {
+        keyboardAudioUnavailableMessage = "Microphone is in use by another app."
+        teardownLivePartialPreview(clearText: true)
+        if wasRecording {
+            let commandID = activeKeyboardRecordingCommandID
+            clearKeyboardCaptureContext()
+            resetCorrectionModeToDefault()
+            releaseIdleTimer()
+            publishKeyboardStatus(.idle, commandID: commandID, message: keyboardAudioUnavailableMessage)
+            KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.dictationStopped)
+        } else {
+            publishKeyboardStatus(.idle, message: keyboardAudioUnavailableMessage)
+        }
+        KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.sessionEnded)
+        startSilentStandbyKeeperIfNeeded()
+    }
+
+    private func handleKeyboardAudioInterruptionEnded(shouldResume: Bool) {
+        keyboardAudioUnavailableMessage = nil
+        guard keyboardStandbyEnabled, shouldResume else { return }
+        scheduleKeyboardStandbyRefresh(delay: 0.75)
+    }
+
+    private func handleKeyboardAudioSessionInvalidated(wasRecording: Bool, message: String) {
+        keyboardAudioUnavailableMessage = message
+        teardownLivePartialPreview(clearText: true)
+        if wasRecording {
+            let commandID = activeKeyboardRecordingCommandID
+            clearKeyboardCaptureContext()
+            resetCorrectionModeToDefault()
+            releaseIdleTimer()
+            publishKeyboardStatus(.idle, commandID: commandID, message: message)
+            KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.dictationStopped)
+        } else {
+            publishKeyboardStatus(.idle, message: message)
+        }
+        KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.sessionEnded)
+        startSilentStandbyKeeperIfNeeded()
+        scheduleKeyboardStandbyRefresh(delay: 1.5)
+    }
+
     private func ensureMicrophonePermissionForUserAction() async -> Bool {
         switch AVAudioApplication.shared.recordPermission {
         case .granted:
@@ -1873,9 +1938,20 @@ final class AppState: ObservableObject {
     }
 
     private var keyboardMicrophonePreparationMessage: String {
-        AVAudioApplication.shared.recordPermission == .denied
+        if let keyboardAudioUnavailableMessage {
+            return keyboardAudioUnavailableMessage
+        }
+        return AVAudioApplication.shared.recordPermission == .denied
             ? "Microphone permission is required."
             : "Open Typeforme to prepare dictation."
+    }
+
+    private func keyboardAudioStatusMessage(for error: Error) -> String {
+        if IOSRecordingAudioSession.isPriorityConflict(error) {
+            keyboardAudioUnavailableMessage = "Microphone is in use by another app."
+            return keyboardAudioUnavailableMessage ?? error.localizedDescription
+        }
+        return error.localizedDescription
     }
 
     private func openAppSettingsForMicrophone() async {
@@ -2476,8 +2552,14 @@ final class AppState: ObservableObject {
             } catch {
                 clearKeyboardCaptureContext()
                 resetCorrectionModeToDefault()
-                setFailure(error.localizedDescription)
-                publishKeyboardStatus(.error, commandID: commandID, message: error.localizedDescription)
+                let message = keyboardAudioStatusMessage(for: error)
+                if IOSRecordingAudioSession.isPriorityConflict(error) {
+                    startSilentStandbyKeeperIfNeeded()
+                    publishKeyboardStatus(.idle, commandID: commandID, message: message)
+                } else {
+                    setFailure(message)
+                    publishKeyboardStatus(.error, commandID: commandID, message: message)
+                }
                 KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.dictationStopped)
                 await resumeKeyboardStandbyAfterCommand()
                 return
@@ -2495,8 +2577,14 @@ final class AppState: ObservableObject {
             KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.dictationStarted)
         } catch {
             clearKeyboardCaptureContext()
-            setFailure(error.localizedDescription)
-            publishKeyboardStatus(.error, commandID: commandID, message: error.localizedDescription)
+            let message = keyboardAudioStatusMessage(for: error)
+            if IOSRecordingAudioSession.isPriorityConflict(error) {
+                startSilentStandbyKeeperIfNeeded()
+                publishKeyboardStatus(.idle, commandID: commandID, message: message)
+            } else {
+                setFailure(message)
+                publishKeyboardStatus(.error, commandID: commandID, message: message)
+            }
             KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.dictationStopped)
             await resumeKeyboardStandbyAfterCommand()
         }
@@ -2552,7 +2640,7 @@ final class AppState: ObservableObject {
         resultText: String? = nil,
         audioDurationSeconds: Double? = nil,
         audioByteCount: Int? = nil,
-            rawTranscriptLength: Int? = nil
+        rawTranscriptLength: Int? = nil
     ) {
         // Last-known Mac bridge reachability. `nil` (= never probed this
         // session) is intentionally NOT mapped to `false` — the keyboard's
@@ -2579,13 +2667,13 @@ final class AppState: ObservableObject {
                keyboardBridgeStatus.message == "Recording" {
                 return
             }
-            keyboardBridgeStatus = KeyboardBridgeStatus(
+            setKeyboardBridgeStatus(KeyboardBridgeStatus(
                 commandID: preservedCommandID,
                 state: .recording,
                 message: "Recording",
                 defaultCorrectionMode: config.correctionMode.rawValue,
                 backendReachable: reachable
-            )
+            ))
             return
         }
 
@@ -2602,7 +2690,12 @@ final class AppState: ObservableObject {
             livePartialTranscript: partial,
             backendReachable: reachable
         )
+        setKeyboardBridgeStatus(status)
+    }
+
+    private func setKeyboardBridgeStatus(_ status: KeyboardBridgeStatus) {
         keyboardBridgeStatus = status
+        KeyboardSharedDefaults.saveStatusSnapshot(status)
     }
 
     /// Called from the SFSpeechRecognizer partial callback on every new

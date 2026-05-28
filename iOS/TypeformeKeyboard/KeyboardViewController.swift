@@ -386,8 +386,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private static let textTouchPositiveTTL: TimeInterval = 12
     private static let statusRefreshStaleTimeout: TimeInterval = 1.0
     private static let fastStatusPollingInterval: TimeInterval = 0.12
-    private static let activeStatusPollingInterval: TimeInterval = 0.35
-    private static let idleStatusPollingInterval: TimeInterval = 1.0
+    private static let sharedStatusSnapshotMaxAge: TimeInterval = 30
+    private static let sharedActiveStatusSnapshotMaxAge: TimeInterval = 3
     private static let textSpaceCursorPointsPerCharacter: CGFloat = 9
     private static let containingAppBundleIdentifier = TypeformeBundleConfiguration.hostBundleIdentifier
     private let deleteRepeatInitialDelay: UInt64 = 450_000_000
@@ -2252,7 +2252,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                     if !self.hasActiveKeyboardRecordingOrStopIntent,
                        self.currentBridgeStatus?.state != .recording,
                        self.currentBridgeStatus?.state != .sending {
-                        self.applyBridgeStatus(KeyboardBridgeStatus(state: .standby, message: "Ready"))
+                        if !self.applySharedBridgeStatusSnapshot() {
+                            self.applyBridgeStatus(KeyboardBridgeStatus(state: .standby, message: "Ready"))
+                        }
                     } else {
                         self.openingHostUntil = 0
                         self.lastBridgeContactAt = Date().timeIntervalSince1970
@@ -2282,12 +2284,14 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             KeyboardDarwinBridge.observe(KeyboardDarwinNotificationName.dictationStarted) { [weak self] in
                 DispatchQueue.main.async {
                     guard let self else { return }
-                    let status = KeyboardBridgeStatus(state: .recording, message: "Recording")
+                    let fallbackStatus = KeyboardBridgeStatus(state: .recording, message: "Recording")
                     self.cancelScheduledHostOpen()
                     self.cancelHostWakeResetTask()
                     self.lastDarwinAwakeAt = Date().timeIntervalSince1970
-                    self.applyBridgeStatus(status)
-                    self.finishStartRequestIfNeeded(status: status)
+                    if !self.applySharedBridgeStatusSnapshot() {
+                        self.applyBridgeStatus(fallbackStatus)
+                    }
+                    self.finishStartRequestIfNeeded(status: self.currentBridgeStatus ?? fallbackStatus)
                 }
             },
             KeyboardDarwinBridge.observe(KeyboardDarwinNotificationName.dictationStopped) { [weak self] in
@@ -2296,13 +2300,21 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                     let wasStarting = self.isStartRequestInFlight
                     self.lastDarwinAwakeAt = Date().timeIntervalSince1970
                     self.finishStoppedNotification()
+                    let appliedSnapshot = self.applySharedBridgeStatusSnapshot()
                     if wasStarting {
+                        if appliedSnapshot,
+                           self.currentBridgeStatus?.state == .idle {
+                            self.updateUI()
+                            return
+                        }
                         self.openHostForDictation()
                         return
                     }
                     if self.currentBridgeStatus?.state != .result,
                        self.currentBridgeStatus?.state != .sending {
-                        self.bridgeStatus = KeyboardBridgeStatus(state: .standby, message: "Ready")
+                        if !appliedSnapshot {
+                            self.bridgeStatus = KeyboardBridgeStatus(state: .standby, message: "Ready")
+                        }
                         self.updateUI()
                     }
                 }
@@ -4032,10 +4044,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             stopPulseRings()
         }
 
-        let desiredInterval = statusPollingInterval(for: currentBridgeStatus?.state)
-        if statusTimer != nil, abs(statusTimerInterval - desiredInterval) > 0.01 {
+        if let desiredInterval = statusPollingInterval(for: currentBridgeStatus?.state) {
+            if statusTimer == nil || abs(statusTimerInterval - desiredInterval) > 0.01 {
+                stopStatusPolling()
+                startStatusPolling(interval: desiredInterval)
+            }
+        } else if statusTimer != nil {
             stopStatusPolling()
-            startStatusPolling(interval: desiredInterval)
         }
         updateTextRecordingStatus(isRecording: isRecordingState, isSending: isSendingState)
     }
@@ -7831,6 +7846,29 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         bridgeStatus
     }
 
+    @discardableResult
+    private func applySharedBridgeStatusSnapshot() -> Bool {
+        guard let status = KeyboardSharedDefaults.loadStatusSnapshot(),
+              isUsableSharedBridgeStatusSnapshot(status)
+        else { return false }
+        applyBridgeStatus(status)
+        return true
+    }
+
+    private func isUsableSharedBridgeStatusSnapshot(_ status: KeyboardBridgeStatus) -> Bool {
+        guard status.state != .result else { return false }
+        let age = Date().timeIntervalSince1970 - status.updatedAt
+        guard age >= 0 else { return false }
+        switch status.state {
+        case .recording, .sending:
+            return age <= Self.sharedActiveStatusSnapshotMaxAge
+        case .idle, .standby, .error:
+            return age <= Self.sharedStatusSnapshotMaxAge
+        case .result:
+            return false
+        }
+    }
+
     private var hasActiveKeyboardRecordingOrStopIntent: Bool {
         isVoicePressActive
             || isCommandPressActive
@@ -8268,16 +8306,18 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         statusRefreshStartedAt = 0
     }
 
-    private func statusPollingInterval(for state: KeyboardBridgeState?) -> TimeInterval {
+    private func statusPollingInterval(for state: KeyboardBridgeState?) -> TimeInterval? {
         switch state {
         case .some(.recording), .some(.sending):
             // Host stages can move Recording → Transcribing → Result in a few
             // hundred ms; keep this cadence fast enough not to skip feedback.
             return Self.fastStatusPollingInterval
         case .some(.idle), .some(.standby):
-            return Self.idleStatusPollingInterval
-        case .some(.result), .some(.error), .none:
-            return Self.activeStatusPollingInterval
+            return nil
+        case .some(.result), .some(.error):
+            return nil
+        case .none:
+            return nil
         }
     }
 
@@ -8287,7 +8327,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let workItem = DispatchWorkItem { [weak self] in
             guard let self, self.view.window != nil else { return }
             let needsHostBootstrap = self.hasFullAccess && KeyboardSharedDefaults.loadPayload() == nil
-            self.startStatusPolling()
+            _ = self.applySharedBridgeStatusSnapshot()
             self.refreshBridgeStatus(captureSelection: false)
             self.postAuthenticatedKeyboardRequest(KeyboardDarwinNotificationName.requestSessionStatus)
             if needsHostBootstrap {

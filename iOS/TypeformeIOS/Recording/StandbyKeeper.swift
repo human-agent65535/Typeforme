@@ -24,11 +24,25 @@ import Foundation
 /// crashes the app on launch. We pin both sides to a single static format.
 @MainActor
 final class StandbyKeeper {
-    private(set) var isActive = false
+    var isActive: Bool {
+        activeFlag && engine.isRunning && player.isPlaying
+    }
 
     private let engine = AVAudioEngine()
     private let player = AVAudioPlayerNode()
     private var hasAttached = false
+    private var activeFlag = false
+    private var notificationObservers: [NSObjectProtocol] = []
+
+    init() {
+        observeSessionInvalidations()
+    }
+
+    deinit {
+        for observer in notificationObservers {
+            NotificationCenter.default.removeObserver(observer)
+        }
+    }
 
     /// 44.1 kHz Float32 stereo — iOS's lingua franca. `mainMixerNode`
     /// always accepts this and the hardware output node converts internally
@@ -38,12 +52,12 @@ final class StandbyKeeper {
 
     func start(configureSession: Bool = true) {
         guard let format = Self.playbackFormat else {
-            isActive = false
+            activeFlag = false
             return
         }
         do {
             try setupAndPlay(format: format, configureSession: configureSession)
-            isActive = true
+            activeFlag = engine.isRunning && player.isPlaying
         } catch {
             // Audio session conflicts, hardware unavailable, etc. — log
             // and move on rather than spamming the UI. The local bridge
@@ -51,22 +65,56 @@ final class StandbyKeeper {
             // suspend after backgrounding but the next keyboard standby
             // URL open will retry.
             NSLog("StandbyKeeper.start failed: \(error)")
-            isActive = false
+            activeFlag = false
         }
     }
 
     func stop(deactivateSession: Bool = true) {
-        let wasActive = isActive
+        let wasActive = activeFlag || engine.isRunning || player.isPlaying
         if player.isPlaying {
             player.stop()
         }
         if engine.isRunning {
             engine.stop()
         }
-        isActive = false
+        activeFlag = false
         if wasActive, deactivateSession {
             try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         }
+    }
+
+    private func observeSessionInvalidations() {
+        let center = NotificationCenter.default
+        let names: [Notification.Name] = [
+            AVAudioSession.interruptionNotification,
+            AVAudioSession.mediaServicesWereResetNotification,
+        ]
+        notificationObservers = names.map { name in
+            center.addObserver(
+                forName: name,
+                object: AVAudioSession.sharedInstance(),
+                queue: nil
+            ) { [weak self] notification in
+                Task { @MainActor [weak self] in
+                    self?.handleSessionInvalidation(notification)
+                }
+            }
+        }
+    }
+
+    private func handleSessionInvalidation(_ notification: Notification) {
+        if notification.name == AVAudioSession.interruptionNotification,
+           let rawType = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+           AVAudioSession.InterruptionType(rawValue: rawType) == .ended {
+            return
+        }
+        if player.isPlaying {
+            player.stop()
+        }
+        if engine.isRunning {
+            engine.stop()
+        }
+        activeFlag = false
     }
 
     private func setupAndPlay(format: AVAudioFormat, configureSession: Bool) throws {
