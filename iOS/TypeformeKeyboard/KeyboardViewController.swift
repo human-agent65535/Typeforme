@@ -303,11 +303,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private static let insertedFlashDuration: TimeInterval = 1.2
     /// Set whenever the host posts a Darwin signal that proves the bridge is
     /// alive (sessionStarted, dictationStarted, dictationStopped). Cleared by
-    /// `sessionEnded` or by a confirmed `.start` failure. This is a durable
-    /// liveness signal independent of `lastBridgeContactAt`'s 3s freshness
-    /// window, so a mic press right after a finished dictation skips the
-    /// 0.9s probe even if the keyboard hasn't received a fresh status frame.
+    /// `sessionEnded`, by a confirmed `.start` failure, or when a fresh
+    /// session-status challenge gets no host echo. This is independent of
+    /// `lastBridgeContactAt`, so a mic press right after a finished dictation
+    /// skips the slow probe while still letting a killed host go gray.
     private var lastDarwinAwakeAt: TimeInterval = 0
+    private var sessionStatusChallengeGeneration: UInt = 0
     private var openingHostUntil: TimeInterval = 0
     private var appliedKeyboardInterfaceStyle: UIUserInterfaceStyle?
     private var lastCorrectionModeButtonSignature = ""
@@ -368,6 +369,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private static let fastStatusPollingInterval: TimeInterval = 0.12
     private static let sharedStatusSnapshotMaxAge: TimeInterval = 30
     private static let sharedActiveStatusSnapshotMaxAge: TimeInterval = 3
+    private static let sharedStandbyLivenessSnapshotMaxAge: TimeInterval = 8
     private static let textSpaceCursorPointsPerCharacter: CGFloat = 9
     private static let containingAppBundleIdentifier = TypeformeBundleConfiguration.hostBundleIdentifier
     private let deleteRepeatInitialDelay: UInt64 = 450_000_000
@@ -5030,7 +5032,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private var currentHostBundleID: String? {
-        currentTextHostBundleID.flatMap { isUsableReturnBundleID($0) ? $0 : nil }
+        currentHostBundleIDFromCurrentHostPID()
+            ?? currentTextHostBundleID.flatMap { isUsableReturnBundleID($0) ? $0 : nil }
     }
 
     private var currentTextHostBundleID: String? {
@@ -5050,11 +5053,15 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 return trimmed
             }
         }
+        return currentHostBundleIDFromCurrentHostPID()
+    }
+
+    private func currentHostBundleIDFromCurrentHostPID() -> String? {
         guard let pid = currentHostProcessID else { return nil }
         let hostPID: AnyObject = NSNumber(value: pid)
         return currentHostBundleIDFromXPC(hostPID: hostPID).flatMap { id in
             let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
-            return isBundleIdentifierShape(trimmed) ? trimmed : nil
+            return isUsableReturnBundleID(trimmed) ? trimmed : nil
         }
     }
 
@@ -5291,16 +5298,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             || currentBridgeStatus?.state == .recording
         guard shouldCancel else { return }
 
-        let commandID = activeRecordingCommandID
-            ?? activeRecordingTextTarget?.commandID
-            ?? currentBridgeStatus?.commandID
-            ?? UUID().uuidString
-        let command = KeyboardBridgeCommand(
-            id: commandID,
-            action: .cancel,
-            correctionMode: correctionMode.rawValue
-        )
-        kbLog.notice("keyboard disappearing during dictation; sending .cancel command")
+        kbLog.notice("keyboard disappearing during dictation; preserving host recording")
         cancelScheduledStop()
         isStartRequestInFlight = false
         shouldStopWhenStartCompletes = false
@@ -5313,18 +5311,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         activeRecordingTextTarget = nil
         pendingStopCommandID = nil
         cancelScheduledHostOpen()
-        _ = postAuthenticatedKeyboardRequest(KeyboardDarwinNotificationName.requestCancelDictation)
-
-        guard hasFullAccess else { return }
-        let bridgeToken = hostKeyboardBridgeToken
-        let localClient = self.localClient
-        Task {
-            _ = try? await localClient.send(
-                command,
-                bridgeToken: bridgeToken,
-                timeout: KeyboardBridgeCommandAction.cancel.requestTimeout
-            )
-        }
     }
 
     private func cancelActiveHoldRecording() {
@@ -7904,7 +7890,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         guard let status = KeyboardSharedDefaults.loadStatusSnapshot(),
               isUsableSharedBridgeStatusSnapshot(status)
         else { return false }
-        applyBridgeStatus(status)
+        applyBridgeStatus(status, recordsLiveContact: false)
         return true
     }
 
@@ -7966,17 +7952,14 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         if Date().timeIntervalSince1970 - lastBridgeContactAt < 3 {
             return status.state != .idle
         }
-        // `sessionStarted` is a durable handoff from the containing app: once
-        // host has prepared the background audio session, it will post
-        // `sessionEnded` when that session is explicitly torn down. Do not
-        // expire the visible Ready state after a few seconds, because the
-        // containing app can be backgrounded and reject localhost status probes.
-        // `.result` and `.sending` only exist because the host bridge actively
-        // produced them, so they're durable too — falling back to a slow probe
-        // after a freshly finished dictation just to confirm what we already
-        // know was the most common source of the 2s mic-press latency.
+        // A fresh standby snapshot is enough for the handoff-return window:
+        // the host may prepare audio and return before the keyboard receives a
+        // Darwin echo. Older standby snapshots still expire so a killed host
+        // does not stay green indefinitely.
         switch status.state {
-        case .standby, .recording, .result, .sending:
+        case .standby:
+            return Date().timeIntervalSince1970 - status.updatedAt <= Self.sharedStandbyLivenessSnapshotMaxAge
+        case .recording, .result, .sending:
             return true
         default:
             return false
@@ -8184,6 +8167,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let action = command.action
         if action != .configure {
             if action == .start || action == .stop || action == .cancel {
+                if action == .start, command.textEditContext == nil {
+                    sendDarwinBridgeCommand(.start, commandID: command.id)
+                    return
+                }
                 sendLocalBridgeCommand(command)
                 return
             }
@@ -8426,6 +8413,40 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
     }
 
+    private func scheduleSessionStatusChallengeTimeout(sentAt: TimeInterval) {
+        sessionStatusChallengeGeneration &+= 1
+        let generation = sessionStatusChallengeGeneration
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { [weak self] in
+            guard let self,
+                  self.view.window != nil,
+                  self.sessionStatusChallengeGeneration == generation,
+                  self.lastDarwinAwakeAt < sentAt,
+                  !self.hasActiveKeyboardRecordingOrStopIntent,
+                  self.currentBridgeStatus?.state != .recording,
+                  self.currentBridgeStatus?.state != .sending
+            else { return }
+            self.lastDarwinAwakeAt = 0
+            guard Date().timeIntervalSince1970 - self.lastBridgeContactAt >= 3 else {
+                self.updateUI()
+                return
+            }
+            if let status = self.currentBridgeStatus,
+               status.state == .standby,
+               Date().timeIntervalSince1970 - status.updatedAt <= Self.sharedStandbyLivenessSnapshotMaxAge {
+                self.updateUI()
+                return
+            }
+            if self.currentBridgeStatus?.state == .standby {
+                self.bridgeStatus = KeyboardBridgeStatus(
+                    state: .idle,
+                    message: self.inputMode.idleTitle,
+                    backendReachable: self.currentBridgeStatus?.backendReachable
+                )
+            }
+            self.updateUI()
+        }
+    }
+
     private func scheduleDeferredStartupProbe() {
         deferredStartupWorkItem?.cancel()
         hasPresentedInitialFrame = false
@@ -8433,7 +8454,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             guard let self, self.view.window != nil else { return }
             _ = self.applySharedBridgeStatusSnapshot()
             self.refreshBridgeStatus(captureSelection: false)
-            self.postAuthenticatedKeyboardRequest(KeyboardDarwinNotificationName.requestSessionStatus)
+            let sentAt = Date().timeIntervalSince1970
+            if self.postAuthenticatedKeyboardRequest(KeyboardDarwinNotificationName.requestSessionStatus) {
+                self.scheduleSessionStatusChallengeTimeout(sentAt: sentAt)
+            }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.20) { [weak self] in
                 guard let self, self.view.window != nil else { return }
                 self.hasPresentedInitialFrame = true
@@ -8514,7 +8538,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.insertedFlashDuration, execute: work)
     }
 
-    private func applyBridgeStatus(_ status: KeyboardBridgeStatus) {
+    private func applyBridgeStatus(_ status: KeyboardBridgeStatus, recordsLiveContact: Bool = true) {
         if shouldIgnoreStaleIdleStatus(status) {
             return
         }
@@ -8565,7 +8589,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             replaceMarkedText("")
         }
         bridgeStatus = status
-        lastBridgeContactAt = Date().timeIntervalSince1970
+        if recordsLiveContact {
+            lastBridgeContactAt = Date().timeIntervalSince1970
+        }
         if styleRewriteCommandID == nil {
             applyDefaultCorrectionModeFromHost(status.defaultCorrectionMode)
         }
@@ -8650,6 +8676,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             status.defaultCorrectionMode ?? "",
             status.audioDurationSeconds.map { String(format: "%.2f", $0) } ?? "",
             status.rawTranscriptLength.map(String.init) ?? "",
+            status.livePartialTranscript ?? "",
         ].joined(separator: ":")
         guard signature != lastStatusSignature else { return }
         lastStatusSignature = signature

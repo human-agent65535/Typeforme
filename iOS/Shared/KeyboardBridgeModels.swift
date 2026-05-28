@@ -115,6 +115,16 @@ enum KeyboardSharedDefaults {
         return handoff
     }
 
+    static func consumeLatestHostHandoff(now: TimeInterval = Date().timeIntervalSince1970) -> KeyboardHostHandoff? {
+        guard let defaults = suite(),
+              let handoff = loadCodable(KeyboardHostHandoff.self, key: hostHandoffKey),
+              handoff.isFresh(now: now)
+        else { return nil }
+        defaults.removeObject(forKey: hostHandoffKey)
+        defaults.synchronize()
+        return handoff
+    }
+
     private static func loadCodable<T: Decodable>(_ type: T.Type, key: String) -> T? {
         guard let defaults = suite(),
               let text = defaults.string(forKey: key),
@@ -799,7 +809,7 @@ struct KeyboardBridgeStatus: Codable, Equatable {
             rawTranscriptLength: rawTranscriptLength,
             defaultCorrectionMode: defaultCorrectionMode,
             audioLevel: nil,
-            livePartialTranscript: nil,
+            livePartialTranscript: livePartialTranscript,
             backendReachable: backendReachable,
             updatedAt: updatedAt
         )
