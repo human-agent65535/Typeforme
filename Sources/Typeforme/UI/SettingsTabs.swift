@@ -2592,7 +2592,7 @@ struct DictionarySettingsView: View {
                 HStack(spacing: 10) {
                     Picker("Type", selection: $selectedType) {
                         ForEach(DictionaryEntry.suggestedTypes, id: \.self) { type in
-                            Text(type.replacingOccurrences(of: "_", with: " ")).tag(type)
+                            Text(DictionaryEntry.displayType(for: type)).tag(type)
                         }
                         Text("custom").tag("custom")
                     }

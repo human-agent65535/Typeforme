@@ -34,7 +34,7 @@ struct DictionaryEntry: Codable, Hashable, Sendable, Identifiable {
     }
 
     var displayType: String {
-        type.replacingOccurrences(of: "_", with: " ")
+        Self.displayType(for: type)
     }
 
     var searchTerms: [String] {
@@ -47,6 +47,10 @@ struct DictionaryEntry: Codable, Hashable, Sendable, Identifiable {
         return trimmed
             .lowercased()
             .replacingOccurrences(of: " ", with: "_")
+    }
+
+    static func displayType(for type: String) -> String {
+        type.replacingOccurrences(of: "_", with: " ")
     }
 
     static func cleanedList(_ values: [String]) -> [String] {

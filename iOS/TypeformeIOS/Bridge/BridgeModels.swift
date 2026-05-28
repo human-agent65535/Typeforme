@@ -384,7 +384,7 @@ struct BridgeUserDictionaryEntry: Codable, Equatable, Identifiable, Hashable {
     }
 
     var displayType: String {
-        type.replacingOccurrences(of: "_", with: " ")
+        Self.displayType(for: type)
     }
 
     static func cleanedSurface(_ value: String) -> String {
@@ -393,12 +393,35 @@ struct BridgeUserDictionaryEntry: Codable, Equatable, Identifiable, Hashable {
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    static func displayType(for type: String) -> String {
+        type.replacingOccurrences(of: "_", with: " ")
+    }
+
     static func normalizedType(_ value: String) -> String {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return "other" }
         return trimmed
             .lowercased()
             .replacingOccurrences(of: " ", with: "_")
+    }
+
+    static func normalizedEntries(_ entries: [BridgeUserDictionaryEntry]) -> [BridgeUserDictionaryEntry] {
+        var seenIDs = Set<UUID>()
+        return entries.compactMap { incoming in
+            let entry = BridgeUserDictionaryEntry(
+                id: incoming.id,
+                type: incoming.type,
+                surface: incoming.surface
+            )
+            guard entry.isValid else { return nil }
+            guard seenIDs.insert(entry.id).inserted else { return nil }
+            return entry
+        }
+        .sorted {
+            if $0.type != $1.type { return $0.type < $1.type }
+            if $0.surface != $1.surface { return $0.surface < $1.surface }
+            return $0.id.uuidString < $1.id.uuidString
+        }
     }
 }
 
@@ -510,7 +533,7 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
         self.numberOutputPreference = numberOutputPreference
         self.punctuationPreference = punctuationPreference
         self.autoCommit = autoCommit
-        self.userDictionary = Self.normalizedUserDictionary(userDictionary)
+        self.userDictionary = BridgeUserDictionaryEntry.normalizedEntries(userDictionary)
         self.modelStatuses = modelStatuses
         self.settingsRevision = settingsRevision
         normalize()
@@ -533,7 +556,7 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
         self.numberOutputPreference = try container.decodeIfPresent(NumberOutputPreferenceID.self, forKey: .numberOutputPreference) ?? .automatic
         self.punctuationPreference = try container.decodeIfPresent(PunctuationPreferenceID.self, forKey: .punctuationPreference) ?? .normal
         self.autoCommit = try container.decodeIfPresent(Bool.self, forKey: .autoCommit) ?? true
-        self.userDictionary = Self.normalizedUserDictionary(
+        self.userDictionary = BridgeUserDictionaryEntry.normalizedEntries(
             try container.decodeIfPresent([BridgeUserDictionaryEntry].self, forKey: .userDictionary) ?? []
         )
         self.modelStatuses = try container.decodeIfPresent([BridgeModelStatus].self, forKey: .modelStatuses) ?? []
@@ -547,31 +570,12 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
         asrTimeoutSec = Self.clampedASRTimeoutSec(asrTimeoutSec)
         correctionTimeoutMs = Self.clampedCorrectionTimeoutMs(correctionTimeoutMs)
         correctionColdTimeoutMs = Self.clampedCorrectionColdTimeoutMs(correctionColdTimeoutMs)
-        userDictionary = Self.normalizedUserDictionary(userDictionary)
+        userDictionary = BridgeUserDictionaryEntry.normalizedEntries(userDictionary)
     }
 
     func supportedLanguageOptions(for provider: String) -> [ASRLanguageOption] {
         let options = supportedLanguagesByASRProvider[provider] ?? supportedLanguages
         return PairingLanguageOption.asASROptions(options)
-    }
-
-    private static func normalizedUserDictionary(_ entries: [BridgeUserDictionaryEntry]) -> [BridgeUserDictionaryEntry] {
-        var seenIDs = Set<UUID>()
-        return entries.compactMap { incoming in
-            let entry = BridgeUserDictionaryEntry(
-                id: incoming.id,
-                type: incoming.type,
-                surface: incoming.surface
-            )
-            guard entry.isValid else { return nil }
-            guard seenIDs.insert(entry.id).inserted else { return nil }
-            return entry
-        }
-        .sorted {
-            if $0.type != $1.type { return $0.type < $1.type }
-            if $0.surface != $1.surface { return $0.surface < $1.surface }
-            return $0.id.uuidString < $1.id.uuidString
-        }
     }
 
     private static func rimeUserPhrases(from entries: [BridgeUserDictionaryEntry]) -> [String] {

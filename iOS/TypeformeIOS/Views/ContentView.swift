@@ -1803,7 +1803,7 @@ private struct ServerVocabularyView: View {
                     HStack(spacing: 10) {
                         Picker("Type", selection: $selectedType) {
                             ForEach(BridgeUserDictionaryEntry.suggestedTypes, id: \.self) { type in
-                                Text(displayType(type)).tag(type)
+                                Text(BridgeUserDictionaryEntry.displayType(for: type)).tag(type)
                             }
                             Text("custom").tag("custom")
                         }
@@ -1859,7 +1859,7 @@ private struct ServerVocabularyView: View {
             }
         }
         .onChange(of: entries) { _, value in
-            let normalized = normalizedEntries(value)
+            let normalized = BridgeUserDictionaryEntry.normalizedEntries(value)
             if normalized != value {
                 entries = normalized
             }
@@ -1886,7 +1886,7 @@ private struct ServerVocabularyView: View {
             type: resolvedType,
             surface: surface
         )
-        entries = normalizedEntries(entries + [entry])
+        entries = BridgeUserDictionaryEntry.normalizedEntries(entries + [entry])
         newSurface = ""
         isNewSurfaceFocused = true
     }
@@ -1898,30 +1898,7 @@ private struct ServerVocabularyView: View {
     private func updateEntry(_ updated: BridgeUserDictionaryEntry) {
         guard let index = entries.firstIndex(where: { $0.id == updated.id }) else { return }
         entries[index] = updated
-        entries = normalizedEntries(entries)
-    }
-
-    private func normalizedEntries(_ values: [BridgeUserDictionaryEntry]) -> [BridgeUserDictionaryEntry] {
-        var seenIDs = Set<UUID>()
-        return values.compactMap { value in
-            let entry = BridgeUserDictionaryEntry(
-                id: value.id,
-                type: value.type,
-                surface: value.surface
-            )
-            guard entry.isValid else { return nil }
-            guard seenIDs.insert(entry.id).inserted else { return nil }
-            return entry
-        }
-        .sorted {
-            if $0.type != $1.type { return $0.type < $1.type }
-            if $0.surface != $1.surface { return $0.surface < $1.surface }
-            return $0.id.uuidString < $1.id.uuidString
-        }
-    }
-
-    private func displayType(_ type: String) -> String {
-        type.replacingOccurrences(of: "_", with: " ")
+        entries = BridgeUserDictionaryEntry.normalizedEntries(entries)
     }
 }
 
@@ -1944,7 +1921,7 @@ private struct ServerVocabularyEntryEditorView: View {
             Section("Type") {
                 Picker("Type", selection: typeSelectionBinding) {
                     ForEach(BridgeUserDictionaryEntry.suggestedTypes, id: \.self) { type in
-                        Text(displayType(type)).tag(type)
+                        Text(BridgeUserDictionaryEntry.displayType(for: type)).tag(type)
                     }
                     Text("custom").tag("custom")
                 }
@@ -2021,7 +1998,4 @@ private struct ServerVocabularyEntryEditorView: View {
         dismiss()
     }
 
-    private func displayType(_ type: String) -> String {
-        type.replacingOccurrences(of: "_", with: " ")
-    }
 }
