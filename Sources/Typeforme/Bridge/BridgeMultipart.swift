@@ -540,7 +540,7 @@ enum BridgeMultipart {
         audioExtension: String
     ) -> [(name: String, value: String)] {
         var fields: [(name: String, value: String)] = []
-        if let clientJobID = normalizedClientJobID(clientJobID) {
+        if let clientJobID = BridgeClientJobID.normalized(clientJobID) {
             fields.append(("client_job_id", clientJobID))
         }
         fields.append(("language_ids", jsonString(languageIDs)))
@@ -622,16 +622,6 @@ enum BridgeMultipart {
             throw BridgeMultipartError.invalidRequest("Unsupported audio extension: \(ext)")
         }
         return ext
-    }
-
-    private static func normalizedClientJobID(_ raw: String?) -> String? {
-        guard let raw else { return nil }
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, trimmed.count <= 96 else { return nil }
-        let allowed = trimmed.filter { character in
-            character.isLetter || character.isNumber || character == "-" || character == "_"
-        }
-        return allowed == trimmed ? trimmed : nil
     }
 
     private static func jsonString<T: Encodable>(_ value: T) -> String {

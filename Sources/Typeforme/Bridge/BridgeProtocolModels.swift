@@ -1,5 +1,19 @@
 import Foundation
 
+enum BridgeClientJobID {
+    static let maxLength = 96
+
+    static func normalized(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed.count <= maxLength else { return nil }
+        let allowed = trimmed.filter { character in
+            character.isLetter || character.isNumber || character == "-" || character == "_"
+        }
+        return allowed == trimmed ? trimmed : nil
+    }
+}
+
 struct BridgeSettingOption: Codable, Sendable, Identifiable, Hashable {
     let id: String
     let displayName: String

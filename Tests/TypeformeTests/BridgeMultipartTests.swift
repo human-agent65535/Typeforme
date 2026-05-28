@@ -11,6 +11,12 @@ struct BridgeMultipartTests {
         #expect(!BridgeHTTPServer.constantTimeEquals("token-123-extra", "token-123"))
     }
 
+    @Test func clientJobIDNormalizationAllowsOnlyBridgeSafeTokens() {
+        #expect(BridgeClientJobID.normalized(" ios_job-1 ") == "ios_job-1")
+        #expect(BridgeClientJobID.normalized("ios job 1") == nil)
+        #expect(BridgeClientJobID.normalized(String(repeating: "a", count: BridgeClientJobID.maxLength + 1)) == nil)
+    }
+
     @Test func dictateUploadUsesMultipartFilePayload() throws {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("typeforme-test-\(UUID().uuidString).m4a")

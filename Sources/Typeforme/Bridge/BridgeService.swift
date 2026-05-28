@@ -164,7 +164,7 @@ final class BridgeService {
     func dictate(_ request: BridgeDictateRequest) async throws -> BridgeDictateResponse {
         pruneExpiredSessions()
         let start = Date()
-        let jobID = normalizedJobID(request.clientJobID)
+        let jobID = BridgeClientJobID.normalized(request.clientJobID)
         let languageIDs = resolveLanguageIDs(ids: request.languageIDs, mode: request.languageMode)
         let correctionMode = try resolveCorrectionMode(request.correctionMode)
         let audioURL = try await writeAudio(request)
@@ -363,7 +363,7 @@ final class BridgeService {
     func restyle(_ request: BridgeRestyleRequest) async throws -> BridgeRestyleResponse {
         pruneExpiredSessions()
         let start = Date()
-        let jobID = normalizedJobID(request.clientJobID)
+        let jobID = BridgeClientJobID.normalized(request.clientJobID)
         let session = request.sessionID.flatMap { sessions[$0] }
         let correctionMode = try resolveCorrectionMode(request.correctionMode ?? session?.correctionMode.rawValue)
         let providedRawTranscript = request.rawTranscript?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -522,7 +522,7 @@ final class BridgeService {
 
     func editText(_ request: BridgeTextEditRequest) async throws -> BridgeTextEditResponse {
         let start = Date()
-        let jobID = normalizedJobID(request.clientJobID)
+        let jobID = BridgeClientJobID.normalized(request.clientJobID)
         let intent = try resolveTextEditIntent(request.intent)
         let contextBefore = request.contextBefore ?? ""
         let targetText = request.targetText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -862,16 +862,6 @@ final class BridgeService {
 
     private func elapsedMs(since date: Date) -> Int {
         Int((Date().timeIntervalSince(date) * 1000).rounded())
-    }
-
-    private func normalizedJobID(_ raw: String?) -> String? {
-        guard let raw else { return nil }
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, trimmed.count <= 96 else { return nil }
-        let allowed = trimmed.filter { character in
-            character.isLetter || character.isNumber || character == "-" || character == "_"
-        }
-        return allowed == trimmed ? trimmed : nil
     }
 
     private func publishJobStatus(
