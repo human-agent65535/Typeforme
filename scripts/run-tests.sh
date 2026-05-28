@@ -4,22 +4,9 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
-if [ -z "${DEVELOPER_DIR:-}" ] && [ -d /Applications/Xcode.app/Contents/Developer ]; then
-    export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
-fi
-
-XCODEBUILD="${DEVELOPER_DIR:-}/usr/bin/xcodebuild"
-if [ ! -x "$XCODEBUILD" ]; then
-    cat >&2 <<'EOF'
-error: full Xcode is required to test Typeforme.
-
-Set DEVELOPER_DIR to Xcode, for example:
-  export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
-
-Use the Xcode-backed scripts for project verification.
-EOF
-    exit 2
-fi
+# shellcheck source=scripts/lib/xcode-tools.sh
+. "$ROOT/scripts/lib/xcode-tools.sh"
+typeforme_configure_xcode "test Typeforme"
 
 exec "$XCODEBUILD" \
     -scheme Typeforme \

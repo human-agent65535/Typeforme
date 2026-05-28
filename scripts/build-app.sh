@@ -43,6 +43,10 @@ if [ -f "$ROOT/.env" ]; then
     . "$ROOT/.env"
     set +a
 fi
+# shellcheck source=scripts/lib/xcode-tools.sh
+. "$ROOT/scripts/lib/xcode-tools.sh"
+typeforme_configure_xcode "build Typeforme"
+
 TYPEFORME_BUNDLE_PREFIX="${TYPEFORME_BUNDLE_PREFIX:-com.example}"
 TYPEFORME_MAC_BUNDLE_IDENTIFIER="${TYPEFORME_MAC_BUNDLE_IDENTIFIER:-$TYPEFORME_BUNDLE_PREFIX.typeforme.mac}"
 
@@ -70,23 +74,6 @@ while [ "$#" -gt 0 ]; do
     esac
     shift
 done
-
-if [ -z "${DEVELOPER_DIR:-}" ] && [ -d /Applications/Xcode.app/Contents/Developer ]; then
-    export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
-fi
-
-XCODEBUILD="${DEVELOPER_DIR:-}/usr/bin/xcodebuild"
-if [ ! -x "$XCODEBUILD" ]; then
-    cat >&2 <<'EOF'
-error: full Xcode is required to build Typeforme.
-
-Set DEVELOPER_DIR to Xcode, for example:
-  export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
-
-Use the Xcode-backed scripts for project verification.
-EOF
-    exit 2
-fi
 
 case "$CONFIG" in
     debug|release) ;;

@@ -7,8 +7,10 @@ FRAMEWORK_ARCHIVE="$ROOT/vendor/LibrimeKit-Frameworks.tgz"
 FRAMEWORK_URL="${LIBRIMEKIT_FRAMEWORK_URL:-https://github.com/amorphobia/LibrimeKit/releases/download/v0.1.0/Frameworks.tgz}"
 REPO_URL="${LIBRIMEKIT_REPO_URL:-https://github.com/mariorichp/LibrimeKit.git}"
 BUILD_ARM64_SIMULATOR="${TYPEFORME_BUILD_RIME_ARM64_SIMULATOR:-auto}"
-DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
-export DEVELOPER_DIR
+
+# shellcheck source=scripts/lib/xcode-tools.sh
+. "$ROOT/scripts/lib/xcode-tools.sh"
+typeforme_configure_xcode "prepare LibrimeKit for iOS"
 
 has_arm64_simulator_librime() {
   local binary="$VENDOR_DIR/Frameworks/librime.xcframework/ios-arm64_x86_64-simulator/librime_simulator_fat.a"
