@@ -337,34 +337,6 @@ struct BridgeHealthResponse: Decodable {
     }
 }
 
-struct BridgeSettingOption: Codable, Equatable, Identifiable {
-    let id: String
-    let displayName: String
-
-    enum CodingKeys: String, CodingKey {
-        case id
-        case displayName = "display_name"
-    }
-}
-
-struct BridgeModelStatus: Codable, Equatable, Identifiable {
-    let id: String
-    let kind: String
-    let displayName: String
-    let installed: Bool
-    let installing: Bool
-    let detail: String
-
-    enum CodingKeys: String, CodingKey {
-        case id
-        case kind
-        case displayName = "display_name"
-        case installed
-        case installing
-        case detail
-    }
-}
-
 struct BridgeUserDictionaryEntry: Codable, Equatable, Identifiable, Hashable {
     static let suggestedTypes = [
         "person",
@@ -724,51 +696,5 @@ struct BridgeTextEditResponse: Decodable {
         case editLatencyMs = "edit_latency_ms"
         case editStatus = "edit_status"
         case editError = "edit_error"
-    }
-}
-
-enum BridgeJobStatusStage: String, Codable {
-    case audioReceived = "audio_received"
-    case transcribing
-    case transcriptReady = "transcript_ready"
-    case refining
-    case resultReady = "result_ready"
-    case failed
-
-    var isTerminal: Bool {
-        switch self {
-        case .resultReady, .failed:
-            return true
-        default:
-            return false
-        }
-    }
-}
-
-struct BridgeJobStatusEvent: Decodable {
-    let jobID: String
-    let stage: BridgeJobStatusStage
-    let message: String
-    let rawTranscript: String?
-    let rawTranscriptLength: Int?
-    let text: String?
-    let latencyMs: Int?
-    let transcriptionLatencyMs: Int?
-    let refineLatencyMs: Int?
-    let error: String?
-    let updatedAt: TimeInterval
-
-    enum CodingKeys: String, CodingKey {
-        case jobID = "job_id"
-        case stage
-        case message
-        case rawTranscript = "raw_transcript"
-        case rawTranscriptLength = "raw_transcript_length"
-        case text
-        case latencyMs = "latency_ms"
-        case transcriptionLatencyMs = "transcription_latency_ms"
-        case refineLatencyMs = "refine_latency_ms"
-        case error
-        case updatedAt = "updated_at"
     }
 }
