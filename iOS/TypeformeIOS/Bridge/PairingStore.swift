@@ -11,13 +11,13 @@ struct PairingStore {
             return .empty
         }
 
-        config.token = config.token.trimmingCharacters(in: .whitespacesAndNewlines)
+        config.normalize()
         return config
     }
 
     func save(_ config: PairingConfig) {
         var persisted = config
-        persisted.token = persisted.token.trimmingCharacters(in: .whitespacesAndNewlines)
+        persisted.normalize()
         _ = persistConfig(persisted)
     }
 

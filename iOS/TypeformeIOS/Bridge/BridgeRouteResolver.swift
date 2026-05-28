@@ -128,22 +128,13 @@ struct BridgeRouteResolver {
     }
 
     private func url(from rawValue: String) -> URL? {
-        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
-        return URL(string: trimmed)
+        let normalized = PairingConfig.normalizedBaseURL(rawValue)
+        guard !normalized.isEmpty else { return nil }
+        return URL(string: normalized)
     }
 
     private func urls(from rawValues: [String]) -> [URL] {
-        var seen = Set<String>()
-        var urls: [URL] = []
-        for rawValue in rawValues {
-            guard let url = url(from: rawValue) else { continue }
-            let key = url.absoluteString
-            guard !seen.contains(key) else { continue }
-            seen.insert(key)
-            urls.append(url)
-        }
-        return urls
+        PairingConfig.uniqueBridgeURLs(rawValues).compactMap { URL(string: $0) }
     }
 
     private func probeFirstAvailable(

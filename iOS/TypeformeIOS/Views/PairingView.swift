@@ -327,7 +327,7 @@ struct PairingView: View {
                 supportedLanguages: config.supportedLanguages,
                 correctionMode: config.correctionMode
             )
-            decoded.normalizeLanguageIDs()
+            decoded.normalize()
             config = decoded
             parsedSuccessfully = true
             parsedSource = trimmed
@@ -392,7 +392,7 @@ struct PairingView: View {
             config.languageIDs,
             supportedOptions: config.supportedLanguageOptions
         )
-        config.normalizeLanguageIDs()
+        config.normalize()
     }
 
 }

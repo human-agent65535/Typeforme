@@ -513,7 +513,7 @@ final class AppState: ObservableObject {
 
     func saveConfig(_ newConfig: PairingConfig) {
         var normalized = newConfig
-        normalized.normalizeLanguageIDs()
+        normalized.normalize()
         config = normalized
         correctionMode = normalized.correctionMode
         selectedLanguageIDs = Set(normalized.validatedLanguageIDs)

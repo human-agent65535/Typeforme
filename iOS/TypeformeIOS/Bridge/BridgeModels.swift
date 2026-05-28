@@ -42,10 +42,10 @@ struct BridgeEndpoints: Codable, Equatable {
         token: String
     ) {
         let localCandidates = PairingConfig.uniqueBridgeURLs([lanBridgeURL] + lanBridgeURLs)
-        self.lanBridgeURL = lanBridgeURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.lanBridgeURL = localCandidates.first ?? ""
         self.lanBridgeURLs = localCandidates
-        self.publicBridgeURL = publicBridgeURL
-        self.token = token
+        self.publicBridgeURL = PairingConfig.normalizedBaseURL(publicBridgeURL)
+        self.token = token.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     init(from decoder: Decoder) throws {
@@ -53,12 +53,11 @@ struct BridgeEndpoints: Codable, Equatable {
         let decodedLANBridgeURL = try container.decodeIfPresent(String.self, forKey: .lanBridgeURL) ?? ""
         let decodedLANBridgeURLs = try container.decodeIfPresent([String].self, forKey: .lanBridgeURLs) ?? []
         let localCandidates = PairingConfig.uniqueBridgeURLs([decodedLANBridgeURL] + decodedLANBridgeURLs)
-        self.lanBridgeURL = decodedLANBridgeURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? (localCandidates.first ?? "")
-            : decodedLANBridgeURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.lanBridgeURL = localCandidates.first ?? ""
         self.lanBridgeURLs = localCandidates
-        self.publicBridgeURL = (try container.decodeIfPresent(String.self, forKey: .publicBridgeURL) ?? "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        self.publicBridgeURL = PairingConfig.normalizedBaseURL(
+            try container.decodeIfPresent(String.self, forKey: .publicBridgeURL) ?? ""
+        )
         self.token = (try container.decodeIfPresent(String.self, forKey: .token) ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
@@ -73,11 +72,11 @@ struct BridgeEndpoints: Codable, Equatable {
     }
 
     mutating func promoteLocalBridgeURL(_ rawValue: String) {
-        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        let candidate = PairingConfig.normalizedBaseURL(rawValue)
+        guard !candidate.isEmpty, URL(string: candidate) != nil else { return }
         let existing = localBridgeURLCandidates
-        lanBridgeURL = trimmed
-        lanBridgeURLs = PairingConfig.uniqueBridgeURLs([trimmed] + existing)
+        lanBridgeURLs = PairingConfig.uniqueBridgeURLs([candidate] + existing)
+        lanBridgeURL = lanBridgeURLs.first ?? candidate
     }
 }
 
@@ -242,7 +241,7 @@ struct PairingConfig: Codable, Equatable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.bridgeEndpoints = try container.decode(BridgeEndpoints.self, forKey: .bridgeEndpoints)
         self.userPreferences = try container.decode(UserPreferences.self, forKey: .userPreferences)
-        normalizeLanguageIDs()
+        normalize()
     }
 
     func encode(to encoder: Encoder) throws {
@@ -267,6 +266,20 @@ struct PairingConfig: Codable, Equatable {
         ASRLanguageSelection.validatedIDs(languageIDs, supportedOptions: supportedLanguageOptions)
     }
 
+    mutating func normalize() {
+        normalizeBridgeEndpoints()
+        normalizeLanguageIDs()
+    }
+
+    mutating func normalizeBridgeEndpoints() {
+        bridgeEndpoints = BridgeEndpoints(
+            lanBridgeURL: lanBridgeURL,
+            lanBridgeURLs: lanBridgeURLs,
+            publicBridgeURL: publicBridgeURL,
+            token: token
+        )
+    }
+
     mutating func normalizeLanguageIDs() {
         languageIDs = validatedLanguageIDs
     }
@@ -279,12 +292,37 @@ struct PairingConfig: Codable, Equatable {
         var seen = Set<String>()
         var urls: [String] = []
         for value in values {
-            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty, !seen.contains(trimmed) else { continue }
-            seen.insert(trimmed)
-            urls.append(trimmed)
+            let normalized = normalizedBaseURL(value)
+            guard !normalized.isEmpty, URL(string: normalized) != nil else { continue }
+            guard seen.insert(normalized).inserted else { continue }
+            urls.append(normalized)
         }
         return urls
+    }
+
+    static func normalizedBaseURL(_ rawValue: String) -> String {
+        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+        if trimmed.hasPrefix("http://") || trimmed.hasPrefix("https://") {
+            return trimmed
+        }
+        if isLocalBridgeHost(trimmed) {
+            return "http://\(trimmed)"
+        }
+        return "https://\(trimmed)"
+    }
+
+    private static func isLocalBridgeHost(_ value: String) -> Bool {
+        if value.hasPrefix("[::1]") || value.hasPrefix("::1") {
+            return true
+        }
+        let host = URLComponents(string: "http://\(value)")?.host ?? value
+        return host == "localhost"
+            || host.hasPrefix("127.")
+            || host.hasPrefix("192.168.")
+            || host.hasPrefix("10.")
+            || host.range(of: #"^172\.(1[6-9]|2[0-9]|3[0-1])\."#, options: .regularExpression) != nil
+            || host == "::1"
     }
 }
 
