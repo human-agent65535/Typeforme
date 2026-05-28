@@ -192,7 +192,7 @@ struct BridgeClient {
         onJobEvent: (@Sendable (BridgeJobStatusEvent) async -> Void)?,
         operation: (String?) async throws -> Response
     ) async throws -> Response {
-        let normalizedJobID = Self.normalizedClientJobID(clientJobID)
+        let normalizedJobID = BridgeClientJobID.normalized(clientJobID)
         let eventTask: Task<Void, Never>? = {
             guard let normalizedJobID, let onJobEvent else { return nil }
             return jobEventTask(jobID: normalizedJobID, onEvent: onJobEvent)
@@ -233,7 +233,7 @@ struct BridgeClient {
         jobID: String,
         onEvent: @Sendable (BridgeJobStatusEvent) async -> Void
     ) async throws -> Bool {
-        guard let safeJobID = Self.normalizedClientJobID(jobID),
+        guard let safeJobID = BridgeClientJobID.normalized(jobID),
               let encodedJobID = safeJobID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed)
         else {
             throw BridgeClientError.invalidURL
@@ -403,16 +403,6 @@ struct BridgeClient {
             alternateTranscript: alternateTranscript
         )
         return (multipart.body, multipart.contentType)
-    }
-
-    private static func normalizedClientJobID(_ raw: String?) -> String? {
-        guard let raw else { return nil }
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, trimmed.count <= 96 else { return nil }
-        let allowed = trimmed.filter { character in
-            character.isLetter || character.isNumber || character == "-" || character == "_"
-        }
-        return allowed == trimmed ? trimmed : nil
     }
 
 }
