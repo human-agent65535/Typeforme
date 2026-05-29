@@ -8,6 +8,7 @@ private let rimeLog = Logger(subsystem: TypeformeBundleConfiguration.keyboardBun
 struct RimeKeyboardCandidate {
     let text: String
     let comment: String
+    let selectionIndex: Int
 }
 
 struct RimeKeyboardState {
@@ -84,6 +85,8 @@ final class RimeInputController {
     // bar already scrolls horizontally and shows as many as the user pans
     // through.
     private static let candidateLimit: Int32 = 60
+    private static let englishCompletionMinimumInputLength = 4
+    private static let englishCompletionDisplayLimit = 1
     private static let startupRetryInterval: TimeInterval = 2.0
     private static var didSetup = false
     private static var didInitialize = false
@@ -531,16 +534,21 @@ final class RimeInputController {
             effectiveCandidateOffset = 0
         }
         let candidates = rawCandidates.prefix(Int(Self.candidateLimit))
-            .compactMap { candidate -> RimeKeyboardCandidate? in
+            .enumerated()
+            .compactMap { rawIndex, candidate -> RimeKeyboardCandidate? in
                 guard let text = candidate.text, !text.isEmpty else { return nil }
-                return RimeKeyboardCandidate(text: text, comment: candidate.comment ?? "")
+                return RimeKeyboardCandidate(
+                    text: text,
+                    comment: candidate.comment ?? "",
+                    selectionIndex: effectiveCandidateOffset + rawIndex
+                )
             }
-        var displayCandidates = candidates
+        var displayCandidates = Self.displayCandidates(from: candidates, input: input)
         if displayCandidates.isEmpty,
            let preview = context.commitTextPreview,
            !preview.isEmpty,
            preview != input {
-            displayCandidates = [RimeKeyboardCandidate(text: preview, comment: "")]
+            displayCandidates = [RimeKeyboardCandidate(text: preview, comment: "", selectionIndex: 0)]
         }
 
         return RimeKeyboardState(
@@ -563,6 +571,29 @@ final class RimeInputController {
         else { return false }
         let input = api.getInput(session) ?? ""
         return status.isComposing || !input.isEmpty
+    }
+
+    private static func displayCandidates(
+        from candidates: [RimeKeyboardCandidate],
+        input: String
+    ) -> [RimeKeyboardCandidate] {
+        var englishCompletionCount = 0
+        let inputLength = input.unicodeScalars.count
+        let filteredCandidates = candidates.filter { candidate in
+            guard isEnglishCompletionCandidate(candidate) else { return true }
+            guard inputLength >= englishCompletionMinimumInputLength else { return false }
+            guard englishCompletionCount < englishCompletionDisplayLimit else { return false }
+            englishCompletionCount += 1
+            return true
+        }
+        return filteredCandidates
+    }
+
+    private static func isEnglishCompletionCandidate(_ candidate: RimeKeyboardCandidate) -> Bool {
+        candidate.comment.hasPrefix("~")
+            && candidate.text.unicodeScalars.contains { scalar in
+                scalar.value <= 0x7F && CharacterSet.letters.contains(scalar)
+            }
     }
 
     private func notReadyState(commitText: String = "") -> RimeKeyboardState {

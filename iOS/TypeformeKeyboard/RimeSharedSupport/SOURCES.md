@@ -4,7 +4,8 @@ This directory contains the minimal Rime runtime data used by the Typeforme
 iOS keyboard extension.
 
 - `typeforme_pinyin*.schema.yaml`, `typeforme_pinyin*.dict.yaml`,
-  `typeforme_overrides.dict.yaml`, and `default.yaml` are Typeforme integration
+  `typeforme_overrides.dict.yaml`, `typeforme_english.schema.yaml`,
+  `typeforme_english.dict.yaml`, and `default.yaml` are Typeforme integration
   files that configure librime for the screen keyboard.
 - `scripts/build-rime-ios-data.sh` generates no-correction schema variants
   from the three checked-in pinyin schemas before building prebuilt data.

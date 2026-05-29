@@ -6718,6 +6718,14 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             return
         }
 
+        let currentState = rimeInput.state()
+        if shouldCommitRawRimeInputBeforeSeparator(currentState) {
+            commitRawRimeInput(currentState.input, appending: " ")
+            resetShiftIfSticky()
+            renderRestyleSuggestionsIfIdle()
+            return
+        }
+
         let result = rimeInput.processKeyCode(
             32,
             asciiPunctuation: chinesePunctuationStyle == .english,
@@ -6786,6 +6794,18 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         renderRimeState(state)
     }
 
+    private func commitRawRimeInput(_ rawInput: String, appending suffix: String = "") {
+        let text = rawInput + suffix
+        guard !text.isEmpty else { return }
+        acceptPendingTextTouchIfSurvived()
+        resetQuoteParity()
+        clearRestyleUndoStateForManualEdit()
+        commitTextReplacingMarkedText(text)
+        activeMarkedText = ""
+        activeMarkedTextOwner = nil
+        applyRimeState(rimeInput.clearComposition())
+    }
+
     private func returnToAlphabetKeyboardAfterSymbolInput() {
         isSymbolKeyboard = false
         isAlternateSymbolKeyboard = false
@@ -6814,12 +6834,14 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     private func shouldUseRawRimeInputAsMarkedText(_ input: String) -> Bool {
         guard textInputLanguage == .chinese,
-              isSearchTextInputContext,
+              (isLiteralAsciiTextInputContext
+                  || isContinuingLiteralAsciiTokenContext
+                  || isRawRimeInputLiteralToken(input)),
               !input.isEmpty
         else { return false }
         return input.unicodeScalars.allSatisfy { scalar in
-            CharacterSet.alphanumerics.contains(scalar)
-                || "-_+.'@".unicodeScalars.contains(scalar)
+            isASCIIAlphanumeric(scalar)
+                || "-_+.'@:/".unicodeScalars.contains(scalar)
         }
     }
 
@@ -6877,7 +6899,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 button,
                 candidate: candidate,
                 displayIndex: index,
-                selectionIndex: state.candidateOffset + index
+                selectionIndex: candidate.selectionIndex
             )
             addCandidateArrangedView(button)
         }
@@ -7166,7 +7188,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             }
             let button = makeCandidateGridButton(
                 candidate: candidate,
-                selectionIndex: state.candidateOffset + index,
+                selectionIndex: candidate.selectionIndex,
                 width: cellWidth
             )
             currentRow?.addArrangedSubview(button)
@@ -7640,13 +7662,31 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     private func insertChineseDirectTextKey(_ character: String) {
         let currentState = rimeInput.state()
+        let shouldKeepRawInputDraft = shouldKeepRawRimeInputDraft(currentState, beforeDirectCharacter: character)
         if currentState.isComposing {
             if let quickSelectIndex = quickCandidateIndex(for: character),
                quickSelectIndex < currentState.candidates.count {
-                applyRimeState(rimeInput.selectCandidate(at: currentState.candidateOffset + quickSelectIndex))
+                applyRimeState(rimeInput.selectCandidate(at: currentState.candidates[quickSelectIndex].selectionIndex))
                 return
             }
-            if isRimeCompositionControlKey(character) {
+            if let literalText = latinLiteralCommitTextBeforePunctuation(currentState, character: character) {
+                commitRawRimeInput(literalText, appending: character)
+                resetShiftIfSticky()
+                renderRestyleSuggestionsIfIdle()
+                return
+            }
+            if shouldKeepRawInputDraft {
+                applyRimeState(
+                    rimeInput.processCharacter(
+                        character,
+                        asciiPunctuation: true,
+                        asciiMode: false
+                    )
+                )
+                resetShiftIfSticky()
+                renderRestyleSuggestionsIfIdle()
+                return
+            } else if isRimeCompositionControlKey(character) {
                 applyRimeState(
                     rimeInput.processCharacter(
                         character,
@@ -7655,8 +7695,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                     )
                 )
                 return
+            } else {
+                applyRimeState(rimeInput.commitComposition())
             }
-            applyRimeState(rimeInput.commitComposition())
         } else {
             replaceMarkedText("")
         }
@@ -7679,6 +7720,133 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
         resetShiftIfSticky()
         renderRestyleSuggestionsIfIdle()
+    }
+
+    private func shouldKeepRawRimeInputDraft(_ state: RimeKeyboardState, beforeDirectCharacter character: String) -> Bool {
+        guard textInputLanguage == .chinese,
+              state.isComposing,
+              isRawLatinInput(state.input),
+              isLatinTokenContinuation(character)
+        else { return false }
+
+        if character == "@" { return true }
+        if isLiteralAsciiTextInputContext { return true }
+        if isContinuingLiteralAsciiTokenContext { return true }
+        if state.candidates.isEmpty { return true }
+        if isRawRimeInputLiteralToken(state.input) { return true }
+
+        let lowercasedInput = state.input.lowercased()
+        if character == ".", lowercasedInput == "www" { return true }
+        if character == ":", ["http", "https", "ftp", "mailto"].contains(lowercasedInput) { return true }
+        return false
+    }
+
+    private func latinLiteralCommitTextBeforePunctuation(
+        _ state: RimeKeyboardState,
+        character: String
+    ) -> String? {
+        guard textInputLanguage == .chinese,
+              state.isComposing,
+              isRawLatinInput(state.input),
+              isLatinTokenContinuation(character),
+              character != "@"
+        else { return nil }
+
+        let lowercasedInput = state.input.lowercased()
+        if isLiteralAsciiTextInputContext
+            || isContinuingLiteralAsciiTokenContext
+            || isRawRimeInputLiteralToken(state.input)
+            || (character == "." && lowercasedInput == "www")
+            || (character == ":" && ["http", "https", "ftp", "mailto"].contains(lowercasedInput)) {
+            return state.input
+        }
+
+        return exactLatinCandidate(in: state)?.text
+    }
+
+    private func exactLatinCandidate(in state: RimeKeyboardState) -> RimeKeyboardCandidate? {
+        let lowercasedInput = state.input.lowercased()
+        return state.candidates.first { candidate in
+            candidate.text.lowercased() == lowercasedInput
+                && isRawLatinInput(candidate.text)
+        }
+    }
+
+    private func shouldCommitRawRimeInputBeforeSeparator(_ state: RimeKeyboardState) -> Bool {
+        guard textInputLanguage == .chinese,
+              state.isComposing,
+              isRawLatinInput(state.input)
+        else { return false }
+        return isDedicatedLiteralAsciiTextInputContext
+            || isContinuingLiteralAsciiTokenContext
+            || isRawRimeInputLiteralToken(state.input)
+    }
+
+    private func isRawLatinInput(_ input: String) -> Bool {
+        guard !input.isEmpty else { return false }
+        return input.unicodeScalars.allSatisfy { scalar in
+            isASCIIAlphanumeric(scalar)
+                || "-_+.'@:/".unicodeScalars.contains(scalar)
+        }
+    }
+
+    private func isLatinTokenContinuation(_ character: String) -> Bool {
+        guard character.count == 1,
+              let scalar = character.unicodeScalars.first
+        else { return false }
+        return ".@_+-':/".unicodeScalars.contains(scalar)
+    }
+
+    private func isRawRimeInputLiteralToken(_ input: String) -> Bool {
+        let lowercasedInput = input.lowercased()
+        return lowercasedInput.contains("@")
+            || lowercasedInput.contains("://")
+            || lowercasedInput.hasPrefix("www.")
+    }
+
+    private func isASCIIAlphanumeric(_ scalar: UnicodeScalar) -> Bool {
+        scalar.value <= 0x7F && CharacterSet.alphanumerics.contains(scalar)
+    }
+
+    private var isLiteralAsciiTextInputContext: Bool {
+        isDedicatedLiteralAsciiTextInputContext || isSearchTextInputContext
+    }
+
+    private var isDedicatedLiteralAsciiTextInputContext: Bool {
+        switch textDocumentProxy.keyboardType {
+        case .URL, .emailAddress, .twitter:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private var isContinuingLiteralAsciiTokenContext: Bool {
+        guard let token = literalAsciiTokenPrefixBeforeInput else { return false }
+        let lowercasedToken = token.lowercased()
+        return lowercasedToken.contains("@")
+            || lowercasedToken.contains("://")
+            || lowercasedToken.hasPrefix("www.")
+            || lowercasedToken.hasPrefix("@")
+            || lowercasedToken.hasPrefix("#")
+    }
+
+    private var literalAsciiTokenPrefixBeforeInput: String? {
+        guard let context = textDocumentProxy.documentContextBeforeInput,
+              !context.isEmpty
+        else { return nil }
+        let scalars = Array(context.unicodeScalars.suffix(96))
+        var tokenScalars: [UnicodeScalar] = []
+        for scalar in scalars.reversed() {
+            if isASCIIAlphanumeric(scalar)
+                || ".@_+-':/#".unicodeScalars.contains(scalar) {
+                tokenScalars.append(scalar)
+            } else {
+                break
+            }
+        }
+        guard !tokenScalars.isEmpty else { return nil }
+        return String(String.UnicodeScalarView(tokenScalars.reversed()))
     }
 
     private func quickCandidateIndex(for character: String) -> Int? {
