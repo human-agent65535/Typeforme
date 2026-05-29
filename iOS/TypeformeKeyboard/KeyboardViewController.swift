@@ -6814,7 +6814,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     private func shouldReturnToAlphabetKeyboardAfterSymbolInput(_ character: String) -> Bool {
         guard isSymbolKeyboard else { return false }
-        return !isDigitTextKey(character)
+        if isDigitTextKey(character) { return false }
+        if shouldStayOnSymbolKeyboardAfterSymbolInput(character) { return false }
+        return shouldSymbolInputReturnToAlphabet(character)
     }
 
     private func isDigitTextKey(_ character: String) -> Bool {
@@ -6822,6 +6824,51 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
               let scalar = character.unicodeScalars.first
         else { return false }
         return CharacterSet.decimalDigits.contains(scalar)
+    }
+
+    private func shouldStayOnSymbolKeyboardAfterSymbolInput(_ character: String) -> Bool {
+        if character == "." || character == "," {
+            return symbolInputContinuesNumber(character)
+        }
+        if character == ":" {
+            return symbolInputContinuesURLSchemeOrTime()
+        }
+
+        switch character {
+        case "-", "/", "$", "¥", "€", "£", "&", "#", "%", "^", "*", "+", "=",
+             "_", "\\", "|", "~", "<", ">", "•", "[", "]", "{", "}":
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func shouldSymbolInputReturnToAlphabet(_ character: String) -> Bool {
+        switch character {
+        case ".", ",", "?", "!", "'", "\"", ";", ":", "@",
+             "。", "，", "、", "？", "！", "；", "：", "“", "”", "‘", "’":
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func symbolInputContinuesNumber(_ character: String) -> Bool {
+        guard character == "." || character == "," else { return false }
+        guard let previous = textDocumentProxy.documentContextBeforeInput?.unicodeScalars.last else {
+            return false
+        }
+        return CharacterSet.decimalDigits.contains(previous)
+    }
+
+    private func symbolInputContinuesURLSchemeOrTime() -> Bool {
+        if let previous = textDocumentProxy.documentContextBeforeInput?.unicodeScalars.last,
+           CharacterSet.decimalDigits.contains(previous) {
+            return true
+        }
+        let currentInput = rimeInput.state().input
+        let prefix = currentInput.isEmpty ? (literalAsciiTokenPrefixBeforeInput ?? "") : currentInput
+        return ["http", "https", "ftp", "mailto"].contains(prefix.lowercased())
     }
 
     private func rimeMarkedText(for state: RimeKeyboardState) -> String {
