@@ -41,6 +41,7 @@ engine:
   translators:
     - punct_translator
     - table_translator@custom_phrase
+    - table_translator@english_word
     - script_translator
   filters:
     - uniquifier
@@ -78,6 +79,13 @@ custom_phrase:
   enable_sentence: false
   initial_quality: 99
 
+english_word:
+  dictionary: typeforme_english
+  enable_completion: false
+  enable_sentence: false
+  enable_user_dict: false
+  initial_quality: 0.4
+
 punctuator:
   half_shape:
     ',': '，'
@@ -113,5 +121,6 @@ punctuator:
 
 recognizer:
   patterns:
+    email: "^[a-z][-_.0-9a-z]*@.*$"
     uppercase: "[A-Z][-_+.'0-9A-Za-z]*$"
     url: "^(www[.]|https?:|ftp[.:]|mailto:|file:).*$|^[a-z]+[.].+$"
