@@ -7310,6 +7310,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         pendingTextTouchCorrection = nil
         acceptPendingTextTouchIfSurvived()
         setCandidateGridExpanded(false)
+        if sender.tag == RimeKeyboardCandidate.literalSelectionIndex {
+            commitRawRimeInput(rimeInput.state().input)
+            return
+        }
         applyRimeState(rimeInput.selectCandidate(at: sender.tag))
     }
 
@@ -7368,6 +7372,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     @objc private func candidateButtonTapped(_ sender: UIButton) {
         pendingTextTouchCorrection = nil
         acceptPendingTextTouchIfSurvived()
+        if sender.tag == RimeKeyboardCandidate.literalSelectionIndex {
+            commitRawRimeInput(rimeInput.state().input)
+            return
+        }
         applyRimeState(rimeInput.selectCandidate(at: sender.tag))
     }
 
@@ -7666,7 +7674,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         if currentState.isComposing {
             if let quickSelectIndex = quickCandidateIndex(for: character),
                quickSelectIndex < currentState.candidates.count {
-                applyRimeState(rimeInput.selectCandidate(at: currentState.candidates[quickSelectIndex].selectionIndex))
+                let candidate = currentState.candidates[quickSelectIndex]
+                if candidate.commitsLiteralInput {
+                    commitRawRimeInput(candidate.text)
+                } else {
+                    applyRimeState(rimeInput.selectCandidate(at: candidate.selectionIndex))
+                }
                 return
             }
             if let literalText = latinLiteralCommitTextBeforePunctuation(currentState, character: character) {
@@ -7761,15 +7774,21 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             return state.input
         }
 
-        return exactLatinCandidate(in: state)?.text
+        return exactLatinCandidateBeforeNonLatinCandidates(in: state)?.text
     }
 
-    private func exactLatinCandidate(in state: RimeKeyboardState) -> RimeKeyboardCandidate? {
+    private func exactLatinCandidateBeforeNonLatinCandidates(in state: RimeKeyboardState) -> RimeKeyboardCandidate? {
         let lowercasedInput = state.input.lowercased()
-        return state.candidates.first { candidate in
-            candidate.text.lowercased() == lowercasedInput
-                && isRawLatinInput(candidate.text)
+        for candidate in state.candidates {
+            if candidate.text.lowercased() == lowercasedInput,
+               isRawLatinInput(candidate.text) {
+                return candidate
+            }
+            if !isRawLatinInput(candidate.text) {
+                return nil
+            }
         }
+        return nil
     }
 
     private func shouldCommitRawRimeInputBeforeSeparator(_ state: RimeKeyboardState) -> Bool {
@@ -7780,6 +7799,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         return isDedicatedLiteralAsciiTextInputContext
             || isContinuingLiteralAsciiTokenContext
             || isRawRimeInputLiteralToken(state.input)
+            || exactLatinCandidateBeforeNonLatinCandidates(in: state) != nil
     }
 
     private func isRawLatinInput(_ input: String) -> Bool {

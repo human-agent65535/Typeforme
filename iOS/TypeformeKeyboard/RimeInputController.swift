@@ -6,9 +6,19 @@ import OSLog
 private let rimeLog = Logger(subsystem: TypeformeBundleConfiguration.keyboardBundleIdentifier, category: "rime")
 
 struct RimeKeyboardCandidate {
+    static let literalSelectionIndex = -1
+
     let text: String
     let comment: String
     let selectionIndex: Int
+    let commitsLiteralInput: Bool
+
+    init(text: String, comment: String, selectionIndex: Int, commitsLiteralInput: Bool = false) {
+        self.text = text
+        self.comment = comment
+        self.selectionIndex = selectionIndex
+        self.commitsLiteralInput = commitsLiteralInput
+    }
 }
 
 struct RimeKeyboardState {
@@ -106,6 +116,7 @@ final class RimeInputController {
     private var desiredUserPhraseContent = RimeInputController.customPhraseFileContent(from: [])
     private var desiredUserPhraseSignature = RimeInputController.customPhraseSignature(RimeInputController.customPhraseFileContent(from: []))
     private var appliedUserPhraseSignature: String?
+    private var englishWordCodes: Set<String>?
 
     var onStateChange: ((RimeKeyboardState) -> Void)?
 
@@ -174,6 +185,7 @@ final class RimeInputController {
             rimeLog.error("Rime prebuilt data is missing from RimeSharedSupport/build")
             return false
         }
+        loadEnglishWordCodesOnQueue(from: sharedSupportURL)
 
         do {
             // The keyboard extension must only open prebuilt Rime data. Do not
@@ -543,7 +555,7 @@ final class RimeInputController {
                     selectionIndex: effectiveCandidateOffset + rawIndex
                 )
             }
-        var displayCandidates = Self.displayCandidates(from: candidates, input: input)
+        var displayCandidates = displayCandidates(from: candidates, input: input, preedit: preedit)
         if displayCandidates.isEmpty,
            let preview = context.commitTextPreview,
            !preview.isEmpty,
@@ -573,18 +585,30 @@ final class RimeInputController {
         return status.isComposing || !input.isEmpty
     }
 
-    private static func displayCandidates(
+    private func displayCandidates(
         from candidates: [RimeKeyboardCandidate],
-        input: String
+        input: String,
+        preedit: String
     ) -> [RimeKeyboardCandidate] {
         var englishCompletionCount = 0
         let inputLength = input.unicodeScalars.count
-        let filteredCandidates = candidates.filter { candidate in
-            guard isEnglishCompletionCandidate(candidate) else { return true }
-            guard inputLength >= englishCompletionMinimumInputLength else { return false }
-            guard englishCompletionCount < englishCompletionDisplayLimit else { return false }
+        var filteredCandidates = candidates.filter { candidate in
+            guard Self.isEnglishCompletionCandidate(candidate) else { return true }
+            guard inputLength >= Self.englishCompletionMinimumInputLength else { return false }
+            guard englishCompletionCount < Self.englishCompletionDisplayLimit else { return false }
             englishCompletionCount += 1
             return true
+        }
+        if shouldPrependLiteralEnglishCandidate(input: input, preedit: preedit, candidates: filteredCandidates) {
+            filteredCandidates.insert(
+                RimeKeyboardCandidate(
+                    text: input,
+                    comment: "",
+                    selectionIndex: RimeKeyboardCandidate.literalSelectionIndex,
+                    commitsLiteralInput: true
+                ),
+                at: 0
+            )
         }
         return filteredCandidates
     }
@@ -594,6 +618,34 @@ final class RimeInputController {
             && candidate.text.unicodeScalars.contains { scalar in
                 scalar.value <= 0x7F && CharacterSet.letters.contains(scalar)
             }
+    }
+
+    private func shouldPrependLiteralEnglishCandidate(
+        input: String,
+        preedit: String,
+        candidates: [RimeKeyboardCandidate]
+    ) -> Bool {
+        let code = input.lowercased()
+        guard Self.isEnglishWordLookupCode(code),
+              englishWordCodes?.contains(code) == true,
+              !candidates.contains(where: { $0.text.lowercased() == code && Self.isEnglishWordLookupCode($0.text.lowercased()) }),
+              preedit != input,
+              Self.containsRimeSegmentDelimiter(preedit)
+        else { return false }
+        return true
+    }
+
+    private static func isEnglishWordLookupCode(_ code: String) -> Bool {
+        guard code.count >= 2 else { return false }
+        return code.unicodeScalars.allSatisfy { scalar in
+            scalar.value >= 0x61 && scalar.value <= 0x7A
+        }
+    }
+
+    private static func containsRimeSegmentDelimiter(_ text: String) -> Bool {
+        text.contains { character in
+            character == "'" || character == "\\" || character == " " || character == "|" || character == "`"
+        }
     }
 
     private func notReadyState(commitText: String = "") -> RimeKeyboardState {
@@ -769,6 +821,37 @@ final class RimeInputController {
             .appendingPathComponent(Self.dataVersion, isDirectory: true)
         try FileManager.default.createDirectory(at: userDataURL, withIntermediateDirectories: true)
         return userDataURL
+    }
+
+    private func loadEnglishWordCodesOnQueue(from sharedSupportURL: URL) {
+        guard englishWordCodes == nil else { return }
+        let url = sharedSupportURL.appendingPathComponent("typeforme_english.dict.yaml")
+        guard let content = try? String(contentsOf: url, encoding: .utf8) else {
+            englishWordCodes = []
+            rimeLog.error("English Rime dictionary is missing from shared support")
+            return
+        }
+
+        var codes = Set<String>()
+        codes.reserveCapacity(80_000)
+        var inEntries = false
+        content.enumerateLines { line, _ in
+            if line == "..." {
+                inEntries = true
+                return
+            }
+            guard inEntries,
+                  !line.isEmpty,
+                  !line.hasPrefix("#")
+            else { return }
+
+            let fields = line.split(separator: "\t", omittingEmptySubsequences: false)
+            guard fields.count >= 2 else { return }
+            let code = String(fields[1]).lowercased()
+            guard Self.isEnglishWordLookupCode(code) else { return }
+            codes.insert(code)
+        }
+        englishWordCodes = codes
     }
 
     private static func customPhraseFileContent(from phrases: [String]) -> String {

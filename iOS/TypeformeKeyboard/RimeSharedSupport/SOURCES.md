@@ -5,8 +5,15 @@ iOS keyboard extension.
 
 - `typeforme_pinyin*.schema.yaml`, `typeforme_pinyin*.dict.yaml`,
   `typeforme_overrides.dict.yaml`, `typeforme_english.schema.yaml`,
-  `typeforme_english.dict.yaml`, and `default.yaml` are Typeforme integration
-  files that configure librime for the screen keyboard.
+  and `default.yaml` are Typeforme integration files that configure librime
+  for the screen keyboard.
+- `typeforme_english.dict.yaml` combines Typeforme-curated product/technical
+  terms with lowercase ASCII words generated from `en_US.txt` in
+  `en-wl/wordlist-diff` commit
+  `1f8ccc65c6d97ca201522e5bbb9fa05c80139bdc`. ESDB is Copyright 2000-2026
+  by Kevin Atkinson and permits use, modification, distribution, and sale of
+  generated word lists when the copyright and permission notice are preserved;
+  ESDB is provided "as is" without express or implied warranty.
 - `scripts/build-rime-ios-data.sh` generates no-correction schema variants
   from the three checked-in pinyin schemas before building prebuilt data.
 - `cn_dicts/8105.dict.yaml`, `cn_dicts/base.dict.yaml`,
