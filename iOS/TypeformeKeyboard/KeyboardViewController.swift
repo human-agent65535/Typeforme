@@ -7520,6 +7520,35 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         textDocumentProxy.unmarkText()
     }
 
+    private func shouldSkipResultCommitForConsumedLivePartial() -> Bool {
+        guard activeMarkedTextOwner == .livePartial,
+              !activeMarkedText.isEmpty
+        else { return false }
+        // The host app can send or clear the marked preview while the server
+        // is still finishing. In that case our marked-text bookkeeping is
+        // stale, so the final result must not be inserted into the now-empty
+        // input field.
+        guard let before = textDocumentProxy.documentContextBeforeInput else {
+            return false
+        }
+        let markedText = activeMarkedText
+        if before.hasSuffix(markedText) {
+            return false
+        }
+        if !before.isEmpty {
+            let markedSuffix = String(markedText.suffix(before.count))
+            if before == markedSuffix {
+                return false
+            }
+        }
+        if let after = textDocumentProxy.documentContextAfterInput,
+           !after.isEmpty,
+           (after.hasPrefix(markedText) || (before + after).contains(markedText)) {
+            return false
+        }
+        return true
+    }
+
     private func isAlphabeticTextKey(_ character: String) -> Bool {
         guard character.count == 1,
               let scalar = character.unicodeScalars.first
@@ -8846,6 +8875,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 activeRecordingTextEditIntent = nil
             } else if activeRecordingTextTarget != nil {
                 didApply = false
+                appliedRewriteTarget = nil
+            } else if shouldSkipResultCommitForConsumedLivePartial() {
+                kbLog.notice("skipped result commit because live partial preview is no longer in host input")
+                activeMarkedText = ""
+                activeMarkedTextOwner = nil
+                didApply = true
                 appliedRewriteTarget = nil
             } else {
                 // commitTextReplacingMarkedText handles both cases: if marked
