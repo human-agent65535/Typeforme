@@ -4811,12 +4811,17 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
         if suppressDuplicateHostOpen(source: "keyboard-action:\(action)") { return }
         let requestedCorrectionMode = action == "record" ? currentDefaultCorrectionMode() : correctionMode
+        let returnBundleID = returnToKeyboard ? currentHostBundleID : nil
+        let returnProcessID = returnToKeyboard ? currentHostProcessID : nil
+        kbLog.notice(
+            "openHostAppForKeyboardAction: action=\(action, privacy: .public), returnBundle=\(returnBundleID ?? "nil", privacy: .private), returnPID=\(returnProcessID.map(String.init) ?? "nil", privacy: .private)"
+        )
         let handoff = KeyboardHostHandoff(
             action: action,
             shouldReturnToKeyboard: returnToKeyboard,
             correctionMode: requestedCorrectionMode.rawValue,
-            returnBundleID: returnToKeyboard ? currentHostBundleID : nil,
-            returnProcessID: returnToKeyboard ? currentHostProcessID : nil
+            returnBundleID: returnBundleID,
+            returnProcessID: returnProcessID
         )
         guard KeyboardSharedDefaults.saveHostHandoff(handoff) else {
             kbLog.error("openHostAppForKeyboardAction: failed to save keyboard handoff")
@@ -5041,16 +5046,27 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         // handoff feel like a keyboard action on device and to avoid opening
         // Typeforme from inside Typeforme. Removing it makes host return
         // manual; keeping it is not appropriate for an App Store-safe build.
-        if let id = privateStringValue(named: "_hostApplicationBundleIdentifier", from: self) {
-            let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
-            if isBundleIdentifierShape(trimmed) {
-                return trimmed
-            }
-        }
-        if let id = privateStringValue(named: "_hostBundleID", from: parent) {
-            let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
-            if isBundleIdentifierShape(trimmed) {
-                return trimmed
+        let objects: [AnyObject?] = [
+            self,
+            parent,
+            extensionContext,
+            textDocumentProxy as AnyObject,
+            view,
+            inputView
+        ]
+        let names = [
+            "_hostApplicationBundleIdentifier",
+            "_hostBundleIdentifier",
+            "_hostBundleID"
+        ]
+        for object in objects {
+            for name in names {
+                if let id = privateStringValue(named: name, from: object) {
+                    let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if isUsableReturnBundleID(trimmed) {
+                        return trimmed
+                    }
+                }
             }
         }
         return currentHostBundleIDFromCurrentHostPID()
@@ -5066,15 +5082,26 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private var currentHostProcessID: Int32? {
-        if let number = privateIntMethodValue(named: "_hostProcessIdentifier", from: self),
-           number.int32Value > 0 {
-            return number.int32Value
+        let objects: [AnyObject?] = [
+            self,
+            parent,
+            extensionContext,
+            textDocumentProxy as AnyObject,
+            view,
+            inputView
+        ]
+        for object in objects {
+            if let number = privateIntMethodValue(named: "_hostProcessIdentifier", from: object),
+               number.int32Value > 0 {
+                return number.int32Value
+            }
+            if let hostPID = privateObjectValue(named: "_hostPID", from: object),
+               let pid = intValue(from: hostPID),
+               pid > 0 {
+                return pid
+            }
         }
-        guard let hostPID = privateObjectValue(named: "_hostPID", from: parent),
-              let pid = intValue(from: hostPID),
-              pid > 0
-        else { return nil }
-        return pid
+        return nil
     }
 
     private func currentHostBundleIDFromXPC(hostPID: AnyObject) -> String? {
