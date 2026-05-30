@@ -546,7 +546,11 @@ final class AppState: ObservableObject {
 
     func bootstrap() async {
         await waitForInitialRenderOpportunity()
-        await setKeyboardStandby(true, surfaceAudioSessionErrors: false)
+        // Music-priority: cold launch stays on the silent keeper only (no
+        // play-and-record activation), so opening or background-waking the host
+        // never interrupts or degrades the user's Bluetooth audio. The capture
+        // engine warms on first user-initiated recording (keyboard mic or orb).
+        await setKeyboardStandby(true, surfaceAudioSessionErrors: false, warmInputEngine: false)
         await refreshRoute(force: true, showIndicator: false)
         _ = try? await refreshMacSettingsIfChanged()
         scheduleHostRecorderPreWarm()
@@ -890,22 +894,10 @@ final class AppState: ObservableObject {
     }
 
     private func scheduleHostRecorderPreWarm() {
-        guard AVAudioApplication.shared.recordPermission == .granted else { return }
-        guard !recorder.isRecording,
-              !keyboardAudioSession.isRecording,
-              !keyboardAudioSession.isActive
-        else { return }
-        recorderPreWarmTask?.cancel()
-        recorderPreWarmTask = Task { @MainActor [weak self] in
-            await Task.yield()
-            guard let self,
-                  !Task.isCancelled,
-                  !self.recorder.isRecording,
-                  !self.keyboardAudioSession.isActive,
-                  !self.phase.isBusy
-            else { return }
-            await self.recorder.preWarm()
-        }
+        // Music-priority: pre-warming activated the play-and-record session while
+        // idle, forcing Bluetooth to HFP and interrupting other audio on a cold
+        // launch. The host orb cold-starts on press instead (foreground, cheap),
+        // so idle never touches the user's playback. Intentionally a no-op.
     }
 
     private func resetCorrectionModeToDefault() {
@@ -1174,6 +1166,13 @@ final class AppState: ObservableObject {
         // session active so recording does not pay a deactivate/reactivate
         // round trip before the UI can leave Preparing.
         standbyKeeper.stop(deactivateSession: false)
+        // If a keyboard dictation engine happens to be hot already, reuse it.
+        // Otherwise the host orb records on its OWN lightweight AVAudioRecorder
+        // (no voice-processing engine) — this keeps the orb fast (~300ms, no
+        // ~2s cold start), and crucially does NOT borrow the keyboard's shared
+        // capture engine, so a host orb recording never lights up the keyboard
+        // UI. Reuse the silent keeper's still-active session for a clean
+        // activation.
         if keyboardAudioSession.isActive, !keyboardAudioSession.isRecording {
             path = "keyboard-session"
             _ = try await keyboardAudioSession.beginRecording()
@@ -1190,7 +1189,7 @@ final class AppState: ObservableObject {
         }
 
         path = recorder.isPreWarmed ? "recorder-prewarmed" : "recorder-cold"
-        try await recorder.start(reuseActiveSession: keyboardAudioSession.isActive)
+        try await recorder.start(reuseActiveSession: hadSilentStandby)
         hostRecordingUsesKeyboardAudioSession = false
         logSlowHostRecordingStart(
             startedAt: startedAt,
@@ -1753,7 +1752,8 @@ final class AppState: ObservableObject {
     func setKeyboardStandby(
         _ enabled: Bool,
         requestMicrophoneIfNeeded: Bool = false,
-        surfaceAudioSessionErrors: Bool = true
+        surfaceAudioSessionErrors: Bool = true,
+        warmInputEngine: Bool = true
     ) async -> Bool {
         keyboardStandbyEnabled = enabled
         configureKeyboardServer()
@@ -1762,7 +1762,8 @@ final class AppState: ObservableObject {
             do {
                 try keyboardServer.start()
                 let isInputReady = try await prepareKeyboardInputStandby(
-                    requestMicrophoneIfNeeded: requestMicrophoneIfNeeded
+                    requestMicrophoneIfNeeded: requestMicrophoneIfNeeded,
+                    warmInputEngine: warmInputEngine
                 )
                 if isInputReady {
                     publishKeyboardStatus(.standby, message: "Ready")
@@ -1814,12 +1815,22 @@ final class AppState: ObservableObject {
         standbyKeeper.isActive || keyboardAudioSession.isActive
     }
 
-    private func prepareKeyboardInputStandby(requestMicrophoneIfNeeded: Bool) async throws -> Bool {
+    private func prepareKeyboardInputStandby(
+        requestMicrophoneIfNeeded: Bool,
+        warmInputEngine: Bool = true
+    ) async throws -> Bool {
         if keyboardAudioSession.isActive {
             keyboardAudioUnavailableMessage = nil
             startKeyboardSessionKeepAlive()
             return true
         }
+
+        // Music-priority: passive/idle standby (cold launch) keeps only the
+        // silent keeper, so it never activates play-and-record (which forces
+        // Bluetooth to HFP / interrupts other audio). Paths that actually start
+        // a recording pass warmInputEngine: true, so the inactive→record cold
+        // start still works.
+        guard warmInputEngine else { return false }
 
         if !(await waitUntilApplicationIsActive(timeout: requestMicrophoneIfNeeded ? 3.0 : 1.0)) {
             appLog.notice("prepareKeyboardInputStandby: app did not become active before audio start; continuing with activation retry")

@@ -27,6 +27,7 @@ enum IOSRecordingAudioSession {
         do {
             try session.setActive(true)
             try? session.setPreferredInputNumberOfChannels(1)
+            try requireMonoInputIfKnown()
         } catch {
             if !reuseActiveSession || purpose != .standby {
                 throw error
@@ -38,6 +39,21 @@ enum IOSRecordingAudioSession {
         let session = AVAudioSession.sharedInstance()
         try session.setCategory(category, mode: mode, options: options(for: purpose))
         try? session.setPreferredInputNumberOfChannels(1)
+    }
+
+    static func requireMonoInputIfKnown() throws {
+        let channels = AVAudioSession.sharedInstance().inputNumberOfChannels
+        guard channels <= 1 else {
+            throw monoInputError(channels: channels)
+        }
+    }
+
+    static func monoInputError(channels: Int) -> NSError {
+        NSError(
+            domain: "Typeforme",
+            code: 8,
+            userInfo: [NSLocalizedDescriptionKey: "Microphone input must be mono; got \(channels) channels"]
+        )
     }
 
     static func configureActiveSessionCategoryEventually(purpose: Purpose) {
@@ -110,6 +126,7 @@ final class AudioTapFileWriter {
     private var currentURL: URL?
     private var recordedFrameCount: AVAudioFramePosition = 0
     private var currentSampleRate: Double = 0
+    private var writeError: Error?
     private var loggedFirstWrite = false
 
     var isRecording: Bool {
@@ -119,6 +136,9 @@ final class AudioTapFileWriter {
     }
 
     func begin(format: AVAudioFormat) throws -> URL {
+        guard format.channelCount == 1 else {
+            throw IOSRecordingAudioSession.monoInputError(channels: Int(format.channelCount))
+        }
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("typeforme-keyboard-\(UUID().uuidString).m4a")
 
@@ -130,6 +150,7 @@ final class AudioTapFileWriter {
         currentURL = url
         recordedFrameCount = 0
         currentSampleRate = format.sampleRate
+        writeError = nil
         loggedFirstWrite = false
         lock.unlock()
         NSLog("typeforme keyboard audio begin sampleRate=\(format.sampleRate) channels=\(format.channelCount)")
@@ -138,33 +159,26 @@ final class AudioTapFileWriter {
 
     func write(_ buffer: AVAudioPCMBuffer) {
         let frameLength = Int(buffer.frameLength)
-        let channelCount = max(1, Int(buffer.format.channelCount))
+        let channelCount = Int(buffer.format.channelCount)
         guard frameLength > 0 else { return }
+        guard channelCount == 1 else {
+            lock.lock()
+            if writeError == nil {
+                writeError = IOSRecordingAudioSession.monoInputError(channels: channelCount)
+            }
+            lock.unlock()
+            return
+        }
 
         var chunk = Data()
         chunk.reserveCapacity(frameLength * MemoryLayout<Int16>.size)
         if let channels = buffer.floatChannelData {
-            let interleaved = buffer.format.isInterleaved
             for frame in 0..<frameLength {
-                var sum: Float = 0
-                for channel in 0..<channelCount {
-                    sum += interleaved
-                        ? channels[0][frame * channelCount + channel]
-                        : channels[channel][frame]
-                }
-                chunk.appendPCM16(sum / Float(channelCount))
+                chunk.appendPCM16(channels[0][frame])
             }
         } else if let channels = buffer.int16ChannelData {
-            let interleaved = buffer.format.isInterleaved
             for frame in 0..<frameLength {
-                var sum = 0
-                for channel in 0..<channelCount {
-                    let sample = interleaved
-                        ? channels[0][frame * channelCount + channel]
-                        : channels[channel][frame]
-                    sum += Int(sample)
-                }
-                chunk.appendInt16(Int16(max(Int(Int16.min), min(Int(Int16.max), sum / channelCount))))
+                chunk.appendInt16(channels[0][frame])
             }
         } else {
             return
@@ -198,15 +212,23 @@ final class AudioTapFileWriter {
         let duration = currentSampleRate > 0 ? Double(recordedFrameCount) / currentSampleRate : 0
         let sampleRate = currentSampleRate
         let frames = Int(recordedFrameCount)
+        let error = writeError
         audioData = Data()
         currentURL = nil
         recordedFrameCount = 0
         currentSampleRate = 0
+        writeError = nil
         loggedFirstWrite = false
         lock.unlock()
         guard let url else {
             NSLog("typeforme keyboard audio finish no_active_file")
             recordingLog.notice("keyboard audio finish: no active file")
+            return nil
+        }
+        if let error {
+            NSLog("typeforme keyboard audio finish failed error=\(error.localizedDescription)")
+            recordingLog.error("keyboard audio finish failed: \(error.localizedDescription, privacy: .public)")
+            try? FileManager.default.removeItem(at: url)
             return nil
         }
         if duration < 0.35 {
@@ -250,6 +272,7 @@ final class AudioTapFileWriter {
         currentURL = nil
         recordedFrameCount = 0
         currentSampleRate = 0
+        writeError = nil
         loggedFirstWrite = false
         lock.unlock()
         if let url {
@@ -663,6 +686,9 @@ final class StandbyAudioSession: ObservableObject {
         try IOSRecordingAudioSession.activate(reuseActiveSession: reuseActiveSession, purpose: purpose)
         try enableVoiceProcessing()
         currentFormat = engine.inputNode.outputFormat(forBus: 0)
+        if let currentFormat, currentFormat.channelCount != 1 {
+            throw IOSRecordingAudioSession.monoInputError(channels: Int(currentFormat.channelCount))
+        }
         installInputTapIfNeeded()
         engine.prepare()
         if !engine.isRunning {
@@ -816,6 +842,9 @@ final class StandbyAudioSession: ObservableObject {
                 IOSRecordingAudioSession.configureActiveSessionCategoryEventually(purpose: .keyboardRecording)
             }
             currentFormat = currentFormat ?? engine.inputNode.outputFormat(forBus: 0)
+            if let currentFormat, currentFormat.channelCount != 1 {
+                throw IOSRecordingAudioSession.monoInputError(channels: Int(currentFormat.channelCount))
+            }
             needsEngineRestart = false
         }
         level = 0
