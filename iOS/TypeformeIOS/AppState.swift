@@ -1706,8 +1706,15 @@ final class AppState: ObservableObject {
         appLog.notice("handleKeyboardHostHandoff: action=\(action, privacy: .public), source=keyboard")
 
         if action == "record" || action == "microphone" {
-            let didPrepareKeyboardSession = await prepareKeyboardMicrophoneFromHostOpen()
-            if !didPrepareKeyboardSession {
+            _ = await prepareKeyboardMicrophoneFromHostOpen()
+            // Returning the user to where they came from is a navigation
+            // concern, not an audio one. Only stay in the host when the mic is
+            // genuinely unusable (permission denied, which opens Settings). A
+            // transient prepare failure — e.g. the capture engine could not warm
+            // because another app holds audio while music is playing — must NOT
+            // strand the user in the host; return so they can retry. Recording
+            // itself re-activates capture on the next press.
+            if AVAudioApplication.shared.recordPermission == .denied {
                 shouldReturnToKeyboard = false
             }
         } else if action == "standby" {
@@ -1715,7 +1722,8 @@ final class AppState: ObservableObject {
                 true,
                 requestMicrophoneIfNeeded: true
             )
-            if !didPrepareKeyboardSession {
+            if !didPrepareKeyboardSession,
+               AVAudioApplication.shared.recordPermission == .denied {
                 shouldReturnToKeyboard = false
                 showKeyboardMicrophoneDeniedFeedbackIfNeeded()
             }
