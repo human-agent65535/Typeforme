@@ -5046,14 +5046,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         // handoff feel like a keyboard action on device and to avoid opening
         // Typeforme from inside Typeforme. Removing it makes host return
         // manual; keeping it is not appropriate for an App Store-safe build.
-        let objects: [AnyObject?] = [
-            self,
-            parent,
-            extensionContext,
-            textDocumentProxy as AnyObject,
-            view,
-            inputView
-        ]
+        let objects: [AnyObject?] = [self, parent]
         let names = [
             "_hostApplicationBundleIdentifier",
             "_hostBundleIdentifier",
@@ -5082,14 +5075,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private var currentHostProcessID: Int32? {
-        let objects: [AnyObject?] = [
-            self,
-            parent,
-            extensionContext,
-            textDocumentProxy as AnyObject,
-            view,
-            inputView
-        ]
+        let objects: [AnyObject?] = [self, parent]
         for object in objects {
             if let number = privateIntMethodValue(named: "_hostProcessIdentifier", from: object),
                number.int32Value > 0 {

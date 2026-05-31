@@ -42,9 +42,6 @@ final class AudioRecorder: @unchecked Sendable {
 
         let input = engine.inputNode
         let format = input.outputFormat(forBus: 0)
-        guard format.channelCount == 1 else {
-            throw AudioRecorderError.fileSetupFailed("Microphone input must be mono; got \(format.channelCount) channels")
-        }
 
         let m4aURL = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("typeforme-\(UUID().uuidString).m4a")
@@ -196,16 +193,8 @@ private final class MonoM4ABufferWriter: @unchecked Sendable {
 
     func write(_ buffer: AVAudioPCMBuffer) {
         let frames = Int(buffer.frameLength)
-        let channels = Int(buffer.format.channelCount)
+        let channels = max(1, Int(buffer.format.channelCount))
         guard frames > 0 else { return }
-        guard channels == 1 else {
-            lock.lock()
-            if writeError == nil {
-                writeError = AudioRecorderError.fileSetupFailed("Microphone input must be mono; got \(channels) channels")
-            }
-            lock.unlock()
-            return
-        }
 
         lock.lock()
         guard let file, let writeFormat, url != nil, writeError == nil else {
@@ -221,13 +210,24 @@ private final class MonoM4ABufferWriter: @unchecked Sendable {
         mono.frameLength = AVAudioFrameCount(frames)
 
         if let data = buffer.floatChannelData {
+            let interleaved = buffer.format.isInterleaved
             for frame in 0..<frames {
-                destination[frame] = data[0][frame]
+                var sum: Float = 0
+                for channel in 0..<channels {
+                    sum += interleaved ? data[0][frame * channels + channel] : data[channel][frame]
+                }
+                destination[frame] = sum / Float(channels)
             }
         } else if let data = buffer.int16ChannelData {
+            let interleaved = buffer.format.isInterleaved
             for frame in 0..<frames {
-                let sample = data[0][frame]
-                destination[frame] = max(-1, min(1, Float(sample) / Float(Int16.max)))
+                var sum = 0
+                for channel in 0..<channels {
+                    let sample = interleaved ? data[0][frame * channels + channel] : data[channel][frame]
+                    sum += Int(sample)
+                }
+                let averaged = Float(sum) / Float(channels) / Float(Int16.max)
+                destination[frame] = max(-1, min(1, averaged))
             }
         } else {
             return
