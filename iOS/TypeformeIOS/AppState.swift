@@ -3,6 +3,7 @@ import Darwin
 import Foundation
 import Network
 import ObjectiveC
+import Observation
 import OSLog
 import Speech
 import UIKit
@@ -258,49 +259,50 @@ struct ServerTimingSummary: Equatable {
 }
 
 @MainActor
-final class AppState: ObservableObject {
-    @Published var config: PairingConfig
-    @Published var correctionMode: CorrectionModeID
-    @Published var inputMode: VoiceInputMode
-    @Published var selectedLanguageIDs: Set<String>
-    @Published var resultText = ""
-    @Published var rawTranscript = ""
-    @Published var sessionID: String?
-    @Published var phase: AppPhase = .idle
-    @Published var errorMessage: String?
-    @Published var routeStatus = BridgeRouteStatus()
-    @Published private(set) var isRefreshingRoute = false
-    @Published var keyboardStandbyEnabled = true
-    @Published var hostAudioSessionLength: HostAudioSessionLength
-    @Published var keyboardAutoCapitalizationEnabled: Bool
-    @Published var keyboardCharacterPreviewEnabled: Bool
-    @Published var keyboardLivePreviewEnabled: Bool
-    @Published var keyboardLivePreviewRecognitionMode: KeyboardLivePreviewRecognitionMode
-    @Published var keyboardChineseInputEnabled: Bool
-    @Published var keyboardChinesePunctuationStyle: KeyboardChinesePunctuationStyle
-    @Published var keyboardRimeDictionaryTier: KeyboardRimeDictionaryTier
-    @Published var keyboardRimeCorrectionEnabled: Bool
-    @Published var keyboardDefaultTextInputLanguage: KeyboardDefaultTextInputLanguage
-    @Published private(set) var keyboardRimeLearningResetGeneration: Int
-    @Published private(set) var keyboardTouchLearningResetGeneration: Int
-    @Published var keyboardBridgeStatus = KeyboardBridgeStatus.idle
+@Observable
+final class AppState {
+    var config: PairingConfig
+    var correctionMode: CorrectionModeID
+    var inputMode: VoiceInputMode
+    var selectedLanguageIDs: Set<String>
+    var resultText = ""
+    var rawTranscript = ""
+    var sessionID: String?
+    var phase: AppPhase = .idle
+    var errorMessage: String?
+    var routeStatus = BridgeRouteStatus()
+    private(set) var isRefreshingRoute = false
+    var keyboardStandbyEnabled = true
+    var hostAudioSessionLength: HostAudioSessionLength
+    var keyboardAutoCapitalizationEnabled: Bool
+    var keyboardCharacterPreviewEnabled: Bool
+    var keyboardLivePreviewEnabled: Bool
+    var keyboardLivePreviewRecognitionMode: KeyboardLivePreviewRecognitionMode
+    var keyboardChineseInputEnabled: Bool
+    var keyboardChinesePunctuationStyle: KeyboardChinesePunctuationStyle
+    var keyboardRimeDictionaryTier: KeyboardRimeDictionaryTier
+    var keyboardRimeCorrectionEnabled: Bool
+    var keyboardDefaultTextInputLanguage: KeyboardDefaultTextInputLanguage
+    private(set) var keyboardRimeLearningResetGeneration: Int
+    private(set) var keyboardTouchLearningResetGeneration: Int
+    var keyboardBridgeStatus = KeyboardBridgeStatus.idle
     /// True once the keyboard extension has successfully contacted the host
     /// (via the local bridge server or a Darwin notification). A successful
     /// contact implies the keyboard is enabled AND has Full Access — without
     /// Full Access the extension can't open a local network connection. Used
     /// by SetupStatusCard to decide whether to default-expand the onboarding
     /// hints. Persisted in UserDefaults so it survives app restarts.
-    @Published var keyboardEverContacted: Bool
-    @Published var keyboardFullAccessRequired: Bool
-    @Published var lastRecordingSummary = ""
-    @Published var processingStatusMessage: String?
-    @Published var latestServerTiming: ServerTimingSummary?
-    @Published var macSettings: BridgeMacSettingsPayload?
-    @Published var isEditingMacSettings = false
-    @Published private(set) var showsReturnButton = false
-    @Published private(set) var isStopAndSendInFlight = false
+    var keyboardEverContacted: Bool
+    var keyboardFullAccessRequired: Bool
+    var lastRecordingSummary = ""
+    var processingStatusMessage: String?
+    var latestServerTiming: ServerTimingSummary?
+    var macSettings: BridgeMacSettingsPayload?
+    var isEditingMacSettings = false
+    private(set) var showsReturnButton = false
+    private(set) var isStopAndSendInFlight = false
     /// Transient feedback ("Copied!", "Saved!") rendered as a toast.
-    @Published var transientMessage: String?
+    var transientMessage: String?
 
     var keyboardNeedsFullAccessSetup: Bool {
         keyboardFullAccessRequired || !keyboardEverContacted
@@ -339,8 +341,8 @@ final class AppState: ObservableObject {
     private var keyboardCaptureStartedFromKeyboard = false
     private var activeKeyboardRecordingCommandID: String?
     private var queuedKeyboardStopCommandID: String?
-    private var hostAudioSessionExpiryTask: Task<Void, Never>?
-    private var keyboardStandbyRefreshTask: Task<Void, Never>?
+    @ObservationIgnored private var hostAudioSessionExpiryTask: Task<Void, Never>?
+    @ObservationIgnored private var keyboardStandbyRefreshTask: Task<Void, Never>?
     private var routeFetchedAt: Date?
     private var networkPathSignature: String?
     private var lastNetworkPathRefreshAt: Date?
@@ -353,19 +355,19 @@ final class AppState: ObservableObject {
     private var phaseResetTask: Task<Void, Never>?
     private var transientMessageTask: Task<Void, Never>?
     private var initialRenderDelayTask: Task<Void, Never>?
-    private var recorderPreWarmTask: Task<Void, Never>?
+    @ObservationIgnored private var recorderPreWarmTask: Task<Void, Never>?
     private var bridgeRefiningStatusTask: Task<Void, Never>?
     /// Live-preview transcript fed by SFSpeechRecognizer while the user is
     /// recording (and held in place until the Mac final result replaces it).
     /// Empty string = no preview surfaced (unsupported language, denied
     /// permission, or no recording in progress).
-    @Published private(set) var livePartialTranscript: String = ""
+    private(set) var livePartialTranscript: String = ""
     private var liveSpeechRecognizer: SFSpeechRecognizer?
     private var liveSpeechRequest: SFSpeechAudioBufferRecognitionRequest?
     private var liveSpeechTask: SFSpeechRecognitionTask?
     private var livePreviewTrace: LivePreviewTrace?
-    private var lifecycleObservers: [NSObjectProtocol] = []
-    private var keyboardDarwinObservers: [KeyboardDarwinNotificationObserver] = []
+    @ObservationIgnored private var lifecycleObservers: [NSObjectProtocol] = []
+    @ObservationIgnored private var keyboardDarwinObservers: [KeyboardDarwinNotificationObserver] = []
     private var routeRefreshInFlightCount = 0
     private var idleTimerHolders = 0
     private var lastGeneratedResultText: String?
@@ -2083,7 +2085,7 @@ final class AppState: ObservableObject {
         appLog.notice("live preview started: locale=\(primaryID, privacy: .public), mode=\(self.keyboardLivePreviewRecognitionMode.rawValue, privacy: .public), onDevice=\(request.requiresOnDeviceRecognition, privacy: .public)")
         liveSpeechTask = recognizer.recognitionTask(with: request) { [weak self] result, error in
             // The task callback runs off the main actor — hop back before
-            // touching @Published state.
+            // touching state.
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 if let result {

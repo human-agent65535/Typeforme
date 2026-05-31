@@ -122,8 +122,9 @@ enum VoiceProcessingError: LocalizedError {
 
 final class AudioTapFileWriter {
     private let lock = NSLock()
-    private var audioData = Data()
     private var currentURL: URL?
+    private var file: AVAudioFile?
+    private var writeFormat: AVAudioFormat?
     private var recordedFrameCount: AVAudioFramePosition = 0
     private var currentSampleRate: Double = 0
     private var writeError: Error?
@@ -141,15 +142,38 @@ final class AudioTapFileWriter {
         }
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("typeforme-keyboard-\(UUID().uuidString).m4a")
+        let sampleRate = format.sampleRate > 0 ? format.sampleRate : 48_000
+        guard let writeFormat = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: sampleRate,
+            channels: 1,
+            interleaved: false
+        ) else {
+            throw NSError(domain: "Typeforme", code: 7, userInfo: [NSLocalizedDescriptionKey: "Could not create keyboard recording format"])
+        }
+        let settings: [String: Any] = [
+            AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
+            AVSampleRateKey: sampleRate,
+            AVNumberOfChannelsKey: 1,
+            AVEncoderBitRateKey: 64_000,
+            AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue,
+        ]
+        let file = try AVAudioFile(
+            forWriting: url,
+            settings: settings,
+            commonFormat: .pcmFormatFloat32,
+            interleaved: false
+        )
 
         lock.lock()
         if let oldURL = currentURL {
             try? FileManager.default.removeItem(at: oldURL)
         }
-        audioData = Data()
         currentURL = url
+        self.file = file
+        self.writeFormat = writeFormat
         recordedFrameCount = 0
-        currentSampleRate = format.sampleRate
+        currentSampleRate = sampleRate
         writeError = nil
         loggedFirstWrite = false
         lock.unlock()
@@ -170,36 +194,35 @@ final class AudioTapFileWriter {
             return
         }
 
-        var chunk = Data()
-        chunk.reserveCapacity(frameLength * MemoryLayout<Int16>.size)
-        if let channels = buffer.floatChannelData {
-            for frame in 0..<frameLength {
-                chunk.appendPCM16(channels[0][frame])
-            }
-        } else if let channels = buffer.int16ChannelData {
-            for frame in 0..<frameLength {
-                chunk.appendInt16(channels[0][frame])
-            }
-        } else {
+        lock.lock()
+        let recordingURL = currentURL
+        let format = writeFormat
+        let hasPreviousError = writeError != nil
+        lock.unlock()
+        guard recordingURL != nil, let format, !hasPreviousError,
+              let writeBuffer = Self.makeWriteBuffer(from: buffer, format: format)
+        else {
             return
         }
 
         var shouldLogFirstWrite = false
-        lock.lock()
-        guard currentURL != nil else {
-            lock.unlock()
-            return
+        do {
+            lock.lock()
+            defer { lock.unlock() }
+            guard currentURL == recordingURL, let file, writeError == nil else {
+                return
+            }
+            do {
+                try file.write(from: writeBuffer)
+                recordedFrameCount += AVAudioFramePosition(buffer.frameLength)
+                if !loggedFirstWrite {
+                    loggedFirstWrite = true
+                    shouldLogFirstWrite = true
+                }
+            } catch {
+                writeError = error
+            }
         }
-        if currentSampleRate <= 0 {
-            currentSampleRate = buffer.format.sampleRate
-        }
-        audioData.append(chunk)
-        recordedFrameCount += AVAudioFramePosition(buffer.frameLength)
-        if !loggedFirstWrite {
-            loggedFirstWrite = true
-            shouldLogFirstWrite = true
-        }
-        lock.unlock()
         if shouldLogFirstWrite {
             NSLog("typeforme keyboard audio first pcm frames=\(buffer.frameLength) sampleRate=\(buffer.format.sampleRate) channels=\(buffer.format.channelCount)")
         }
@@ -208,13 +231,13 @@ final class AudioTapFileWriter {
     func finish() -> URL? {
         lock.lock()
         let url = currentURL
-        let data = audioData
         let duration = currentSampleRate > 0 ? Double(recordedFrameCount) / currentSampleRate : 0
         let sampleRate = currentSampleRate
         let frames = Int(recordedFrameCount)
         let error = writeError
-        audioData = Data()
         currentURL = nil
+        file = nil
+        writeFormat = nil
         recordedFrameCount = 0
         currentSampleRate = 0
         writeError = nil
@@ -232,28 +255,24 @@ final class AudioTapFileWriter {
             return nil
         }
         if duration < 0.35 {
-            NSLog("typeforme keyboard audio finish too_short duration=\(duration) frames=\(frames) bytes=\(data.count) sampleRate=\(sampleRate)")
+            NSLog("typeforme keyboard audio finish too_short duration=\(duration) frames=\(frames) sampleRate=\(sampleRate)")
             recordingLog.notice(
-                "keyboard audio finish: too short duration=\(duration, privacy: .public) frames=\(frames, privacy: .public) bytes=\(data.count, privacy: .public) sampleRate=\(sampleRate, privacy: .public)"
+                "keyboard audio finish: too short duration=\(duration, privacy: .public) frames=\(frames, privacy: .public) sampleRate=\(sampleRate, privacy: .public)"
             )
             try? FileManager.default.removeItem(at: url)
             return nil
         }
-        do {
-            try Self.writeM4A(data: data, sampleRate: sampleRate, frameCount: frames, to: url)
-            let fileBytes = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.intValue ?? 0
-            NSLog("typeforme keyboard audio finish m4a_written duration=\(duration) frames=\(frames) pcmBytes=\(data.count) fileBytes=\(fileBytes) sampleRate=\(sampleRate)")
-            recordingLog.notice(
-                "keyboard audio finish: m4a written duration=\(duration, privacy: .public) frames=\(frames, privacy: .public) pcmBytes=\(data.count, privacy: .public) fileBytes=\(fileBytes, privacy: .public) sampleRate=\(sampleRate, privacy: .public)"
-            )
-        } catch {
-            NSLog("typeforme keyboard audio finish m4a_failed duration=\(duration) frames=\(frames) pcmBytes=\(data.count) sampleRate=\(sampleRate) error=\(error.localizedDescription)")
-            recordingLog.error(
-                "keyboard audio finish: m4a failed duration=\(duration, privacy: .public) frames=\(frames, privacy: .public) pcmBytes=\(data.count, privacy: .public) sampleRate=\(sampleRate, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
-            )
+        let fileBytes = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.intValue ?? 0
+        guard fileBytes > 0 else {
+            NSLog("typeforme keyboard audio finish m4a_empty duration=\(duration) frames=\(frames) sampleRate=\(sampleRate)")
+            recordingLog.error("keyboard audio finish: empty m4a duration=\(duration, privacy: .public) frames=\(frames, privacy: .public) sampleRate=\(sampleRate, privacy: .public)")
             try? FileManager.default.removeItem(at: url)
             return nil
         }
+        NSLog("typeforme keyboard audio finish m4a_written duration=\(duration) frames=\(frames) fileBytes=\(fileBytes) sampleRate=\(sampleRate)")
+        recordingLog.notice(
+            "keyboard audio finish: m4a written duration=\(duration, privacy: .public) frames=\(frames, privacy: .public) fileBytes=\(fileBytes, privacy: .public) sampleRate=\(sampleRate, privacy: .public)"
+        )
         return url
     }
 
@@ -268,8 +287,9 @@ final class AudioTapFileWriter {
     func discard() {
         lock.lock()
         let url = currentURL
-        audioData = Data()
         currentURL = nil
+        file = nil
+        writeFormat = nil
         recordedFrameCount = 0
         currentSampleRate = 0
         writeError = nil
@@ -280,67 +300,35 @@ final class AudioTapFileWriter {
         }
     }
 
-    private static func writeM4A(
-        data: Data,
-        sampleRate: Double,
-        frameCount: Int,
-        to url: URL
-    ) throws {
-        let sampleCount = min(frameCount, data.count / MemoryLayout<Int16>.size)
-        guard sampleCount > 0 else {
-            throw NSError(domain: "Typeforme", code: 6, userInfo: [NSLocalizedDescriptionKey: "Recorded M4A contains no audio data"])
+    private static func makeWriteBuffer(
+        from buffer: AVAudioPCMBuffer,
+        format: AVAudioFormat
+    ) -> AVAudioPCMBuffer? {
+        if buffer.format.isEqual(format) {
+            return buffer
         }
-        let rate = max(1, sampleRate)
-        guard let format = AVAudioFormat(
-            commonFormat: .pcmFormatInt16,
-            sampleRate: rate,
-            channels: 1,
-            interleaved: false
-        ),
-              let buffer = AVAudioPCMBuffer(
-                pcmFormat: format,
-                frameCapacity: AVAudioFrameCount(sampleCount)
-              )
-        else {
-            throw NSError(domain: "Typeforme", code: 7, userInfo: [NSLocalizedDescriptionKey: "Could not create M4A conversion buffer"])
+
+        let frameLength = Int(buffer.frameLength)
+        guard let output = AVAudioPCMBuffer(
+            pcmFormat: format,
+            frameCapacity: AVAudioFrameCount(frameLength)
+        ), let destination = output.floatChannelData?[0] else {
+            return nil
         }
-        buffer.frameLength = AVAudioFrameCount(sampleCount)
-        data.withUnsafeBytes { rawBuffer in
-            if let source = rawBuffer.baseAddress,
-               let destination = buffer.int16ChannelData?[0] {
-                UnsafeMutableRawPointer(destination).copyMemory(
-                    from: source,
-                    byteCount: sampleCount * MemoryLayout<Int16>.size
-                )
+        output.frameLength = AVAudioFrameCount(frameLength)
+
+        if let channels = buffer.floatChannelData {
+            destination.update(from: channels[0], count: frameLength)
+            return output
+        }
+        if let channels = buffer.int16ChannelData {
+            let source = channels[0]
+            for i in 0..<frameLength {
+                destination[i] = max(-1, min(1, Float(source[i]) / Float(Int16.max)))
             }
+            return output
         }
-
-        let settings: [String: Any] = [
-            AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
-            AVSampleRateKey: rate,
-            AVNumberOfChannelsKey: 1,
-            AVEncoderBitRateKey: 64_000,
-            AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue,
-        ]
-        let file = try AVAudioFile(
-            forWriting: url,
-            settings: settings,
-            commonFormat: .pcmFormatInt16,
-            interleaved: false
-        )
-        try file.write(from: buffer)
-    }
-}
-
-private extension Data {
-    mutating func appendInt16(_ value: Int16) {
-        var littleEndian = value.littleEndian
-        Swift.withUnsafeBytes(of: &littleEndian) { append(contentsOf: $0) }
-    }
-
-    mutating func appendPCM16(_ sample: Float) {
-        let clamped = Swift.max(-1, Swift.min(1, sample))
-        appendInt16(Int16(clamped * Float(Int16.max)))
+        return nil
     }
 }
 

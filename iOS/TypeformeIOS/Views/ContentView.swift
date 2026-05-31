@@ -2,7 +2,7 @@ import SwiftUI
 import UIKit
 
 struct ContentView: View {
-    @EnvironmentObject private var state: AppState
+    @Environment(AppState.self) private var state
     @State private var showingPairing = false
     @State private var showingMacSettings = false
     @State private var showingKeyboardSettings = false
@@ -78,13 +78,13 @@ struct ContentView: View {
                         MacSettingsView {
                             showingPairing = true
                         }
-                            .environmentObject(state)
+                            .environment(state)
                     }
                 }
                 .sheet(isPresented: $showingKeyboardSettings) {
                     NavigationStack {
                         KeyboardSettingsView()
-                            .environmentObject(state)
+                            .environment(state)
                     }
                 }
                 .sheet(isPresented: $showingKeyboardGuide) {
@@ -157,7 +157,7 @@ struct ContentView: View {
 /// "Full Access granted" — see AppState.keyboardEverContacted) and to
 /// collapsed afterwards, while still letting the user re-expand any time.
 private struct SetupStatusCard: View {
-    @EnvironmentObject private var state: AppState
+    @Environment(AppState.self) private var state
     let onShowGuide: () -> Void
 
     @State private var isExpanded: Bool = true
@@ -365,7 +365,7 @@ private struct UnpairedHero: View {
 // MARK: - Route status bar
 
 private struct RouteStatusBar: View {
-    @EnvironmentObject private var state: AppState
+    @Environment(AppState.self) private var state
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -423,7 +423,7 @@ private struct RouteStatusBar: View {
 /// soft inner highlight, state-tinted shadow, and concentric pulse rings during
 /// recording. The mic icon swaps out for a voiceprint while recording.
 private struct HeroRecordCard: View {
-    @EnvironmentObject private var state: AppState
+    @Environment(AppState.self) private var state
     @ObservedObject var audio: AudioCoordinator
     @State private var isPressed = false
 
@@ -783,7 +783,7 @@ private struct VoicePrintBars: View {
 // MARK: - Mode chips
 
 private struct ModeChipsRow: View {
-    @EnvironmentObject private var state: AppState
+    @Environment(AppState.self) private var state
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
@@ -840,9 +840,10 @@ private struct ModeChip: View {
 // MARK: - Languages row
 
 private struct LanguagesRow: View {
-    @EnvironmentObject private var state: AppState
+    @Environment(AppState.self) private var state
 
     var body: some View {
+        @Bindable var state = state
         NavigationLink {
             LanguageSelectionView(
                 selection: $state.selectedLanguageIDs,
@@ -887,7 +888,7 @@ private struct LanguagesRow: View {
 // MARK: - Keyboard settings
 
 private struct KeyboardSettingsView: View {
-    @EnvironmentObject private var state: AppState
+    @Environment(AppState.self) private var state
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -1077,9 +1078,10 @@ private struct KeyboardSettingsView: View {
 // MARK: - Result card
 
 private struct ResultCard: View {
-    @EnvironmentObject private var state: AppState
+    @Environment(AppState.self) private var state
 
     var body: some View {
+        @Bindable var state = state
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Label("Result", systemImage: "text.alignleft")
@@ -1132,7 +1134,7 @@ private struct ResultCard: View {
 // MARK: - Raw transcript card
 
 private struct RawTranscriptCard: View {
-    @EnvironmentObject private var state: AppState
+    @Environment(AppState.self) private var state
     @Binding var expanded: Bool
 
     var body: some View {
@@ -1445,7 +1447,7 @@ private struct TimeoutSecondsRow: View {
 }
 
 private struct MacSettingsView: View {
-    @EnvironmentObject private var state: AppState
+    @Environment(AppState.self) private var state
     @Environment(\.dismiss) private var dismiss
     let onRepairPairing: () -> Void
     @State private var initialDraft: BridgeMacSettingsPayload?

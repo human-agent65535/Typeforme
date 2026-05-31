@@ -25,14 +25,14 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 @main
 struct TypeformeIOSApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-    @StateObject private var state = AppState()
+    @State private var state = AppState()
     @State private var foregroundPresenceTask: Task<Void, Never>?
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
         WindowGroup {
             ContentView()
-                .environmentObject(state)
+                .environment(state)
                 .task {
                     updateHostForegroundPresence(for: scenePhase)
                     await state.bootstrap()
