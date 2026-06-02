@@ -408,9 +408,52 @@ final class BridgeHTTPServer: @unchecked Sendable {
     }
 
     private static func shouldTrustForwardedHeaders(from remoteAddress: SocketAddress?) -> Bool {
-        guard AppSettings.bridgePublicEnabled else { return false }
-        guard let ip = remoteAddress?.ipAddress else { return false }
-        return ip == "127.0.0.1" || ip == "::1" || ip == "localhost"
+        shouldTrustForwardedHeaders(
+            remoteIP: remoteAddress?.ipAddress,
+            publicBridgeEnabled: AppSettings.bridgePublicEnabled,
+            lanBridgeEnabled: AppSettings.bridgeLANEnabled
+        )
+    }
+
+    static func shouldTrustForwardedHeaders(
+        remoteIP: String?,
+        publicBridgeEnabled: Bool,
+        lanBridgeEnabled: Bool
+    ) -> Bool {
+        guard publicBridgeEnabled, let ip = cleanHeader(remoteIP, maxLength: 80) else { return false }
+        if isLoopbackAddress(ip) { return true }
+
+        // A LAN-hosted cloudflared connector reaches Bridge from its LAN address.
+        return lanBridgeEnabled && isPrivateLANAddress(ip)
+    }
+
+    private static func isLoopbackAddress(_ ip: String) -> Bool {
+        ip == "127.0.0.1" || ip == "::1" || ip == "localhost"
+    }
+
+    private static func isPrivateLANAddress(_ ip: String) -> Bool {
+        if let octets = ipv4Octets(ip) {
+            if octets[0] == 10 { return true }
+            if octets[0] == 172 { return (16...31).contains(octets[1]) }
+            if octets[0] == 192 { return octets[1] == 168 }
+            return false
+        }
+
+        let lowercasedIP = ip.lowercased()
+        return lowercasedIP.hasPrefix("fc")
+            || lowercasedIP.hasPrefix("fd")
+            || lowercasedIP.hasPrefix("fe80:")
+    }
+
+    private static func ipv4Octets(_ ip: String) -> [Int]? {
+        let parts = ip.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 4 else { return nil }
+        var octets: [Int] = []
+        for part in parts {
+            guard let value = Int(part), (0...255).contains(value) else { return nil }
+            octets.append(value)
+        }
+        return octets
     }
 
     private static func forwardedClientIP(from request: Request) -> String? {
