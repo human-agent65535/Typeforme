@@ -32,8 +32,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var comboHotkeyIsDown = false
     private var commandTextEditHotkeyIsDown = false
     private var comboHotkeyReleaseWatchdog: Task<Void, Never>?
+    private var commandTextEditHotkeyReleaseWatchdog: Task<Void, Never>?
     private var terminationTask: Task<Void, Never>?
     private static let comboHotkeyReleaseWatchdogDelay: UInt64 = 1_500_000_000
+    private static let commandTextEditHotkeyReleaseWatchdogDelay: UInt64 = 1_500_000_000
     private static let terminationShutdownDeadline: UInt64 = 4_000_000_000
     private var lastComboHotkeyPressAt: Date?
     private var lastCommandTextEditHotkeyPressAt: Date?
@@ -183,6 +185,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         clientSettingsSync.cancel()
         holdMonitor.uninstall()
         comboHotkeyReleaseWatchdog?.cancel()
+        commandTextEditHotkeyReleaseWatchdog?.cancel()
         terminationTask?.cancel()
         if let m = escMonitor { NSEvent.removeMonitor(m); escMonitor = nil }
         if let m = localEscMonitor { NSEvent.removeMonitor(m); localEscMonitor = nil }
@@ -241,6 +244,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         lastCommandTextEditHotkeyPressAt = now
         commandTextEditHotkeyIsDown = true
+        armCommandTextEditHotkeyReleaseWatchdog()
         Task { @MainActor in
             await coordinator.toggleCommandTextEdit()
         }
@@ -248,6 +252,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func handleCommandTextEditRelease() {
         commandTextEditHotkeyIsDown = false
+        commandTextEditHotkeyReleaseWatchdog?.cancel()
+        commandTextEditHotkeyReleaseWatchdog = nil
     }
 
     private func armComboHotkeyReleaseWatchdog() {
@@ -261,6 +267,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.comboHotkeyIsDown = false
                 self.comboHotkeyReleaseWatchdog = nil
                 Log.hotkey.debug("toggle key-up watchdog reset")
+            }
+        }
+    }
+
+    private func armCommandTextEditHotkeyReleaseWatchdog() {
+        commandTextEditHotkeyReleaseWatchdog?.cancel()
+        let delay = Self.commandTextEditHotkeyReleaseWatchdogDelay
+        commandTextEditHotkeyReleaseWatchdog = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: delay)
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                guard let self, self.commandTextEditHotkeyIsDown else { return }
+                self.commandTextEditHotkeyIsDown = false
+                self.commandTextEditHotkeyReleaseWatchdog = nil
+                Log.hotkey.debug("command edit key-up watchdog reset")
             }
         }
     }
