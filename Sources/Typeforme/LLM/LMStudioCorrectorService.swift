@@ -7,10 +7,14 @@ struct LMStudioCheckReport: Sendable {
     let modelIDs: [String]
 }
 
+typealias LMStudioModelIDFetcher = @Sendable (_ endpoint: URL, _ apiKey: String?, _ timeout: TimeInterval) async throws -> [String]
+
 final class LMStudioCorrectorService: CorrectorService {
     let kind: CorrectionBackendKind = .externalLMStudio
 
     static let minimumRequestTimeoutMs = 100
+    private static let configurationCheckTimeout: TimeInterval = 5
+    private static let invalidAPIKeyProbePrefix = "typeforme-invalid-lmstudio-token-"
 
     func correct(_ request: CorrectionRequest, timeoutMs: Int) async throws -> CorrectionResult {
         let (system, user) = PromptBuilder.build(for: request)
@@ -65,33 +69,44 @@ final class LMStudioCorrectorService: CorrectorService {
     static func checkConfiguration(
         baseURL: String = AppSettings.lmStudioBaseURL,
         apiKey: String = AppSettings.lmStudioAPIKey,
-        selectedModel: String = AppSettings.lmStudioModel
+        selectedModel: String = AppSettings.lmStudioModel,
+        modelIDFetcher: LMStudioModelIDFetcher? = nil
     ) async -> LMStudioCheckReport {
+        let trimmedAPIKey = normalizedAPIKey(apiKey)
+        let fetchModelIDs = modelIDFetcher ?? defaultModelIDFetcher
         do {
             let endpoint = try modelsEndpoint(baseURL: baseURL)
-
-            let modelIDs = try await OpenAICompatibleClient.modelIDs(
+            let modelIDs = try await fetchModelIDs(endpoint, trimmedAPIKey, configurationCheckTimeout)
+            if trimmedAPIKey != nil,
+               let verificationFailure = await apiKeyVerificationFailureReport(
                 endpoint: endpoint,
-                apiKey: apiKey,
-                timeout: 5
-            )
-            return availabilityReport(modelIDs: modelIDs, selectedModel: selectedModel)
+                modelIDs: modelIDs,
+                modelIDFetcher: fetchModelIDs
+               ) {
+                return verificationFailure
+            }
+            let report = availabilityReport(modelIDs: modelIDs, selectedModel: selectedModel)
+            return trimmedAPIKey == nil ? report : report.withDetailPrefix("API key verified.")
+        } catch let error as OpenAICompatibleClientError where error.isAuthenticationFailure {
+            let detail = trimmedAPIKey == nil
+                ? "LM Studio requires an API key. Enter a valid API token from LM Studio Server Settings."
+                : "LM Studio rejected the API key. Check the token and its permissions in LM Studio Server Settings."
+            return LMStudioCheckReport(ok: false, status: "Failed", detail: detail, modelIDs: [])
         } catch {
             return LMStudioCheckReport(ok: false, status: "Failed", detail: error.localizedDescription, modelIDs: [])
         }
     }
 
     static func chatCompletionsEndpoint(baseURL: String) throws -> URL {
-        let normalized = normalizedBaseURLString(baseURL)
-        guard !normalized.isEmpty else {
-            throw CorrectorError.unavailable("LM Studio URL is empty")
-        }
-        if normalized.hasSuffix("/chat/completions") {
-            guard let url = URL(string: normalized) else { throw CorrectorError.unavailable("Invalid LM Studio URL") }
-            try validateHTTPURL(url)
-            return url
-        }
-        let path = normalized.hasSuffix("/v1") ? "/chat/completions" : "/v1/chat/completions"
+        try openAICompatibleEndpoint(baseURL: baseURL, path: "/chat/completions")
+    }
+
+    static func modelsEndpoint(baseURL: String) throws -> URL {
+        try openAICompatibleEndpoint(baseURL: baseURL, path: "/models")
+    }
+
+    private static func openAICompatibleEndpoint(baseURL: String, path: String) throws -> URL {
+        let normalized = try openAICompatibleBaseURLString(baseURL)
         guard let url = URL(string: normalized + path) else {
             throw CorrectorError.unavailable("Invalid LM Studio URL")
         }
@@ -99,20 +114,32 @@ final class LMStudioCorrectorService: CorrectorService {
         return url
     }
 
-    static func modelsEndpoint(baseURL: String) throws -> URL {
-        var normalized = normalizedBaseURLString(baseURL)
+    private static func openAICompatibleBaseURLString(_ baseURL: String) throws -> String {
+        let normalized = normalizedBaseURLString(baseURL)
         guard !normalized.isEmpty else {
             throw CorrectorError.unavailable("LM Studio URL is empty")
         }
-        if normalized.hasSuffix("/chat/completions") {
-            normalized = String(normalized.dropLast("/chat/completions".count))
-        }
-        let path = normalized.hasSuffix("/v1") ? "/models" : "/v1/models"
-        guard let url = URL(string: normalized + path) else {
+        guard var components = URLComponents(string: normalized) else {
             throw CorrectorError.unavailable("Invalid LM Studio URL")
         }
+        components.query = nil
+        components.fragment = nil
+        var path = components.percentEncodedPath
+        if path.hasSuffix("/chat/completions") {
+            path = String(path.dropLast("/chat/completions".count))
+        }
+        if path.hasSuffix("/models") {
+            path = String(path.dropLast("/models".count))
+        }
+        if path.isEmpty {
+            path = "/v1"
+        } else if !path.hasSuffix("/v1") {
+            path += "/v1"
+        }
+        components.percentEncodedPath = path
+        guard let url = components.url else { throw CorrectorError.unavailable("Invalid LM Studio URL") }
         try validateHTTPURL(url)
-        return url
+        return url.absoluteString
     }
 
     private static func validateHTTPURL(_ url: URL) throws {
@@ -158,10 +185,11 @@ final class LMStudioCorrectorService: CorrectorService {
             )
         }
         guard selected.isEmpty || modelIDs.contains(selected) else {
+            let fallback = modelIDs[0]
             return LMStudioCheckReport(
-                ok: false,
-                status: "Failed",
-                detail: "Selected model \(selected) is not loaded. \(modelListSummary(modelIDs: modelIDs))",
+                ok: true,
+                status: "Ready",
+                detail: "Selected model \(selected) is not loaded. Using \(fallback). \(modelListSummary(modelIDs: modelIDs))",
                 modelIDs: modelIDs
             )
         }
@@ -178,9 +206,58 @@ final class LMStudioCorrectorService: CorrectorService {
         return modelIDs.count > 4 ? "\(modelIDs.count) models: \(preview), ..." : "\(modelIDs.count) models: \(preview)"
     }
 
+    private static let defaultModelIDFetcher: LMStudioModelIDFetcher = { endpoint, apiKey, timeout in
+        try await OpenAICompatibleClient.modelIDs(endpoint: endpoint, apiKey: apiKey, timeout: timeout)
+    }
+
+    private static func apiKeyVerificationFailureReport(
+        endpoint: URL,
+        modelIDs: [String],
+        modelIDFetcher: LMStudioModelIDFetcher
+    ) async -> LMStudioCheckReport? {
+        do {
+            _ = try await modelIDFetcher(endpoint, invalidAPIKeyProbe(), configurationCheckTimeout)
+            return LMStudioCheckReport(
+                ok: false,
+                status: "Failed",
+                detail: "LM Studio accepted a deliberately invalid API key. Enable Require Authentication in LM Studio Server Settings, then refresh models to verify the configured key.",
+                modelIDs: modelIDs
+            )
+        } catch let error as OpenAICompatibleClientError where error.isAuthenticationFailure {
+            return nil
+        } catch {
+            return LMStudioCheckReport(
+                ok: false,
+                status: "Failed",
+                detail: "Could not verify that LM Studio rejects invalid API keys: \(error.localizedDescription)",
+                modelIDs: modelIDs
+            )
+        }
+    }
+
+    private static func invalidAPIKeyProbe() -> String {
+        invalidAPIKeyProbePrefix + UUID().uuidString
+    }
+
+    private static func normalizedAPIKey(_ value: String) -> String? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
     private static func normalizedBaseURLString(_ value: String) -> String {
         value
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+    }
+}
+
+private extension LMStudioCheckReport {
+    func withDetailPrefix(_ prefix: String) -> LMStudioCheckReport {
+        LMStudioCheckReport(
+            ok: ok,
+            status: status,
+            detail: "\(prefix) \(detail)",
+            modelIDs: modelIDs
+        )
     }
 }

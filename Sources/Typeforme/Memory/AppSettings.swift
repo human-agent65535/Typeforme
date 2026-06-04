@@ -137,7 +137,7 @@ enum AppSettings {
             Keys.llama4BDownloadURL:      "https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf?download=true",
             Keys.llama9BDownloadURL:      "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf?download=true",
             Keys.llamaUseFlashAttn:       true,
-            Keys.lmStudioBaseURL:         "http://127.0.0.1:1234/v1",
+            Keys.lmStudioBaseURL:         "http://127.0.0.1:1234",
             Keys.lmStudioAPIKey:          "",
             Keys.lmStudioModel:           "",
 
@@ -370,9 +370,9 @@ enum AppSettings {
     static var llama9BDownloadURL: String { ud.string(forKey: Keys.llama9BDownloadURL) ?? "" }
     static var llamaUseFlashAttn: Bool  { ud.bool(forKey: Keys.llamaUseFlashAttn) }
     static var lmStudioBaseURL: String {
-        let value = ud.string(forKey: Keys.lmStudioBaseURL) ?? "http://127.0.0.1:1234/v1"
+        let value = ud.string(forKey: Keys.lmStudioBaseURL) ?? "http://127.0.0.1:1234"
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? "http://127.0.0.1:1234/v1" : trimmed
+        return trimmed.isEmpty ? "http://127.0.0.1:1234" : trimmed
     }
     static var lmStudioAPIKey: String {
         ud.string(forKey: Keys.lmStudioAPIKey)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""

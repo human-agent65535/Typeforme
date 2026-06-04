@@ -1860,7 +1860,7 @@ struct CorrectionSettingsView: View {
     @AppStorage(AppSettings.Keys.correctionAutoCommit)    private var autoCommit: Bool = true
     @AppStorage(AppSettings.Keys.numberOutputPreference)  private var numberOutputPreferenceRaw: String = NumberOutputPreference.automatic.rawValue
     @AppStorage(AppSettings.Keys.punctuationPreference)   private var punctuationPreferenceRaw: String = PunctuationOutputPreference.normal.rawValue
-    @AppStorage(AppSettings.Keys.lmStudioBaseURL)         private var lmStudioBaseURL: String = "http://127.0.0.1:1234/v1"
+    @AppStorage(AppSettings.Keys.lmStudioBaseURL)         private var lmStudioBaseURL: String = "http://127.0.0.1:1234"
     @AppStorage(AppSettings.Keys.lmStudioAPIKey)          private var lmStudioAPIKey: String = ""
     @AppStorage(AppSettings.Keys.lmStudioModel)           private var lmStudioModel: String = ""
     @State private var showAdvanced = false
@@ -1986,7 +1986,7 @@ struct CorrectionSettingsView: View {
                         .disabled(isCheckingLMStudio)
                     }
 
-                    Text("Uses any reachable LM Studio OpenAI-compatible /v1 server, including LAN URLs. Qwen models receive no-think chat hints so content is returned as JSON instead of hidden reasoning.")
+                    Text("Uses any reachable LM Studio OpenAI-compatible server URL, including LAN URLs. Typeforme adds the OpenAI /v1 path for requests.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }

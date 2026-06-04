@@ -47,6 +47,7 @@ enum OpenAICompatibleClientError: LocalizedError, Equatable {
     case bodyEncode(String)
     case timeout
     case unavailable(String)
+    case httpStatus(Int, String)
     case requestFailed(String)
     case invalidResponse(String)
 
@@ -58,9 +59,16 @@ enum OpenAICompatibleClientError: LocalizedError, Equatable {
             return "request timed out"
         case .unavailable(let detail):
             return detail
+        case .httpStatus(let code, let detail):
+            return Self.httpStatusDescription(code: code, detail: detail)
         case .requestFailed(let detail), .invalidResponse(let detail):
             return detail
         }
+    }
+
+    var isAuthenticationFailure: Bool {
+        guard case .httpStatus(let code, _) = self else { return false }
+        return code == 401 || code == 403
     }
 
     var correctorError: CorrectorError {
@@ -69,9 +77,15 @@ enum OpenAICompatibleClientError: LocalizedError, Equatable {
             return .timeout
         case .unavailable(let detail):
             return .unavailable(detail)
+        case .httpStatus(let code, let detail):
+            return .requestFailed(Self.httpStatusDescription(code: code, detail: detail))
         case .bodyEncode(let detail), .requestFailed(let detail), .invalidResponse(let detail):
             return .requestFailed(detail)
         }
+    }
+
+    private static func httpStatusDescription(code: Int, detail: String) -> String {
+        "HTTP \(code)\(detail.isEmpty ? "" : " \(detail)")"
     }
 }
 
@@ -185,7 +199,7 @@ enum OpenAICompatibleClient {
         }
         guard (200..<300).contains(http.statusCode) else {
             let detail = errorMessage(data: data)
-            throw OpenAICompatibleClientError.requestFailed("HTTP \(http.statusCode)\(detail.isEmpty ? "" : " \(detail)")")
+            throw OpenAICompatibleClientError.httpStatus(http.statusCode, detail)
         }
     }
 
