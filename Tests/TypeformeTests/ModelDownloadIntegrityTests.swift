@@ -28,4 +28,24 @@ struct ModelDownloadIntegrityTests {
             )
         }
     }
+
+    @Test func validatesExpectedByteCount() throws {
+        let url = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("typeforme-integrity-size-\(UUID().uuidString).txt")
+        try Data("abc".utf8).write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        try ModelDownloadIntegrity.validateFile(
+            at: url,
+            expectedBytes: 3,
+            label: "fixture"
+        )
+        #expect(throws: ModelDownloadIntegrityError.self) {
+            try ModelDownloadIntegrity.validateFile(
+                at: url,
+                expectedBytes: 4,
+                label: "fixture"
+            )
+        }
+    }
 }

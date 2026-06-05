@@ -3,11 +3,14 @@ import Foundation
 
 enum ModelDownloadIntegrityError: LocalizedError {
     case checksumMismatch(label: String, expected: String, actual: String)
+    case sizeMismatch(label: String, expected: Int64, actual: Int64)
 
     var errorDescription: String? {
         switch self {
         case .checksumMismatch(let label, let expected, let actual):
             return "\(label) checksum mismatch. Expected \(expected), got \(actual)."
+        case .sizeMismatch(let label, let expected, let actual):
+            return "\(label) size mismatch. Expected \(ByteCountFormatter.string(fromByteCount: expected, countStyle: .file)), got \(ByteCountFormatter.string(fromByteCount: actual, countStyle: .file))."
         }
     }
 }
@@ -33,15 +36,39 @@ enum ModelDownloadIntegrity {
         expectedSHA256ByCanonicalURL[canonicalURLString(url)]
     }
 
-    static func validateFile(at url: URL, expectedSHA256: String, label: String) throws {
-        let actual = try sha256Hex(of: url)
-        guard actual.caseInsensitiveCompare(expectedSHA256) == .orderedSame else {
-            throw ModelDownloadIntegrityError.checksumMismatch(
-                label: label,
-                expected: expectedSHA256,
-                actual: actual
-            )
+    static func validateFile(
+        at url: URL,
+        expectedSHA256: String? = nil,
+        expectedBytes: Int64? = nil,
+        label: String
+    ) throws {
+        if let expectedBytes {
+            let actual = try byteCount(of: url)
+            guard actual == expectedBytes else {
+                throw ModelDownloadIntegrityError.sizeMismatch(
+                    label: label,
+                    expected: expectedBytes,
+                    actual: actual
+                )
+            }
         }
+
+        if let expectedSHA256 {
+            let actual = try sha256Hex(of: url)
+            guard actual.caseInsensitiveCompare(expectedSHA256) == .orderedSame else {
+                throw ModelDownloadIntegrityError.checksumMismatch(
+                    label: label,
+                    expected: expectedSHA256,
+                    actual: actual
+                )
+            }
+        }
+    }
+
+    static func byteCount(of url: URL) throws -> Int64 {
+        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+        guard let value = attributes[.size] as? NSNumber else { return 0 }
+        return value.int64Value
     }
 
     static func sha256Hex(of url: URL) throws -> String {

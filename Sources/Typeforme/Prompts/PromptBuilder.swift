@@ -40,8 +40,8 @@ enum PromptBuilder {
             bundleID: request.frontmostBundleID ?? "",
             appCategory: request.appCategory.rawValue,
             languages: ASRLanguageSelection.displayNames(for: languageIDs),
-            languageCodes: ASRLanguageSelection.whisperCodes(for: languageIDs),
-            whisperLanguageHint: ASRLanguageSelection.whisperLanguageHint(for: languageIDs) ?? "detect",
+            languageCodes: ASRLanguageSelection.languageCodes(for: languageIDs),
+            languageHint: ASRLanguageSelection.languageHint(for: languageIDs) ?? "detect",
             languageInstruction: LocaleTextNormalizer.promptInstruction(for: languageIDs),
             correctionMode: request.correctionMode.rawValue,
             outputPreferences: outputPreferences
@@ -80,9 +80,6 @@ enum PromptBuilder {
         </output_schema>
         """)
         parts.append(examples(for: request.correctionMode))
-        if let directive = requestDirective(for: request) {
-            parts.append(directive)
-        }
         parts.append("""
         <actual_task>
         Use the examples only as decision patterns. Now process the single input_json below using the correction_mode named in its context, and follow that mode's rules — do not default to a milder mode regardless of phrasing here.
@@ -97,21 +94,6 @@ enum PromptBuilder {
         }
         parts.append("Return the corrected insertion text as the JSON object described above.")
         return parts.joined(separator: "\n")
-    }
-
-    private static func requestDirective(for request: CorrectionRequest) -> String? {
-        let raw = request.rawTranscript
-        let lowerTranscript = raw.lowercased()
-        let englishAnchors = [" should be ", " oh wait ", " wait no ", " scratch that "]
-        let chineseAnchors = ["应该是", "不对", "改成", "更正", "不是", "取消", "删掉", "去掉", "不要了"]
-        let hasEnglishAnchor = englishAnchors.contains(where: { lowerTranscript.contains($0) })
-        let hasChineseAnchor = chineseAnchors.contains(where: { raw.contains($0) })
-        guard hasEnglishAnchor || hasChineseAnchor else { return nil }
-        return """
-        <request_directive>
-        Anchored spoken repair detected in the current raw_transcript. For replacement patterns ("A should be B", "A 应该是 B", "A 不对 B", "A 哦不对 B", "A 改成 B", "A wait no B", "A oh wait B"), if A is a local label, token, value, or ASR error and B is the intended replacement, output the final text using B. Do not leave both A and B in the output, and do not include the repair wording ("should be" / "应该是" / "不对" / "哦不对" / "改成" / "wait no" / "oh wait") as content. For cancellation/deletion patterns ("A 不要了", "取消 A", "删掉 A", "去掉 A"), drop A from the output.
-        </request_directive>
-        """
     }
 
     private static func examples(for mode: CorrectionMode) -> String {
@@ -188,7 +170,7 @@ enum PromptBuilder {
             Input:
             {"context":{"correction_mode":"polish"},"raw_transcript":"明天去买苹果两个梨子不要了香蕉一个改两个"}
             Output:
-            {"text":"明天去买两个苹果，不要梨子，香蕉从一个改成两个。"}
+            {"text":"明天去买两个苹果和两个香蕉。"}
             </example>
             <example>
             Input:

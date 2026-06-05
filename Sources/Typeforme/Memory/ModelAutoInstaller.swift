@@ -21,6 +21,7 @@ private final class ModelAutoInstallDownloadRunner: NSObject, URLSessionDownload
     private let destination: URL
     private let label: String
     private let expectedSHA256: String?
+    private let expectedBytes: Int64?
     private let lock = NSLock()
     private var continuation: CheckedContinuation<Void, Error>?
     private var task: URLSessionDownloadTask?
@@ -33,10 +34,11 @@ private final class ModelAutoInstallDownloadRunner: NSObject, URLSessionDownload
         return URLSession(configuration: config, delegate: self, delegateQueue: queue)
     }()
 
-    init(destination: URL, label: String, expectedSHA256: String?) {
+    init(destination: URL, label: String, expectedSHA256: String?, expectedBytes: Int64?) {
         self.destination = destination
         self.label = label
         self.expectedSHA256 = expectedSHA256
+        self.expectedBytes = expectedBytes
     }
 
     func download(from url: URL) async throws {
@@ -89,13 +91,12 @@ private final class ModelAutoInstallDownloadRunner: NSObject, URLSessionDownload
                 at: destination.deletingLastPathComponent(),
                 withIntermediateDirectories: true
             )
-            if let expectedSHA256 {
-                try ModelDownloadIntegrity.validateFile(
-                    at: location,
-                    expectedSHA256: expectedSHA256,
-                    label: label
-                )
-            }
+            try ModelDownloadIntegrity.validateFile(
+                at: location,
+                expectedSHA256: expectedSHA256,
+                expectedBytes: expectedBytes,
+                label: label
+            )
             try? fileManager.removeItem(at: destination)
             try fileManager.moveItem(at: location, to: destination)
             Self.removeResumeData(for: destination)
@@ -191,8 +192,24 @@ actor ModelAutoInstaller {
 
     private var tasks: [String: Task<Void, Error>] = [:]
 
-    func ensureFile(atPath path: String, downloadURLString: String, label: String) async throws {
-        if FileManager.default.fileExists(atPath: path) { return }
+    func ensureFile(
+        atPath path: String,
+        downloadURLString: String,
+        label: String,
+        expectedBytes: Int64? = nil
+    ) async throws {
+        if FileManager.default.fileExists(atPath: path) {
+            do {
+                try ModelDownloadIntegrity.validateFile(
+                    at: URL(fileURLWithPath: path),
+                    expectedBytes: expectedBytes,
+                    label: label
+                )
+                return
+            } catch {
+                try? FileManager.default.removeItem(atPath: path)
+            }
+        }
 
         let trimmedURL = downloadURLString.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedURL.isEmpty else {
@@ -210,14 +227,19 @@ actor ModelAutoInstaller {
 
         let destination = URL(fileURLWithPath: path)
         let task = Task {
-            try await Self.download(from: url, to: destination, label: label)
+            try await Self.download(from: url, to: destination, label: label, expectedBytes: expectedBytes)
         }
         tasks[key] = task
         defer { tasks[key] = nil }
         try await task.value
     }
 
-    private static func download(from url: URL, to destination: URL, label: String) async throws {
+    private static func download(
+        from url: URL,
+        to destination: URL,
+        label: String,
+        expectedBytes: Int64?
+    ) async throws {
         Log.store.notice("auto-installing model: \(label, privacy: .public)")
         ModelInstallRegistry.markInstalling(path: destination.path, label: label)
         defer { ModelInstallRegistry.markFinished(path: destination.path) }
@@ -225,7 +247,8 @@ actor ModelAutoInstaller {
         let runner = ModelAutoInstallDownloadRunner(
             destination: destination,
             label: label,
-            expectedSHA256: ModelDownloadIntegrity.expectedSHA256(for: url)
+            expectedSHA256: ModelDownloadIntegrity.expectedSHA256(for: url),
+            expectedBytes: expectedBytes
         )
         try await runner.download(from: url)
         Log.store.info("model auto-installed: \(destination.lastPathComponent, privacy: .public)")

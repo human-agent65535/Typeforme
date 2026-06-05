@@ -6,7 +6,7 @@ Typeforme 是一个本地优先的语音输入工具。Mac app 负责录音、�
 
 ## 功能
 
-- 语音识别：WhisperKit 或 Qwen3-ASR GGUF。
+- 语音识别：Qwen3-ASR GGUF 或 NVIDIA Nemotron ASR。
 - 文本整理：本地 Qwen3.5 GGUF，或用户配置的 LM Studio / OpenAI-compatible endpoint。
 - 输出模式：Clean、Polish、Polish+、Structure+、Formal+。
 - 触发方式：全局快捷键、双击修饰键按住说话、iOS 键盘按钮。
@@ -34,14 +34,15 @@ Typeforme 是一个本地优先的语音输入工具。Mac app 负责录音、�
 - 麦克风权限。
 - macOS Accessibility 权限，用于自动提交文本。
 - iOS 17+；键盘扩展需要开启 Full Access。
-- 本地 Qwen3.5 与 Qwen3-ASR 需要较多内存和磁盘空间；小内存机器建议先使用较小模型或 WhisperKit。
+- 本地 Qwen3.5、Qwen3-ASR 与 NVIDIA Nemotron ASR 需要较多内存和磁盘空间；小内存机器建议先使用较小模型。
 
 ## 快速开始
 
-使用 Qwen3-ASR GGUF 或本地 Qwen3.5 前，先准备 llama.cpp 运行时。WhisperKit 与 LM Studio endpoint 不依赖内置 `llama-server`。
+使用 Qwen3-ASR GGUF 或本地 Qwen3.5 前，先准备 llama.cpp 运行时。NVIDIA Nemotron ASR 还需要构建本地 helper；LM Studio endpoint 不依赖内置 `llama-server`。
 
 ```sh
 scripts/vendor-llama.sh <path-to-llama.cpp/build/bin>
+scripts/build-nvidia-nemotron-helper.sh
 ```
 
 构建 macOS app：
@@ -102,8 +103,8 @@ TEAM=<your-team-id> TYPEFORME_BUNDLE_PREFIX=<your-reverse-dns-prefix> scripts/de
 主要子目录：
 
 - `Models/`：本地文本整理模型。
-- `Models/WhisperKit/`：WhisperKit cache。
 - `Models/Qwen3ASR/`：Qwen3-ASR GGUF 与 mmproj。
+- `Models/NvidiaNemotron/`：NVIDIA Nemotron ASR 模型。
 - `prompts/`：自定义 prompt override。
 - `Bridge/`：Bridge 临时上传音频。
 - `ASRWork/`：ASR 前的临时转码音频。
@@ -115,7 +116,7 @@ TEAM=<your-team-id> TYPEFORME_BUNDLE_PREFIX=<your-reverse-dns-prefix> scripts/de
 ```text
 Sources/Typeforme/
   App/             macOS app lifecycle 与 DictationCoordinator
-  ASR/             WhisperKit、Qwen3-ASR、音频转码
+  ASR/             Qwen3-ASR、NVIDIA Nemotron、音频转码
   Audio/           macOS 录音
   Bridge/          本地 HTTP Bridge 与远端 Bridge client
   Hotkey/          快捷键与双击修饰键监听

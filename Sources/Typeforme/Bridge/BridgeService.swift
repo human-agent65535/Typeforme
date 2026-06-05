@@ -90,9 +90,13 @@ final class BridgeService {
         }
         if let timeoutSec = request.asrTimeoutSec {
             let clamped = BridgeSettingsPayload.clampedASRTimeoutSec(timeoutSec)
-            let key = provider == "whisperkit"
-                ? AppSettings.Keys.asrWhisperKitTimeoutSec
-                : AppSettings.Keys.asrQwenLlamaTimeoutSec
+            let key: String
+            switch provider {
+            case "nvidia-nemotron-asr":
+                key = AppSettings.Keys.asrNvidiaNemotronTimeoutSec
+            default:
+                key = AppSettings.Keys.asrQwenLlamaTimeoutSec
+            }
             UserDefaults.standard.set(Double(clamped), forKey: key)
         }
 

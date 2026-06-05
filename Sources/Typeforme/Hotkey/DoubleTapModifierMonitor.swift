@@ -52,7 +52,7 @@ enum HoldModifier: String, CaseIterable, Identifiable, Codable, Sendable {
 }
 
 /// Watches one modifier key globally and detects "double-tap-and-hold" — the
-/// idiom used by macOS Dictation, Wispr Flow, SuperWhisper, etc.: tap once,
+/// idiom used by macOS Dictation and similar tools: tap once,
 /// release, tap again and HOLD. Holding triggers `onHoldStart`; releasing the
 /// modifier on the second press fires `onHoldEnd`.
 ///

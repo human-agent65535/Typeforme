@@ -14,7 +14,7 @@ import Foundation
 /// `AVAudioPlayerNode` running on an engine is decoupled from session
 /// category churn and reliably stays alive across recording sessions.
 ///
-/// Why playback (silent) instead of TypeWhisper's continuous mic engine:
+/// Why playback (silent) instead of a continuous mic engine:
 /// playback keeps the app alive without lighting the red microphone status
 /// indicator and without actually capturing audio. Battery cost: ~1-2%/hr.
 ///

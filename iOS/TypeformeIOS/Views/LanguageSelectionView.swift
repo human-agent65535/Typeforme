@@ -90,7 +90,7 @@ struct LanguageSelectionView: View {
         return options.filter { option in
             option.id.lowercased().contains(query)
                 || option.displayName.lowercased().contains(query)
-                || option.whisperCode.lowercased().contains(query)
+                || option.languageCode.lowercased().contains(query)
         }
     }
 

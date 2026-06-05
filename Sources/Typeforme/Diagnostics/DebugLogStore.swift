@@ -486,8 +486,10 @@ enum DebugLogStore {
         switch AppSettings.asrProvider.lowercased() {
         case "qwen3-asr-llama":
             return AppSettings.asrQwenLlamaModelID
+        case "nvidia-nemotron-asr":
+            return AppSettings.asrNvidiaNemotronModelID
         default:
-            return AppSettings.asrModel
+            return AppSettings.asrQwenLlamaModelID
         }
     }
 

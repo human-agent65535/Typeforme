@@ -4,39 +4,19 @@ import Foundation
 final class ASRFactory {
     static let shared = ASRFactory()
 
-    private var whisper: WhisperKitASRService?
     private var qwenLlama: QwenLlamaASRService?
     private var qwenLlamaKey: String?
-
-    var whisperKitCacheDir: URL { AppPaths.whisperKitCacheDir }
-
-    func whisperKitCachedModelInfo(modelName: String) -> WhisperKitModelCacheInfo? {
-        WhisperKitASRService.cachedModelInfo(for: modelName)
-    }
+    private var nvidiaNemotron: NvidiaNemotronASRService?
 
     func get() -> ASRService {
         switch AppSettings.asrProvider.lowercased() {
+        case "nvidia-nemotron-asr":
+            return AutoInstallingNvidiaNemotronASRService()
         case "qwen3-asr-llama":
-            return AutoInstallingQwenLlamaASRService()
+            fallthrough
         default:
-            return whisperService(for: AppSettings.asrModel)
+            return AutoInstallingQwenLlamaASRService()
         }
-    }
-
-    func prepareWhisperKitModel(
-        modelName: String,
-        progress: (@MainActor @Sendable (WhisperKitPreparationProgress) -> Void)? = nil,
-        stage: (@MainActor @Sendable (WhisperKitPreparationStage) -> Void)? = nil
-    ) async throws -> URL {
-        try await whisperService(for: modelName).prepareModel(progress: progress, stage: stage)
-    }
-
-    func deleteWhisperKitModel(modelName: String) throws {
-        if whisper?.modelName == modelName {
-            whisper = nil
-        }
-        guard let cached = whisperKitCachedModelInfo(modelName: modelName) else { return }
-        try FileManager.default.removeItem(at: cached.modelFolder)
     }
 
     func preloadCachedActiveModel() async {
@@ -46,21 +26,9 @@ final class ASRFactory {
             return
         }
 
-        guard provider == "whisperkit" || provider.isEmpty else {
-            Log.asr.info("ASR preload skipped for external provider: \(provider, privacy: .public)")
+        if provider == "nvidia-nemotron-asr" {
+            Log.asr.info("NVIDIA Nemotron ASR preload skipped; bundled helper starts on demand")
             return
-        }
-
-        let modelName = AppSettings.asrModel
-        guard whisperKitCachedModelInfo(modelName: modelName) != nil else {
-            Log.asr.notice("WhisperKit preload skipped; model not cached: \(modelName, privacy: .public)")
-            return
-        }
-        do {
-            _ = try await whisperService(for: modelName).prepareModel()
-            Log.asr.info("WhisperKit preloaded: \(modelName, privacy: .public)")
-        } catch {
-            Log.asr.error("WhisperKit preload failed: \(error.localizedDescription, privacy: .public)")
         }
     }
 
@@ -86,6 +54,19 @@ final class ASRFactory {
         )
     }
 
+    func ensureNvidiaNemotronInstalled() async throws {
+        try AppPaths.ensureDirectories()
+        let spec = NvidiaNemotronASRModelCatalog.spec(for: AppSettings.asrNvidiaNemotronModelID)
+        for file in spec.files {
+            try await ModelAutoInstaller.shared.ensureFile(
+                atPath: AppSettings.asrNvidiaNemotronPath(for: file),
+                downloadURLString: AppSettings.asrNvidiaNemotronDownloadURL(for: file),
+                label: "NVIDIA Nemotron \(file.label)",
+                expectedBytes: file.expectedBytes
+            )
+        }
+    }
+
     func preloadQwenLlama() async {
         guard FileManager.default.fileExists(atPath: AppSettings.asrQwenLlamaModelPath),
               FileManager.default.fileExists(atPath: AppSettings.asrQwenLlamaMMProjPath)
@@ -107,11 +88,11 @@ final class ASRFactory {
         qwenLlamaKey = nil
     }
 
-    private func whisperService(for modelName: String) -> WhisperKitASRService {
-        if whisper == nil || whisper?.modelName != modelName {
-            whisper = WhisperKitASRService(modelName: modelName)
+    func nvidiaNemotronService() -> NvidiaNemotronASRService {
+        if nvidiaNemotron == nil {
+            nvidiaNemotron = NvidiaNemotronASRService()
         }
-        return whisper!
+        return nvidiaNemotron!
     }
 
     func qwenLlamaServiceAfterInstall() -> QwenLlamaASRService? {
@@ -162,5 +143,15 @@ private struct AutoInstallingQwenLlamaASRService: ASRService {
             throw ASRAudioSupportError.httpStatus(503, "Bundled llama-server binary not found")
         }
         return try await service.transcribe(audioFileURL: audioFileURL, languageIDs: languageIDs)
+    }
+}
+
+private struct AutoInstallingNvidiaNemotronASRService: ASRService {
+    func transcribe(audioFileURL: URL, languageIDs: [String]) async throws -> String {
+        try await ASRFactory.shared.ensureNvidiaNemotronInstalled()
+        return try await ASRFactory.shared.nvidiaNemotronService().transcribe(
+            audioFileURL: audioFileURL,
+            languageIDs: languageIDs
+        )
     }
 }

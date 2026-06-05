@@ -1662,7 +1662,7 @@ private struct MacSettingsView: View {
 
     private var asrProviderBinding: Binding<String> {
         Binding {
-            draft?.asrProvider ?? "whisperkit"
+            draft?.asrProvider ?? "qwen3-asr-llama"
         } set: { value in
             draft?.asrProvider = value
             normalizeDraft()

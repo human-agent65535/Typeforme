@@ -17,11 +17,18 @@ enum AppSettings {
         static let launchAtLogin        = "app.launchAtLogin"
 
         // ASR
-        static let asrProvider          = "asr.provider"            // "whisperkit" | "qwen3-asr-llama"
-        static let asrModel             = "asr.model"
+        static let asrProvider          = "asr.provider"            // "qwen3-asr-llama" | "nvidia-nemotron-asr"
         static let asrLanguageIDs       = "asr.languages"           // comma-separated ASRLanguageOption ids
-        static let asrUnloadAfterMin    = "asr.unloadAfterMin"      // 0 disables
-        static let asrWhisperKitTimeoutSec = "asr.whisperkit.timeoutSec"
+        static let asrNvidiaNemotronTimeoutSec = "asr.nvidia.nemotron.timeoutSec"
+        static let asrNvidiaNemotronModelID = "asr.nvidia.nemotron.modelID"
+        static let asrNvidiaNemotronEncoderPath = "asr.nvidia.nemotron.encoderPath"
+        static let asrNvidiaNemotronEncoderDataPath = "asr.nvidia.nemotron.encoderDataPath"
+        static let asrNvidiaNemotronDecoderJointPath = "asr.nvidia.nemotron.decoderJointPath"
+        static let asrNvidiaNemotronTokenizerPath = "asr.nvidia.nemotron.tokenizerPath"
+        static let asrNvidiaNemotronEncoderDownloadURL = "asr.nvidia.nemotron.encoderDownloadURL"
+        static let asrNvidiaNemotronEncoderDataDownloadURL = "asr.nvidia.nemotron.encoderDataDownloadURL"
+        static let asrNvidiaNemotronDecoderJointDownloadURL = "asr.nvidia.nemotron.decoderJointDownloadURL"
+        static let asrNvidiaNemotronTokenizerDownloadURL = "asr.nvidia.nemotron.tokenizerDownloadURL"
         static let asrQwenLlamaTimeoutSec = "asr.qwen3.llama.timeoutSec"
         static let asrQwenLlamaModelID  = "asr.qwen3.llama.modelID"
         static let asrQwenLlamaMaxTokens = "asr.qwen3.llama.maxTokens"
@@ -106,10 +113,9 @@ enum AppSettings {
             Keys.launchAtLogin:        true,
 
             Keys.asrProvider:       "qwen3-asr-llama",
-            Keys.asrModel:          "large-v3-v20240930_626MB",
             Keys.asrLanguageIDs:    ASRLanguageSelection.defaultRawValue,
-            Keys.asrUnloadAfterMin: 0,
-            Keys.asrWhisperKitTimeoutSec: 120,
+            Keys.asrNvidiaNemotronTimeoutSec: 300,
+            Keys.asrNvidiaNemotronModelID: NvidiaNemotronASRModelCatalog.defaultID,
             Keys.asrQwenLlamaTimeoutSec: 120,
             Keys.asrQwenLlamaModelID: QwenASRModelCatalog.defaultID,
             Keys.asrQwenLlamaMaxTokens: 2048,
@@ -167,10 +173,14 @@ enum AppSettings {
             registeredDefaults[spec.modelURLKey] = spec.defaultModelURL
             registeredDefaults[spec.mmprojURLKey] = spec.defaultMMProjURL
         }
+        for file in NvidiaNemotronASRModelCatalog.spec(for: NvidiaNemotronASRModelCatalog.defaultID).files {
+            registeredDefaults[file.pathKey] = file.defaultPath
+            registeredDefaults[file.urlKey] = file.defaultURL
+        }
         UserDefaults.standard.register(defaults: registeredDefaults)
 
         if let raw = UserDefaults.standard.string(forKey: Keys.asrProvider),
-           !["whisperkit", "qwen3-asr-llama"].contains(raw.lowercased()) {
+           !["qwen3-asr-llama", "nvidia-nemotron-asr"].contains(raw.lowercased()) {
             UserDefaults.standard.set("qwen3-asr-llama", forKey: Keys.asrProvider)
         }
         repairInvalidRawSetting(forKey: Keys.correctionBackend, default: CorrectionBackendKind.qwen35_2B)
@@ -223,10 +233,9 @@ enum AppSettings {
 
     static let serverScopedSettingKeys: [String] = [
         Keys.asrProvider,
-        Keys.asrModel,
         Keys.asrLanguageIDs,
-        Keys.asrUnloadAfterMin,
-        Keys.asrWhisperKitTimeoutSec,
+        Keys.asrNvidiaNemotronTimeoutSec,
+        Keys.asrNvidiaNemotronModelID,
         Keys.asrQwenLlamaTimeoutSec,
         Keys.asrQwenLlamaModelID,
         Keys.asrQwenLlamaMaxTokens,
@@ -266,6 +275,8 @@ enum AppSettings {
         Keys.diagnosticsDebugCaptureLimit,
     ] + QwenASRModelCatalog.all.flatMap {
         [$0.modelPathKey, $0.mmprojPathKey, $0.modelURLKey, $0.mmprojURLKey]
+    } + NvidiaNemotronASRModelCatalog.all.flatMap { spec in
+        spec.files.flatMap { [$0.pathKey, $0.urlKey] }
     }
 
     static let clientScopedSettingKeys: [String] = [
@@ -296,10 +307,11 @@ enum AppSettings {
 
     static var asrProvider: String {
         let raw = ud.string(forKey: Keys.asrProvider)?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard raw == "whisperkit" || raw == "qwen3-asr-llama" else { return "qwen3-asr-llama" }
+        guard raw == "qwen3-asr-llama" || raw == "nvidia-nemotron-asr" else {
+            return "qwen3-asr-llama"
+        }
         return raw!
     }
-    static var asrModel: String                       { ud.string(forKey: Keys.asrModel) ?? "large-v3-v20240930_626MB" }
     static var asrLanguageIDs: [String] {
         ASRLanguageSelection.parse(
             ud.string(forKey: Keys.asrLanguageIDs) ?? ASRLanguageSelection.defaultRawValue,
@@ -307,9 +319,20 @@ enum AppSettings {
         )
     }
     static var asrLocale: String                      { ASRLanguageSelection.primaryLanguageID(for: asrLanguageIDs) }
-    static var asrUnloadAfterMinutes: Int             { ud.integer(forKey: Keys.asrUnloadAfterMin) }
-    static var asrWhisperKitTimeoutSeconds: TimeInterval {
-        max(10, ud.double(forKey: Keys.asrWhisperKitTimeoutSec))
+    static var asrNvidiaNemotronTimeoutSeconds: TimeInterval {
+        min(max(10, ud.double(forKey: Keys.asrNvidiaNemotronTimeoutSec)), 300)
+    }
+    static var asrNvidiaNemotronModelID: String {
+        let raw = ud.string(forKey: Keys.asrNvidiaNemotronModelID) ?? NvidiaNemotronASRModelCatalog.defaultID
+        return NvidiaNemotronASRModelCatalog.spec(for: raw).id
+    }
+    static func asrNvidiaNemotronPath(for file: NvidiaNemotronASRFileSpec) -> String {
+        let value = ud.string(forKey: file.pathKey) ?? file.defaultPath
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? file.defaultPath : trimmed
+    }
+    static func asrNvidiaNemotronDownloadURL(for file: NvidiaNemotronASRFileSpec) -> String {
+        ud.string(forKey: file.urlKey) ?? file.defaultURL
     }
     static var asrQwenLlamaTimeoutSeconds: TimeInterval {
         max(10, ud.double(forKey: Keys.asrQwenLlamaTimeoutSec))

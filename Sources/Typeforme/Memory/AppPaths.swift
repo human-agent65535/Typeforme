@@ -3,8 +3,8 @@ import Foundation
 /// Filesystem paths for runtime artifacts:
 ///   ~/Library/Application Support/Typeforme/
 ///     ├── Models/          (correction and ASR model files)
-///     │   └── WhisperKit/  (WhisperKit HuggingFace/Core ML cache)
 ///     │   └── Qwen3ASR/    (Qwen3 ASR GGUF + mmproj files)
+///     │   └── NvidiaNemotron/ (Nemotron ONNX + tokenizer files)
 ///     ├── prompts/         (system.md and mode-*.md)
 ///     ├── Bridge/          (temporary uploaded audio)
 ///     ├── ASRWork/         (temporary audio for external ASR)
@@ -21,8 +21,8 @@ enum AppPaths {
     }()
 
     static let modelsDir: URL          = appSupportDir.appendingPathComponent("Models",            isDirectory: true)
-    static let whisperKitCacheDir: URL = modelsDir.appendingPathComponent("WhisperKit",            isDirectory: true)
     static let qwen3ASRModelsDir: URL  = modelsDir.appendingPathComponent("Qwen3ASR",              isDirectory: true)
+    static let nvidiaNemotronModelsDir: URL = modelsDir.appendingPathComponent("NvidiaNemotron",    isDirectory: true)
     static let promptsDir: URL         = appSupportDir.appendingPathComponent("prompts",           isDirectory: true)
     static let bridgeDir: URL          = appSupportDir.appendingPathComponent("Bridge",            isDirectory: true)
     static let asrWorkDir: URL         = appSupportDir.appendingPathComponent("ASRWork",           isDirectory: true)
@@ -42,15 +42,27 @@ enum AppPaths {
     static let qwen3ASR17Q8MMProjFile: URL = qwen3ASRModelsDir.appendingPathComponent("mmproj-Qwen3-ASR-1.7B-Q8_0.gguf")
     static let qwen3ASR17BF16File: URL = qwen3ASRModelsDir.appendingPathComponent("Qwen3-ASR-1.7B-bf16.gguf")
     static let qwen3ASR17BF16MMProjFile: URL = qwen3ASRModelsDir.appendingPathComponent("mmproj-Qwen3-ASR-1.7B-bf16.gguf")
+    static let nvidiaNemotronEncoderFile: URL = nvidiaNemotronModelsDir.appendingPathComponent("encoder.onnx")
+    static let nvidiaNemotronEncoderDataFile: URL = nvidiaNemotronModelsDir.appendingPathComponent("encoder.onnx.data")
+    static let nvidiaNemotronDecoderJointFile: URL = nvidiaNemotronModelsDir.appendingPathComponent("decoder_joint.onnx")
+    static let nvidiaNemotronTokenizerFile: URL = nvidiaNemotronModelsDir.appendingPathComponent("tokenizer.model")
 
     /// llama-server-arm64 helper bundled inside the .app at Contents/Resources/llama/.
     static var bundledLlamaServer: URL? {
         Bundle.main.url(forResource: "llama-server-arm64", withExtension: nil, subdirectory: "llama")
     }
 
+    static var bundledNvidiaNemotronRunner: URL? {
+        Bundle.main.url(
+            forResource: NvidiaNemotronASRModelCatalog.bundledHelperName,
+            withExtension: nil,
+            subdirectory: NvidiaNemotronASRModelCatalog.bundledResourceSubdirectory
+        )
+    }
+
     static func ensureDirectories() throws {
         let fm = FileManager.default
-        for url in [appSupportDir, modelsDir, whisperKitCacheDir, qwen3ASRModelsDir, promptsDir, bridgeDir, asrWorkDir, logsDir, debugCapturesDir] {
+        for url in [appSupportDir, modelsDir, qwen3ASRModelsDir, nvidiaNemotronModelsDir, promptsDir, bridgeDir, asrWorkDir, logsDir, debugCapturesDir] {
             try fm.createDirectory(at: url, withIntermediateDirectories: true)
         }
     }

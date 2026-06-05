@@ -248,7 +248,7 @@ struct BridgeSettingsPayload: Codable, Sendable {
 
     static let controllableASRProviders: [BridgeSettingOption] = [
         BridgeSettingOption(id: "qwen3-asr-llama", displayName: "Qwen3-ASR (default)"),
-        BridgeSettingOption(id: "whisperkit", displayName: "WhisperKit"),
+        BridgeSettingOption(id: "nvidia-nemotron-asr", displayName: "NVIDIA Nemotron ASR"),
     ]
 
     static let controllableCorrectionBackends: [CorrectionBackendKind] = [
@@ -401,8 +401,8 @@ struct BridgeSettingsPayload: Codable, Sendable {
     }
 
     fileprivate static func currentASRTimeoutSec(provider: String) -> Double {
-        if provider == "whisperkit" {
-            return AppSettings.asrWhisperKitTimeoutSeconds
+        if provider == "nvidia-nemotron-asr" {
+            return AppSettings.asrNvidiaNemotronTimeoutSeconds
         }
         return AppSettings.asrQwenLlamaTimeoutSeconds
     }
@@ -427,16 +427,22 @@ struct BridgeSettingsPayload: Codable, Sendable {
             )
         }
 
-        let modelName = AppSettings.asrModel
-        let installed = WhisperKitASRService.cachedModelInfo(for: modelName) != nil
-        return BridgeModelStatus(
-            id: "asr:whisperkit:\(modelName)",
-            kind: "asr",
-            displayName: "WhisperKit \(modelName)",
-            installed: installed,
-            installing: false,
-            detail: installed ? "Ready" : "Managed by WhisperKit"
-        )
+        if asrProvider == "nvidia-nemotron-asr" {
+            let spec = NvidiaNemotronASRModelCatalog.spec(for: AppSettings.asrNvidiaNemotronModelID)
+            let status = NvidiaNemotronASRService.bundledRuntimeStatus()
+            let installing = spec.files.contains {
+                ModelInstallRegistry.isInstalling(path: AppSettings.asrNvidiaNemotronPath(for: $0))
+            }
+            return BridgeModelStatus(
+                id: "asr:\(asrProvider):\(spec.id)",
+                kind: "asr",
+                displayName: spec.label,
+                installed: status.isReady,
+                installing: installing,
+                detail: installing ? "Installing" : status.detail
+            )
+        }
+        return selectedASRModelStatus(asrProvider: "qwen3-asr-llama")
     }
 
     private static func selectedRestyleModelStatus(
@@ -869,7 +875,7 @@ struct BridgeLanguageOption: Codable, Sendable, Identifiable, Hashable {
             let id = option.id.trimmingCharacters(in: .whitespacesAndNewlines)
             let name = option.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !id.isEmpty, !name.isEmpty else { return nil }
-            return ASRLanguageOption(id: id, displayName: name, whisperCode: id)
+            return ASRLanguageOption(id: id, displayName: name, languageCode: id)
         }
         return resolved.isEmpty ? ASRLanguageSelection.all : resolved
     }

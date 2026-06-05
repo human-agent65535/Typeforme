@@ -1165,74 +1165,14 @@ private struct HoldModifierRecorder: View {
 
 // MARK: - ASR
 
-private struct WhisperModelOption: Identifiable {
-    let id: String
-    let label: String
-    let detail: String
-}
-
-private let whisperModelOptions: [WhisperModelOption] = [
-    WhisperModelOption(
-        id: "tiny",
-        label: "Tiny",
-        detail: "Fastest. Useful for debugging, weak for mixed or less common languages."
-    ),
-    WhisperModelOption(
-        id: "base",
-        label: "Base",
-        detail: "Still fast, slightly better than Tiny."
-    ),
-    WhisperModelOption(
-        id: "small_216MB",
-        label: "Small (~216 MB)",
-        detail: "Good middle ground for short dictation."
-    ),
-    WhisperModelOption(
-        id: "medium",
-        label: "Medium",
-        detail: "Higher accuracy, slower and larger download."
-    ),
-    WhisperModelOption(
-        id: "distil-large-v3_594MB",
-        label: "Distil Large v3 (~594 MB)",
-        detail: "Large-v3 family, smaller and usually faster."
-    ),
-    WhisperModelOption(
-        id: "large-v3-v20240930_626MB",
-        label: "Large v3 2024 (~626 MB)",
-        detail: "Recommended for multilingual accuracy."
-    ),
-    WhisperModelOption(
-        id: "large-v3-v20240930_turbo_632MB",
-        label: "Large v3 2024 Turbo (~632 MB)",
-        detail: "Faster large-v3 variant. Good for interactive use."
-    ),
-    WhisperModelOption(
-        id: "large-v3_947MB",
-        label: "Large v3 Full (~947 MB)",
-        detail: "Bigger Core ML package; try when accuracy matters more than startup."
-    ),
-    WhisperModelOption(
-        id: "large-v3_turbo_954MB",
-        label: "Large v3 Turbo Full (~954 MB)",
-        detail: "Bigger turbo package; faster than full large-v3 on supported Macs."
-    ),
-]
-
 struct ASRSettingsView: View {
     @AppStorage(AppSettings.Keys.asrProvider)        private var provider: String = "qwen3-asr-llama"
-    @AppStorage(AppSettings.Keys.asrModel)           private var model: String = "large-v3-v20240930_626MB"
     @AppStorage(AppSettings.Keys.asrLanguageIDs)     private var languageIDsRaw: String = ASRLanguageSelection.defaultRawValue
-    @AppStorage(AppSettings.Keys.asrUnloadAfterMin)  private var unloadAfterMin: Int = 0
-    @AppStorage(AppSettings.Keys.asrWhisperKitTimeoutSec) private var whisperTimeoutSec: Double = 120
+    @AppStorage(AppSettings.Keys.asrNvidiaNemotronTimeoutSec) private var nvidiaTimeoutSec: Double = 300
+    @AppStorage(AppSettings.Keys.asrNvidiaNemotronModelID) private var nvidiaModelID: String = NvidiaNemotronASRModelCatalog.defaultID
     @AppStorage(AppSettings.Keys.asrQwenLlamaTimeoutSec) private var qwenTimeoutSec: Double = 120
     @AppStorage(AppSettings.Keys.asrQwenLlamaModelID) private var qwenModelID: String = QwenASRModelCatalog.defaultID
     @AppStorage(AppSettings.Keys.asrQwenLlamaMaxTokens) private var qwenMaxTokens: Int = 2048
-    @State private var isPreparingModel = false
-    @State private var preparationStatus = "Not checked"
-    @State private var preparationDetail = ""
-    @State private var preparationProgress: Double?
-    @State private var preparationTask: Task<Void, Never>?
     @State private var showAllLanguages = false
 
     var body: some View {
@@ -1240,30 +1180,27 @@ struct ASRSettingsView: View {
             Section("Engine") {
                 Picker("Provider", selection: $provider) {
                     Text("Qwen3-ASR (default)").tag("qwen3-asr-llama")
-                    Text("WhisperKit").tag("whisperkit")
+                    Text("NVIDIA Nemotron ASR").tag("nvidia-nemotron-asr")
                 }
                 .pickerStyle(.menu)
 
-                if isWhisperProvider {
-                    Picker("Model", selection: $model) {
-                        ForEach(whisperModelOptions) { option in
-                            Text(option.label).tag(option.id)
+                if isNvidiaProvider {
+                    Picker("Model", selection: $nvidiaModelID) {
+                        ForEach(NvidiaNemotronASRModelCatalog.all) { spec in
+                            Text(spec.label).tag(spec.id)
                         }
                     }
                     .pickerStyle(.menu)
                     IntegerSettingField(
                         title: "Timeout",
                         value: Binding(
-                            get: { Int(whisperTimeoutSec) },
-                            set: { whisperTimeoutSec = Double($0) }
+                            get: { Int(nvidiaTimeoutSec) },
+                            set: { nvidiaTimeoutSec = Double($0) }
                         ),
                         range: 10...300,
                         suffix: "s"
                     )
-                    Text(selectedWhisperModel?.detail ?? "WhisperKit downloads the chosen model from HuggingFace.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                    Text("Use Download & Warm Up to avoid the first dictation doing download and Core ML specialization work.")
+                    Text(selectedNvidiaModel.note)
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 } else {
@@ -1333,53 +1270,15 @@ struct ASRSettingsView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
-            if isWhisperProvider {
-                Section("WhisperKit model") {
-                    whisperStatusRow
-                    if isPreparingModel {
-                        if let preparationProgress {
-                            ProgressView(value: preparationProgress)
-                        } else {
-                            ProgressView()
-                        }
-                    }
-                    HStack {
-                        Button {
-                            preparationTask?.cancel()
-                            preparationTask = Task { await prepareSelectedModel() }
-                        } label: {
-                            Label("Download & Warm Up", systemImage: "arrow.down.circle")
-                        }
-                        .disabled(isPreparingModel)
-
-                        Button {
-                            revealWhisperKitCache()
-                        } label: {
-                            Label("Reveal Cache", systemImage: "folder")
-                        }
-                        Button(role: .destructive) {
-                            deleteSelectedWhisperModel()
-                        } label: {
-                            Label("Delete", systemImage: "trash")
-                        }
-                        .disabled(isPreparingModel || ASRFactory.shared.whisperKitCachedModelInfo(modelName: model) == nil)
-                    }
-                }
-                Section("Memory") {
-                    IntegerSettingField(
-                        title: "Unload after idle",
-                        value: $unloadAfterMin,
-                        range: 0...60,
-                        suffix: "min"
-                    )
-                    Text("Frees the GPU once you stop dictating. Reloads on the next hotkey press.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-            } else {
+            if !isNvidiaProvider {
                 Section("Qwen3-ASR model") {
                     QwenASRModelRow(spec: selectedQwenModel)
                         .id(selectedQwenModel.id)
+                }
+            } else {
+                Section("NVIDIA Nemotron model") {
+                    NvidiaNemotronASRModelRow(spec: selectedNvidiaModel)
+                        .id(selectedNvidiaModel.id)
                 }
             }
         }
@@ -1387,39 +1286,30 @@ struct ASRSettingsView: View {
         .onAppear {
             normalizeProvider()
             clampLanguageSelection()
-            resetPreparationStatus()
-        }
-        .onChange(of: model) { _, _ in
-            preparationTask?.cancel()
-            resetPreparationStatus()
         }
         .onChange(of: provider) { _, _ in
             normalizeProvider()
             clampLanguageSelection()
-            preparationTask?.cancel()
-            if isWhisperProvider {
-                resetPreparationStatus()
-            }
         }
         .onChange(of: qwenModelID) { _, _ in
             Task { @MainActor in await ASRFactory.shared.stopQwenLlama() }
         }
     }
 
-    private var isWhisperProvider: Bool {
-        provider.lowercased() == "whisperkit"
+    private var isNvidiaProvider: Bool {
+        provider.lowercased() == "nvidia-nemotron-asr"
     }
 
     private var selectedLanguageIDs: [String] {
         ASRLanguageSelection.parse(languageIDsRaw, supportedOptions: supportedLanguageOptions)
     }
 
-    private var selectedWhisperModel: WhisperModelOption? {
-        whisperModelOptions.first { $0.id == model }
-    }
-
     private var selectedQwenModel: QwenASRModelSpec {
         QwenASRModelCatalog.spec(for: qwenModelID)
+    }
+
+    private var selectedNvidiaModel: NvidiaNemotronASRModelSpec {
+        NvidiaNemotronASRModelCatalog.spec(for: nvidiaModelID)
     }
 
     private var selectedLanguageSummary: String {
@@ -1429,8 +1319,8 @@ struct ASRSettingsView: View {
     }
 
     private var languageHelpText: String {
-        if isWhisperProvider {
-            return "Select one language to pass Whisper a strong language hint. Select multiple languages for mixed speech: WhisperKit detects the language, and the correction prompt is constrained to the checked languages. WhisperKit does not currently expose an API to limit detection candidates to only these languages."
+        if isNvidiaProvider {
+            return "Nemotron uses a target language for one selected language and automatic language detection for multiple selected languages. The checked languages constrain script normalization and correction after ASR."
         }
         return "Qwen3-ASR through llama.cpp detects the language automatically across its supported languages. The checked languages constrain script normalization and correction after ASR."
     }
@@ -1486,134 +1376,17 @@ struct ASRSettingsView: View {
         languageIDsRaw = ASRLanguageSelection.rawValue(for: ordered, supportedOptions: supportedLanguageOptions)
     }
 
-    private var preparationColor: Color {
-        if isPreparingModel { return .orange }
-        if preparationStatus == "Downloaded" || preparationStatus == "Ready" { return .green }
-        if preparationStatus == "Failed" { return .red }
-        return .secondary
-    }
-
-    @ViewBuilder
-    private var whisperStatusRow: some View {
-        HStack(spacing: 10) {
-            Circle()
-                .fill(preparationColor)
-                .frame(width: 8, height: 8)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(preparationStatus)
-                Text(preparationDetail)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .truncationMode(.middle)
-            }
-            Spacer()
-        }
-    }
-
-    private func resetPreparationStatus() {
-        isPreparingModel = false
-        preparationProgress = nil
-        if let cached = ASRFactory.shared.whisperKitCachedModelInfo(modelName: model) {
-            preparationStatus = "Downloaded"
-            preparationDetail = cached.usesDocumentDirectoryCache ? "Document cache: \(cached.modelFolder.path)" : cached.modelFolder.path
-        } else {
-            preparationStatus = "Not Downloaded"
-            preparationDetail = "Cache: \(ASRFactory.shared.whisperKitCacheDir.path)"
-        }
-    }
-
-    @MainActor
-    private func prepareSelectedModel() async {
-        let selectedModel = model
-        isPreparingModel = true
-        preparationProgress = nil
-        preparationStatus = "Connecting"
-        preparationDetail = selectedModel
-
-        do {
-            let folder = try await ASRFactory.shared.prepareWhisperKitModel(
-                modelName: selectedModel,
-                progress: { update in
-                    guard selectedModel == model else { return }
-                    preparationProgress = update.isByteProgress ? update.fractionCompleted.map { min(max($0, 0), 1) } : nil
-                    if let fraction = preparationProgress, update.isByteProgress {
-                        preparationStatus = "Downloading \(Int((fraction * 100).rounded()))%"
-                    } else {
-                        preparationStatus = "Downloading"
-                    }
-                    preparationDetail = progressDetail(update)
-                },
-                stage: { stage in
-                    guard selectedModel == model else { return }
-                    switch stage {
-                    case .downloading:
-                        preparationStatus = "Downloading"
-                        preparationDetail = "Fetching model files from HuggingFace..."
-                    case .loading:
-                        preparationProgress = nil
-                        preparationStatus = "Loading"
-                        preparationDetail = "Loading cached model..."
-                    case .warmingUp:
-                        preparationProgress = nil
-                        preparationStatus = "Warming Up"
-                        preparationDetail = "Specializing Core ML models for this Mac..."
-                    case .ready:
-                        preparationProgress = nil
-                        preparationStatus = "Ready"
-                    }
-                }
-            )
-            guard !Task.isCancelled else { return }
-            preparationProgress = nil
-            preparationStatus = "Ready"
-            preparationDetail = folder.path
-        } catch is CancellationError {
-            preparationStatus = "Cancelled"
-            preparationDetail = "Cache: \(ASRFactory.shared.whisperKitCacheDir.path)"
-        } catch {
-            preparationStatus = "Failed"
-            preparationDetail = error.localizedDescription
-        }
-
-        isPreparingModel = false
-    }
-
-    private func progressDetail(_ update: WhisperKitPreparationProgress) -> String {
-        guard update.isByteProgress, update.totalUnitCount > 0 else {
-            if update.totalUnitCount > 0 {
-                return "Downloading model files... (\(update.completedUnitCount)/\(update.totalUnitCount))"
-            }
-            return "Downloading model files..."
-        }
-        let done = ByteCountFormatter.string(fromByteCount: update.completedUnitCount, countStyle: .file)
-        let total = ByteCountFormatter.string(fromByteCount: update.totalUnitCount, countStyle: .file)
-        return "\(done) / \(total)"
-    }
-
-    private func revealWhisperKitCache() {
-        try? AppPaths.ensureDirectories()
-        NSWorkspace.shared.activateFileViewerSelecting([ASRFactory.shared.whisperKitCacheDir])
-    }
-
-    private func deleteSelectedWhisperModel() {
-        do {
-            preparationTask?.cancel()
-            try ASRFactory.shared.deleteWhisperKitModel(modelName: model)
-            resetPreparationStatus()
-        } catch {
-            preparationStatus = "Failed"
-            preparationDetail = error.localizedDescription
-        }
-    }
-
     private func normalizeProvider() {
         let value = provider.lowercased()
         let normalizedQwenModelID = QwenASRModelCatalog.spec(for: qwenModelID).id
         if qwenModelID != normalizedQwenModelID {
             qwenModelID = normalizedQwenModelID
         }
-        if value != "whisperkit" && value != "qwen3-asr-llama" {
+        let normalizedNvidiaModelID = NvidiaNemotronASRModelCatalog.spec(for: nvidiaModelID).id
+        if nvidiaModelID != normalizedNvidiaModelID {
+            nvidiaModelID = normalizedNvidiaModelID
+        }
+        if value != "qwen3-asr-llama" && value != "nvidia-nemotron-asr" {
             provider = "qwen3-asr-llama"
         }
     }
@@ -1846,6 +1619,306 @@ private struct QwenASRModelRow: View {
         if case .failed(let why) = mmprojDownloader.state { return "mmproj: \(why)" }
         return nil
     }
+}
+
+private struct NvidiaNemotronASRModelRow: View {
+    let spec: NvidiaNemotronASRModelSpec
+    let files: [NvidiaNemotronASRFileSpec]
+
+    @AppStorage private var encoderPath: String
+    @AppStorage private var encoderDataPath: String
+    @AppStorage private var decoderJointPath: String
+    @AppStorage private var tokenizerPath: String
+    @AppStorage private var encoderURL: String
+    @AppStorage private var encoderDataURL: String
+    @AppStorage private var decoderJointURL: String
+    @AppStorage private var tokenizerURL: String
+    @StateObject private var encoderDownloader = ModelDownloader()
+    @StateObject private var encoderDataDownloader = ModelDownloader()
+    @StateObject private var decoderJointDownloader = ModelDownloader()
+    @StateObject private var tokenizerDownloader = ModelDownloader()
+    @State private var deleteError: String?
+
+    init(spec: NvidiaNemotronASRModelSpec) {
+        self.spec = spec
+        self.files = spec.files
+        self._encoderPath = AppStorage(wrappedValue: spec.files[0].defaultPath, spec.files[0].pathKey)
+        self._encoderDataPath = AppStorage(wrappedValue: spec.files[1].defaultPath, spec.files[1].pathKey)
+        self._decoderJointPath = AppStorage(wrappedValue: spec.files[2].defaultPath, spec.files[2].pathKey)
+        self._tokenizerPath = AppStorage(wrappedValue: spec.files[3].defaultPath, spec.files[3].pathKey)
+        self._encoderURL = AppStorage(wrappedValue: spec.files[0].defaultURL, spec.files[0].urlKey)
+        self._encoderDataURL = AppStorage(wrappedValue: spec.files[1].defaultURL, spec.files[1].urlKey)
+        self._decoderJointURL = AppStorage(wrappedValue: spec.files[2].defaultURL, spec.files[2].urlKey)
+        self._tokenizerURL = AppStorage(wrappedValue: spec.files[3].defaultURL, spec.files[3].urlKey)
+    }
+
+    var body: some View {
+        let status = runtimeStatus
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(spec.label).bold()
+                    Text(spec.note)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Text(statusLabel(status))
+                    .font(.caption)
+                    .foregroundStyle(statusColor(status))
+            }
+            downloadControls
+            if let message = userVisibleProblem(status) {
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .lineLimit(2)
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    @ViewBuilder
+    private var downloadControls: some View {
+        if isDownloading {
+            VStack(alignment: .leading, spacing: 4) {
+                downloadProgress(received: aggregateReceivedBytes, total: totalExpectedBytes)
+                Button {
+                    cancelDownloads()
+                } label: {
+                    Label("Cancel", systemImage: "xmark.circle")
+                }
+            }
+        } else {
+            HStack {
+                Button {
+                    startDownloads()
+                } label: {
+                    Label(modelInstalled ? "Update" : "Download", systemImage: "arrow.down.circle")
+                }
+                .disabled(anyDownloadURLEmpty)
+                Button(role: .destructive) {
+                    deleteModel()
+                } label: {
+                    Label("Delete", systemImage: "trash")
+                }
+                .disabled(!anyModelFileExists)
+                if let why = failureText {
+                    Text(why)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .lineLimit(2)
+                }
+                if let deleteError {
+                    Text(deleteError)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .lineLimit(2)
+                }
+                if completedAllDownloads {
+                    Label("Done", systemImage: "checkmark.circle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.green)
+                }
+                Spacer()
+            }
+        }
+    }
+
+    private func downloadProgress(received: Int64, total: Int64) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ProgressView(value: total > 0 ? Double(received) / Double(total) : 0)
+            HStack {
+                Text("Downloading model: \(format(received)) / \(format(total))")
+                    .font(.caption)
+                    .monospacedDigit()
+                Spacer()
+            }
+        }
+    }
+
+    private func startDownloads() {
+        deleteError = nil
+        Task { @MainActor in
+            try? AppPaths.ensureDirectories()
+            startDownload(file: files[0], path: effectiveEncoderPath, url: encoderURL, downloader: encoderDownloader)
+            startDownload(file: files[1], path: effectiveEncoderDataPath, url: encoderDataURL, downloader: encoderDataDownloader)
+            startDownload(file: files[2], path: effectiveDecoderJointPath, url: decoderJointURL, downloader: decoderJointDownloader)
+            startDownload(file: files[3], path: effectiveTokenizerPath, url: tokenizerURL, downloader: tokenizerDownloader)
+        }
+    }
+
+    private func startDownload(file: NvidiaNemotronASRFileSpec, path: String, url: String, downloader: ModelDownloader) {
+        guard let downloadURL = URL(string: url.trimmingCharacters(in: .whitespacesAndNewlines)) else { return }
+        downloader.start(
+            from: downloadURL,
+            to: URL(fileURLWithPath: path),
+            expectedSHA256: ModelDownloadIntegrity.expectedSHA256(for: downloadURL),
+            expectedBytes: file.expectedBytes
+        )
+    }
+
+    private func cancelDownloads() {
+        encoderDownloader.cancel()
+        encoderDataDownloader.cancel()
+        decoderJointDownloader.cancel()
+        tokenizerDownloader.cancel()
+    }
+
+    private func deleteModel() {
+        deleteError = nil
+        Task { @MainActor in
+            do {
+                for path in effectiveModelPaths {
+                    let url = URL(fileURLWithPath: path)
+                    if FileManager.default.fileExists(atPath: url.path) {
+                        try FileManager.default.removeItem(at: url)
+                    }
+                }
+                encoderDownloader.reset()
+                encoderDataDownloader.reset()
+                decoderJointDownloader.reset()
+                tokenizerDownloader.reset()
+            } catch {
+                deleteError = error.localizedDescription
+            }
+        }
+    }
+
+    private var runtimeStatus: NvidiaNemotronASRRuntimeStatus {
+        NvidiaNemotronASRService.runtimeStatus(
+            runnerURL: AppPaths.bundledNvidiaNemotronRunner,
+            modelFiles: [
+                NvidiaNemotronASRModelFileStatus(spec: files[0], url: URL(fileURLWithPath: effectiveEncoderPath)),
+                NvidiaNemotronASRModelFileStatus(spec: files[1], url: URL(fileURLWithPath: effectiveEncoderDataPath)),
+                NvidiaNemotronASRModelFileStatus(spec: files[2], url: URL(fileURLWithPath: effectiveDecoderJointPath)),
+                NvidiaNemotronASRModelFileStatus(spec: files[3], url: URL(fileURLWithPath: effectiveTokenizerPath)),
+            ]
+        )
+    }
+
+    private var effectiveEncoderPath: String { effectivePath(encoderPath, fallback: files[0].defaultPath) }
+    private var effectiveEncoderDataPath: String { effectivePath(encoderDataPath, fallback: files[1].defaultPath) }
+    private var effectiveDecoderJointPath: String { effectivePath(decoderJointPath, fallback: files[2].defaultPath) }
+    private var effectiveTokenizerPath: String { effectivePath(tokenizerPath, fallback: files[3].defaultPath) }
+
+    private var effectiveModelPaths: [String] {
+        [effectiveEncoderPath, effectiveEncoderDataPath, effectiveDecoderJointPath, effectiveTokenizerPath]
+    }
+
+    private var modelInstalled: Bool {
+        runtimeStatus.isReady
+    }
+
+    private var anyModelFileExists: Bool {
+        effectiveModelPaths.contains { FileManager.default.fileExists(atPath: $0) }
+    }
+
+    private var anyDownloadURLEmpty: Bool {
+        [encoderURL, encoderDataURL, decoderJointURL, tokenizerURL]
+            .contains { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    }
+
+    private var isDownloading: Bool {
+        if case .downloading = encoderDownloader.state { return true }
+        if case .downloading = encoderDataDownloader.state { return true }
+        if case .downloading = decoderJointDownloader.state { return true }
+        if case .downloading = tokenizerDownloader.state { return true }
+        return false
+    }
+
+    private var completedAllDownloads: Bool {
+        if case .completed = encoderDownloader.state,
+           case .completed = encoderDataDownloader.state,
+           case .completed = decoderJointDownloader.state,
+           case .completed = tokenizerDownloader.state {
+            return true
+        }
+        return false
+    }
+
+    private var failureText: String? {
+        if case .failed(let why) = encoderDownloader.state { return "Download failed: \(why)" }
+        if case .failed(let why) = encoderDataDownloader.state { return "Download failed: \(why)" }
+        if case .failed(let why) = decoderJointDownloader.state { return "Download failed: \(why)" }
+        if case .failed(let why) = tokenizerDownloader.state { return "Download failed: \(why)" }
+        return nil
+    }
+
+    private var totalExpectedBytes: Int64 {
+        files.map(\.expectedBytes).reduce(0, +)
+    }
+
+    private var aggregateReceivedBytes: Int64 {
+        zip(files, [encoderDownloader, encoderDataDownloader, decoderJointDownloader, tokenizerDownloader])
+            .map { file, downloader in
+                switch downloader.state {
+                case .completed:
+                    return file.expectedBytes
+                case .downloading(let received, _):
+                    return received
+                default:
+                    let path = effectivePathForFile(file)
+                    return runtimeStatus.modelFiles.first { $0.spec.id == file.id }?.installed == true
+                        ? file.expectedBytes
+                        : existingByteCount(atPath: path)
+                }
+            }
+            .reduce(0, +)
+    }
+
+    private func effectivePathForFile(_ file: NvidiaNemotronASRFileSpec) -> String {
+        if file.id == files[0].id {
+            return effectiveEncoderPath
+        }
+        if file.id == files[1].id {
+            return effectiveEncoderDataPath
+        }
+        if file.id == files[2].id {
+            return effectiveDecoderJointPath
+        }
+        return effectiveTokenizerPath
+    }
+
+    private func existingByteCount(atPath path: String) -> Int64 {
+        (try? ModelDownloadIntegrity.byteCount(of: URL(fileURLWithPath: path))) ?? 0
+    }
+
+    private func statusLabel(_ status: NvidiaNemotronASRRuntimeStatus) -> String {
+        if !status.runnerReady { return "Runtime missing" }
+        if status.isReady { return "Installed" }
+        if anyModelFileExists { return "Incomplete" }
+        return "Not installed"
+    }
+
+    private func statusColor(_ status: NvidiaNemotronASRRuntimeStatus) -> Color {
+        if status.isReady { return .green }
+        if !status.runnerReady { return .red }
+        return .secondary
+    }
+
+    private func userVisibleProblem(_ status: NvidiaNemotronASRRuntimeStatus) -> String? {
+        if !status.runnerReady {
+            return "Nemotron runtime is missing from the app bundle. Rebuild the app and try again."
+        }
+        if !status.isReady && anyModelFileExists {
+            return "Nemotron model is incomplete. Download again or delete it."
+        }
+        if anyDownloadURLEmpty {
+            return "Nemotron model download URL is missing."
+        }
+        return nil
+    }
+
+    private func effectivePath(_ value: String, fallback: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? fallback : trimmed
+    }
+
+    private func format(_ b: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: b, countStyle: .file)
+    }
+
 }
 
 // MARK: - Correction

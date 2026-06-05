@@ -23,6 +23,7 @@ INSTALL_DIR="${INSTALL_DIR:-/Applications}"
 BIN_DIR="$APP_DIR/Contents/MacOS"
 RES_DIR="$APP_DIR/Contents/Resources"
 LLAMA_DIR="$RES_DIR/llama"
+NVIDIA_NEMOTRON_DIR="$RES_DIR/nvidia-nemotron"
 
 usage() {
     cat <<EOF
@@ -290,6 +291,23 @@ if [ -x "$LLAMA_SRC" ]; then
     done
 fi
 
+NVIDIA_NEMOTRON_SRC="$ROOT/vendor/nvidia-nemotron"
+NVIDIA_NEMOTRON_BIN="$NVIDIA_NEMOTRON_SRC/typeforme-nemotron-asr"
+if [ -x "$NVIDIA_NEMOTRON_BIN" ]; then
+    mkdir -p "$NVIDIA_NEMOTRON_DIR"
+    cp "$NVIDIA_NEMOTRON_BIN" "$NVIDIA_NEMOTRON_DIR/typeforme-nemotron-asr"
+    chmod +x "$NVIDIA_NEMOTRON_DIR/typeforme-nemotron-asr"
+    for sib in "$NVIDIA_NEMOTRON_SRC"/*.dylib; do
+        [ -e "$sib" ] && cp "$sib" "$NVIDIA_NEMOTRON_DIR/"
+    done
+    bundle_non_system_deps "$NVIDIA_NEMOTRON_DIR" "typeforme-nemotron-asr"
+    codesign --force --options runtime --sign "$SIGN_IDENTITY" "$NVIDIA_NEMOTRON_DIR/typeforme-nemotron-asr"
+    for sib in "$NVIDIA_NEMOTRON_DIR"/*.dylib; do
+        [ -e "$sib" ] || continue
+        codesign --force --options runtime --sign "$SIGN_IDENTITY" "$sib"
+    done
+fi
+
 # Sign the app bundle. --deep so anything inside Resources/ is verified too.
 APP_ENT="$ROOT/Resources/Typeforme.entitlements"
 codesign --force --options runtime --entitlements "$APP_ENT" \
@@ -303,6 +321,11 @@ if [ -x "$LLAMA_DIR/llama-server-arm64" ]; then
     echo "       (with llama-server-arm64)"
 else
     echo "       (no llama-server-arm64 — drop one in vendor/ and rebuild for embedded LLM)"
+fi
+if [ -x "$NVIDIA_NEMOTRON_DIR/typeforme-nemotron-asr" ]; then
+    echo "       (with nvidia-nemotron helper)"
+else
+    echo "       (no nvidia-nemotron helper — run scripts/build-nvidia-nemotron-helper.sh and rebuild for NVIDIA ASR)"
 fi
 
 if [ "$INSTALL_APP" -eq 1 ]; then

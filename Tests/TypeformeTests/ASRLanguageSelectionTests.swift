@@ -3,21 +3,21 @@ import Testing
 
 @Suite("ASRLanguageSelection")
 struct ASRLanguageSelectionTests {
-    @Test func exposesWhisperLanguageCatalog() {
+    @Test func exposesLanguageCatalog() {
         #expect(ASRLanguageSelection.all.count >= 95)
         #expect(Set(ASRLanguageSelection.all.map(\.id)).count == ASRLanguageSelection.all.count)
         #expect(ASRLanguageSelection.option(for: "yue")?.displayName == "Cantonese")
     }
 
-    @Test func singleLanguageProducesWhisperHint() {
-        #expect(ASRLanguageSelection.whisperLanguageHint(for: ["zh-CN"]) == "zh")
-        #expect(ASRLanguageSelection.whisperLanguageHint(for: ["en-US"]) == "en")
-        #expect(ASRLanguageSelection.whisperLanguageHint(for: ["ja"]) == "ja")
+    @Test func singleLanguageProducesLanguageHint() {
+        #expect(ASRLanguageSelection.languageHint(for: ["zh-CN"]) == "zh")
+        #expect(ASRLanguageSelection.languageHint(for: ["en-US"]) == "en")
+        #expect(ASRLanguageSelection.languageHint(for: ["ja"]) == "ja")
     }
 
     @Test func multipleLanguagesUseDetection() {
-        #expect(ASRLanguageSelection.whisperLanguageHint(for: ["zh-CN", "en-US"]) == nil)
-        #expect(ASRLanguageSelection.whisperCodes(for: ["zh-CN", "en-US"]) == ["zh", "en"])
+        #expect(ASRLanguageSelection.languageHint(for: ["zh-CN", "en-US"]) == nil)
+        #expect(ASRLanguageSelection.languageCodes(for: ["zh-CN", "en-US"]) == ["zh", "en"])
     }
 
     @Test func compatibilityLanguageValuesAreCanonicalized() {
@@ -34,5 +34,17 @@ struct ASRLanguageSelectionTests {
         #expect(ids.contains("ro"))
         #expect(!ids.contains("af"))
         #expect(ASRLanguageSelection.validatedIDs(["af", "vi"], provider: "qwen3-asr-llama") == ["vi"])
+    }
+
+    @Test func nvidiaNemotronLanguageCatalogUsesOutOfBoxLocales() {
+        let ids = Set(ASRLanguageSelection.nvidiaNemotronASRSupportedLanguages.map(\.id))
+        #expect(ids.contains("zh-CN"))
+        #expect(ids.contains("en-US"))
+        #expect(ids.contains("ja"))
+        #expect(ids.contains("vi"))
+        #expect(ids.contains("pl"))
+        #expect(!ids.contains("zh-TW"))
+        #expect(!ids.contains("af"))
+        #expect(ASRLanguageSelection.validatedIDs(["zh-TW", "ja"], provider: "nvidia-nemotron-asr") == ["ja"])
     }
 }

@@ -20,7 +20,7 @@ struct DictationPromptContextPayload: Codable, Sendable, Equatable {
     let appCategory: String
     let languages: [String]
     let languageCodes: [String]
-    let whisperLanguageHint: String
+    let languageHint: String
     let languageInstruction: String
     let correctionMode: String
     let outputPreferences: PromptOutputPreferencesPayload
@@ -31,7 +31,7 @@ struct DictationPromptContextPayload: Codable, Sendable, Equatable {
         case appCategory = "app_category"
         case languages
         case languageCodes = "language_codes"
-        case whisperLanguageHint = "whisper_language_hint"
+        case languageHint = "language_hint"
         case languageInstruction = "language_instruction"
         case correctionMode = "correction_mode"
         case outputPreferences = "output_preferences"

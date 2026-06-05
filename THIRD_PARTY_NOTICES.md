@@ -9,8 +9,6 @@ should include the applicable upstream license texts and attribution notices.
 
 - KeyboardShortcuts: MIT License
   - https://github.com/sindresorhus/KeyboardShortcuts
-- Argmax OSS Swift / WhisperKit: MIT License
-  - https://github.com/argmaxinc/argmax-oss-swift
 - Hummingbird: Apache License 2.0
   - https://github.com/hummingbird-project/hummingbird
 - Swift Server and Apple Swift packages, including SwiftNIO, AsyncHTTPClient,
@@ -28,6 +26,14 @@ should include the applicable upstream license texts and attribution notices.
 - OpenSSL libraries may be included by the local llama runtime build:
   Apache License 2.0
   - https://www.openssl.org/
+- typeforme-nemotron-asr helper dependencies, when built from
+  `Tools/NvidiaNemotronHelper/` and bundled into `dist/Typeforme.app`:
+  - parakeet-rs: MIT OR Apache-2.0
+    - https://github.com/altunenes/parakeet-rs
+  - hound: Apache-2.0
+    - https://github.com/ruuda/hound
+  - serde_json: MIT OR Apache-2.0
+    - https://github.com/serde-rs/json
 
 ## Planned Rime Integration
 

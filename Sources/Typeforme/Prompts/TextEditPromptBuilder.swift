@@ -92,7 +92,7 @@ enum TextEditPromptBuilder {
             bundleID: request.frontmostBundleID ?? "",
             appCategory: request.appCategory.rawValue,
             languages: ASRLanguageSelection.displayNames(for: languageIDs),
-            languageCodes: ASRLanguageSelection.whisperCodes(for: languageIDs),
+            languageCodes: ASRLanguageSelection.languageCodes(for: languageIDs),
             languageInstruction: LocaleTextNormalizer.promptInstruction(for: languageIDs),
             targetLanguageHint: targetLanguageHint(for: request),
             outputPreferences: outputPreferences

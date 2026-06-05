@@ -93,7 +93,7 @@ struct UserPreferences: Codable, Equatable {
 
     init(
         languageIDs: [String] = ["zh-CN", "en-US"],
-        supportedLanguages: [PairingLanguageOption] = PairingLanguageOption.allWhisperLanguages,
+        supportedLanguages: [PairingLanguageOption] = PairingLanguageOption.allLanguages,
         correctionMode: CorrectionModeID = .polish
     ) {
         self.supportedLanguages = supportedLanguages
@@ -107,7 +107,7 @@ struct UserPreferences: Codable, Equatable {
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let supportedLanguages = try container.decodeIfPresent([PairingLanguageOption].self, forKey: .supportedLanguages)
-            ?? PairingLanguageOption.allWhisperLanguages
+            ?? PairingLanguageOption.allLanguages
         let languageIDs = try container.decodeIfPresent([String].self, forKey: .languageIDs)
             ?? ["zh-CN", "en-US"]
         self.init(
@@ -144,7 +144,7 @@ struct PairingPayload: Decodable, Equatable {
 
     func config(
         languageIDs: [String] = ["zh-CN", "en-US"],
-        supportedLanguages: [PairingLanguageOption] = PairingLanguageOption.allWhisperLanguages,
+        supportedLanguages: [PairingLanguageOption] = PairingLanguageOption.allLanguages,
         correctionMode: CorrectionModeID = .polish
     ) -> PairingConfig {
         let localCandidates = PairingConfig.uniqueBridgeURLs([lanBridgeURL] + lanBridgeURLs)
@@ -206,7 +206,7 @@ struct PairingConfig: Codable, Equatable {
         publicBridgeURL: "",
         token: "",
         languageIDs: ["zh-CN", "en-US"],
-        supportedLanguages: PairingLanguageOption.allWhisperLanguages,
+        supportedLanguages: PairingLanguageOption.allLanguages,
         correctionMode: .polish
     )
 
@@ -221,7 +221,7 @@ struct PairingConfig: Codable, Equatable {
         publicBridgeURL: String,
         token: String,
         languageIDs: [String],
-        supportedLanguages: [PairingLanguageOption] = PairingLanguageOption.allWhisperLanguages,
+        supportedLanguages: [PairingLanguageOption] = PairingLanguageOption.allLanguages,
         correctionMode: CorrectionModeID
     ) {
         self.bridgeEndpoints = BridgeEndpoints(
@@ -316,7 +316,7 @@ struct PairingLanguageOption: Codable, Equatable, Identifiable {
         case displayName = "display_name"
     }
 
-    static let allWhisperLanguages = ASRLanguageSelection.all.map(PairingLanguageOption.init)
+    static let allLanguages = ASRLanguageSelection.all.map(PairingLanguageOption.init)
 
     static func asASROptions(_ options: [PairingLanguageOption]) -> [ASRLanguageOption] {
         let resolved = options.compactMap { option -> ASRLanguageOption? in
@@ -326,7 +326,7 @@ struct PairingLanguageOption: Codable, Equatable, Identifiable {
             let id = option.id.trimmingCharacters(in: .whitespacesAndNewlines)
             let name = option.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !id.isEmpty, !name.isEmpty else { return nil }
-            return ASRLanguageOption(id: id, displayName: name, whisperCode: id)
+            return ASRLanguageOption(id: id, displayName: name, languageCode: id)
         }
         return resolved.isEmpty ? ASRLanguageSelection.all : resolved
     }
@@ -553,7 +553,7 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
         self.asrProvider = try container.decodeIfPresent(String.self, forKey: .asrProvider) ?? "qwen3-asr-llama"
         self.asrProviderOptions = try container.decodeIfPresent([BridgeSettingOption].self, forKey: .asrProviderOptions) ?? []
         self.supportedLanguages = try container.decodeIfPresent([PairingLanguageOption].self, forKey: .supportedLanguages)
-            ?? PairingLanguageOption.allWhisperLanguages
+            ?? PairingLanguageOption.allLanguages
         self.supportedLanguagesByASRProvider = try container.decodeIfPresent([String: [PairingLanguageOption]].self, forKey: .supportedLanguagesByASRProvider) ?? [:]
         self.languageIDs = try container.decodeIfPresent([String].self, forKey: .languageIDs) ?? ["zh-CN", "en-US"]
         self.asrTimeoutSec = try container.decodeIfPresent(Double.self, forKey: .asrTimeoutSec) ?? 120

@@ -40,6 +40,11 @@ enum ASRAudioSupport {
                 with: "",
                 options: .regularExpression
             )
+            .replacingOccurrences(
+                of: #"(?i)\s*<[a-z]{2}(?:-[a-z]{2})?>\s*$"#,
+                with: "",
+                options: .regularExpression
+            )
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return value
     }

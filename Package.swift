@@ -18,8 +18,6 @@ let package = Package(
     dependencies: [
         // Global hotkey recorder / monitor.
         .package(url: "https://github.com/sindresorhus/KeyboardShortcuts", .upToNextMajor(from: "2.4.0")),
-        // Argmax OSS WhisperKit ASR provider (product `WhisperKit`).
-        .package(url: "https://github.com/argmaxinc/argmax-oss-swift", .upToNextMajor(from: "1.0.0")),
         // Local HTTP server for Bridge. Do not hand-roll HTTP parsing/keep-alive.
         .package(url: "https://github.com/hummingbird-project/hummingbird.git", .upToNextMajor(from: "2.0.0")),
     ],
@@ -28,7 +26,6 @@ let package = Package(
             name: "Typeforme",
             dependencies: [
                 .product(name: "KeyboardShortcuts", package: "KeyboardShortcuts"),
-                .product(name: "WhisperKit",        package: "argmax-oss-swift"),
                 .product(name: "Hummingbird",       package: "hummingbird"),
             ],
             path: "Sources/Typeforme",
