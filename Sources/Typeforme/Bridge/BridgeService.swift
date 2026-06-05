@@ -72,6 +72,7 @@ final class BridgeService {
 
     func updateSettings(_ request: BridgeSettingsUpdateRequest) async throws -> BridgeSettingsPayload {
         let oldASRProvider = BridgeSettingsPayload.normalizedASRProvider(AppSettings.asrProvider)
+        let oldQwenASRModelID = AppSettings.asrQwenLlamaModelID
         let provider = try resolveASRProvider(request.asrProvider) ?? oldASRProvider
         let supportedLanguages = ASRLanguageSelection.supportedOptions(forProvider: provider)
         let languageIDs = ASRLanguageSelection.validatedIDs(
@@ -82,6 +83,15 @@ final class BridgeService {
         if request.asrProvider != nil {
             UserDefaults.standard.set(provider, forKey: AppSettings.Keys.asrProvider)
         }
+        if let rawModelID = request.asrModelID {
+            let modelID = try resolveASRModelID(rawModelID, provider: provider)
+            switch provider {
+            case "nvidia-nemotron-asr":
+                UserDefaults.standard.set(modelID, forKey: AppSettings.Keys.asrNvidiaNemotronModelID)
+            default:
+                UserDefaults.standard.set(modelID, forKey: AppSettings.Keys.asrQwenLlamaModelID)
+            }
+        }
         if request.languageIDs != nil || request.asrProvider != nil {
             UserDefaults.standard.set(
                 ASRLanguageSelection.rawValue(for: languageIDs, supportedOptions: supportedLanguages),
@@ -90,14 +100,15 @@ final class BridgeService {
         }
         if let timeoutSec = request.asrTimeoutSec {
             let clamped = BridgeSettingsPayload.clampedASRTimeoutSec(timeoutSec)
-            let key: String
             switch provider {
             case "nvidia-nemotron-asr":
-                key = AppSettings.Keys.asrNvidiaNemotronTimeoutSec
+                UserDefaults.standard.set(Double(clamped), forKey: AppSettings.Keys.asrNvidiaNemotronTimeoutSec)
+            case "qwen3-asr-llama+nvidia-nemotron-asr":
+                UserDefaults.standard.set(Double(clamped), forKey: AppSettings.Keys.asrQwenLlamaTimeoutSec)
+                UserDefaults.standard.set(Double(clamped), forKey: AppSettings.Keys.asrNvidiaNemotronTimeoutSec)
             default:
-                key = AppSettings.Keys.asrQwenLlamaTimeoutSec
+                UserDefaults.standard.set(Double(clamped), forKey: AppSettings.Keys.asrQwenLlamaTimeoutSec)
             }
-            UserDefaults.standard.set(Double(clamped), forKey: key)
         }
 
         if let rawBackend = request.correctionBackend {
@@ -154,8 +165,10 @@ final class BridgeService {
 
         UserDefaults.standard.synchronize()
         let newASRProvider = BridgeSettingsPayload.normalizedASRProvider(AppSettings.asrProvider)
+        let newQwenASRModelID = AppSettings.asrQwenLlamaModelID
         Task { @MainActor in
-            if oldASRProvider != newASRProvider, oldASRProvider == "qwen3-asr-llama" {
+            if (oldASRProvider != newASRProvider && Self.providerUsesQwen(oldASRProvider))
+                || oldQwenASRModelID != newQwenASRModelID {
                 await ASRFactory.shared.stopQwenLlama()
             }
             async let asrPreload: Void = ASRFactory.shared.preloadCachedActiveModel()
@@ -192,6 +205,8 @@ final class BridgeService {
 
         let asrStarted = Date()
         let raw: String
+        let asrAlternateTranscripts: [String]
+        let asrWarning: String?
         let transcriptionLatencyMs: Int
         do {
             await publishJobStatus(
@@ -199,14 +214,21 @@ final class BridgeService {
                 stage: .transcribing,
                 message: "Transcribing audio"
             )
-            raw = try await ASRFactory.shared.get().transcribe(audioFileURL: audioURL, languageIDs: languageIDs)
+            let asrResult = try await ASRFactory.shared.get().transcribeResult(audioFileURL: audioURL, languageIDs: languageIDs)
+            raw = asrResult.text
+            asrAlternateTranscripts = asrResult.alternateTranscripts
+            asrWarning = asrResult.warningText
             transcriptionLatencyMs = elapsedMs(since: asrStarted)
+            let combinedAlternateTranscripts = Self.combinedAlternateTranscripts(
+                primaryTranscript: raw,
+                candidates: asrAlternateTranscripts.map(Optional.some) + [request.alternateTranscript]
+            )
             DebugLogStore.recordASR(
                 debugLog,
                 text: raw,
                 status: "ok",
                 latencyMs: transcriptionLatencyMs,
-                alternateText: request.alternateTranscript
+                alternateText: Self.debugAlternateText(combinedAlternateTranscripts)
             )
         } catch {
             DebugLogStore.recordASR(
@@ -236,13 +258,18 @@ final class BridgeService {
             )
             throw BridgeServiceError.emptyTranscript
         }
+        let combinedAlternateTranscripts = Self.combinedAlternateTranscripts(
+            primaryTranscript: trimmed,
+            candidates: asrAlternateTranscripts.map(Optional.some) + [request.alternateTranscript]
+        )
         await publishJobStatus(
             jobID: jobID,
             stage: .transcriptReady,
             message: "Transcript ready",
             rawTranscript: request.includeRawTranscript == true ? trimmed : nil,
             rawTranscriptLength: trimmed.count,
-            transcriptionLatencyMs: transcriptionLatencyMs
+            transcriptionLatencyMs: transcriptionLatencyMs,
+            warning: asrWarning
         )
         let contextBefore = request.contextBefore ?? ""
         let contextAfter = request.contextAfter ?? ""
@@ -255,7 +282,7 @@ final class BridgeService {
             appCategory: appCategory,
             contextBefore: contextBefore,
             contextAfter: contextAfter,
-            alternateTranscript: request.alternateTranscript?.trimmingCharacters(in: .whitespacesAndNewlines)
+            alternateTranscripts: combinedAlternateTranscripts
         )
 
         let correctionStarted = Date()
@@ -278,7 +305,7 @@ final class BridgeService {
                 appCategory: appCategory,
                 contextBefore: contextBefore,
                 contextAfter: contextAfter,
-                alternateTranscript: request.alternateTranscript?.trimmingCharacters(in: .whitespacesAndNewlines)
+                alternateTranscripts: combinedAlternateTranscripts
             )
             correctionLatencyMs = elapsedMs(since: correctionStarted)
         } catch {
@@ -347,6 +374,7 @@ final class BridgeService {
             transcriptionLatencyMs: transcriptionLatencyMs,
             correctionLatencyMs: correctionLatencyMs,
             rawTranscript: request.includeRawTranscript == true ? trimmed : nil,
+            asrWarning: asrWarning,
             correctionStatus: correction.status,
             correctionError: correction.error
         )
@@ -359,6 +387,7 @@ final class BridgeService {
             latencyMs: response.latencyMs,
             transcriptionLatencyMs: transcriptionLatencyMs,
             refineLatencyMs: correctionLatencyMs,
+            warning: asrWarning,
             error: correction.error
         )
         return response
@@ -635,7 +664,7 @@ final class BridgeService {
         appCategory: AppCategory,
         contextBefore: String = "",
         contextAfter: String = "",
-        alternateTranscript: String? = nil
+        alternateTranscripts: [String] = []
     ) async throws -> BridgeCorrectionOutput {
         let request = correctionRequest(
             rawTranscript: rawTranscript,
@@ -646,7 +675,7 @@ final class BridgeService {
             appCategory: appCategory,
             contextBefore: contextBefore,
             contextAfter: contextAfter,
-            alternateTranscript: alternateTranscript
+            alternateTranscripts: alternateTranscripts
         )
 
         var result = try await CorrectorFactory.shared.make().correct(
@@ -669,7 +698,7 @@ final class BridgeService {
         appCategory: AppCategory,
         contextBefore: String = "",
         contextAfter: String = "",
-        alternateTranscript: String? = nil
+        alternateTranscripts: [String] = []
     ) -> CorrectionRequest {
         CorrectionRequest(
             correctionMode: correctionMode,
@@ -683,8 +712,22 @@ final class BridgeService {
             numberOutputPreference: AppSettings.numberOutputPreference,
             punctuationPreference: AppSettings.punctuationPreference,
             userDictionary: dictionary.sortedSnapshot(),
-            alternateTranscript: alternateTranscript
+            alternateTranscripts: alternateTranscripts
         )
+    }
+
+    private static func combinedAlternateTranscripts(
+        primaryTranscript: String,
+        candidates: [String?]
+    ) -> [String] {
+        CorrectionRequest.normalizedAlternateTranscripts(
+            primaryTranscript: primaryTranscript,
+            candidates: candidates
+        )
+    }
+
+    private static func debugAlternateText(_ alternates: [String]) -> String? {
+        alternates.isEmpty ? nil : alternates.joined(separator: "\n")
     }
 
     private func normalize(
@@ -785,6 +828,23 @@ final class BridgeService {
         return value
     }
 
+    private func resolveASRModelID(_ raw: String, provider: String) throws -> String {
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !value.isEmpty else {
+            throw BridgeServiceError.invalidRequest("ASR model cannot be empty")
+        }
+        let options = BridgeSettingsPayload.controllableASRModelOptionsByProvider[provider] ?? []
+        guard options.contains(where: { $0.id == value }) else {
+            throw BridgeServiceError.invalidRequest("Unknown ASR model for \(provider): \(raw)")
+        }
+        return value
+    }
+
+    private static func providerUsesQwen(_ provider: String) -> Bool {
+        let value = provider.lowercased()
+        return value == "qwen3-asr-llama" || value == "qwen3-asr-llama+nvidia-nemotron-asr"
+    }
+
     private func resolveCorrectionBackend(_ raw: String) throws -> CorrectionBackendKind {
         guard let backend = CorrectionBackendKind(rawValue: raw),
               BridgeSettingsPayload.controllableCorrectionBackends.contains(backend)
@@ -883,6 +943,7 @@ final class BridgeService {
         latencyMs: Int? = nil,
         transcriptionLatencyMs: Int? = nil,
         refineLatencyMs: Int? = nil,
+        warning: String? = nil,
         error: String? = nil
     ) async {
         guard let jobID else { return }
@@ -896,6 +957,7 @@ final class BridgeService {
             latencyMs: latencyMs,
             transcriptionLatencyMs: transcriptionLatencyMs,
             refineLatencyMs: refineLatencyMs,
+            warning: warning,
             error: error
         ))
     }

@@ -488,6 +488,8 @@ enum DebugLogStore {
             return AppSettings.asrQwenLlamaModelID
         case "nvidia-nemotron-asr":
             return AppSettings.asrNvidiaNemotronModelID
+        case "qwen3-asr-llama+nvidia-nemotron-asr":
+            return "qwen:\(AppSettings.asrQwenLlamaModelID), nemotron:\(AppSettings.asrNvidiaNemotronModelID)"
         default:
             return AppSettings.asrQwenLlamaModelID
         }
@@ -495,7 +497,7 @@ enum DebugLogStore {
 
     private static func activeASRMaxTokens() -> Int? {
         switch AppSettings.asrProvider.lowercased() {
-        case "qwen3-asr-llama":
+        case "qwen3-asr-llama", "qwen3-asr-llama+nvidia-nemotron-asr":
             return AppSettings.asrQwenLlamaMaxTokens
         default:
             return nil

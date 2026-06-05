@@ -325,13 +325,19 @@ final class DictationCoordinator: ObservableObject {
         var didRecordASR = false
         let asrStarted = Date()
         do {
-            let raw = try await asr.transcribe(audioFileURL: url, languageIDs: AppSettings.asrLanguageIDs)
+            let asrResult = try await asr.transcribeResult(audioFileURL: url, languageIDs: AppSettings.asrLanguageIDs)
+            let raw = asrResult.text
+            let alternateTranscripts = Self.combinedAlternateTranscripts(
+                primaryTranscript: raw,
+                candidates: asrResult.alternateTranscripts.map(Optional.some) + [liveSnapshotAtCorrection]
+            )
+            let asrWarning = asrResult.warningText
             DebugLogStore.recordASR(
                 debugLog,
                 text: raw,
                 status: "ok",
                 latencyMs: elapsedMs(since: asrStarted),
-                alternateText: liveSnapshotAtCorrection
+                alternateText: Self.debugAlternateText(alternateTranscripts)
             )
             didRecordASR = true
             try await ensureActive(sessionID: sessionID, token: cancelToken)
@@ -434,7 +440,10 @@ final class DictationCoordinator: ObservableObject {
             }
 
             transition(to: .correcting)
-            let request = buildCorrectionRequest(rawTranscript: trimmed)
+            let request = buildCorrectionRequest(
+                rawTranscript: trimmed,
+                alternateTranscripts: alternateTranscripts
+            )
             let correctionStarted = Date()
             do {
                 let result = try await corrector.correct(request, timeoutMs: AppSettings.correctionTimeoutMs)
@@ -450,7 +459,7 @@ final class DictationCoordinator: ObservableObject {
                     timeoutMs: AppSettings.correctionTimeoutMs
                 )
                 previewCorrectionMode = request.correctionMode
-                lastWarning = nil
+                lastWarning = asrWarning
                 lastCorrected = normalizedResult.text
                 await finish(with: normalizedResult, sessionID: sessionID, cancelToken: cancelToken)
             } catch CorrectorError.empty {
@@ -495,7 +504,7 @@ final class DictationCoordinator: ObservableObject {
                     timeoutMs: AppSettings.correctionTimeoutMs
                 )
                 previewCorrectionMode = request.correctionMode
-                lastWarning = Self.previewWithoutRefineMessage
+                lastWarning = Self.combinedWarning([Self.previewWithoutRefineMessage, asrWarning])
                 lastCorrected = fallbackResult.text
                 await finish(with: fallbackResult, sessionID: sessionID, cancelToken: cancelToken)
             }
@@ -807,7 +816,7 @@ final class DictationCoordinator: ObservableObject {
             }
             try await ensureActive(sessionID: sessionID, token: cancelToken)
             clearPreviewTargetState()
-            let warning = lastWarning == nil ? nil : Self.insertedWithoutRefineMessage
+            let warning = Self.successWarning(from: lastWarning)
             lastWarning = warning
             transition(to: .success)
             scheduleAutoReset(after: warning == nil ? 0.8 : Self.degradedSuccessResetDelay)
@@ -827,7 +836,8 @@ final class DictationCoordinator: ObservableObject {
 
     private func buildCorrectionRequest(
         rawTranscript: String,
-        correctionModeOverride: CorrectionMode? = nil
+        correctionModeOverride: CorrectionMode? = nil,
+        alternateTranscripts: [String] = []
     ) -> CorrectionRequest {
         let snapshot = frontmostSnapshot
         let category = AppCategory.from(bundleID: snapshot?.bundleID)
@@ -835,8 +845,10 @@ final class DictationCoordinator: ObservableObject {
         // Snapshot the live partial so the corrector sees the same text the
         // user just saw on screen. Neutral framing (see baseSystem prompt) —
         // never attributed by source name in the prompt itself.
-        let alternate = liveSnapshotAtCorrection.trimmingCharacters(in: .whitespacesAndNewlines)
-        let alternateForRequest: String? = alternate.isEmpty ? nil : alternate
+        let alternateForRequest = Self.combinedAlternateTranscripts(
+            primaryTranscript: rawTranscript,
+            candidates: alternateTranscripts.map(Optional.some) + [liveSnapshotAtCorrection]
+        )
         return CorrectionRequest(
             correctionMode: correctionMode,
             frontmostAppName:  snapshot?.localizedName,
@@ -849,8 +861,36 @@ final class DictationCoordinator: ObservableObject {
             numberOutputPreference: AppSettings.numberOutputPreference,
             punctuationPreference: AppSettings.punctuationPreference,
             userDictionary: dictionary.sortedSnapshot(),
-            alternateTranscript: alternateForRequest
+            alternateTranscripts: alternateForRequest
         )
+    }
+
+    private static func combinedAlternateTranscripts(
+        primaryTranscript: String,
+        candidates: [String?]
+    ) -> [String] {
+        CorrectionRequest.normalizedAlternateTranscripts(
+            primaryTranscript: primaryTranscript,
+            candidates: candidates
+        )
+    }
+
+    private static func debugAlternateText(_ alternates: [String]) -> String? {
+        alternates.isEmpty ? nil : alternates.joined(separator: "\n")
+    }
+
+    private static func combinedWarning(_ warnings: [String?]) -> String? {
+        let cleaned = warnings
+            .map { $0?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "" }
+            .filter { !$0.isEmpty }
+        return cleaned.isEmpty ? nil : cleaned.joined(separator: "\n")
+    }
+
+    private static func successWarning(from warning: String?) -> String? {
+        let trimmed = warning?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if trimmed.isEmpty { return nil }
+        if trimmed == previewWithoutRefineMessage { return insertedWithoutRefineMessage }
+        return trimmed
     }
 
     // MARK: - Live partial preview (Apple Speech, on-device only)
@@ -861,7 +901,7 @@ final class DictationCoordinator: ObservableObject {
     // The Mac ASR + correction pipeline is unchanged — Apple Speech never
     // replaces the canonical result. The last partial is captured into
     // `liveSnapshotAtCorrection` at stopDictation() time and threaded into
-    // CorrectionRequest.alternateTranscript so the corrector LLM can use it
+    // CorrectionRequest.alternateTranscripts so the corrector LLM can use it
     // as a supplementary hypothesis (neutral framing — see baseSystem prompt).
     //
     // Gating: AppSettings.voiceLivePreview must be on, the primary language
@@ -1054,6 +1094,7 @@ final class DictationCoordinator: ObservableObject {
                     timeoutMs: AppSettings.correctionTimeoutMs
                 )
                 previewCorrectionMode = selectedCorrectionMode
+                lastWarning = response.asrWarning
                 lastCorrected = editResponse.text
                 try await replaceVoiceDraftIfNeeded(
                     editResponse.text,
@@ -1098,6 +1139,7 @@ final class DictationCoordinator: ObservableObject {
                     timeoutMs: AppSettings.correctionTimeoutMs
                 )
                 previewCorrectionMode = selectedCorrectionMode
+                lastWarning = response.asrWarning
                 lastCorrected = editResponse.text
                 await finishTextEdit(
                     TextEditResult(action: .replaceTarget, text: editResponse.text),
@@ -1125,9 +1167,12 @@ final class DictationCoordinator: ObservableObject {
                 timeoutMs: AppSettings.correctionTimeoutMs
             )
             previewCorrectionMode = selectedCorrectionMode
-            lastWarning = Self.isCorrectionDegradedStatus(response.correctionStatus)
-                ? Self.previewWithoutRefineMessage
-                : nil
+            lastWarning = Self.combinedWarning([
+                Self.isCorrectionDegradedStatus(response.correctionStatus)
+                    ? Self.previewWithoutRefineMessage
+                    : nil,
+                response.asrWarning,
+            ])
             lastCorrected = result.text
             await finish(with: result, sessionID: sessionID, cancelToken: cancelToken)
         } catch is CancellationError {
@@ -1222,7 +1267,7 @@ final class DictationCoordinator: ObservableObject {
                 try await ensureActive(sessionID: sessionID, token: cancelToken)
                 try await committer.commit(result.text, to: frontmostSnapshot, cancelToken: cancelToken)
                 try await ensureActive(sessionID: sessionID, token: cancelToken)
-                let warning = lastWarning == nil ? nil : Self.insertedWithoutRefineMessage
+                let warning = Self.successWarning(from: lastWarning)
                 lastWarning = warning
                 transition(to: .success)
                 scheduleAutoReset(after: warning == nil ? 0.8 : Self.degradedSuccessResetDelay)
@@ -1269,8 +1314,10 @@ final class DictationCoordinator: ObservableObject {
                 )
                 try await ensureActive(sessionID: sessionID, token: cancelToken)
                 clearTextEditRequest()
+                let warning = Self.successWarning(from: lastWarning)
+                lastWarning = warning
                 transition(to: .success)
-                scheduleAutoReset(after: 0.8)
+                scheduleAutoReset(after: warning == nil ? 0.8 : Self.degradedSuccessResetDelay)
             } catch is CancellationError {
                 transition(to: .idle)
             } catch TextCommitterError.cancelled {

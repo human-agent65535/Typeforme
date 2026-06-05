@@ -91,6 +91,7 @@ private struct RemoteBridgeTextEditRequest: Encodable {
 
 private struct RemoteBridgeSettingsUpdateRequest: Encodable {
     let asrProvider: String
+    let asrModelID: String?
     let languageIDs: [String]
     let asrTimeoutSec: Double
     let correctionBackend: String
@@ -107,6 +108,7 @@ private struct RemoteBridgeSettingsUpdateRequest: Encodable {
 
     enum CodingKeys: String, CodingKey {
         case asrProvider = "asr_provider"
+        case asrModelID = "asr_model_id"
         case languageIDs = "language_ids"
         case asrTimeoutSec = "asr_timeout_sec"
         case correctionBackend = "correction_backend"
@@ -189,6 +191,7 @@ struct RemoteBridgeClient {
     ) async throws -> BridgeSettingsPayload {
         let payload = RemoteBridgeSettingsUpdateRequest(
             asrProvider: settings.asrProvider,
+            asrModelID: settings.asrModelID,
             languageIDs: settings.languageIDs,
             asrTimeoutSec: settings.asrTimeoutSec,
             correctionBackend: settings.correctionBackend,

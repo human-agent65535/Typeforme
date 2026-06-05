@@ -166,12 +166,20 @@ enum ASRLanguageSelection {
         return all.filter { supported.contains($0.id) }
     }
 
+    static var dualASRSupportedLanguages: [ASRLanguageOption] {
+        let qwen = Set(qwenASRSupportedLanguageIDs)
+        let nemotron = Set(nvidiaNemotronASRSupportedLanguageIDs)
+        return all.filter { qwen.contains($0.id) && nemotron.contains($0.id) }
+    }
+
     static func supportedOptions(forProvider provider: String) -> [ASRLanguageOption] {
         switch normalizedProvider(provider) {
         case "qwen3-asr-llama":
             return qwenASRSupportedLanguages
         case "nvidia-nemotron-asr":
             return nvidiaNemotronASRSupportedLanguages
+        case "qwen3-asr-llama+nvidia-nemotron-asr":
+            return dualASRSupportedLanguages
         default:
             return all
         }
@@ -280,7 +288,7 @@ enum ASRLanguageSelection {
     private static func normalizedProvider(_ provider: String) -> String {
         let value = provider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         switch value {
-        case "qwen3-asr-llama", "nvidia-nemotron-asr":
+        case "qwen3-asr-llama", "nvidia-nemotron-asr", "qwen3-asr-llama+nvidia-nemotron-asr":
             return value
         default:
             return "qwen3-asr-llama"

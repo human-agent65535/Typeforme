@@ -109,6 +109,7 @@ struct BridgeJobStatusEvent: Codable, Sendable {
     let latencyMs: Int?
     let transcriptionLatencyMs: Int?
     let refineLatencyMs: Int?
+    let warning: String?
     let error: String?
     let updatedAt: TimeInterval
 
@@ -122,6 +123,7 @@ struct BridgeJobStatusEvent: Codable, Sendable {
         case latencyMs = "latency_ms"
         case transcriptionLatencyMs = "transcription_latency_ms"
         case refineLatencyMs = "refine_latency_ms"
+        case warning
         case error
         case updatedAt = "updated_at"
     }
@@ -136,6 +138,7 @@ struct BridgeJobStatusEvent: Codable, Sendable {
         latencyMs: Int? = nil,
         transcriptionLatencyMs: Int? = nil,
         refineLatencyMs: Int? = nil,
+        warning: String? = nil,
         error: String? = nil,
         updatedAt: TimeInterval = Date().timeIntervalSince1970
     ) {
@@ -148,6 +151,7 @@ struct BridgeJobStatusEvent: Codable, Sendable {
         self.latencyMs = latencyMs
         self.transcriptionLatencyMs = transcriptionLatencyMs
         self.refineLatencyMs = refineLatencyMs
+        self.warning = warning
         self.error = error
         self.updatedAt = updatedAt
     }

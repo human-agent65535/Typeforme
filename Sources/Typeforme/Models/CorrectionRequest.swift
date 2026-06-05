@@ -12,13 +12,9 @@ struct CorrectionRequest: Codable, Sendable {
     var numberOutputPreference: NumberOutputPreference
     var punctuationPreference: PunctuationOutputPreference
     var userDictionary: [DictionaryEntry]
-    /// Optional supplementary transcription of the same audio from another ASR
-    /// (e.g. iOS on-device Apple Speech, used for live preview before this
-    /// request was sent). The prompt presents this as a neutral "alternate
-    /// hypothesis" — never attributed by source name — and instructs the LLM
-    /// to fall back on linguistic plausibility when raw_transcript and the
-    /// alternate disagree. `nil` when no alternate was provided.
-    var alternateTranscript: String?
+    /// Optional supplementary transcriptions of the same audio. The prompt
+    /// presents these as neutral hypotheses, never attributed by source name.
+    var alternateTranscripts: [String]
 
     init(
         correctionMode: CorrectionMode,
@@ -32,7 +28,8 @@ struct CorrectionRequest: Codable, Sendable {
         numberOutputPreference: NumberOutputPreference = .automatic,
         punctuationPreference: PunctuationOutputPreference = .normal,
         userDictionary: [DictionaryEntry],
-        alternateTranscript: String? = nil
+        alternateTranscript: String? = nil,
+        alternateTranscripts: [String] = []
     ) {
         self.correctionMode = correctionMode
         self.frontmostAppName = frontmostAppName
@@ -45,7 +42,10 @@ struct CorrectionRequest: Codable, Sendable {
         self.numberOutputPreference = numberOutputPreference
         self.punctuationPreference = punctuationPreference
         self.userDictionary = userDictionary
-        self.alternateTranscript = alternateTranscript
+        self.alternateTranscripts = Self.normalizedAlternateTranscripts(
+            primaryTranscript: rawTranscript,
+            candidates: alternateTranscripts.map(Optional.some) + [alternateTranscript]
+        )
     }
 
     func replacingCorrectionMode(_ correctionMode: CorrectionMode) -> CorrectionRequest {
@@ -61,7 +61,23 @@ struct CorrectionRequest: Codable, Sendable {
             numberOutputPreference: numberOutputPreference,
             punctuationPreference: punctuationPreference,
             userDictionary: userDictionary,
-            alternateTranscript: alternateTranscript
+            alternateTranscripts: alternateTranscripts
         )
+    }
+
+    static func normalizedAlternateTranscripts(
+        primaryTranscript: String,
+        candidates: [String?]
+    ) -> [String] {
+        let primary = primaryTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+        var seen = Set<String>()
+        var alternates: [String] = []
+        for candidate in candidates {
+            let value = candidate?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            guard !value.isEmpty, value != primary else { continue }
+            guard seen.insert(value).inserted else { continue }
+            alternates.append(value)
+        }
+        return alternates
     }
 }

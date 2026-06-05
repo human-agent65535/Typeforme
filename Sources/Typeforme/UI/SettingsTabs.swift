@@ -459,6 +459,16 @@ struct ClientServerSettingsView: View {
                     }
                     .pickerStyle(.menu)
 
+                    if BridgeSettingsPayload.providerUsesQwen(current.asrProvider),
+                       !current.asrModelOptions(for: current.asrProvider).isEmpty {
+                        Picker("Model", selection: asrModelBinding) {
+                            ForEach(current.asrModelOptions(for: current.asrProvider)) { option in
+                                Text(option.displayName).tag(option.id)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                    }
+
                     Text(selectedLanguageSummary)
                         .font(.footnote)
                         .foregroundStyle(.secondary)
@@ -566,6 +576,16 @@ struct ClientServerSettingsView: View {
             draft?.asrProvider ?? "qwen3-asr-llama"
         } set: { value in
             draft?.asrProvider = value
+            normalizeDraft()
+        }
+    }
+
+    private var asrModelBinding: Binding<String> {
+        Binding {
+            guard let draft else { return "" }
+            return draft.asrModelID ?? draft.asrModelOptions(for: draft.asrProvider).first?.id ?? ""
+        } set: { value in
+            draft?.asrModelID = value
             normalizeDraft()
         }
     }
@@ -1181,6 +1201,7 @@ struct ASRSettingsView: View {
                 Picker("Provider", selection: $provider) {
                     Text("Qwen3-ASR (default)").tag("qwen3-asr-llama")
                     Text("NVIDIA Nemotron ASR").tag("nvidia-nemotron-asr")
+                    Text("Qwen + Nemotron Cross-check").tag("qwen3-asr-llama+nvidia-nemotron-asr")
                 }
                 .pickerStyle(.menu)
 
@@ -1203,22 +1224,33 @@ struct ASRSettingsView: View {
                     Text(selectedNvidiaModel.note)
                         .font(.footnote)
                         .foregroundStyle(.secondary)
-                } else {
-                    Picker("Model", selection: $qwenModelID) {
+                }
+
+                if usesQwenProvider {
+                    Picker(isDualProvider ? "Qwen model" : "Model", selection: $qwenModelID) {
                         ForEach(QwenASRModelCatalog.all) { spec in
                             Text(spec.label).tag(spec.id)
                         }
                     }
                     .pickerStyle(.menu)
-                    IntegerSettingField(
-                        title: "Timeout",
-                        value: Binding(
-                            get: { Int(qwenTimeoutSec) },
-                            set: { qwenTimeoutSec = Double($0) }
-                        ),
-                        range: 10...300,
-                        suffix: "s"
-                    )
+                    if isDualProvider {
+                        IntegerSettingField(
+                            title: "Timeout",
+                            value: crossCheckTimeoutBinding,
+                            range: 10...300,
+                            suffix: "s"
+                        )
+                    } else {
+                        IntegerSettingField(
+                            title: "Timeout",
+                            value: Binding(
+                                get: { Int(qwenTimeoutSec) },
+                                set: { qwenTimeoutSec = Double($0) }
+                            ),
+                            range: 10...300,
+                            suffix: "s"
+                        )
+                    }
                     IntegerSettingField(
                         title: "Max transcript tokens",
                         value: $qwenMaxTokens,
@@ -1229,6 +1261,12 @@ struct ASRSettingsView: View {
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                     Text("This caps only Qwen-ASR transcript output. It is not the refine model token limit.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+
+                if isDualProvider {
+                    Text("Runs Qwen and Nemotron in parallel. If the cross-check transcript is unavailable, Typeforme continues with the primary transcript and shows a warning.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -1270,12 +1308,13 @@ struct ASRSettingsView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
-            if !isNvidiaProvider {
+            if usesQwenProvider {
                 Section("Qwen3-ASR model") {
                     QwenASRModelRow(spec: selectedQwenModel)
                         .id(selectedQwenModel.id)
                 }
-            } else {
+            }
+            if usesNvidiaProvider {
                 Section("NVIDIA Nemotron model") {
                     NvidiaNemotronASRModelRow(spec: selectedNvidiaModel)
                         .id(selectedNvidiaModel.id)
@@ -1300,6 +1339,29 @@ struct ASRSettingsView: View {
         provider.lowercased() == "nvidia-nemotron-asr"
     }
 
+    private var isDualProvider: Bool {
+        provider.lowercased() == "qwen3-asr-llama+nvidia-nemotron-asr"
+    }
+
+    private var usesQwenProvider: Bool {
+        provider.lowercased() == "qwen3-asr-llama"
+            || provider.lowercased() == "qwen3-asr-llama+nvidia-nemotron-asr"
+    }
+
+    private var usesNvidiaProvider: Bool {
+        isNvidiaProvider || isDualProvider
+    }
+
+    private var crossCheckTimeoutBinding: Binding<Int> {
+        Binding(
+            get: { Int(max(qwenTimeoutSec, nvidiaTimeoutSec)) },
+            set: {
+                qwenTimeoutSec = Double($0)
+                nvidiaTimeoutSec = Double($0)
+            }
+        )
+    }
+
     private var selectedLanguageIDs: [String] {
         ASRLanguageSelection.parse(languageIDsRaw, supportedOptions: supportedLanguageOptions)
     }
@@ -1319,6 +1381,9 @@ struct ASRSettingsView: View {
     }
 
     private var languageHelpText: String {
+        if isDualProvider {
+            return "Cross-check supports only languages shared by Qwen and Nemotron. The checked languages constrain ASR selection, script normalization, and correction."
+        }
         if isNvidiaProvider {
             return "Nemotron uses a target language for one selected language and automatic language detection for multiple selected languages. The checked languages constrain script normalization and correction after ASR."
         }
@@ -1386,7 +1451,9 @@ struct ASRSettingsView: View {
         if nvidiaModelID != normalizedNvidiaModelID {
             nvidiaModelID = normalizedNvidiaModelID
         }
-        if value != "qwen3-asr-llama" && value != "nvidia-nemotron-asr" {
+        if value != "qwen3-asr-llama"
+            && value != "nvidia-nemotron-asr"
+            && value != "qwen3-asr-llama+nvidia-nemotron-asr" {
             provider = "qwen3-asr-llama"
         }
     }
@@ -1433,32 +1500,20 @@ private struct QwenASRModelRow: View {
                 Spacer()
                 combinedStatusLabel
             }
-            HStack {
-                Text("Model").frame(width: 60, alignment: .leading)
-                TextField("", text: $modelPath).textFieldStyle(.roundedBorder)
-                Button("Reveal") { reveal(modelPath) }
-            }
-            HStack {
-                Text("URL").frame(width: 60, alignment: .leading)
-                TextField("", text: $modelURL).textFieldStyle(.roundedBorder)
-            }
-            HStack {
-                Text("mmproj").frame(width: 60, alignment: .leading)
-                TextField("", text: $mmprojPath).textFieldStyle(.roundedBorder)
-                Button("Reveal") { reveal(mmprojPath) }
-            }
-            HStack {
-                Text("URL").frame(width: 60, alignment: .leading)
-                TextField("", text: $mmprojURL).textFieldStyle(.roundedBorder)
-            }
             downloadControls
+            if let message = userVisibleProblem {
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .lineLimit(2)
+            }
         }
         .padding(.vertical, 4)
     }
 
     private var combinedStatusLabel: some View {
         let installed = modelExists && mmprojExists
-        return Text(installed ? "Installed" : "\(modelExists ? 1 : 0)/2 files")
+        return Text(installed ? "Installed" : (anyModelFileExists ? "Incomplete" : "Not installed"))
             .font(.caption)
             .foregroundStyle(installed ? .green : .secondary)
     }
@@ -1467,12 +1522,7 @@ private struct QwenASRModelRow: View {
     private var downloadControls: some View {
         if isDownloading {
             VStack(alignment: .leading, spacing: 4) {
-                if case .downloading(let received, let total) = modelDownloader.state {
-                    downloadProgress(title: "Model", received: received, total: total)
-                }
-                if case .downloading(let received, let total) = mmprojDownloader.state {
-                    downloadProgress(title: "mmproj", received: received, total: total)
-                }
+                downloadProgress(received: aggregateReceivedBytes, total: aggregateTotalBytes)
                 Button {
                     modelDownloader.cancel()
                     mmprojDownloader.cancel()
@@ -1487,13 +1537,18 @@ private struct QwenASRModelRow: View {
                 } label: {
                     Label(modelExists && mmprojExists ? "Update" : "Download", systemImage: "arrow.down.circle")
                 }
-                .disabled(modelURL.trimmingCharacters(in: .whitespaces).isEmpty || mmprojURL.trimmingCharacters(in: .whitespaces).isEmpty)
+                .disabled(anyDownloadURLEmpty)
                 Button(role: .destructive) {
                     deleteModel()
                 } label: {
                     Label("Delete", systemImage: "trash")
                 }
                 .disabled(!modelExists && !mmprojExists)
+                Button {
+                    revealModelFolder()
+                } label: {
+                    Label("Reveal", systemImage: "folder")
+                }
                 if let why = failureText {
                     Text(why)
                         .font(.caption)
@@ -1516,11 +1571,11 @@ private struct QwenASRModelRow: View {
         }
     }
 
-    private func downloadProgress(title: String, received: Int64, total: Int64) -> some View {
+    private func downloadProgress(received: Int64, total: Int64) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             ProgressView(value: total > 0 ? Double(received) / Double(total) : 0)
             HStack {
-                Text("\(title): \(format(received)) / \(format(total))")
+                Text("Downloading model: \(format(received)) / \(format(total))")
                     .font(.caption)
                     .monospacedDigit()
                 Spacer()
@@ -1529,8 +1584,8 @@ private struct QwenASRModelRow: View {
     }
 
     private func startDownloads() {
-        let modelURLString = modelURL.trimmingCharacters(in: .whitespaces)
-        let mmprojURLString = mmprojURL.trimmingCharacters(in: .whitespaces)
+        let modelURLString = effectiveModelURLString
+        let mmprojURLString = effectiveMMProjURLString
         guard let modelDownloadURL = URL(string: modelURLString),
               let mmprojDownloadURL = URL(string: mmprojURLString)
         else { return }
@@ -1568,16 +1623,10 @@ private struct QwenASRModelRow: View {
         }
     }
 
-    private func reveal(_ path: String) {
-        let effectivePath = path.trimmingCharacters(in: .whitespacesAndNewlines)
-        let target = URL(fileURLWithPath: effectivePath.isEmpty ? spec.defaultModelPath : effectivePath)
-        let dir = target.deletingLastPathComponent()
+    private func revealModelFolder() {
+        let dir = URL(fileURLWithPath: effectiveModelPath).deletingLastPathComponent()
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        if FileManager.default.fileExists(atPath: target.path) {
-            NSWorkspace.shared.activateFileViewerSelecting([target])
-        } else {
-            NSWorkspace.shared.activateFileViewerSelecting([dir])
-        }
+        NSWorkspace.shared.open(dir)
     }
 
     private func format(_ b: Int64) -> String {
@@ -1600,6 +1649,24 @@ private struct QwenASRModelRow: View {
         FileManager.default.fileExists(atPath: effectiveMMProjPath)
     }
 
+    private var anyModelFileExists: Bool {
+        modelExists || mmprojExists
+    }
+
+    private var effectiveModelURLString: String {
+        let trimmed = modelURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? spec.defaultModelURL : trimmed
+    }
+
+    private var effectiveMMProjURLString: String {
+        let trimmed = mmprojURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? spec.defaultMMProjURL : trimmed
+    }
+
+    private var anyDownloadURLEmpty: Bool {
+        effectiveModelURLString.isEmpty || effectiveMMProjURLString.isEmpty
+    }
+
     private var isDownloading: Bool {
         if case .downloading = modelDownloader.state { return true }
         if case .downloading = mmprojDownloader.state { return true }
@@ -1618,6 +1685,51 @@ private struct QwenASRModelRow: View {
         if case .failed(let why) = modelDownloader.state { return "Model: \(why)" }
         if case .failed(let why) = mmprojDownloader.state { return "mmproj: \(why)" }
         return nil
+    }
+
+    private var userVisibleProblem: String? {
+        if !(modelExists && mmprojExists), anyModelFileExists {
+            return "Qwen3-ASR model is incomplete. Download again or delete it."
+        }
+        if anyDownloadURLEmpty {
+            return "Qwen3-ASR model download URL is missing."
+        }
+        return nil
+    }
+
+    private var aggregateReceivedBytes: Int64 {
+        downloaderReceivedBytes(modelDownloader, fallbackPath: effectiveModelPath)
+            + downloaderReceivedBytes(mmprojDownloader, fallbackPath: effectiveMMProjPath)
+    }
+
+    private var aggregateTotalBytes: Int64 {
+        let modelTotal = downloaderTotalBytes(modelDownloader)
+        let mmprojTotal = downloaderTotalBytes(mmprojDownloader)
+        return modelTotal + mmprojTotal
+    }
+
+    private func downloaderReceivedBytes(_ downloader: ModelDownloader, fallbackPath: String) -> Int64 {
+        switch downloader.state {
+        case .completed:
+            return existingByteCount(atPath: fallbackPath)
+        case .downloading(let received, _):
+            return received
+        default:
+            return existingByteCount(atPath: fallbackPath)
+        }
+    }
+
+    private func downloaderTotalBytes(_ downloader: ModelDownloader) -> Int64 {
+        switch downloader.state {
+        case .downloading(let received, let total):
+            return max(received, total)
+        default:
+            return 0
+        }
+    }
+
+    private func existingByteCount(atPath path: String) -> Int64 {
+        (try? ModelDownloadIntegrity.byteCount(of: URL(fileURLWithPath: path))) ?? 0
     }
 }
 
@@ -1703,6 +1815,11 @@ private struct NvidiaNemotronASRModelRow: View {
                     Label("Delete", systemImage: "trash")
                 }
                 .disabled(!anyModelFileExists)
+                Button {
+                    revealModelFolder()
+                } label: {
+                    Label("Reveal", systemImage: "folder")
+                }
                 if let why = failureText {
                     Text(why)
                         .font(.caption)
@@ -1783,6 +1900,12 @@ private struct NvidiaNemotronASRModelRow: View {
                 deleteError = error.localizedDescription
             }
         }
+    }
+
+    private func revealModelFolder() {
+        let dir = URL(fileURLWithPath: effectiveEncoderPath).deletingLastPathComponent()
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        NSWorkspace.shared.open(dir)
     }
 
     private var runtimeStatus: NvidiaNemotronASRRuntimeStatus {
@@ -2286,9 +2409,8 @@ struct CorrectionSettingsView: View {
     }
 }
 
-/// One row for an embedded llama model: shows current path, file status,
-/// and a download button driven by ModelDownloader. The Reveal button opens
-/// the model folder in Finder so the user can manually drop a .gguf there too.
+/// One row for an embedded llama model. The UI treats the model as one
+/// installable unit; path and URL settings remain internal configuration.
 private struct ModelDownloadRow: View {
     let spec: LocalLlamaModelSpec
     let isSelected: Bool
@@ -2327,16 +2449,13 @@ private struct ModelDownloadRow: View {
                 Spacer()
                 statusLabel
             }
-            HStack {
-                Text("Path").frame(width: 60, alignment: .leading)
-                TextField("", text: $path).textFieldStyle(.roundedBorder)
-                Button("Reveal") { reveal() }
-            }
-            HStack {
-                Text("URL").frame(width: 60, alignment: .leading)
-                TextField("", text: $url).textFieldStyle(.roundedBorder)
-            }
             downloadControls
+            if let message = userVisibleProblem {
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .lineLimit(2)
+            }
         }
         .padding(.vertical, 4)
     }
@@ -2361,17 +2480,22 @@ private struct ModelDownloadRow: View {
                     startDownload()
                 } label: {
                     Label(
-                        modelExists ? "Re-download" : "Download",
+                        modelExists ? "Update" : "Download",
                         systemImage: "arrow.down.circle"
                     )
                 }
-                .disabled(url.trimmingCharacters(in: .whitespaces).isEmpty)
+                .disabled(effectiveURLString.isEmpty)
                 Button(role: .destructive) {
                     deleteModel()
                 } label: {
                     Label("Delete", systemImage: "trash")
                 }
                 .disabled(!modelExists || isDownloading)
+                Button {
+                    revealModelFolder()
+                } label: {
+                    Label("Reveal", systemImage: "folder")
+                }
                 if case .failed(let why) = downloader.state {
                     Text(why)
                         .font(.caption)
@@ -2395,7 +2519,7 @@ private struct ModelDownloadRow: View {
             VStack(alignment: .leading, spacing: 4) {
                 ProgressView(value: total > 0 ? Double(received) / Double(total) : 0)
                 HStack {
-                    Text("\(format(received)) / \(format(total))")
+                    Text("Downloading model: \(format(received)) / \(format(total))")
                         .font(.caption)
                         .monospacedDigit()
                     Spacer()
@@ -2409,7 +2533,7 @@ private struct ModelDownloadRow: View {
     // MARK: - Actions
 
     private func startDownload() {
-        let trimmed = url.trimmingCharacters(in: .whitespaces)
+        let trimmed = effectiveURLString
         guard let u = URL(string: trimmed) else { return }
         let dest = URL(fileURLWithPath: effectivePath)
         deleteError = nil
@@ -2440,15 +2564,10 @@ private struct ModelDownloadRow: View {
         }
     }
 
-    private func reveal() {
+    private func revealModelFolder() {
         let dir = URL(fileURLWithPath: effectivePath).deletingLastPathComponent()
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let target = URL(fileURLWithPath: effectivePath)
-        if FileManager.default.fileExists(atPath: target.path) {
-            NSWorkspace.shared.activateFileViewerSelecting([target])
-        } else {
-            NSWorkspace.shared.activateFileViewerSelecting([dir])
-        }
+        NSWorkspace.shared.open(dir)
     }
 
     private func format(_ b: Int64) -> String {
@@ -2459,6 +2578,10 @@ private struct ModelDownloadRow: View {
         path.isEmpty ? spec.defaultPath : path
     }
 
+    private var effectiveURLString: String {
+        url.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     private var modelExists: Bool {
         FileManager.default.fileExists(atPath: effectivePath)
     }
@@ -2466,6 +2589,13 @@ private struct ModelDownloadRow: View {
     private var isDownloading: Bool {
         if case .downloading = downloader.state { return true }
         return false
+    }
+
+    private var userVisibleProblem: String? {
+        if effectiveURLString.isEmpty {
+            return "Model download URL is missing."
+        }
+        return nil
     }
 }
 

@@ -1473,6 +1473,16 @@ private struct MacSettingsView: View {
                     }
                     .pickerStyle(.menu)
 
+                    if BridgeMacSettingsPayload.providerUsesQwen(draft.asrProvider),
+                       !draft.asrModelOptions(for: draft.asrProvider).isEmpty {
+                        Picker("Model", selection: asrModelBinding) {
+                            ForEach(draft.asrModelOptions(for: draft.asrProvider)) { option in
+                                Text(option.displayName).tag(option.id)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                    }
+
                     TimeoutSecondsRow(
                         title: "ASR Timeout",
                         seconds: asrTimeoutSecondsBinding,
@@ -1665,6 +1675,16 @@ private struct MacSettingsView: View {
             draft?.asrProvider ?? "qwen3-asr-llama"
         } set: { value in
             draft?.asrProvider = value
+            normalizeDraft()
+        }
+    }
+
+    private var asrModelBinding: Binding<String> {
+        Binding {
+            guard let draft else { return "" }
+            return draft.asrModelID ?? draft.asrModelOptions(for: draft.asrProvider).first?.id ?? ""
+        } set: { value in
+            draft?.asrModelID = value
             normalizeDraft()
         }
     }

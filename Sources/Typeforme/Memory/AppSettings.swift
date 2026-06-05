@@ -17,7 +17,7 @@ enum AppSettings {
         static let launchAtLogin        = "app.launchAtLogin"
 
         // ASR
-        static let asrProvider          = "asr.provider"            // "qwen3-asr-llama" | "nvidia-nemotron-asr"
+        static let asrProvider          = "asr.provider"            // "qwen3-asr-llama" | "nvidia-nemotron-asr" | "qwen3-asr-llama+nvidia-nemotron-asr"
         static let asrLanguageIDs       = "asr.languages"           // comma-separated ASRLanguageOption ids
         static let asrNvidiaNemotronTimeoutSec = "asr.nvidia.nemotron.timeoutSec"
         static let asrNvidiaNemotronModelID = "asr.nvidia.nemotron.modelID"
@@ -180,7 +180,7 @@ enum AppSettings {
         UserDefaults.standard.register(defaults: registeredDefaults)
 
         if let raw = UserDefaults.standard.string(forKey: Keys.asrProvider),
-           !["qwen3-asr-llama", "nvidia-nemotron-asr"].contains(raw.lowercased()) {
+           !["qwen3-asr-llama", "nvidia-nemotron-asr", "qwen3-asr-llama+nvidia-nemotron-asr"].contains(raw.lowercased()) {
             UserDefaults.standard.set("qwen3-asr-llama", forKey: Keys.asrProvider)
         }
         repairInvalidRawSetting(forKey: Keys.correctionBackend, default: CorrectionBackendKind.qwen35_2B)
@@ -307,7 +307,9 @@ enum AppSettings {
 
     static var asrProvider: String {
         let raw = ud.string(forKey: Keys.asrProvider)?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard raw == "qwen3-asr-llama" || raw == "nvidia-nemotron-asr" else {
+        guard raw == "qwen3-asr-llama"
+            || raw == "nvidia-nemotron-asr"
+            || raw == "qwen3-asr-llama+nvidia-nemotron-asr" else {
             return "qwen3-asr-llama"
         }
         return raw!

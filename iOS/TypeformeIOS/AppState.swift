@@ -1475,6 +1475,7 @@ final class AppState {
             applyCorrectionMetadata(
                 status: finalCorrectionStatus,
                 error: finalCorrectionError,
+                asrWarning: response.asrWarning,
                 successKind: successKind
             )
             if let resultCommandID {
@@ -1576,7 +1577,10 @@ final class AppState {
             )
             notifyKeyboardResultReady()
             errorMessage = nil
-            applyCorrectionMetadata(status: response.correctionStatus, error: response.correctionError)
+            applyCorrectionMetadata(
+                status: response.correctionStatus,
+                error: response.correctionError
+            )
         } catch {
             // Invalidate the route cache on both auth and network errors so
             // the next Restyle tap re-probes instead of reusing a dead route.
@@ -3046,9 +3050,11 @@ final class AppState {
     private func applyCorrectionMetadata(
         status correctionStatus: String?,
         error correctionError: String?,
+        asrWarning: String? = nil,
         successKind: AppPhase.SuccessKind = .ready
     ) {
         let normalizedStatus = correctionStatus?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let warning = asrWarning?.trimmingCharacters(in: .whitespacesAndNewlines)
         if normalizedStatus == "error" {
             let message = correctionError?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             setFailure(message.isEmpty ? "Mac refine failed." : message)
@@ -3057,19 +3063,12 @@ final class AppState {
         if Self.isCorrectionDegradedStatus(normalizedStatus) {
             errorMessage = nil
             setPhase(.success(successKind))
-            showTransient(Self.degradedCorrectionMessage(for: successKind))
+            showTransient(Self.statusMessage(Self.degradedCorrectionMessage(for: successKind), warning: warning))
             return
         }
         errorMessage = nil
         setPhase(.success(successKind))
-        switch successKind {
-        case .ready:
-            showTransient("Ready")
-        case .copied:
-            showTransient("Copied")
-        case .inserted:
-            showTransient("Inserted")
-        }
+        showTransient(Self.statusMessage(Self.successMessage(for: successKind), warning: warning))
     }
 
     private static func isCorrectionDegradedStatus(_ status: String?) -> Bool {
@@ -3090,6 +3089,22 @@ final class AppState {
         case .inserted:
             return "Inserted without refine"
         }
+    }
+
+    private static func successMessage(for successKind: AppPhase.SuccessKind) -> String {
+        switch successKind {
+        case .ready:
+            return "Ready"
+        case .copied:
+            return "Copied"
+        case .inserted:
+            return "Inserted"
+        }
+    }
+
+    private static func statusMessage(_ message: String, warning: String?) -> String {
+        guard let warning, !warning.isEmpty else { return message }
+        return "\(message) · \(warning)"
     }
 
     private func isBenignEmptyTranscript(_ error: Error) -> Bool {

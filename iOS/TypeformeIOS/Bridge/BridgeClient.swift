@@ -87,6 +87,7 @@ struct BridgeClient {
     ) async throws -> BridgeMacSettingsPayload {
         let payload = BridgeSettingsUpdateRequest(
             asrProvider: settings.asrProvider,
+            asrModelID: settings.asrModelID,
             languageIDs: settings.languageIDs,
             asrTimeoutSec: settings.asrTimeoutSec,
             correctionBackend: settings.correctionBackend,

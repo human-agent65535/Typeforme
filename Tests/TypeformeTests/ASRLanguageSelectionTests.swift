@@ -47,4 +47,20 @@ struct ASRLanguageSelectionTests {
         #expect(!ids.contains("af"))
         #expect(ASRLanguageSelection.validatedIDs(["zh-TW", "ja"], provider: "nvidia-nemotron-asr") == ["ja"])
     }
+
+    @Test func dualASRLanguageCatalogUsesProviderIntersection() {
+        let ids = Set(ASRLanguageSelection.dualASRSupportedLanguages.map(\.id))
+        #expect(ids.contains("zh-CN"))
+        #expect(ids.contains("en-US"))
+        #expect(ids.contains("ja"))
+        #expect(ids.contains("vi"))
+        #expect(!ids.contains("zh-TW"))
+        #expect(!ids.contains("af"))
+        #expect(
+            ASRLanguageSelection.validatedIDs(
+                ["zh-TW", "zh-CN"],
+                provider: "qwen3-asr-llama+nvidia-nemotron-asr"
+            ) == ["zh-CN"]
+        )
+    }
 }

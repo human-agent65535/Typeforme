@@ -53,11 +53,11 @@ struct PromptBuilderTests {
         #expect(repairPrompt.contains("\"text\":\"The button label should be hold to speak.\""))
     }
 
-    @Test func userPromptThreadsAlternateTranscriptIntoInputJSON() {
+    @Test func userPromptThreadsAlternateTranscriptsIntoInputJSON() {
         // Regression: a prior version built `alternate_transcript` only for the
         // debug-log copy of CorrectionRequest, and re-derived a fresh request
         // for the corrector pipeline without it. The LLM never saw the second
-        // hypothesis. Pin the field down end-to-end here.
+        // hypothesis. Pin the plural field down end-to-end here.
         let request = CorrectionRequest(
             correctionMode: .polish,
             frontmostAppName: "Notes",
@@ -69,10 +69,10 @@ struct PromptBuilderTests {
             alternateTranscript: "今天 ship 这个 future"
         )
         let prompt = PromptBuilder.userPrompt(for: request)
-        #expect(prompt.contains("\"alternate_transcript\":\"今天 ship 这个 future\""))
-        #expect(BuiltInPrompts.baseSystem.contains("alternate_transcript, when present"))
-        #expect(BuiltInPrompts.baseSystem.contains("raw_transcript is the canonical text"))
-        #expect(BuiltInPrompts.baseSystem.contains("never paste alternate_transcript wholesale"))
+        #expect(prompt.contains("\"alternate_transcripts\":[\"今天 ship 这个 future\"]"))
+        #expect(BuiltInPrompts.baseSystem.contains("alternate_transcripts, when present"))
+        #expect(BuiltInPrompts.baseSystem.contains("source-neutral hypotheses"))
+        #expect(BuiltInPrompts.baseSystem.contains("never paste any hypothesis wholesale"))
 
         // When no alternate is provided, the field is omitted from the JSON.
         let bareRequest = CorrectionRequest(
@@ -85,7 +85,7 @@ struct PromptBuilderTests {
             userDictionary: []
         )
         let barePrompt = PromptBuilder.userPrompt(for: bareRequest)
-        #expect(!barePrompt.contains("\"alternate_transcript\""))
+        #expect(!barePrompt.contains("\"alternate_transcripts\""))
 
         // An empty / whitespace-only alternate is also omitted.
         let emptyRequest = CorrectionRequest(
@@ -99,7 +99,28 @@ struct PromptBuilderTests {
             alternateTranscript: "   "
         )
         let emptyPrompt = PromptBuilder.userPrompt(for: emptyRequest)
-        #expect(!emptyPrompt.contains("\"alternate_transcript\""))
+        #expect(!emptyPrompt.contains("\"alternate_transcripts\""))
+
+        let multiRequest = CorrectionRequest(
+            correctionMode: .polish,
+            frontmostAppName: "Notes",
+            frontmostBundleID: "com.apple.Notes",
+            appCategory: .document,
+            languageIDs: ["zh-CN", "en-US"],
+            rawTranscript: "今天 ship 这个 feature",
+            userDictionary: [],
+            alternateTranscripts: [
+                "   ",
+                "今天 ship 这个 feature",
+                "今天 ship 这个 future",
+                "今天 ship 这个 future",
+                "今天 ship 这个 feat sure",
+            ]
+        )
+        let multiPrompt = PromptBuilder.userPrompt(for: multiRequest)
+        #expect(multiPrompt.contains("\"alternate_transcripts\":[\"今天 ship 这个 future\",\"今天 ship 这个 feat sure\"]"))
+        #expect(!multiPrompt.contains("\"Qwen\""))
+        #expect(!multiPrompt.contains("\"Nemotron\""))
     }
 
     @Test func userPromptEscapesEmbeddedClosingInputJSONTag() {

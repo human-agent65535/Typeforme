@@ -32,6 +32,16 @@ struct BridgeSettingsRevisionTests {
         #expect(BridgeSettingsPayload.settingsRevision(for: payload) != revision)
     }
 
+    @Test func revisionChangesWhenASRModelChanges() {
+        var payload = BridgeSettingsPayload.current()
+        let revision = BridgeSettingsPayload.settingsRevision(for: payload)
+
+        payload.asrProvider = "qwen3-asr-llama"
+        payload.asrModelID = "qwen3-asr-1.7b-q8_0"
+
+        #expect(BridgeSettingsPayload.settingsRevision(for: payload) != revision)
+    }
+
     @Test func revisionChangesWhenUserDictionaryChanges() {
         var payload = BridgeSettingsPayload.current()
         let revision = BridgeSettingsPayload.settingsRevision(for: payload)

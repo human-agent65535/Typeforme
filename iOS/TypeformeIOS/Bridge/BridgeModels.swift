@@ -437,6 +437,8 @@ struct BridgeUserDictionaryEntry: Codable, Equatable, Identifiable, Hashable {
 struct BridgeMacSettingsPayload: Codable, Equatable {
     var asrProvider: String
     var asrProviderOptions: [BridgeSettingOption]
+    var asrModelID: String?
+    var asrModelOptionsByASRProvider: [String: [BridgeSettingOption]]
     var languageIDs: [String]
     var supportedLanguages: [PairingLanguageOption]
     var supportedLanguagesByASRProvider: [String: [PairingLanguageOption]]
@@ -460,6 +462,8 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
     enum CodingKeys: String, CodingKey {
         case asrProvider = "asr_provider"
         case asrProviderOptions = "asr_provider_options"
+        case asrModelID = "asr_model_id"
+        case asrModelOptionsByASRProvider = "asr_model_options_by_asr_provider"
         case languageIDs = "language_ids"
         case supportedLanguages = "supported_languages"
         case supportedLanguagesByASRProvider = "supported_languages_by_asr_provider"
@@ -512,6 +516,8 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
     init(
         asrProvider: String,
         asrProviderOptions: [BridgeSettingOption],
+        asrModelID: String? = nil,
+        asrModelOptionsByASRProvider: [String: [BridgeSettingOption]] = [:],
         languageIDs: [String],
         supportedLanguages: [PairingLanguageOption],
         supportedLanguagesByASRProvider: [String: [PairingLanguageOption]],
@@ -530,6 +536,8 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
     ) {
         self.asrProvider = asrProvider
         self.asrProviderOptions = asrProviderOptions
+        self.asrModelID = asrModelID
+        self.asrModelOptionsByASRProvider = asrModelOptionsByASRProvider
         self.languageIDs = languageIDs
         self.supportedLanguages = supportedLanguages
         self.supportedLanguagesByASRProvider = supportedLanguagesByASRProvider
@@ -552,6 +560,11 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.asrProvider = try container.decodeIfPresent(String.self, forKey: .asrProvider) ?? "qwen3-asr-llama"
         self.asrProviderOptions = try container.decodeIfPresent([BridgeSettingOption].self, forKey: .asrProviderOptions) ?? []
+        self.asrModelID = try container.decodeIfPresent(String.self, forKey: .asrModelID)
+        self.asrModelOptionsByASRProvider = try container.decodeIfPresent(
+            [String: [BridgeSettingOption]].self,
+            forKey: .asrModelOptionsByASRProvider
+        ) ?? [:]
         self.supportedLanguages = try container.decodeIfPresent([PairingLanguageOption].self, forKey: .supportedLanguages)
             ?? PairingLanguageOption.allLanguages
         self.supportedLanguagesByASRProvider = try container.decodeIfPresent([String: [PairingLanguageOption]].self, forKey: .supportedLanguagesByASRProvider) ?? [:]
@@ -574,6 +587,16 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
     }
 
     mutating func normalize() {
+        if !asrProviderOptions.isEmpty && !asrProviderOptions.contains(where: { $0.id == asrProvider }) {
+            asrProvider = asrProviderOptions[0].id
+        }
+        let options = asrModelOptions(for: asrProvider)
+        if !options.isEmpty {
+            let selected = asrModelID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !options.contains(where: { $0.id == selected }) {
+                asrModelID = options[0].id
+            }
+        }
         let supported = supportedLanguageOptions(for: asrProvider)
         languageIDs = ASRLanguageSelection.validatedIDs(languageIDs, supportedOptions: supported)
         asrTimeoutSec = Self.clampedASRTimeoutSec(asrTimeoutSec)
@@ -585,6 +608,16 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
     func supportedLanguageOptions(for provider: String) -> [ASRLanguageOption] {
         let options = supportedLanguagesByASRProvider[provider] ?? supportedLanguages
         return PairingLanguageOption.asASROptions(options)
+    }
+
+    func asrModelOptions(for provider: String) -> [BridgeSettingOption] {
+        asrModelOptionsByASRProvider[provider] ?? []
+    }
+
+    static func providerUsesQwen(_ provider: String) -> Bool {
+        let value = provider.lowercased()
+        return value == "qwen3-asr-llama"
+            || value == "qwen3-asr-llama+nvidia-nemotron-asr"
     }
 
     private static func rimeUserPhrases(from entries: [BridgeUserDictionaryEntry]) -> [String] {
@@ -623,6 +656,7 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
 
 struct BridgeSettingsUpdateRequest: Encodable {
     let asrProvider: String
+    let asrModelID: String?
     let languageIDs: [String]
     let asrTimeoutSec: Double
     let correctionBackend: String
@@ -636,6 +670,7 @@ struct BridgeSettingsUpdateRequest: Encodable {
 
     enum CodingKeys: String, CodingKey {
         case asrProvider = "asr_provider"
+        case asrModelID = "asr_model_id"
         case languageIDs = "language_ids"
         case asrTimeoutSec = "asr_timeout_sec"
         case correctionBackend = "correction_backend"
@@ -658,6 +693,7 @@ struct BridgeDictateResponse: Decodable {
     let transcriptionLatencyMs: Int?
     let correctionLatencyMs: Int?
     let rawTranscript: String?
+    let asrWarning: String?
     let correctionStatus: String?
     let correctionError: String?
 
@@ -670,6 +706,7 @@ struct BridgeDictateResponse: Decodable {
         case transcriptionLatencyMs = "transcription_latency_ms"
         case correctionLatencyMs = "correction_latency_ms"
         case rawTranscript = "raw_transcript"
+        case asrWarning = "asr_warning"
         case correctionStatus = "correction_status"
         case correctionError = "correction_error"
     }
