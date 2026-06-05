@@ -7539,8 +7539,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         else { return false }
         // The host app can send or clear the marked preview while the server
         // is still finishing. In that case our marked-text bookkeeping is
-        // stale, so the final result must not be inserted into the now-empty
-        // input field.
+        // stale, so the final result must not be inserted into an empty input
+        // field. Some target apps do not expose active marked text in
+        // documentContextBeforeInput / documentContextAfterInput, so absence
+        // from context alone is not enough to prove the preview was consumed.
         guard let before = textDocumentProxy.documentContextBeforeInput else {
             return false
         }
@@ -7557,6 +7559,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         if let after = textDocumentProxy.documentContextAfterInput,
            !after.isEmpty,
            (after.hasPrefix(markedText) || (before + after).contains(markedText)) {
+            return false
+        }
+        if textDocumentProxy.hasText {
+            kbLog.notice(
+                "live partial absent from context but input still has text; committing final result beforeLen=\(before.count, privacy: .public)"
+            )
             return false
         }
         return true
