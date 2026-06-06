@@ -228,7 +228,8 @@ final class BridgeService {
                 text: raw,
                 status: "ok",
                 latencyMs: transcriptionLatencyMs,
-                alternateText: Self.debugAlternateText(combinedAlternateTranscripts)
+                alternateTranscripts: combinedAlternateTranscripts,
+                modelOutputs: asrResult.modelOutputs
             )
         } catch {
             DebugLogStore.recordASR(
@@ -237,7 +238,7 @@ final class BridgeService {
                 status: "error",
                 error: error.localizedDescription,
                 latencyMs: elapsedMs(since: asrStarted),
-                alternateText: request.alternateTranscript
+                alternateTranscripts: request.alternateTranscript.map { [$0] } ?? []
             )
             await publishJobStatus(
                 jobID: jobID,
@@ -724,10 +725,6 @@ final class BridgeService {
             primaryTranscript: primaryTranscript,
             candidates: candidates
         )
-    }
-
-    private static func debugAlternateText(_ alternates: [String]) -> String? {
-        alternates.isEmpty ? nil : alternates.joined(separator: "\n")
     }
 
     private func normalize(

@@ -13,10 +13,10 @@ private struct DebugLogTranscript: Codable {
     var provider: String?
     var model: String?
     var maxTokens: Int?
-    /// Supplementary transcription received alongside the audio (e.g. iOS
-    /// on-device Apple Speech preview). Stored verbatim so post-hoc analysis
-    /// can compare it against the canonical `text` for quality regressions.
-    var alternateText: String?
+    var modelOutputs: [DebugLogTranscriptModelOutput]?
+    /// Supplementary transcripts sent to the corrector alongside `text`.
+    /// This can include cross-check ASR output and Apple Speech preview text.
+    var alternateTranscripts: [String]?
 
     enum CodingKeys: String, CodingKey {
         case status
@@ -26,8 +26,18 @@ private struct DebugLogTranscript: Codable {
         case provider
         case model
         case maxTokens = "max_tokens"
-        case alternateText = "alternate_text"
+        case modelOutputs = "model_outputs"
+        case alternateTranscripts = "alternate_transcripts"
     }
+}
+
+private struct DebugLogTranscriptModelOutput: Codable {
+    var role: String
+    var provider: String
+    var model: String
+    var status: String
+    var text: String?
+    var error: String?
 }
 
 private struct DebugLogCorrection: Codable {
@@ -290,9 +300,12 @@ enum DebugLogStore {
         status: String,
         error: String? = nil,
         latencyMs: Int? = nil,
-        alternateText: String? = nil
+        alternateTranscripts: [String] = [],
+        modelOutputs: [ASRTranscriptModelOutput] = []
     ) {
         mutate(handle) { record in
+            let cleanedAlternates = normalizedTranscripts(alternateTranscripts)
+            let cleanedModelOutputs = normalizedModelOutputs(modelOutputs)
             record.transcript = DebugLogTranscript(
                 status: status,
                 text: text,
@@ -301,9 +314,8 @@ enum DebugLogStore {
                 provider: AppSettings.asrProvider,
                 model: activeASRModelDescription(),
                 maxTokens: activeASRMaxTokens(),
-                alternateText: alternateText
-                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                    .flatMap { $0.isEmpty ? nil : $0 }
+                modelOutputs: cleanedModelOutputs.isEmpty ? nil : cleanedModelOutputs,
+                alternateTranscripts: cleanedAlternates.isEmpty ? nil : cleanedAlternates
             )
         }
     }
@@ -438,6 +450,38 @@ enum DebugLogStore {
             contextAfterChars: request.contextAfter.count,
             spokenInstructionChars: request.spokenInstruction.count
         )
+    }
+
+    private static func normalizedTranscripts(_ values: [String]) -> [String] {
+        var seen = Set<String>()
+        return values.compactMap { value in
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, seen.insert(trimmed).inserted else { return nil }
+            return trimmed
+        }
+    }
+
+    private static func normalizedModelOutputs(
+        _ outputs: [ASRTranscriptModelOutput]
+    ) -> [DebugLogTranscriptModelOutput] {
+        outputs.compactMap { output in
+            let text = cleanedOptionalText(output.text)
+            let error = cleanedOptionalText(output.error)
+            guard text != nil || error != nil else { return nil }
+            return DebugLogTranscriptModelOutput(
+                role: output.role,
+                provider: output.provider,
+                model: output.model,
+                status: output.status,
+                text: text,
+                error: error
+            )
+        }
+    }
+
+    private static func cleanedOptionalText(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     private static func saveReceivedAudio(_ source: URL, in directory: URL) throws -> String {

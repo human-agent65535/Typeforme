@@ -337,7 +337,8 @@ final class DictationCoordinator: ObservableObject {
                 text: raw,
                 status: "ok",
                 latencyMs: elapsedMs(since: asrStarted),
-                alternateText: Self.debugAlternateText(alternateTranscripts)
+                alternateTranscripts: alternateTranscripts,
+                modelOutputs: asrResult.modelOutputs
             )
             didRecordASR = true
             try await ensureActive(sessionID: sessionID, token: cancelToken)
@@ -521,7 +522,7 @@ final class DictationCoordinator: ObservableObject {
                     status: "error",
                     error: error.localizedDescription,
                     latencyMs: elapsedMs(since: asrStarted),
-                    alternateText: liveSnapshotAtCorrection
+                    alternateTranscripts: liveSnapshotAtCorrection.isEmpty ? [] : [liveSnapshotAtCorrection]
                 )
             }
             try? FileManager.default.removeItem(at: url)
@@ -875,10 +876,6 @@ final class DictationCoordinator: ObservableObject {
         )
     }
 
-    private static func debugAlternateText(_ alternates: [String]) -> String? {
-        alternates.isEmpty ? nil : alternates.joined(separator: "\n")
-    }
-
     private static func combinedWarning(_ warnings: [String?]) -> String? {
         let cleaned = warnings
             .map { $0?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "" }
@@ -1059,7 +1056,7 @@ final class DictationCoordinator: ObservableObject {
                 text: raw.isEmpty ? nil : raw,
                 status: raw.isEmpty ? "remote_no_raw" : "remote_ok",
                 latencyMs: response.transcriptionLatencyMs ?? elapsedMs(since: started),
-                alternateText: liveSnapshotAtCorrection
+                alternateTranscripts: liveSnapshotAtCorrection.isEmpty ? [] : [liveSnapshotAtCorrection]
             )
             lastTranscript = raw.isEmpty ? response.text : raw
             remoteBridgeSessionID = response.sessionID
@@ -1186,7 +1183,7 @@ final class DictationCoordinator: ObservableObject {
                 status: "remote_error",
                 error: error.localizedDescription,
                 latencyMs: elapsedMs(since: started),
-                alternateText: liveSnapshotAtCorrection
+                alternateTranscripts: liveSnapshotAtCorrection.isEmpty ? [] : [liveSnapshotAtCorrection]
             )
             guard await isActive(sessionID: sessionID, token: cancelToken) else { return }
             reportError(error.localizedDescription)

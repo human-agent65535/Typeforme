@@ -3,15 +3,18 @@ import Foundation
 struct ASRTranscription: Sendable {
     let text: String
     let alternateTranscripts: [String]
+    let modelOutputs: [ASRTranscriptModelOutput]
     let warnings: [String]
 
     init(
         text: String,
         alternateTranscripts: [String] = [],
+        modelOutputs: [ASRTranscriptModelOutput] = [],
         warnings: [String] = []
     ) {
         self.text = text
         self.alternateTranscripts = alternateTranscripts
+        self.modelOutputs = modelOutputs
         self.warnings = warnings
     }
 
@@ -21,6 +24,15 @@ struct ASRTranscription: Sendable {
             .filter { !$0.isEmpty }
         return cleaned.isEmpty ? nil : cleaned.joined(separator: "\n")
     }
+}
+
+struct ASRTranscriptModelOutput: Sendable {
+    let role: String
+    let provider: String
+    let model: String
+    let status: String
+    let text: String?
+    let error: String?
 }
 
 /// ASR providers return final text for an audio file. Live partial preview is

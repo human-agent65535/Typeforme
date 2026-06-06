@@ -162,6 +162,16 @@ private struct AutoInstallingQwenLlamaASRService: ASRService {
         }
         return try await service.transcribe(audioFileURL: audioFileURL, languageIDs: languageIDs)
     }
+
+    func transcribeResult(audioFileURL: URL, languageIDs: [String]) async throws -> ASRTranscription {
+        let text = try await transcribe(audioFileURL: audioFileURL, languageIDs: languageIDs)
+        return ASRTranscription(
+            text: text,
+            modelOutputs: [
+                ASRModelOutputFactory.qwen(role: "primary", text: text)
+            ]
+        )
+    }
 }
 
 private struct AutoInstallingNvidiaNemotronASRService: ASRService {
@@ -170,6 +180,16 @@ private struct AutoInstallingNvidiaNemotronASRService: ASRService {
         return try await ASRFactory.shared.nvidiaNemotronService().transcribe(
             audioFileURL: audioFileURL,
             languageIDs: languageIDs
+        )
+    }
+
+    func transcribeResult(audioFileURL: URL, languageIDs: [String]) async throws -> ASRTranscription {
+        let text = try await transcribe(audioFileURL: audioFileURL, languageIDs: languageIDs)
+        return ASRTranscription(
+            text: text,
+            modelOutputs: [
+                ASRModelOutputFactory.nemotron(role: "primary", text: text)
+            ]
         )
     }
 }
@@ -209,6 +229,16 @@ private struct AutoInstallingDualASRService: ASRService {
         return ASRTranscription(
             text: primary,
             alternateTranscripts: auxiliary.isEmpty || auxiliary == primary ? [] : [auxiliary],
+            modelOutputs: [
+                ASRModelOutputFactory.qwen(
+                    role: primaryIsNemotron ? "cross_check" : "primary",
+                    result: qwenResult
+                ),
+                ASRModelOutputFactory.nemotron(
+                    role: primaryIsNemotron ? "primary" : "cross_check",
+                    result: nemotronResult
+                )
+            ],
             warnings: auxiliaryResult.error == nil ? [] : ["Cross-check transcript unavailable"]
         )
     }
@@ -233,4 +263,36 @@ private struct AutoInstallingDualASRService: ASRService {
 private struct ASRAttemptResult {
     let text: String
     let error: String?
+}
+
+private enum ASRModelOutputFactory {
+    static func qwen(role: String, result: ASRAttemptResult) -> ASRTranscriptModelOutput {
+        qwen(role: role, text: result.text, error: result.error)
+    }
+
+    static func qwen(role: String, text: String, error: String? = nil) -> ASRTranscriptModelOutput {
+        ASRTranscriptModelOutput(
+            role: role,
+            provider: "qwen3-asr-llama",
+            model: AppSettings.asrQwenLlamaModelID,
+            status: error == nil ? "ok" : "error",
+            text: text,
+            error: error
+        )
+    }
+
+    static func nemotron(role: String, result: ASRAttemptResult) -> ASRTranscriptModelOutput {
+        nemotron(role: role, text: result.text, error: result.error)
+    }
+
+    static func nemotron(role: String, text: String, error: String? = nil) -> ASRTranscriptModelOutput {
+        ASRTranscriptModelOutput(
+            role: role,
+            provider: "nvidia-nemotron-asr",
+            model: AppSettings.asrNvidiaNemotronModelID,
+            status: error == nil ? "ok" : "error",
+            text: text,
+            error: error
+        )
+    }
 }
