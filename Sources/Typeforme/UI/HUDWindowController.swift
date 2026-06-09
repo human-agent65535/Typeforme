@@ -143,6 +143,7 @@ final class HUDWindowController {
         isShown = true
         let size = self.size(for: coordinator.state)
         let finalOrigin = origin(for: coordinator.state, size: size)
+        panel.manualDragRegionHeight = dragRegionHeight(for: coordinator.state, size: size)
         // Slide-up entrance: start a few points below the target and fade in.
         let startOrigin = NSPoint(x: finalOrigin.x, y: finalOrigin.y - Self.entranceLift)
         isProgrammaticallyMoving = true
@@ -205,6 +206,7 @@ final class HUDWindowController {
 
         let size = self.size(for: state)
         let frame = NSRect(origin: origin(for: state, size: size), size: size)
+        panel.manualDragRegionHeight = dragRegionHeight(for: state, size: size)
         isProgrammaticallyMoving = true
         let release: @Sendable () -> Void = { [weak self] in
             Task { @MainActor in
@@ -367,6 +369,10 @@ final class HUDWindowController {
             }
         }
         return coordinator.lastCorrected.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func dragRegionHeight(for state: DictationState, size: NSSize) -> CGFloat {
+        min(size.height, Self.compactHeight)
     }
 
     private func previewSize() -> NSSize {

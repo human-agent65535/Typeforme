@@ -1,4 +1,3 @@
-import AppKit
 import SwiftUI
 import KeyboardShortcuts
 
@@ -591,7 +590,6 @@ private struct VoicePreviewActionBar: View {
         .background(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .fill(.ultraThinMaterial)
-                .overlay(WindowDragRegion())
         )
         .overlay(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
@@ -600,18 +598,6 @@ private struct VoicePreviewActionBar: View {
         .shadow(color: Color.black.opacity(0.14), radius: 14, x: 0, y: 8)
         .opacity(disabled ? 0.62 : 1.0)
         .animation(.easeInOut(duration: 0.16), value: disabled)
-    }
-}
-
-private struct WindowDragRegion: NSViewRepresentable {
-    func makeNSView(context: Context) -> DragView {
-        DragView()
-    }
-
-    func updateNSView(_ nsView: DragView, context: Context) {}
-
-    final class DragView: NSView {
-        override var mouseDownCanMoveWindow: Bool { true }
     }
 }
 
