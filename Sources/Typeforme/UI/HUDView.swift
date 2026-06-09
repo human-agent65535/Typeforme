@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import KeyboardShortcuts
 
@@ -249,29 +250,37 @@ struct HUDView: View {
 
     @ViewBuilder
     private var surface: some View {
-        let shape = RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
-        shape
-            .fill(.ultraThinMaterial)
-            .overlay(
-                // State-coloured glow along the top edge, fades into the body.
-                shape
-                    .strokeBorder(stateColor.opacity(0.35), lineWidth: 0.8)
-                    .mask(
-                        LinearGradient(
-                            colors: [.black, .black.opacity(0.0)],
-                            startPoint: .top,
-                            endPoint: .center
+        if usesActionBarOnlySurface {
+            Color.clear
+        } else {
+            let shape = RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
+            shape
+                .fill(.ultraThinMaterial)
+                .overlay(
+                    // State-coloured glow along the top edge, fades into the body.
+                    shape
+                        .strokeBorder(stateColor.opacity(0.35), lineWidth: 0.8)
+                        .mask(
+                            LinearGradient(
+                                colors: [.black, .black.opacity(0.0)],
+                                startPoint: .top,
+                                endPoint: .center
+                            )
                         )
-                    )
-                    .opacity(stateColor == .clear ? 0 : 1)
-            )
-            .overlay(
-                // Hairline border so the capsule has a defined edge in any bg.
-                // `.separatorColor` is the system semantic for thin dividers
-                // and reads correctly in both light + dark mode — earlier we
-                // hardcoded white-opacity, which was invisible in light mode.
-                shape.strokeBorder(Color(nsColor: .separatorColor), lineWidth: 0.5)
-            )
+                        .opacity(stateColor == .clear ? 0 : 1)
+                )
+                .overlay(
+                    // Hairline border so the capsule has a defined edge in any bg.
+                    // `.separatorColor` is the system semantic for thin dividers
+                    // and reads correctly in both light + dark mode — earlier we
+                    // hardcoded white-opacity, which was invisible in light mode.
+                    shape.strokeBorder(Color(nsColor: .separatorColor), lineWidth: 0.5)
+                )
+        }
+    }
+
+    private var usesActionBarOnlySurface: Bool {
+        isVoicePreviewMode && isExpandedPreview && voicePreviewText.isEmpty
     }
 
     // MARK: - Leading (icon / waveform / recording dot)
@@ -582,6 +591,7 @@ private struct VoicePreviewActionBar: View {
         .background(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .fill(.ultraThinMaterial)
+                .overlay(WindowDragRegion())
         )
         .overlay(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
@@ -590,6 +600,18 @@ private struct VoicePreviewActionBar: View {
         .shadow(color: Color.black.opacity(0.14), radius: 14, x: 0, y: 8)
         .opacity(disabled ? 0.62 : 1.0)
         .animation(.easeInOut(duration: 0.16), value: disabled)
+    }
+}
+
+private struct WindowDragRegion: NSViewRepresentable {
+    func makeNSView(context: Context) -> DragView {
+        DragView()
+    }
+
+    func updateNSView(_ nsView: DragView, context: Context) {}
+
+    final class DragView: NSView {
+        override var mouseDownCanMoveWindow: Bool { true }
     }
 }
 
