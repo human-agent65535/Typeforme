@@ -18,8 +18,7 @@ final class DictationCoordinator: ObservableObject {
     @Published private(set) var audioLevel: Float = 0
     @Published private(set) var frontmostSnapshot: FrontmostAppSnapshot?
     @Published private(set) var previewCorrectionMode: CorrectionMode?
-    @Published private(set) var previewKind: VoicePreviewKind = .dictation
-    @Published private(set) var previewAnchorRect: CGRect?
+    @Published private(set) var voicePreviewHUDExpanded = false
     /// Live-preview transcript fed by Apple Speech in parallel with recording.
     /// Held in place from the first partial until the Mac ASR + correction
     /// final replaces it, then cleared. Empty string = no preview (unsupported
@@ -43,11 +42,7 @@ final class DictationCoordinator: ObservableObject {
     private var activeTextEditIntent: TextEditIntent?
     private var previewTextEditTarget: TextEditTargetSnapshot?
     private var previewTextEditAppSnapshot: FrontmostAppSnapshot?
-    private var activeVoiceDraftTarget: VoiceDraftInsertionTarget?
-    private var previewVoiceDraft: VoiceDraftTextSnapshot?
-    private var previewVoiceDraftAppSnapshot: FrontmostAppSnapshot?
     private var previewRestyleSourceText: String?
-    private var activeDraftCommandTargetText: String?
     private var activeDictationContextBefore = ""
     private var activeDictationContextAfter = ""
     private var startInProgress = false
@@ -114,6 +109,9 @@ final class DictationCoordinator: ObservableObject {
         activeSessionID = sessionID
         activeCancelToken = cancelToken
         clearPreviewState()
+        if AppSettings.voiceUXMode == .voicePreview {
+            voicePreviewHUDExpanded = true
+        }
         startInProgress = true
         stopAfterStart = false
         resetTask?.cancel(); resetTask = nil
@@ -143,14 +141,6 @@ final class DictationCoordinator: ObservableObject {
             activeTextEditIntent = activeTextEditTarget == nil ? nil : .repairSelection
         } else {
             clearTextEditRequest()
-            activeVoiceDraftTarget = TextEditTargetCapture.draftInsertionTarget(in: frontmostSnapshot)
-            guard activeVoiceDraftTarget != nil else {
-                startInProgress = false
-                clearActiveSession()
-                reportError("Focus an editable text field first")
-                scheduleAutoReset(after: Self.errorResetDelay)
-                return
-            }
         }
 
         let livePreviewPCMHandler = makeLivePartialPreviewPCMHandlerIfAvailable()
@@ -203,70 +193,59 @@ final class DictationCoordinator: ObservableObject {
         }
     }
 
-    func toggleDraftCommand() async {
+    func togglePreviewCommand() async {
         if startInProgress {
-            Log.coordinator.debug("draft command toggle ignored while dictation start is in progress")
+            Log.coordinator.debug("preview command toggle ignored while dictation start is in progress")
             return
         }
 
         switch state {
-        case .preview:
-            await startDraftCommand()
-        case .recording where activeDraftCommandTargetText != nil:
+        case .idle:
+            await startDictation(intent: .command)
+        case .preview, .success, .error:
+            reset()
+            await startDictation(intent: .command)
+        case .recording:
             guard !shouldIgnoreEarlyToggleStop() else { return }
             await stopDictation()
-        default:
-            break
+        case .transcribing, .correcting, .inserting:
+            await cancelDictation()
         }
     }
 
-    private func startDraftCommand() async {
-        guard state == .preview, !startInProgress else { return }
-        let targetText = lastCorrected.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !targetText.isEmpty else { return }
-        if !AccessibilityPermissions.isTrusted {
-            AccessibilityPermissions.requestTrustPrompt()
-        }
+    func expandVoicePreviewHUD() {
+        guard AppSettings.voiceUXMode == .voicePreview, state == .idle else { return }
+        voicePreviewHUDExpanded = true
+    }
 
-        let sessionID = UUID()
-        let cancelToken = CommitCancellationToken()
-        activeSessionID = sessionID
-        activeCancelToken = cancelToken
-        activeDraftCommandTargetText = targetText
-        clearTextEditRequest()
-        clearDictationContext()
-        startInProgress = true
-        stopAfterStart = false
-        resetTask?.cancel(); resetTask = nil
+    func collapseVoicePreviewHUD() {
+        guard AppSettings.voiceUXMode == .voicePreview else { return }
+        voicePreviewHUDExpanded = false
+    }
 
-        let livePreviewPCMHandler = makeLivePartialPreviewPCMHandlerIfAvailable()
-        do {
-            let startedURL = try await recorder.start(pcmHandler: livePreviewPCMHandler)
-            startInProgress = false
-            guard await isActive(sessionID: sessionID, token: cancelToken) else {
-                if let stoppedURL = recorder.stop() {
-                    try? FileManager.default.removeItem(at: stoppedURL)
-                } else {
-                    try? FileManager.default.removeItem(at: startedURL)
-                }
-                teardownLivePartialPreview(clearText: true)
-                return
-            }
-            transition(to: .recording)
-            scheduleAutoStop(after: AppSettings.maxRecordingDuration)
-            if stopAfterStart {
-                stopAfterStart = false
-                await stopDictation()
-            }
-        } catch {
-            teardownLivePartialPreview(clearText: true)
-            startInProgress = false
-            stopAfterStart = false
-            activeDraftCommandTargetText = nil
-            guard activeSessionID == sessionID else { return }
-            clearActiveSession()
-            reportError(error.localizedDescription)
-            scheduleAutoReset(after: Self.errorResetDelay)
+    var canCollapseVoicePreviewHUD: Bool {
+        AppSettings.voiceUXMode == .voicePreview && state == .idle && voicePreviewHUDExpanded
+    }
+
+    private var isVoicePreviewMode: Bool {
+        AppSettings.voiceUXMode == .voicePreview
+    }
+
+    private var canRestyleFocusedInputFromHUD: Bool {
+        isVoicePreviewMode && state == .idle && voicePreviewHUDExpanded
+    }
+
+    private var canUseVoicePreviewDirectCommit: Bool {
+        AppSettings.voiceUXMode == .voicePreview
+    }
+
+    private var canUseClassicAutoCommit: Bool {
+        AppSettings.autoCommit && AppSettings.voiceUXMode == .classic
+    }
+
+    private func collapseVoicePreviewHUDAfterAction() {
+        if AppSettings.voiceUXMode == .voicePreview {
+            voicePreviewHUDExpanded = false
         }
     }
 
@@ -349,51 +328,10 @@ final class DictationCoordinator: ObservableObject {
             guard !trimmed.isEmpty else {
                 Log.asr.notice("empty transcript — returning to idle without commit")
                 clearActiveSession()
-                activeDraftCommandTargetText = nil
                 clearDictationContext()
                 clearTextEditRequest()
+                collapseVoicePreviewHUDAfterAction()
                 transition(to: .idle)
-                return
-            }
-
-            if let draftTarget = activeDraftCommandTargetText {
-                activeDraftCommandTargetText = nil
-                transition(to: .correcting)
-                do {
-                    let editStarted = Date()
-                    let result = try await textEditService.edit(
-                        intent: .command,
-                        contextBefore: "",
-                        targetText: draftTarget,
-                        contextAfter: "",
-                        spokenInstruction: trimmed,
-                        languageIDs: AppSettings.asrLanguageIDs,
-                        appName: snapshot?.localizedName,
-                        bundleID: snapshot?.bundleID,
-                        appCategory: AppCategory.from(bundleID: snapshot?.bundleID)
-                    )
-                    try await ensureActive(sessionID: sessionID, token: cancelToken)
-                    DebugLogStore.recordCorrection(
-                        debugLog,
-                        mode: selectedCorrectionMode,
-                        text: result.text,
-                        status: "draft_command",
-                        latencyMs: elapsedMs(since: editStarted),
-                        timeoutMs: AppSettings.correctionTimeoutMs
-                    )
-                    previewCorrectionMode = selectedCorrectionMode
-                    lastCorrected = result.text
-                    try await replaceVoiceDraftIfNeeded(result.text, sessionID: sessionID, cancelToken: cancelToken)
-                    enterPreview(
-                        text: result.text,
-                        kind: .dictation,
-                        restyleSourceText: stableRestyleText(result.text)
-                    )
-                } catch {
-                    try await ensureActive(sessionID: sessionID, token: cancelToken)
-                    reportError("Draft command failed: \(error.localizedDescription)")
-                    scheduleAutoReset(after: Self.errorResetDelay)
-                }
                 return
             }
 
@@ -605,20 +543,15 @@ final class DictationCoordinator: ObservableObject {
     }
 
     private func clearPreviewTargetState() {
-        previewKind = .dictation
-        previewAnchorRect = nil
         previewTextEditTarget = nil
         previewTextEditAppSnapshot = nil
-        previewVoiceDraft = nil
-        previewVoiceDraftAppSnapshot = nil
         previewRestyleSourceText = nil
     }
 
     private func clearPreviewState() {
         previewCorrectionMode = nil
         clearPreviewTargetState()
-        activeVoiceDraftTarget = nil
-        activeDraftCommandTargetText = nil
+        voicePreviewHUDExpanded = false
         lastWarning = nil
     }
 
@@ -672,8 +605,6 @@ final class DictationCoordinator: ObservableObject {
         autoStopTask?.cancel(); autoStopTask = nil
         resetTask?.cancel();     resetTask = nil
         await activeCancelToken?.cancel()
-        let draftToRemove = previewVoiceDraft
-        let draftAppSnapshot = previewVoiceDraftAppSnapshot
         clearActiveSession()
         clearTextEditRequest()
         clearDictationContext()
@@ -687,13 +618,6 @@ final class DictationCoordinator: ObservableObject {
             }
         } else {
             _ = recorder.stop()
-        }
-        if let draftToRemove {
-            try? await committer.removeVoiceDraft(
-                draftToRemove,
-                appSnapshot: draftAppSnapshot,
-                cancelToken: nil
-            )
         }
         audioLevel = 0
         reset()
@@ -722,6 +646,10 @@ final class DictationCoordinator: ObservableObject {
     // MARK: - Mode switching
 
     func requestCorrectionModeChange(to newMode: CorrectionMode) async {
+        if canRestyleFocusedInputFromHUD {
+            await restyleFocusedInput(to: newMode)
+            return
+        }
         guard state == .preview else { return }
         let source = restyleSource()
         let raw = source.text
@@ -758,11 +686,6 @@ final class DictationCoordinator: ObservableObject {
             let normalizedResult = normalizeResult(result, correctionMode: request.correctionMode)
             lastWarning = nil
             lastCorrected = normalizedResult.text
-            try await replaceVoiceDraftIfNeeded(
-                normalizedResult.text,
-                sessionID: sessionID,
-                cancelToken: cancelToken
-            )
             copyPreviewToPasteboard(normalizedResult)
             transition(to: .preview)
             schedulePreviewResetIfNeeded()
@@ -780,8 +703,8 @@ final class DictationCoordinator: ObservableObject {
     }
 
     /// Insert the previewed text. Ordinary dictation inserts at the current
-    /// cursor; a Voice Draft text-edit preview applies the replacement to the
-    /// originally captured target.
+    /// cursor; a text-edit preview applies the replacement to the originally
+    /// captured target.
     func commitPreview() async {
         guard state == .preview else { return }
         let text = lastCorrected.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -799,13 +722,7 @@ final class DictationCoordinator: ObservableObject {
 
         do {
             try await ensureActive(sessionID: sessionID, token: cancelToken)
-            if let draft = previewVoiceDraft {
-                try await committer.acceptVoiceDraft(
-                    draft,
-                    appSnapshot: previewVoiceDraftAppSnapshot ?? snapshot,
-                    cancelToken: cancelToken
-                )
-            } else if let textEditTarget {
+            if let textEditTarget {
                 try await committer.commitTextEdit(
                     text,
                     target: textEditTarget,
@@ -816,6 +733,7 @@ final class DictationCoordinator: ObservableObject {
                 try await committer.commit(text, to: snapshot, cancelToken: cancelToken)
             }
             try await ensureActive(sessionID: sessionID, token: cancelToken)
+            clearActiveSession()
             clearPreviewTargetState()
             let warning = Self.successWarning(from: lastWarning)
             lastWarning = warning
@@ -1061,51 +979,6 @@ final class DictationCoordinator: ObservableObject {
             lastTranscript = raw.isEmpty ? response.text : raw
             remoteBridgeSessionID = response.sessionID
 
-            if let draftTarget = activeDraftCommandTargetText {
-                activeDraftCommandTargetText = nil
-                let spoken = lastTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !spoken.isEmpty else {
-                    reportError("Remote transcript was empty")
-                    scheduleAutoReset(after: Self.errorResetDelay)
-                    return
-                }
-                transition(to: .correcting)
-                let editResponse = try await client.editText(
-                    intent: .command,
-                    contextBefore: "",
-                    targetText: draftTarget,
-                    contextAfter: "",
-                    spokenInstruction: spoken,
-                    languageIDs: AppSettings.clientLanguageIDs,
-                    appSnapshot: snapshot,
-                    appCategory: AppCategory.from(bundleID: snapshot?.bundleID)
-                )
-                try await ensureActive(sessionID: sessionID, token: cancelToken)
-                DebugLogStore.recordCorrection(
-                    debugLog,
-                    mode: selectedCorrectionMode,
-                    text: editResponse.text,
-                    status: "remote_draft_command",
-                    error: editResponse.editError,
-                    latencyMs: editResponse.editLatencyMs ?? editResponse.latencyMs,
-                    timeoutMs: AppSettings.correctionTimeoutMs
-                )
-                previewCorrectionMode = selectedCorrectionMode
-                lastWarning = response.asrWarning
-                lastCorrected = editResponse.text
-                try await replaceVoiceDraftIfNeeded(
-                    editResponse.text,
-                    sessionID: sessionID,
-                    cancelToken: cancelToken
-                )
-                enterPreview(
-                    text: editResponse.text,
-                    kind: .dictation,
-                    restyleSourceText: stableRestyleText(editResponse.text)
-                )
-                return
-            }
-
             if let editTarget = activeTextEditTarget,
                let editIntent = activeTextEditIntent {
                 let spoken = lastTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1222,7 +1095,6 @@ final class DictationCoordinator: ObservableObject {
                 ? Self.previewWithoutRefineMessage
                 : nil
             lastCorrected = result.text
-            try await replaceVoiceDraftIfNeeded(result.text, sessionID: sessionID, cancelToken: cancelToken)
             copyPreviewToPasteboard(result)
             transition(to: .preview)
             schedulePreviewResetIfNeeded()
@@ -1237,6 +1109,107 @@ final class DictationCoordinator: ObservableObject {
         }
     }
 
+    private func restyleFocusedInput(to newMode: CorrectionMode) async {
+        guard !startInProgress else { return }
+        if !AccessibilityPermissions.isTrusted {
+            AccessibilityPermissions.requestTrustPrompt()
+        }
+
+        let snapshot = FrontmostAppCapture.snapshot()
+        guard let target = TextEditTargetCapture.snapshot(in: snapshot, allowFocusedValue: true) else {
+            reportError("Select text or focus a text field first")
+            scheduleAutoReset(after: Self.errorResetDelay)
+            return
+        }
+
+        let sourceText = target.targetText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !sourceText.isEmpty else { return }
+
+        let sessionID = UUID()
+        let cancelToken = CommitCancellationToken()
+        activeSessionID = sessionID
+        activeCancelToken = cancelToken
+        previewCorrectionMode = newMode
+        frontmostSnapshot = snapshot
+        resetTask?.cancel(); resetTask = nil
+        transition(to: .correcting)
+
+        do {
+            let text: String
+            if AppSettings.processingMode == .client {
+                let resolved = try await RemoteBridgeClient.resolvedFromSettings(probeAllEndpoints: false)
+                let response = try await resolved.client.restyle(
+                    sessionID: nil,
+                    rawTranscript: sourceText,
+                    languageIDs: AppSettings.clientLanguageIDs,
+                    correctionMode: newMode,
+                    appSnapshot: snapshot,
+                    appCategory: AppCategory.from(bundleID: snapshot?.bundleID),
+                    contextBefore: target.contextBefore,
+                    contextAfter: target.contextAfter
+                )
+                try await ensureActive(sessionID: sessionID, token: cancelToken)
+                lastWarning = Self.isCorrectionDegradedStatus(response.correctionStatus)
+                    ? Self.previewWithoutRefineMessage
+                    : nil
+                text = normalizeResult(
+                    CorrectionResult(action: .commit, text: response.text, risk: .low),
+                    correctionMode: newMode
+                ).text
+            } else {
+                let request = CorrectionRequest(
+                    correctionMode: newMode,
+                    frontmostAppName: snapshot?.localizedName,
+                    frontmostBundleID: snapshot?.bundleID,
+                    appCategory: AppCategory.from(bundleID: snapshot?.bundleID),
+                    languageIDs: AppSettings.activeLanguageIDs,
+                    rawTranscript: sourceText,
+                    contextBefore: target.contextBefore,
+                    contextAfter: target.contextAfter,
+                    numberOutputPreference: AppSettings.numberOutputPreference,
+                    punctuationPreference: AppSettings.punctuationPreference,
+                    userDictionary: dictionary.sortedSnapshot()
+                )
+                let result = try await corrector.correct(request, timeoutMs: AppSettings.correctionTimeoutMs)
+                try await ensureActive(sessionID: sessionID, token: cancelToken)
+                lastWarning = nil
+                text = normalizeResult(result, correctionMode: request.correctionMode).text
+            }
+
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else {
+                clearActiveSession()
+                collapseVoicePreviewHUDAfterAction()
+                transition(to: .idle)
+                return
+            }
+
+            lastCorrected = trimmed
+            transition(to: .inserting)
+            try await committer.commitTextEdit(
+                trimmed,
+                target: target,
+                appSnapshot: snapshot,
+                cancelToken: cancelToken
+            )
+            try await ensureActive(sessionID: sessionID, token: cancelToken)
+            clearActiveSession()
+            clearPreviewTargetState()
+            collapseVoicePreviewHUDAfterAction()
+            let warning = Self.successWarning(from: lastWarning)
+            lastWarning = warning
+            transition(to: .success)
+            scheduleAutoReset(after: warning == nil ? 0.8 : Self.degradedSuccessResetDelay)
+        } catch is CancellationError {
+            transition(to: .idle)
+        } catch TextCommitterError.cancelled {
+            transition(to: .idle)
+        } catch {
+            reportError("Restyle failed: \(error.localizedDescription)")
+            scheduleAutoReset(after: Self.errorResetDelay)
+        }
+    }
+
     // MARK: - Commit
 
     private func finish(
@@ -1244,19 +1217,7 @@ final class DictationCoordinator: ObservableObject {
         sessionID: UUID,
         cancelToken: CommitCancellationToken
     ) async {
-        if AppSettings.voiceUXMode == .voiceDraft {
-            await finishVoiceDraft(
-                result.text,
-                target: activeVoiceDraftTarget,
-                appSnapshot: frontmostSnapshot,
-                sessionID: sessionID,
-                cancelToken: cancelToken,
-                restyleSource: lastTranscript
-            )
-            return
-        }
-
-        let shouldAutoCommit = AppSettings.autoCommit && AppSettings.voiceUXMode == .classic
+        let shouldAutoCommit = canUseVoicePreviewDirectCommit || canUseClassicAutoCommit
         if shouldAutoCommit {
             clearPreviewTargetState()
             transition(to: .inserting)
@@ -1264,6 +1225,8 @@ final class DictationCoordinator: ObservableObject {
                 try await ensureActive(sessionID: sessionID, token: cancelToken)
                 try await committer.commit(result.text, to: frontmostSnapshot, cancelToken: cancelToken)
                 try await ensureActive(sessionID: sessionID, token: cancelToken)
+                clearActiveSession()
+                collapseVoicePreviewHUDAfterAction()
                 let warning = Self.successWarning(from: lastWarning)
                 lastWarning = warning
                 transition(to: .success)
@@ -1277,7 +1240,7 @@ final class DictationCoordinator: ObservableObject {
                 scheduleAutoReset(after: Self.errorResetDelay)
             }
         } else {
-            enterPreview(text: result.text, kind: .dictation)
+            enterPreview(text: result.text)
         }
     }
 
@@ -1296,8 +1259,7 @@ final class DictationCoordinator: ObservableObject {
             return
         }
 
-        let shouldAutoCommit = intent == .command
-            || (AppSettings.autoCommit && AppSettings.voiceUXMode == .classic)
+        let shouldAutoCommit = intent == .command || canUseVoicePreviewDirectCommit || canUseClassicAutoCommit
         if shouldAutoCommit {
             clearPreviewTargetState()
             transition(to: .inserting)
@@ -1311,6 +1273,8 @@ final class DictationCoordinator: ObservableObject {
                 )
                 try await ensureActive(sessionID: sessionID, token: cancelToken)
                 clearTextEditRequest()
+                clearActiveSession()
+                collapseVoicePreviewHUDAfterAction()
                 let warning = Self.successWarning(from: lastWarning)
                 lastWarning = warning
                 transition(to: .success)
@@ -1324,23 +1288,8 @@ final class DictationCoordinator: ObservableObject {
                 scheduleAutoReset(after: Self.errorResetDelay)
             }
         } else {
-            if AppSettings.voiceUXMode == .voiceDraft,
-               let draftTarget = TextEditTargetCapture.draftInsertionTarget(from: target) {
-                await finishVoiceDraft(
-                    text,
-                    target: draftTarget,
-                    appSnapshot: appSnapshot,
-                    sessionID: sessionID,
-                    cancelToken: cancelToken,
-                    kind: .textEdit,
-                    restyleSource: text
-                )
-                return
-            }
-
             enterPreview(
                 text: text,
-                kind: .textEdit,
                 textEditTarget: target,
                 textEditAppSnapshot: appSnapshot,
                 restyleSourceText: stableRestyleText(text),
@@ -1349,52 +1298,8 @@ final class DictationCoordinator: ObservableObject {
         }
     }
 
-    private func finishVoiceDraft(
-        _ text: String,
-        target: VoiceDraftInsertionTarget?,
-        appSnapshot: FrontmostAppSnapshot?,
-        sessionID: UUID,
-        cancelToken: CommitCancellationToken,
-        kind: VoicePreviewKind = .dictation,
-        restyleSource: String? = nil
-    ) async {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, let target else {
-            clearActiveSession()
-            transition(to: .idle)
-            return
-        }
-
-        do {
-            try await ensureActive(sessionID: sessionID, token: cancelToken)
-            let draft = try await committer.insertVoiceDraft(
-                trimmed,
-                target: target,
-                appSnapshot: appSnapshot,
-                cancelToken: cancelToken
-            )
-            try await ensureActive(sessionID: sessionID, token: cancelToken)
-            enterVoiceDraftPreview(
-                draft: draft,
-                text: trimmed,
-                appSnapshot: appSnapshot,
-                kind: kind,
-                restyleSource: restyleSource
-            )
-        } catch is CancellationError {
-            transition(to: .idle)
-        } catch TextCommitterError.cancelled {
-            transition(to: .idle)
-        } catch {
-            PasteboardTextCommitter.copyForManualPaste(trimmed)
-            reportError(error.localizedDescription)
-            scheduleAutoReset(after: Self.errorResetDelay)
-        }
-    }
-
     private func enterPreview(
         text: String,
-        kind: VoicePreviewKind,
         textEditTarget: TextEditTargetSnapshot? = nil,
         textEditAppSnapshot: FrontmostAppSnapshot? = nil,
         restyleSourceText: String? = nil,
@@ -1404,7 +1309,6 @@ final class DictationCoordinator: ObservableObject {
         if clearsTextEditRequest {
             clearTextEditRequest()
         }
-        previewKind = kind
         previewTextEditTarget = textEditTarget
         previewTextEditAppSnapshot = textEditAppSnapshot
         previewRestyleSourceText = restyleSourceText
@@ -1413,50 +1317,7 @@ final class DictationCoordinator: ObservableObject {
         schedulePreviewResetIfNeeded()
     }
 
-    private func enterVoiceDraftPreview(
-        draft: VoiceDraftTextSnapshot,
-        text: String,
-        appSnapshot: FrontmostAppSnapshot?,
-        kind: VoicePreviewKind,
-        restyleSource: String?
-    ) {
-        clearActiveSession()
-        clearTextEditRequest()
-        activeVoiceDraftTarget = nil
-        previewKind = kind
-        previewTextEditTarget = nil
-        previewTextEditAppSnapshot = nil
-        previewVoiceDraft = draft
-        previewVoiceDraftAppSnapshot = appSnapshot
-        previewRestyleSourceText = stableRestyleText(restyleSource, fallback: text)
-        previewAnchorRect = draft.anchorRect
-        lastCorrected = text
-        copyPreviewTextToPasteboard(text)
-        transition(to: .preview)
-    }
-
-    private func replaceVoiceDraftIfNeeded(
-        _ text: String,
-        sessionID: UUID,
-        cancelToken: CommitCancellationToken
-    ) async throws {
-        guard let draft = previewVoiceDraft else { return }
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        let updated = try await committer.replaceVoiceDraft(
-            trimmed,
-            draft: draft,
-            appSnapshot: previewVoiceDraftAppSnapshot ?? frontmostSnapshot,
-            cancelToken: cancelToken
-        )
-        try await ensureActive(sessionID: sessionID, token: cancelToken)
-        previewVoiceDraft = updated
-        previewAnchorRect = updated.anchorRect
-        lastCorrected = trimmed
-    }
-
     private func schedulePreviewResetIfNeeded() {
-        guard previewVoiceDraft == nil else { return }
         scheduleAutoReset(after: Self.previewResetDelay)
     }
 
@@ -1502,7 +1363,7 @@ final class DictationCoordinator: ObservableObject {
     }
 
     private func restyleSource() -> (text: String, useExistingSession: Bool) {
-        if AppSettings.voiceUXMode == .voiceDraft || previewTextEditTarget != nil {
+        if previewTextEditTarget != nil {
             if let text = stableRestyleText(previewRestyleSourceText) {
                 return (text, false)
             }
@@ -1529,9 +1390,4 @@ final class DictationCoordinator: ObservableObject {
     private func elapsedMs(since date: Date) -> Int {
         Int(Date().timeIntervalSince(date) * 1000)
     }
-}
-
-enum VoicePreviewKind: String, Sendable {
-    case dictation
-    case textEdit
 }

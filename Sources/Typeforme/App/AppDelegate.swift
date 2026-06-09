@@ -15,6 +15,18 @@ private struct BridgeListenerSettings: Equatable {
     }
 }
 
+private struct HUDVisibilitySettings: Equatable {
+    let alwaysShow: Bool
+    let voiceUXMode: VoiceUXMode
+
+    static var current: HUDVisibilitySettings {
+        HUDVisibilitySettings(
+            alwaysShow: AppSettings.alwaysShowHUD,
+            voiceUXMode: AppSettings.voiceUXMode
+        )
+    }
+}
+
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let coordinator: DictationCoordinator
@@ -59,19 +71,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // HUD visibility: show whenever something's happening, OR whenever
         // the user has flipped on "Always show HUD" (Settings or menu bar).
-        let alwaysShowChanges = NotificationCenter.default
+        let visibilitySettingChanges = NotificationCenter.default
             .publisher(for: UserDefaults.didChangeNotification)
-            .map { _ in AppSettings.alwaysShowHUD }
-            .prepend(AppSettings.alwaysShowHUD)
+            .map { _ in HUDVisibilitySettings.current }
+            .prepend(HUDVisibilitySettings.current)
             .removeDuplicates()
 
         Publishers.CombineLatest(
             coordinator.$state.removeDuplicates(),
-            alwaysShowChanges
+            visibilitySettingChanges
         )
-        .sink { [weak self] state, alwaysShow in
+        .sink { [weak self] state, settings in
             guard let self else { return }
-            if state == .idle && !alwaysShow {
+            let shouldShowIdleHUD = settings.alwaysShow || settings.voiceUXMode == .voicePreview
+            if state == .idle && !shouldShowIdleHUD {
                 self.hud.hide()
             } else {
                 self.hud.show()
@@ -94,6 +107,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         holdMonitor.onHoldStart = { [weak self] in self?.handleHoldStart() }
         holdMonitor.onHoldEnd   = { [weak self] in self?.handleHoldEnd() }
         holdMonitor.install(modifier: AppSettings.holdModifier)
+
+        coordinator.$state
+            .removeDuplicates()
+            .sink { [weak self] state in
+                guard state == .idle else { return }
+                self?.holdMonitor.resetGestureState()
+            }
+            .store(in: &cancellables)
 
         NotificationCenter.default
             .publisher(for: UserDefaults.didChangeNotification)
@@ -323,6 +344,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if self.coordinator.state != .idle {
                     Log.app.debug("Esc — cancelling dictation")
                     await self.coordinator.cancelDictation()
+                } else if self.coordinator.canCollapseVoicePreviewHUD {
+                    Log.app.debug("Esc — collapsing voice preview HUD")
+                    self.coordinator.collapseVoicePreviewHUD()
                 }
             }
         }
@@ -333,6 +357,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if self.coordinator.state != .idle {
                     Log.app.debug("Esc — cancelling dictation")
                     await self.coordinator.cancelDictation()
+                } else if self.coordinator.canCollapseVoicePreviewHUD {
+                    Log.app.debug("Esc — collapsing voice preview HUD")
+                    self.coordinator.collapseVoicePreviewHUD()
                 }
             }
             return event

@@ -19,7 +19,17 @@ struct HUDView: View {
     /// the user can actually verify what's about to be inserted, then chips
     /// + Insert on the bottom. Other states stay as a single 52pt-tall row.
     private var isExpandedPreview: Bool {
-        coordinator.state == .preview ||
+        if isVoicePreviewMode {
+            switch coordinator.state {
+            case .idle:
+                return coordinator.voicePreviewHUDExpanded
+            case .recording, .transcribing, .correcting, .preview:
+                return true
+            case .inserting, .success, .error:
+                return false
+            }
+        }
+        return coordinator.state == .preview ||
             (coordinator.state == .correcting && !coordinator.lastCorrected.isEmpty)
     }
 
@@ -49,13 +59,28 @@ struct HUDView: View {
     /// Idle: a small circular presence indicator. The panel itself shrinks to
     /// a 40pt circle (see HUDWindowController). Hover surfaces the hotkey hint
     /// without expanding the idle HUD.
+    @ViewBuilder
     private var idleDotBody: some View {
+        if isVoicePreviewMode {
+            Button {
+                coordinator.expandVoicePreviewHUD()
+            } label: {
+                idleDotImage
+            }
+            .buttonStyle(.plain)
+            .help("Ready · \(hotkeyDescription)")
+        } else {
+            idleDotImage
+                .help("Ready · \(hotkeyDescription)")
+        }
+    }
+
+    private var idleDotImage: some View {
         Image(systemName: "mic")
             .font(.system(size: 13, weight: .semibold))
             .symbolRenderingMode(.hierarchical)
             .foregroundStyle(.secondary)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .help("Ready · \(hotkeyDescription)")
     }
 
     private var compactBody: some View {
@@ -111,8 +136,8 @@ struct HUDView: View {
 
     @ViewBuilder
     private var expandedPreviewBody: some View {
-        if isVoiceDraftMode {
-            voiceDraftPreviewBody
+        if isVoicePreviewMode {
+            voicePreviewBody
         } else {
             classicPreviewBody
         }
@@ -156,15 +181,31 @@ struct HUDView: View {
         .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
-    private var voiceDraftPreviewBody: some View {
-        HStack(spacing: 0) {
-            VoiceDraftActionBar(
+    private var voicePreviewBody: some View {
+        VStack(alignment: .leading, spacing: voicePreviewText.isEmpty ? 0 : 12) {
+            if !voicePreviewText.isEmpty {
+                Text(voicePreviewText)
+                    .font(.system(size: 13.5, weight: .medium, design: .rounded))
+                    .foregroundStyle(.primary)
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
+            }
+            if let warningText {
+                Label(warningText, systemImage: "exclamationmark.triangle.fill")
+                    .font(.system(size: 11.5, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.orange)
+                    .lineLimit(1)
+            }
+            VoicePreviewActionBar(
                 coordinator: coordinator,
-                disabled: coordinator.state == .correcting
+                disabled: voicePreviewActionsDisabled
             )
-            Spacer(minLength: 0)
         }
-        .padding(6)
+        .padding(.horizontal, voicePreviewText.isEmpty ? 6 : 18)
+        .padding(.top, voicePreviewText.isEmpty ? 6 : 14)
+        .padding(.bottom, 6)
         .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
@@ -178,17 +219,36 @@ struct HUDView: View {
         return trimmed.isEmpty ? nil : trimmed
     }
 
-    private var isVoiceDraftMode: Bool {
-        VoiceUXMode(rawValue: voiceUXModeRaw) == .voiceDraft
+    private var voicePreviewText: String {
+        let live = coordinator.livePartialTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !live.isEmpty {
+            switch coordinator.state {
+            case .recording, .transcribing, .correcting:
+                return live
+            default:
+                break
+            }
+        }
+        return coordinator.lastCorrected.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var voicePreviewActionsDisabled: Bool {
+        switch coordinator.state {
+        case .idle, .preview:
+            return false
+        case .recording, .transcribing, .correcting, .inserting, .success, .error:
+            return true
+        }
+    }
+
+    private var isVoicePreviewMode: Bool {
+        VoiceUXMode(rawValue: voiceUXModeRaw) == .voicePreview
     }
 
     // MARK: - Surface
 
     @ViewBuilder
     private var surface: some View {
-        if isVoiceDraftMode && isExpandedPreview {
-            Color.clear
-        } else {
         let shape = RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
         shape
             .fill(.ultraThinMaterial)
@@ -212,7 +272,6 @@ struct HUDView: View {
                 // hardcoded white-opacity, which was invisible in light mode.
                 shape.strokeBorder(Color(nsColor: .separatorColor), lineWidth: 0.5)
             )
-        }
     }
 
     // MARK: - Leading (icon / waveform / recording dot)
@@ -473,19 +532,19 @@ private struct ChipStyle: ViewModifier {
     }
 }
 
-// MARK: - Voice Draft action bar
+// MARK: - Voice Preview action bar
 
-private struct VoiceDraftActionBar: View {
+private struct VoicePreviewActionBar: View {
     @ObservedObject var coordinator: DictationCoordinator
     let disabled: Bool
 
     var body: some View {
         HStack(spacing: 4) {
-            VoiceDraftBarButton(
+            VoicePreviewBarButton(
                 title: "Wand",
                 systemImage: "wand.and.stars"
             ) {
-                Task { await coordinator.toggleDraftCommand() }
+                Task { await coordinator.togglePreviewCommand() }
             }
             .disabled(disabled)
 
@@ -504,7 +563,11 @@ private struct VoiceDraftActionBar: View {
                 .frame(height: 18)
 
             Button {
-                Task { await coordinator.cancelDictation() }
+                if coordinator.state == .idle {
+                    coordinator.collapseVoicePreviewHUD()
+                } else {
+                    Task { await coordinator.cancelDictation() }
+                }
             } label: {
                 Image(systemName: "xmark")
                     .font(.system(size: 10, weight: .bold))
@@ -513,7 +576,7 @@ private struct VoiceDraftActionBar: View {
             }
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
-            .help("Cancel draft (Esc)")
+            .help("Collapse (Esc)")
         }
         .padding(5)
         .background(
@@ -530,22 +593,22 @@ private struct VoiceDraftActionBar: View {
     }
 }
 
-private struct VoiceDraftBarButton: View {
+private struct VoicePreviewBarButton: View {
     let title: String
     let systemImage: String
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            VoiceDraftBarLabel(title: title, systemImage: systemImage)
+            VoicePreviewBarLabel(title: title, systemImage: systemImage)
                 .foregroundStyle(Color.primary)
         }
         .buttonStyle(.plain)
-        .help("Speak a command for this draft")
+        .help("Speak a command for the current input")
     }
 }
 
-private struct VoiceDraftBarLabel: View {
+private struct VoicePreviewBarLabel: View {
     let title: String
     let systemImage: String
 

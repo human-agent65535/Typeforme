@@ -2118,7 +2118,7 @@ struct CorrectionSettingsView: View {
 
                 Toggle("Auto-commit in Classic", isOn: $autoCommit)
 
-                Text("Voice Draft writes into the focused input first, then keeps the action bar available for refine or text actions.")
+                Text("Voice Preview keeps the HUD available as a small icon. Speech preview expands while recording, final text inserts directly, and Wand/Style act on the current selection or focused input.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
 

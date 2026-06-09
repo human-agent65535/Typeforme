@@ -2,7 +2,7 @@ import Foundation
 
 enum VoiceUXMode: String, Codable, CaseIterable, Identifiable, Sendable {
     case classic = "classic"
-    case voiceDraft = "voice_draft"
+    case voicePreview = "voice_preview"
 
     var id: String { rawValue }
 
@@ -10,8 +10,8 @@ enum VoiceUXMode: String, Codable, CaseIterable, Identifiable, Sendable {
         switch self {
         case .classic:
             return "Classic"
-        case .voiceDraft:
-            return "Voice Draft (Beta)"
+        case .voicePreview:
+            return "Voice Preview"
         }
     }
 
@@ -19,8 +19,8 @@ enum VoiceUXMode: String, Codable, CaseIterable, Identifiable, Sendable {
         switch self {
         case .classic:
             return "Preserves the current hotkey-first behavior for compatibility."
-        case .voiceDraft:
-            return "Places recognized text directly in the focused input as a selected draft. Use Style/Wand to replace it in place, or Esc to cancel."
+        case .voicePreview:
+            return "Keeps the HUD available as a small icon, shows live speech preview while recording, and inserts the final text directly into the focused input."
         }
     }
 }

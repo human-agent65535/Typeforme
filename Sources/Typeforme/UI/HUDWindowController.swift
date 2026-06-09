@@ -38,7 +38,7 @@ final class HUDWindowController {
     private static let previewMaxHeight: CGFloat = 420
     private static let previewWidth: CGFloat = 620
     private static let degradedSuccessWidth: CGFloat = 220
-    private static let voiceDraftBarSize = NSSize(width: 552, height: 48)
+    private static let voicePreviewBarSize = NSSize(width: 552, height: 48)
     private static let bottomMargin: CGFloat = 80
     private static let entranceLift: CGFloat = 14
     private static let edgePadding: CGFloat = 8
@@ -100,7 +100,16 @@ final class HUDWindowController {
         }
         .store(in: &cancellables)
 
-        coordinator.$previewAnchorRect
+        coordinator.$voicePreviewHUDExpanded
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                guard let self else { return }
+                self.applyWidth(for: self.coordinator.state, animated: true)
+            }
+            .store(in: &cancellables)
+
+        NotificationCenter.default
+            .publisher(for: UserDefaults.didChangeNotification)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 guard let self else { return }
@@ -157,11 +166,15 @@ final class HUDWindowController {
         isShown = false
         holdAtPreviewWidth = false
         let panel = self.panel
+        let shouldDeactivateAfterHide = panel.isKeyWindow
         NSAnimationContext.runAnimationGroup({ ctx in
             ctx.duration = 0.18
             panel.animator().alphaValue = 0
         }, completionHandler: {
             panel.orderOut(nil)
+            if shouldDeactivateAfterHide {
+                NSApp.deactivate()
+            }
         })
     }
 
@@ -217,74 +230,7 @@ final class HUDWindowController {
     }
 
     private func origin(for state: DictationState, size: NSSize) -> NSPoint {
-        if isVoiceDraftBarVisible(for: state),
-           let rect = coordinator.previewAnchorRect,
-           Self.isUsableRect(rect) {
-            return originNearAXRect(rect, size: size)
-        }
         return originForAnchor(anchorOrDefault(), size: size)
-    }
-
-    private func originNearAXRect(_ axRect: CGRect, size: NSSize) -> NSPoint {
-        guard let screen = screen(containingAXRect: axRect) ?? NSScreen.main else {
-            return originForAnchor(anchorOrDefault(), size: size)
-        }
-
-        let rect = appKitRect(fromAXRect: axRect, on: screen)
-        let visible = screen.visibleFrame
-        let minX = visible.minX + Self.edgePadding
-        let maxX = visible.maxX - size.width - Self.edgePadding
-        let minY = visible.minY + Self.edgePadding
-        let maxY = visible.maxY - size.height - Self.edgePadding
-
-        // Anchor the panel's left edge at the caret (`rect.maxX` is the end
-        // of the inserted voice-draft range, where the caret sits after
-        // insertion) so the toolbar sits to the lower-right of the caret —
-        // not centered under the whole input row, not right-aligned to the
-        // input width.
-        var x = rect.maxX
-        if minX <= maxX {
-            x = max(minX, min(maxX, x))
-        }
-
-        let below = rect.minY - size.height - 8
-        let above = rect.maxY + 8
-        var y = below >= minY ? below : above
-        if minY <= maxY {
-            y = max(minY, min(maxY, y))
-        }
-        return NSPoint(x: x, y: y)
-    }
-
-    private func appKitRect(fromAXRect rect: CGRect, on screen: NSScreen) -> NSRect {
-        let candidate = NSRect(
-            x: rect.minX,
-            y: screen.frame.maxY - rect.maxY,
-            width: rect.width,
-            height: rect.height
-        )
-        if screen.frame.intersects(candidate) || screen.visibleFrame.intersects(candidate) {
-            return candidate
-        }
-        return NSRect(x: rect.minX, y: rect.minY, width: rect.width, height: rect.height)
-    }
-
-    private func screen(containingAXRect rect: CGRect) -> NSScreen? {
-        guard Self.isUsableRect(rect) else { return nil }
-        return NSScreen.screens.first { screen in
-            let converted = appKitRect(fromAXRect: rect, on: screen)
-            let raw = NSRect(x: rect.minX, y: rect.minY, width: rect.width, height: rect.height)
-            return screen.frame.intersects(converted) || screen.frame.intersects(raw)
-        }
-    }
-
-    private static func isUsableRect(_ rect: CGRect) -> Bool {
-        rect.minX.isFinite &&
-            rect.minY.isFinite &&
-            rect.width.isFinite &&
-            rect.height.isFinite &&
-            rect.width > 1 &&
-            rect.height > 1
     }
 
     /// Compute the panel origin so the panel's BOTTOM edge sits on `anchor.y`
@@ -355,20 +301,18 @@ final class HUDWindowController {
     /// inside the HUD. Capped at `previewMaxHeight` so a 5-minute monologue
     /// can't paint over the entire screen.
     private func size(for state: DictationState) -> NSSize {
+        if isVoicePreviewExpanded(for: state) {
+            return voicePreviewSize(for: state)
+        }
+
         switch state {
         case .idle:
             return NSSize(width: Self.idleSize, height: Self.idleSize)
         case .recording, .transcribing, .inserting:
             return livePartialSize(for: state) ?? NSSize(width: Self.width(for: state), height: Self.compactHeight)
         case .preview:
-            if isVoiceDraftBarVisible(for: state) {
-                return Self.voiceDraftBarSize
-            }
             return previewSize()
         case .correcting where !coordinator.lastCorrected.isEmpty:
-            if isVoiceDraftBarVisible(for: state) {
-                return Self.voiceDraftBarSize
-            }
             return previewSize()
         case .correcting:
             return livePartialSize(for: state) ?? NSSize(width: Self.width(for: state), height: Self.compactHeight)
@@ -379,9 +323,50 @@ final class HUDWindowController {
         }
     }
 
-    private func isVoiceDraftBarVisible(for state: DictationState) -> Bool {
-        guard AppSettings.voiceUXMode == .voiceDraft else { return false }
-        return state == .preview || (state == .correcting && !coordinator.lastCorrected.isEmpty)
+    private func isVoicePreviewExpanded(for state: DictationState) -> Bool {
+        guard AppSettings.voiceUXMode == .voicePreview else { return false }
+        switch state {
+        case .idle:
+            return coordinator.voicePreviewHUDExpanded
+        case .recording, .transcribing, .correcting, .preview:
+            return true
+        case .inserting, .success, .error:
+            return false
+        }
+    }
+
+    private func voicePreviewSize(for state: DictationState) -> NSSize {
+        let text = voicePreviewText(for: state)
+        guard !text.isEmpty else {
+            return Self.voicePreviewBarSize
+        }
+        let warning = coordinator.lastWarning?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let cacheKey = warning.isEmpty ? "voicePreview:\(text)" : "voicePreview:\(text)|warning:\(warning)"
+        if cachedPreviewText == cacheKey, let cachedPreviewSize {
+            return cachedPreviewSize
+        }
+        let textHeight = Self.measuredTextHeight(for: text, inWidth: Self.previewWidth - 36)
+        let warningHeight: CGFloat = !warning.isEmpty
+            ? Self.previewWarningHeight
+            : 0
+        let height = min(textHeight + warningHeight + Self.previewChromeHeight, Self.previewMaxHeight)
+        let size = NSSize(width: Self.previewWidth, height: height)
+        cachedPreviewText = cacheKey
+        cachedPreviewSize = size
+        return size
+    }
+
+    private func voicePreviewText(for state: DictationState) -> String {
+        let live = coordinator.livePartialTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !live.isEmpty {
+            switch state {
+            case .recording, .transcribing, .correcting:
+                return live
+            default:
+                break
+            }
+        }
+        return coordinator.lastCorrected.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func previewSize() -> NSSize {

@@ -124,6 +124,18 @@ final class DoubleTapModifierMonitor {
         lastReleaseAt = nil
     }
 
+    func resetGestureState() {
+        pendingHoldTask?.cancel()
+        pendingHoldTask = nil
+        if isHolding {
+            isHolding = false
+            onHoldEnd?()
+        }
+        wasPressed = false
+        lastReleaseAt = nil
+        applyPendingModifierIfIdle()
+    }
+
     private func handle(_ event: NSEvent) {
         let mask = modifier.deviceFlagMask
         guard mask != 0 else { return }
