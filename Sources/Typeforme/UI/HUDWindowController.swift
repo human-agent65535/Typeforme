@@ -28,6 +28,7 @@ final class HUDWindowController {
     /// Set while we're moving the panel ourselves (entrance / width change);
     /// suppresses the user-drag observer so we don't treat it as a manual move.
     private var isProgrammaticallyMoving = false
+    private var isUserDragging = false
     private var cachedPreviewText: String?
     private var cachedPreviewSize: NSSize?
 
@@ -110,12 +111,28 @@ final class HUDWindowController {
 
         NotificationCenter.default
             .publisher(for: UserDefaults.didChangeNotification)
+            .map { _ in AppSettings.voiceUXMode }
+            .prepend(AppSettings.voiceUXMode)
+            .removeDuplicates()
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 guard let self else { return }
                 self.applyWidth(for: self.coordinator.state, animated: true)
             }
             .store(in: &cancellables)
+
+        panel.onManualDragBegan = { [weak self] in
+            self?.isUserDragging = true
+        }
+        panel.onManualDragMoved = { [weak self] in
+            self?.updateAnchorFromCurrentFrame()
+        }
+        panel.onManualDragEnded = { [weak self] in
+            guard let self else { return }
+            self.updateAnchorFromCurrentFrame()
+            self.persistCurrentAnchor()
+            self.isUserDragging = false
+        }
 
         // The user dragged the HUD — persist the new center so it sticks
         // across width changes and across app launches.
@@ -193,7 +210,7 @@ final class HUDWindowController {
     // MARK: - Adaptive width
 
     private func applyWidth(for state: DictationState, animated: Bool) {
-        guard isShown else { return }
+        guard isShown, !isUserDragging else { return }
 
         // Re-correct latch: see the chip-click width-thrash bug for context.
         if state == .preview {
@@ -289,12 +306,21 @@ final class HUDWindowController {
     }
 
     private func handleManualMove() {
-        guard !isProgrammaticallyMoving else { return }
+        guard !isProgrammaticallyMoving, !panel.isManualDragging else { return }
+        updateAnchorFromCurrentFrame()
+        persistCurrentAnchor()
+    }
+
+    private func updateAnchorFromCurrentFrame() {
         let bottomCenter = NSPoint(x: panel.frame.midX, y: panel.frame.minY)
         anchorBottomCenter = bottomCenter
+    }
+
+    private func persistCurrentAnchor() {
+        guard let anchorBottomCenter else { return }
         let ud = UserDefaults.standard
-        ud.set(Double(bottomCenter.x), forKey: Self.anchorXKey)
-        ud.set(Double(bottomCenter.y), forKey: Self.anchorYKey)
+        ud.set(Double(anchorBottomCenter.x), forKey: Self.anchorXKey)
+        ud.set(Double(anchorBottomCenter.y), forKey: Self.anchorYKey)
     }
 
     /// Per-state target size. Preview height is `measuredTextHeight +

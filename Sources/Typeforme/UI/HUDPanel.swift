@@ -4,6 +4,10 @@ import AppKit
 /// from the user's current app.
 final class HUDPanel: NSPanel {
     var manualDragRegionHeight: CGFloat = 0
+    var onManualDragBegan: (() -> Void)?
+    var onManualDragMoved: (() -> Void)?
+    var onManualDragEnded: (() -> Void)?
+    var isManualDragging: Bool { dragSession?.isDragging == true }
 
     private struct DragSession {
         let startMouseLocation: NSPoint
@@ -69,6 +73,7 @@ final class HUDPanel: NSPanel {
                     return
                 }
                 session.isDragging = true
+                onManualDragBegan?()
             }
 
             dragSession = session
@@ -76,11 +81,14 @@ final class HUDPanel: NSPanel {
                 x: session.startFrame.origin.x + delta.x,
                 y: session.startFrame.origin.y + delta.y
             ))
+            onManualDragMoved?()
         case .leftMouseUp:
             let handledDrag = dragSession?.isDragging == true
             dragSession = nil
             if !handledDrag {
                 super.sendEvent(event)
+            } else {
+                onManualDragEnded?()
             }
         default:
             super.sendEvent(event)
