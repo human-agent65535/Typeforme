@@ -1646,7 +1646,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         resetAllPressedControlStates(animated: false)
         if keyboardFocus == .text {
             pendingRimeCharacters.removeAll()
-            applyRimeState(rimeInput.commitComposition())
+            commitDisplayedRimeCompositionIfNeeded()
         }
         textTouchLearner.flush()
         stopDeleteRepeat()
@@ -1808,7 +1808,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
            shouldApplyDefault,
            let defaultLanguage = textInputLanguage(for: hostDefaultLanguage) {
             if textInputLanguage == .chinese, defaultLanguage == .english {
-                applyRimeState(rimeInput.commitComposition())
+                commitDisplayedRimeCompositionIfNeeded()
             }
             textInputLanguage = defaultLanguage
             defaults.set(defaultLanguage.rawValue, forKey: textInputLanguageKey)
@@ -1817,7 +1817,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
         if !isChineseInputEnabled, textInputLanguage != .english {
             if applyRimeChanges {
-                applyRimeState(rimeInput.commitComposition())
+                commitDisplayedRimeCompositionIfNeeded()
             }
             textInputLanguage = .english
             defaults.set(TextInputLanguage.english.rawValue, forKey: textInputLanguageKey)
@@ -6299,7 +6299,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         guard keyboardFocus != focus else { return }
         resetAllPressedControlStates(animated: false)
         if keyboardFocus == .text {
-            applyRimeState(rimeInput.commitComposition())
+            commitDisplayedRimeCompositionIfNeeded()
             resetQuoteParity()
         }
         clearTextShiftState()
@@ -6449,7 +6449,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     @objc private func toggleTextInputLanguage() {
         guard isChineseInputEnabled else { return }
         if textInputLanguage == .chinese {
-            applyRimeState(rimeInput.commitComposition())
+            commitDisplayedRimeCompositionIfNeeded()
             textInputLanguage = .english
         } else {
             textInputLanguage = .chinese
@@ -6607,7 +6607,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
 
         if textInputLanguage == .english {
-            applyRimeState(rimeInput.commitComposition())
+            commitDisplayedRimeCompositionIfNeeded()
             let isAlphabetic = isAlphabeticTextKey(character)
             let shouldCapitalize = isAlphabetic
                 && effectiveTextShiftActive(autoCap: shouldAutoCapitalizeNextEnglishLetter())
@@ -6632,7 +6632,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
 
         if isTextShiftEnabled {
-            applyRimeState(rimeInput.commitComposition())
+            commitDisplayedRimeCompositionIfNeeded()
             clearRestyleUndoStateForManualEdit()
             textDocumentProxy.insertText(character.uppercased())
             resetShiftIfSticky()
@@ -6757,7 +6757,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         acceptPendingTextTouchIfSurvived()
 
         if textInputLanguage == .english {
-            applyRimeState(rimeInput.commitComposition())
+            commitDisplayedRimeCompositionIfNeeded()
             clearRestyleUndoStateForManualEdit()
             textDocumentProxy.insertText(" ")
             if !resetShiftIfSticky() {
@@ -6811,8 +6811,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             return
         }
 
-        let state = currentState.isComposing ? rimeInput.commitRawInput() : currentState
-        applyRimeState(state)
+        let state = commitDisplayedRimeCompositionIfNeeded(from: currentState)
         if state.commitText.isEmpty {
             clearRestyleUndoStateForManualEdit()
             textDocumentProxy.insertText("\n")
@@ -6852,6 +6851,16 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         activeMarkedText = ""
         activeMarkedTextOwner = nil
         applyRimeState(rimeInput.clearComposition())
+    }
+
+    @discardableResult
+    private func commitDisplayedRimeCompositionIfNeeded(from currentState: RimeKeyboardState? = nil) -> RimeKeyboardState {
+        let state = currentState ?? rimeInput.state()
+        guard state.isComposing else { return state }
+        let text = rimeMarkedText(for: state)
+        let committedState = rimeInput.commitVisibleComposition(text)
+        applyRimeState(committedState)
+        return committedState
     }
 
     private func returnToAlphabetKeyboardAfterSymbolInput() {
@@ -6920,11 +6929,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func rimeMarkedText(for state: RimeKeyboardState) -> String {
-        guard state.isComposing else { return "" }
-        if shouldUseRawRimeInputAsMarkedText(state.input) {
-            return state.input
-        }
-        return state.preedit.isEmpty ? state.input : state.preedit
+        state.visibleCompositionText(preferRawInput: shouldUseRawRimeInputAsMarkedText(state.input))
     }
 
     private func shouldUseRawRimeInputAsMarkedText(_ input: String) -> Bool {
@@ -7873,7 +7878,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 )
                 return
             } else {
-                applyRimeState(rimeInput.commitComposition())
+                commitDisplayedRimeCompositionIfNeeded(from: currentState)
             }
         } else {
             replaceMarkedText("")
@@ -8156,7 +8161,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             textSpaceCursorStartX = location.x
             textTrackpadLastStepX = 0
             if rimeInput.state().isComposing {
-                applyRimeState(rimeInput.commitComposition())
+                commitDisplayedRimeCompositionIfNeeded()
             }
             keyboardHaptics.playSelectionChanged()
             setTextTrackpadMode(true)

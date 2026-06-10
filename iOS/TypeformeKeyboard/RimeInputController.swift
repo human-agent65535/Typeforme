@@ -32,6 +32,14 @@ struct RimeKeyboardState {
     let hasNextPage: Bool
     let commitText: String
     let errorMessage: String?
+
+    func visibleCompositionText(preferRawInput: Bool = false) -> String {
+        guard isComposing else { return "" }
+        if preferRawInput {
+            return input
+        }
+        return preedit.isEmpty ? input : preedit
+    }
 }
 
 enum RimeCharacterProcessResult {
@@ -477,6 +485,14 @@ final class RimeInputController {
             let rawInput = api.getInput(session) ?? ""
             api.cleanComposition(session)
             return stateOnQueue(commitText: rawInput)
+        }
+    }
+
+    func commitVisibleComposition(_ text: String) -> RimeKeyboardState {
+        guard startIfNeeded() else { return notReadyState(commitText: text) }
+        return rimeQueue.sync {
+            api.cleanComposition(session)
+            return stateOnQueue(commitText: text)
         }
     }
 
