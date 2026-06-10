@@ -14,6 +14,11 @@ actor KeyboardLocalClient {
     private var pooledTask: URLSessionWebSocketTask?
     private var pooledBridgeToken: String?
     private var isPooledTaskBusy = false
+    /// Bumped by shutdown(). In-flight sends snapshot this at entry so a
+    /// failure caused by shutdown cancelling the pooled socket is not
+    /// "healed" by a fresh dial, and a socket dialed across a shutdown is
+    /// never re-pooled.
+    private var shutdownGeneration: UInt64 = 0
 
     func status(bridgeToken: String?, timeout: TimeInterval = 0.45) async throws -> KeyboardBridgeStatus {
         try await send(action: .status, command: nil, bridgeToken: bridgeToken, timeout: timeout, reusesConnection: true)
@@ -26,6 +31,7 @@ actor KeyboardLocalClient {
     /// Closes the pooled status connection. Called when status polling stops
     /// or the keyboard disappears; the host drops its side on cancel.
     func shutdown() {
+        shutdownGeneration &+= 1
         discardPooledTask()
     }
 
@@ -49,6 +55,7 @@ actor KeyboardLocalClient {
             guard let command else { throw URLError(.badURL) }
             request = .command(command, bridgeToken: bridgeToken)
         }
+        let generation = shutdownGeneration
 
         if reusesConnection,
            let task = pooledTask,
@@ -70,6 +77,10 @@ actor KeyboardLocalClient {
                 } else {
                     task.cancel(with: .normalClosure, reason: nil)
                 }
+                // A failure caused by shutdown() cancelling this socket must
+                // not fall through to a fresh dial — that would resurrect the
+                // connection stopStatusPolling just asked us to close.
+                guard shutdownGeneration == generation else { throw error }
             }
         }
 
@@ -85,7 +96,9 @@ actor KeyboardLocalClient {
                 verifyHelloWith: bridgeToken,
                 timeout: timeout
             )
-            if reusesConnection {
+            // Don't pool across a shutdown: the poll result is still valid,
+            // but the connection must not outlive stopStatusPolling.
+            if reusesConnection, shutdownGeneration == generation {
                 // Actor reentrancy: an overlapping call may have pooled its
                 // own socket while this one awaited. Never hold two — close
                 // the previous occupant before taking the slot.
