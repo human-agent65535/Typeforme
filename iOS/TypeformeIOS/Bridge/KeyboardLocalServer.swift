@@ -167,21 +167,28 @@ final class KeyboardLocalServer {
                     self.removeTask(taskID)
                     return
                 }
-                let status = await self.status(for: request, expectedToken: expectedToken)
+                let authorized = self.isAuthorized(request, expectedToken: expectedToken)
+                let status = await self.status(for: request, authorized: authorized)
                 guard !Task.isCancelled, self.isCurrentGeneration(generation) else {
                     connection.cancel()
                     self.removeTask(taskID)
                     return
                 }
-                self.send(status, connection: connection, keepAliveGeneration: generation, expectedToken: expectedToken)
+                if authorized {
+                    self.send(status, connection: connection, keepAliveGeneration: generation, expectedToken: expectedToken)
+                } else {
+                    // Unauthorized peers get the error frame and a close —
+                    // never a persistent connection.
+                    self.send(status, connection: connection)
+                }
                 self.removeTask(taskID)
             }
             self.storeTask(task, id: taskID, generation: generation)
         }
     }
 
-    private func status(for request: KeyboardLocalBridgeRequest, expectedToken: String) async -> KeyboardBridgeStatus {
-        guard isAuthorized(request, expectedToken: expectedToken) else {
+    private func status(for request: KeyboardLocalBridgeRequest, authorized: Bool) async -> KeyboardBridgeStatus {
+        guard authorized else {
             return KeyboardBridgeStatus(state: .error, message: "Keyboard bridge unauthorized")
         }
         switch request.action {
@@ -221,7 +228,11 @@ final class KeyboardLocalServer {
     /// connection stays open and waits for the next request — the keyboard
     /// reuses one socket for its ~8Hz recording status polls, so closing
     /// after every response cost a TCP connect + WS upgrade + HMAC hello per
-    /// sample. Error responses pass nil and close as before.
+    /// sample. Keep-alive is only granted to requests that passed HMAC
+    /// authorization; transport errors, oversize/undecodable frames, and
+    /// unauthorized requests pass nil and close. Authorized exchanges whose
+    /// handler reports an `.error` *status* (busy, expired command) do keep
+    /// the connection — the error is application state, not protocol failure.
     private func send(
         _ status: KeyboardBridgeStatus,
         connection: NWConnection,

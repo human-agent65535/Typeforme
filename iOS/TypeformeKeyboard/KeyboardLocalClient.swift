@@ -61,8 +61,15 @@ actor KeyboardLocalClient {
             } catch {
                 // Stale pooled socket (host listener restarted, timeout, close
                 // mid-flight). Drop it and fall through to a fresh dial so one
-                // dead connection never surfaces as a failed poll.
-                discardPooledTask()
+                // dead connection never surfaces as a failed poll. Actors are
+                // reentrant across awaits, so an overlapping call may have
+                // replaced the pooled slot already — only tear down the slot
+                // when it still holds this socket.
+                if pooledTask === task {
+                    discardPooledTask()
+                } else {
+                    task.cancel(with: .normalClosure, reason: nil)
+                }
             }
         }
 
@@ -79,6 +86,12 @@ actor KeyboardLocalClient {
                 timeout: timeout
             )
             if reusesConnection {
+                // Actor reentrancy: an overlapping call may have pooled its
+                // own socket while this one awaited. Never hold two — close
+                // the previous occupant before taking the slot.
+                if let existing = pooledTask, existing !== task {
+                    existing.cancel(with: .normalClosure, reason: nil)
+                }
                 pooledTask = task
                 pooledBridgeToken = bridgeToken
             } else {
