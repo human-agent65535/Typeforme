@@ -82,7 +82,7 @@ enum KeyboardSharedDefaults {
         } else {
             defaults.removeObject(forKey: hostForegroundKey)
         }
-        return defaults.synchronize()
+        return true
     }
 
     static func isHostForegroundActive(
@@ -111,7 +111,6 @@ enum KeyboardSharedDefaults {
               handoff.isFresh(now: now)
         else { return nil }
         defaults.removeObject(forKey: hostHandoffKey)
-        defaults.synchronize()
         return handoff
     }
 
@@ -121,7 +120,6 @@ enum KeyboardSharedDefaults {
               handoff.isFresh(now: now)
         else { return nil }
         defaults.removeObject(forKey: hostHandoffKey)
-        defaults.synchronize()
         return handoff
     }
 
@@ -139,8 +137,11 @@ enum KeyboardSharedDefaults {
               let text = String(data: data, encoding: .utf8),
               let defaults = suite()
         else { return false }
+        // No synchronize(): cfprefsd propagates App Group writes across
+        // processes on its own, and synchronize() is a blocking XPC round
+        // trip on the caller's thread (status snapshots save on the host
+        // main actor during dictation).
         defaults.set(text, forKey: key)
-        defaults.synchronize()
         return true
     }
 }

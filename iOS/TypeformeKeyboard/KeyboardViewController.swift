@@ -36,7 +36,7 @@ private extension CorrectionModePreset {
     }
 }
 
-final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate {
+final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate, UIScrollViewDelegate {
     private enum CapsuleStyle {
         case chrome
         case key
@@ -454,6 +454,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private static let textKeyboardToolbarKeyGap: CGFloat = 10
     private static let candidateInlineMinimumCellWidth: CGFloat = 41
     private static let candidateInlineCellHorizontalPadding: CGFloat = 20
+    /// Inline candidate strip renders in windows of this many cells. Rime can
+    /// return up to 60 candidates per keystroke but only ~6-8 are visible;
+    /// one chunk covers roughly two screen widths so a normal scroll never
+    /// reaches unrendered area, and the rest materialize on demand.
+    private static let candidateInlineRenderChunkCount = 14
     private static let candidateTextFontSize: CGFloat = 20
     /// The native Chinese expanded candidate panel uses compact 45pt rows and
     /// length-aware cells: short candidates fill six even columns, while long
@@ -542,6 +547,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private var textKeyCommitCharacters: [ObjectIdentifier: String] = [:]
     private var reusableCandidateButtons: [UIButton] = []
     private var candidateButtonWidthConstraints: [NSLayoutConstraint] = []
+    /// Source list + rendered prefix length for the windowed inline strip.
+    /// Cleared by `resetCandidateStackForReuse` so non-candidate content
+    /// (status labels, notices) can never trigger a deferred append.
+    private var pendingInlineCandidates: [RimeKeyboardCandidate] = []
+    private var renderedInlineCandidateCount = 0
     private var reusableCandidateSeparators: [UIView] = []
     private var reusableCandidateStatusLabels: [UILabel] = []
     private var candidateStatusLabelWidthConstraints: [ObjectIdentifier: NSLayoutConstraint] = [:]
@@ -2752,7 +2762,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 width: diameter,
                 height: diameter
             )
-            ring.path = UIBezierPath(ovalIn: CGRect(origin: .zero, size: CGSize(width: diameter, height: diameter))).cgPath
+            // Path geometry depends only on the constant orb diameter; build
+            // it once instead of allocating a CGPath on every layout pass.
+            if ring.path == nil {
+                ring.path = UIBezierPath(
+                    ovalIn: CGRect(origin: .zero, size: CGSize(width: diameter, height: diameter))
+                ).cgPath
+            }
         }
         updateCandidateScrollViewport()
         updateCandidateGridCollapseButtonFrame()
@@ -2786,6 +2802,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func logKeyboardTouchSurfaceLayoutIfNeeded() {
+        // Runs on every layout pass; the dedupe key alone costs several rect
+        // conversions plus a hit-band computation, so gate the whole thing
+        // behind the same flag as the touch event trace.
+        guard defaults.bool(forKey: keyboardTouchTraceEnabledKey) else { return }
         let surfaceFrame = view.bounds.integral
         let viewFrame = view.frame.integral
         let superviewFrame = view.superview?.frame.integral ?? .zero
@@ -3050,6 +3070,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         candidateScrollView.delaysContentTouches = false
         candidateScrollView.canCancelContentTouches = true
         candidateScrollView.isDirectionalLockEnabled = true
+        // Drives the windowed candidate rendering: scrolling toward the
+        // rendered edge appends the next chunk (scrollViewDidScroll).
+        candidateScrollView.delegate = self
         candidateScrollView.addGestureRecognizer(candidateScrollTapRecognizer)
         // UIScrollView's clipsToBounds default is false — without this, the
         // last candidate near the right edge can render under the chevron.
@@ -3911,7 +3934,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 self.voiceTitleLabel.textColor = self.voiceTitleColor
                 self.voiceTitleLabel.alpha = isHoldRecording ? 0 : 1
             }
-            self.voiceIconView.image = UIImage(systemName: self.voiceIconName)
+            self.voiceIconView.image = Self.cachedSymbolImage(named: self.voiceIconName)
             let showsSpinner = isSendingState || (!isRecordingState && (self.isStartRequestInFlight || self.isOpeningHostApp))
             self.voiceIconView.alpha = (isRecordingState || showsSpinner) ? 0 : 1
             self.voicePrint.alpha = showsInOrbVoicePrint ? 1 : 0
@@ -4030,6 +4053,18 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             stopStatusPolling()
         }
         updateTextRecordingStatus(isRecording: isRecordingState, isSending: isSendingState)
+    }
+
+    /// updateUI runs on every status transition; the orb icon cycles between
+    /// four SF Symbols, so resolve each name once instead of per pass.
+    /// Main-thread only.
+    private static var symbolImageCache: [String: UIImage] = [:]
+
+    private static func cachedSymbolImage(named name: String) -> UIImage? {
+        if let cached = symbolImageCache[name] { return cached }
+        guard let image = UIImage(systemName: name) else { return nil }
+        symbolImageCache[name] = image
+        return image
     }
 
     private func logSlowUpdateUI(startedAt: CFTimeInterval, animated: Bool, state: KeyboardBridgeState?) {
@@ -6947,27 +6982,15 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             return
         }
 
-        // iOS-native top bar: ALL candidates render here and the user scrolls
-        // horizontally. The expanded panel (chevron-down) lays the same list
-        // out vertically. We do NOT cap by "what fits visually" because that
-        // hides anything beyond the first screen of candidates with no way
-        // to reach them except via expand.
-        for index in state.candidates.indices {
-            let candidate = state.candidates[index]
-            let button = reusableCandidateButton(at: index)
-            configureCandidateButton(
-                button,
-                candidate: candidate,
-                displayIndex: index,
-                selectionIndex: candidate.selectionIndex
-            )
-            addCandidateArrangedView(button)
-        }
-        // Trailing flexible spacer absorbs unused width when candidate total
-        // width is less than the scroll view's frame width. Must be last in
-        // the stack — `resetCandidateStackForReuse` hides everything, and we
-        // re-add the spacer here so it ends up after all candidates.
-        addCandidateArrangedView(candidateTrailingSpacer)
+        // iOS-native top bar: ALL candidates stay reachable by scrolling, but
+        // only a window is materialized per keystroke. Configuring every cell
+        // (attributed title + width measurement + configuration assignment)
+        // for the full 60-candidate pool made each Chinese keystroke pay for
+        // ~50 cells the user can't see; the remainder appends on demand as
+        // scrolling approaches the rendered edge (scrollViewDidScroll).
+        pendingInlineCandidates = state.candidates
+        renderedInlineCandidateCount = 0
+        appendInlineCandidates(upTo: Self.candidateInlineRenderChunkCount)
         candidateScrollView.setContentOffset(.zero, animated: false)
         renderCandidateGrid(state)
     }
@@ -7019,9 +7042,53 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private func resetCandidateStackForReuse() {
         activeCandidateSeparatorIndex = 0
         activeCandidateStatusLabelIndex = 0
+        pendingInlineCandidates.removeAll()
+        renderedInlineCandidateCount = 0
         candidateStack.arrangedSubviews.forEach { view in
             candidateStack.removeArrangedSubview(view)
             view.isHidden = true
+        }
+    }
+
+    /// Materializes inline candidate cells up to `targetCount`, keeping the
+    /// flexible trailing spacer last in the stack — it absorbs unused width
+    /// when the rendered cells are narrower than the scroll view (see
+    /// `candidateTrailingSpacer`).
+    private func appendInlineCandidates(upTo targetCount: Int) {
+        let target = min(targetCount, pendingInlineCandidates.count)
+        guard target > renderedInlineCandidateCount else { return }
+        candidateStack.removeArrangedSubview(candidateTrailingSpacer)
+        candidateTrailingSpacer.isHidden = true
+        for index in renderedInlineCandidateCount..<target {
+            let candidate = pendingInlineCandidates[index]
+            let button = reusableCandidateButton(at: index)
+            configureCandidateButton(
+                button,
+                candidate: candidate,
+                displayIndex: index,
+                selectionIndex: candidate.selectionIndex
+            )
+            addCandidateArrangedView(button)
+        }
+        renderedInlineCandidateCount = target
+        addCandidateArrangedView(candidateTrailingSpacer)
+    }
+
+    func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        guard scrollView === candidateScrollView else { return }
+        appendInlineCandidatesForScrollPositionIfNeeded()
+    }
+
+    private func appendInlineCandidatesForScrollPositionIfNeeded() {
+        guard renderedInlineCandidateCount < pendingInlineCandidates.count else { return }
+        let visibleTrailingEdge = candidateScrollView.contentOffset.x + candidateScrollView.bounds.width
+        // One extra screen of headroom so a fling decelerates into rendered
+        // cells instead of blank track.
+        guard visibleTrailingEdge + candidateScrollView.bounds.width >= candidateScrollView.contentSize.width else {
+            return
+        }
+        performCandidateRefreshWithoutAnimation {
+            appendInlineCandidates(upTo: renderedInlineCandidateCount + Self.candidateInlineRenderChunkCount)
         }
     }
 
@@ -8674,6 +8741,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         statusTimer?.invalidate()
         statusTimer = nil
         statusTimerInterval = 0
+        // Polling is the only consumer of the pooled bridge connection; close
+        // it so the host isn't left holding an idle socket between sessions.
+        let client = localClient
+        Task {
+            await client.shutdown()
+        }
     }
 
     private func cancelStatusRefresh() {
@@ -8959,6 +9032,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             }
         }
 
+        // livePartialTranscript is intentionally absent: partial-only changes
+        // are already rendered above via marked text and the voiceprint level,
+        // so they must not trigger a full updateUI pass (which reconfigures
+        // every key button) several times a second while the user speaks.
         let signature = [
             status.commandID ?? "",
             status.state.rawValue,
@@ -8967,7 +9044,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             status.defaultCorrectionMode ?? "",
             status.audioDurationSeconds.map { String(format: "%.2f", $0) } ?? "",
             status.rawTranscriptLength.map(String.init) ?? "",
-            status.livePartialTranscript ?? "",
         ].joined(separator: ":")
         guard signature != lastStatusSignature else { return }
         lastStatusSignature = signature

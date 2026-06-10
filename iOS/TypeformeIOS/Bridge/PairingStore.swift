@@ -28,7 +28,7 @@ struct PairingStore {
     private func persistConfig(_ config: PairingConfig) -> Bool {
         guard let data = try? JSONEncoder().encode(config) else { return false }
         UserDefaults.standard.set(data, forKey: key)
-        return UserDefaults.standard.synchronize()
+        return true
     }
 }
 

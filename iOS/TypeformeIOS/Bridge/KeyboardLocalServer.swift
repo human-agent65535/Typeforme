@@ -134,10 +134,12 @@ final class KeyboardLocalServer {
                 return
             }
 
-            guard error == nil,
-                  let data,
-                  data.count <= Self.maxMessageBytes
-            else {
+            // Transport error or peer close — nothing left to answer.
+            guard error == nil, let data else {
+                connection.cancel()
+                return
+            }
+            guard data.count <= Self.maxMessageBytes else {
                 self.send(
                     KeyboardBridgeStatus(state: .error, message: "Bad keyboard bridge request"),
                     connection: connection
@@ -171,7 +173,7 @@ final class KeyboardLocalServer {
                     self.removeTask(taskID)
                     return
                 }
-                self.send(status, connection: connection)
+                self.send(status, connection: connection, keepAliveGeneration: generation, expectedToken: expectedToken)
                 self.removeTask(taskID)
             }
             self.storeTask(task, id: taskID, generation: generation)
@@ -215,15 +217,34 @@ final class KeyboardLocalServer {
         })
     }
 
-    private func send(_ status: KeyboardBridgeStatus, connection: NWConnection) {
+    /// Sends one status frame. With `keepAliveGeneration`/`expectedToken` the
+    /// connection stays open and waits for the next request — the keyboard
+    /// reuses one socket for its ~8Hz recording status polls, so closing
+    /// after every response cost a TCP connect + WS upgrade + HMAC hello per
+    /// sample. Error responses pass nil and close as before.
+    private func send(
+        _ status: KeyboardBridgeStatus,
+        connection: NWConnection,
+        keepAliveGeneration: UInt? = nil,
+        expectedToken: String? = nil
+    ) {
         guard let data = try? JSONEncoder().encode(status) else {
             connection.cancel()
             return
         }
         let metadata = NWProtocolWebSocket.Metadata(opcode: .binary)
         let context = NWConnection.ContentContext(identifier: "keyboard-bridge-status", metadata: [metadata])
-        connection.send(content: data, contentContext: context, isComplete: true, completion: .contentProcessed { _ in
-            connection.cancel()
+        connection.send(content: data, contentContext: context, isComplete: true, completion: .contentProcessed { [weak self] error in
+            guard let self,
+                  error == nil,
+                  let keepAliveGeneration,
+                  let expectedToken,
+                  self.isCurrentGeneration(keepAliveGeneration)
+            else {
+                connection.cancel()
+                return
+            }
+            self.receiveMessage(from: connection, generation: keepAliveGeneration, expectedToken: expectedToken)
         })
     }
 

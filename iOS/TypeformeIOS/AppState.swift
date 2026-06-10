@@ -2868,8 +2868,9 @@ final class AppState {
         setKeyboardBridgeStatus(status)
     }
 
-    private func setKeyboardBridgeStatus(_ status: KeyboardBridgeStatus) {
+    private func setKeyboardBridgeStatus(_ status: KeyboardBridgeStatus, persistSnapshot: Bool = true) {
         keyboardBridgeStatus = status
+        guard persistSnapshot else { return }
         KeyboardSharedDefaults.saveStatusSnapshot(status)
     }
 
@@ -2881,7 +2882,13 @@ final class AppState {
         guard keyboardBridgeStatus.state == .recording || keyboardBridgeStatus.state == .sending else { return }
         let next = livePartialTranscript.isEmpty ? nil : livePartialTranscript
         guard keyboardBridgeStatus.livePartialTranscript != next else { return }
-        setKeyboardBridgeStatus(keyboardBridgeStatus.withLivePartialTranscript(next))
+        // Partials reach the keyboard through its live status poll; writing a
+        // shared-defaults snapshot per speech hypothesis is main-actor disk
+        // traffic several times a second with no reader that needs it.
+        setKeyboardBridgeStatus(
+            keyboardBridgeStatus.withLivePartialTranscript(next),
+            persistSnapshot: false
+        )
     }
 
     private func cancelActiveRecordingWithoutSending(
