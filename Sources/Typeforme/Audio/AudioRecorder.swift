@@ -27,6 +27,7 @@ enum AudioRecorderError: LocalizedError {
 final class AudioRecorder: @unchecked Sendable {
     private let engine = AVAudioEngine()
     private let fileWriter = MonoM4ABufferWriter()
+    private let levelThrottler = LevelUpdateThrottler(interval: 1.0 / 20.0)
     private var currentURL: URL?
     private var configChangeObserver: NSObjectProtocol?
     private var isRunning = false
@@ -49,6 +50,8 @@ final class AudioRecorder: @unchecked Sendable {
 
         let writer = fileWriter
         let levelHandler = onLevel
+        let levelThrottler = levelThrottler
+        levelThrottler.reset()
         input.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
             // Tap closure runs on the audio thread; it only touches its own
             // buffer writer and snapshotted handlers.
@@ -57,8 +60,8 @@ final class AudioRecorder: @unchecked Sendable {
             // SFSpeechRecognizer). Snapshotted at install-time so a late
             // attach is intentionally a no-op for the current recording.
             pcmHandler?(buffer)
-            let rms = Self.rms(buffer)
-            if let levelHandler {
+            if let levelHandler, levelThrottler.shouldPublish() {
+                let rms = Self.rms(buffer)
                 Task { @MainActor [weak self] in
                     guard self?.isRunning == true else { return }
                     levelHandler(rms)
@@ -148,6 +151,30 @@ final class AudioRecorder: @unchecked Sendable {
         }
     }
 
+}
+
+private final class LevelUpdateThrottler: @unchecked Sendable {
+    private let interval: TimeInterval
+    private let lock = NSLock()
+    private var lastUpdateAt: TimeInterval = 0
+
+    init(interval: TimeInterval) {
+        self.interval = interval
+    }
+
+    func reset() {
+        lock.lock()
+        lastUpdateAt = 0
+        lock.unlock()
+    }
+
+    func shouldPublish(now: TimeInterval = CFAbsoluteTimeGetCurrent()) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard now - lastUpdateAt >= interval else { return false }
+        lastUpdateAt = now
+        return true
+    }
 }
 
 private final class MonoM4ABufferWriter: @unchecked Sendable {

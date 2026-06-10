@@ -1,11 +1,110 @@
 import Foundation
 
-struct DebugLogHandle {
+struct DebugLogHandle: Sendable {
     let id: String
     let directory: URL
 }
 
-private struct DebugLogTranscript: Codable {
+private actor DebugLogDiskWriter {
+    static let shared = DebugLogDiskWriter()
+
+    private static let recordFileName = "record.json"
+
+    func saveReceivedAudio(_ source: URL, for handle: DebugLogHandle) {
+        do {
+            let filename = try Self.copyAudio(source, in: handle.directory)
+            update(handle) { record in
+                record.audioFile = filename
+                record.audioCopyError = nil
+            }
+        } catch {
+            let message = error.localizedDescription
+            update(handle) { record in
+                record.audioCopyError = message
+            }
+        }
+    }
+
+    func recordTranscript(_ transcript: DebugLogTranscript, for handle: DebugLogHandle) {
+        update(handle) { record in
+            record.transcript = transcript
+        }
+    }
+
+    func recordCorrection(_ correction: DebugLogCorrection, for handle: DebugLogHandle) {
+        update(handle) { record in
+            record.correction = correction
+        }
+    }
+
+    func recordTextEdit(_ textEdit: DebugLogTextEdit, for handle: DebugLogHandle) {
+        update(handle) { record in
+            record.textEdit = textEdit
+        }
+    }
+
+    func prune(limit: Int) {
+        let items = Self.entries()
+        for url in items.dropFirst(limit) {
+            try? FileManager.default.removeItem(at: url)
+        }
+    }
+
+    private func update(
+        _ handle: DebugLogHandle,
+        _ body: (inout DebugLogRecord) -> Void
+    ) {
+        do {
+            var record = try Self.read(in: handle.directory)
+            body(&record)
+            try Self.write(record, in: handle.directory)
+        } catch {
+            Log.store.error("debug capture update failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    private static func read(in directory: URL) throws -> DebugLogRecord {
+        let data = try Data(contentsOf: directory.appendingPathComponent(recordFileName))
+        return try BridgeJSON.decode(DebugLogRecord.self, from: data)
+    }
+
+    private static func copyAudio(_ source: URL, in directory: URL) throws -> String {
+        let ext = source.pathExtension.isEmpty ? "audio" : source.pathExtension.lowercased()
+        let filename = "audio.\(ext)"
+        let destination = directory.appendingPathComponent(filename)
+        if FileManager.default.fileExists(atPath: destination.path) {
+            try FileManager.default.removeItem(at: destination)
+        }
+        try FileManager.default.copyItem(at: source, to: destination)
+        return filename
+    }
+
+    private static func write(_ record: DebugLogRecord, in directory: URL) throws {
+        let data = try BridgeJSON.encodePrettySorted(record)
+        try data.write(to: directory.appendingPathComponent(recordFileName), options: .atomic)
+    }
+
+    private static func entries() -> [URL] {
+        guard let urls = try? FileManager.default.contentsOfDirectory(
+            at: AppPaths.debugCapturesDir,
+            includingPropertiesForKeys: [.creationDateKey, .isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return []
+        }
+        return urls
+            .filter { url in
+                (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+            }
+            .sorted { lhs, rhs in
+                let leftDate = (try? lhs.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast
+                let rightDate = (try? rhs.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast
+                return leftDate > rightDate
+            }
+    }
+}
+
+private struct DebugLogTranscript: Codable, Sendable {
     var status: String
     var text: String?
     var error: String?
@@ -31,7 +130,7 @@ private struct DebugLogTranscript: Codable {
     }
 }
 
-private struct DebugLogTranscriptModelOutput: Codable {
+private struct DebugLogTranscriptModelOutput: Codable, Sendable {
     var role: String
     var provider: String
     var model: String
@@ -40,7 +139,7 @@ private struct DebugLogTranscriptModelOutput: Codable {
     var error: String?
 }
 
-private struct DebugLogCorrection: Codable {
+private struct DebugLogCorrection: Codable, Sendable {
     var correctionMode: String
     var backend: String
     var model: String
@@ -66,7 +165,7 @@ private struct DebugLogCorrection: Codable {
     }
 }
 
-private struct DebugLogCorrectionInput: Codable {
+private struct DebugLogCorrectionInput: Codable, Sendable {
     var rawTranscript: String
     var contextBefore: String
     var contextAfter: String
@@ -98,7 +197,7 @@ private struct DebugLogCorrectionInput: Codable {
     }
 }
 
-private struct DebugLogTextEdit: Codable {
+private struct DebugLogTextEdit: Codable, Sendable {
     var intent: String
     var backend: String
     var model: String
@@ -124,7 +223,7 @@ private struct DebugLogTextEdit: Codable {
     }
 }
 
-private struct DebugLogTextEditInput: Codable {
+private struct DebugLogTextEditInput: Codable, Sendable {
     var intent: String
     var contextBefore: String
     var targetText: String
@@ -162,7 +261,7 @@ private struct DebugLogTextEditInput: Codable {
     }
 }
 
-private struct DebugLogRecord: Codable {
+private struct DebugLogRecord: Codable, Sendable {
     var id: String
     var createdAt: String
     var source: String
@@ -256,22 +355,12 @@ enum DebugLogStore {
             let directory = AppPaths.debugCapturesDir.appendingPathComponent(id, isDirectory: true)
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
 
-            var audioFileName: String?
-            var audioCopyError: String?
-            if let audioURL {
-                do {
-                    audioFileName = try saveReceivedAudio(audioURL, in: directory)
-                } catch {
-                    audioCopyError = error.localizedDescription
-                }
-            }
-
             let record = DebugLogRecord(
                 id: id,
                 createdAt: createdAt,
                 source: source,
-                audioFile: audioFileName,
-                audioCopyError: audioCopyError,
+                audioFile: nil,
+                audioCopyError: nil,
                 asrProvider: AppSettings.asrProvider,
                 asrModel: activeASRModelDescription(),
                 asrMaxTokens: activeASRMaxTokens(),
@@ -285,7 +374,15 @@ enum DebugLogStore {
                 textEdit: nil
             )
             try write(record, in: directory)
-            prune()
+            if let audioURL {
+                Task {
+                    await DebugLogDiskWriter.shared.saveReceivedAudio(audioURL, for: DebugLogHandle(id: id, directory: directory))
+                }
+            }
+            let captureLimit = AppSettings.diagnosticsDebugCaptureLimit
+            Task {
+                await DebugLogDiskWriter.shared.prune(limit: captureLimit)
+            }
             Log.store.info("\(logLabel) started: \(id, privacy: .public)")
             return DebugLogHandle(id: id, directory: directory)
         } catch {
@@ -303,20 +400,22 @@ enum DebugLogStore {
         alternateTranscripts: [String] = [],
         modelOutputs: [ASRTranscriptModelOutput] = []
     ) {
-        mutate(handle) { record in
-            let cleanedAlternates = normalizedTranscripts(alternateTranscripts)
-            let cleanedModelOutputs = normalizedModelOutputs(modelOutputs)
-            record.transcript = DebugLogTranscript(
-                status: status,
-                text: text,
-                error: error,
-                latencyMs: latencyMs,
-                provider: AppSettings.asrProvider,
-                model: activeASRModelDescription(),
-                maxTokens: activeASRMaxTokens(),
-                modelOutputs: cleanedModelOutputs.isEmpty ? nil : cleanedModelOutputs,
-                alternateTranscripts: cleanedAlternates.isEmpty ? nil : cleanedAlternates
-            )
+        guard let handle else { return }
+        let cleanedAlternates = normalizedTranscripts(alternateTranscripts)
+        let cleanedModelOutputs = normalizedModelOutputs(modelOutputs)
+        let transcript = DebugLogTranscript(
+            status: status,
+            text: text,
+            error: error,
+            latencyMs: latencyMs,
+            provider: AppSettings.asrProvider,
+            model: activeASRModelDescription(),
+            maxTokens: activeASRMaxTokens(),
+            modelOutputs: cleanedModelOutputs.isEmpty ? nil : cleanedModelOutputs,
+            alternateTranscripts: cleanedAlternates.isEmpty ? nil : cleanedAlternates
+        )
+        Task {
+            await DebugLogDiskWriter.shared.recordTranscript(transcript, for: handle)
         }
     }
 
@@ -330,19 +429,21 @@ enum DebugLogStore {
         request: CorrectionRequest? = nil,
         timeoutMs: Int? = nil
     ) {
-        mutate(handle) { record in
-            record.correction = DebugLogCorrection(
-                correctionMode: mode.rawValue,
-                backend: AppSettings.correctionBackend.rawValue,
-                model: activeCorrectionModelDescription(),
-                maxTokens: AppSettings.correctionMaxTokens,
-                timeoutMs: timeoutMs,
-                status: status,
-                text: text,
-                error: error,
-                latencyMs: latencyMs,
-                input: request.map(correctionInput)
-            )
+        guard let handle else { return }
+        let correction = DebugLogCorrection(
+            correctionMode: mode.rawValue,
+            backend: AppSettings.correctionBackend.rawValue,
+            model: activeCorrectionModelDescription(),
+            maxTokens: AppSettings.correctionMaxTokens,
+            timeoutMs: timeoutMs,
+            status: status,
+            text: text,
+            error: error,
+            latencyMs: latencyMs,
+            input: request.map(correctionInput)
+        )
+        Task {
+            await DebugLogDiskWriter.shared.recordCorrection(correction, for: handle)
         }
     }
 
@@ -356,19 +457,21 @@ enum DebugLogStore {
         request: TextEditRequest? = nil,
         timeoutMs: Int? = nil
     ) {
-        mutate(handle) { record in
-            record.textEdit = DebugLogTextEdit(
-                intent: intent.rawValue,
-                backend: AppSettings.correctionBackend.rawValue,
-                model: activeCorrectionModelDescription(),
-                maxTokens: AppSettings.correctionMaxTokens,
-                timeoutMs: timeoutMs,
-                status: status,
-                text: text,
-                error: error,
-                latencyMs: latencyMs,
-                input: request.map(textEditInput)
-            )
+        guard let handle else { return }
+        let textEdit = DebugLogTextEdit(
+            intent: intent.rawValue,
+            backend: AppSettings.correctionBackend.rawValue,
+            model: activeCorrectionModelDescription(),
+            maxTokens: AppSettings.correctionMaxTokens,
+            timeoutMs: timeoutMs,
+            status: status,
+            text: text,
+            error: error,
+            latencyMs: latencyMs,
+            input: request.map(textEditInput)
+        )
+        Task {
+            await DebugLogDiskWriter.shared.recordTextEdit(textEdit, for: handle)
         }
     }
 
@@ -392,25 +495,6 @@ enum DebugLogStore {
         for url in items.dropFirst(AppSettings.diagnosticsDebugCaptureLimit) {
             try? FileManager.default.removeItem(at: url)
         }
-    }
-
-    private static func mutate(
-        _ handle: DebugLogHandle?,
-        _ body: (inout DebugLogRecord) -> Void
-    ) {
-        guard let handle else { return }
-        do {
-            var record = try read(in: handle.directory)
-            body(&record)
-            try write(record, in: handle.directory)
-        } catch {
-            Log.store.error("debug capture update failed: \(error.localizedDescription, privacy: .public)")
-        }
-    }
-
-    private static func read(in directory: URL) throws -> DebugLogRecord {
-        let data = try Data(contentsOf: directory.appendingPathComponent(recordFileName))
-        return try BridgeJSON.decode(DebugLogRecord.self, from: data)
     }
 
     private static func correctionInput(_ request: CorrectionRequest) -> DebugLogCorrectionInput {
@@ -482,17 +566,6 @@ enum DebugLogStore {
     private static func cleanedOptionalText(_ value: String?) -> String? {
         let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return trimmed.isEmpty ? nil : trimmed
-    }
-
-    private static func saveReceivedAudio(_ source: URL, in directory: URL) throws -> String {
-        let ext = source.pathExtension.isEmpty ? "audio" : source.pathExtension.lowercased()
-        let filename = "audio.\(ext)"
-        let destination = directory.appendingPathComponent(filename)
-        if FileManager.default.fileExists(atPath: destination.path) {
-            try FileManager.default.removeItem(at: destination)
-        }
-        try FileManager.default.copyItem(at: source, to: destination)
-        return filename
     }
 
     private static func write(_ record: DebugLogRecord, in directory: URL) throws {

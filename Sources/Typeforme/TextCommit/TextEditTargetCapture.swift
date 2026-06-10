@@ -126,6 +126,14 @@ enum TextEditTargetCapture {
         return value as? String
     }
 
+    private static func intAttribute(_ attribute: String, from element: AXUIElement) -> Int? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else {
+            return nil
+        }
+        return (value as? NSNumber)?.intValue
+    }
+
     private static func isSecureTextElement(_ element: AXUIElement) -> Bool {
         let values = [
             stringAttribute(kAXRoleAttribute, from: element),
@@ -141,10 +149,47 @@ enum TextEditTargetCapture {
     }
 
     private static func contextAroundSelection(in element: AXUIElement) -> (before: String, after: String) {
+        guard let range = selectedRange(in: element) else { return ("", "") }
+        let start = max(0, range.location - contextLimit)
+        let beforeLength = range.location - start
+        let afterStart = range.location + range.length
+
+        if let documentLength = intAttribute(kAXNumberOfCharactersAttribute, from: element),
+           range.location <= documentLength {
+            let afterLength = min(contextLimit, max(0, documentLength - afterStart))
+            if let before = stringForRange(CFRange(location: start, length: beforeLength), in: element),
+               let after = stringForRange(CFRange(location: afterStart, length: afterLength), in: element) {
+                return (before, after)
+            }
+        }
+
+        return contextAroundSelectionFromFullValue(in: element, selectedRange: range)
+    }
+
+    private static func stringForRange(_ range: CFRange, in element: AXUIElement) -> String? {
+        guard range.location >= 0, range.length >= 0 else { return nil }
+        if range.length == 0 { return "" }
+        var mutableRange = range
+        guard let axRange = AXValueCreate(.cfRange, &mutableRange) else { return nil }
+        var value: CFTypeRef?
+        guard AXUIElementCopyParameterizedAttributeValue(
+            element,
+            kAXStringForRangeParameterizedAttribute as CFString,
+            axRange,
+            &value
+        ) == .success else {
+            return nil
+        }
+        return value as? String
+    }
+
+    private static func contextAroundSelectionFromFullValue(
+        in element: AXUIElement,
+        selectedRange range: CFRange
+    ) -> (before: String, after: String) {
         guard let fullValue = stringAttribute(kAXValueAttribute, from: element) else {
             return ("", "")
         }
-        guard let range = selectedRange(in: element) else { return ("", "") }
         let ns = fullValue as NSString
         guard range.location <= ns.length else { return ("", "") }
         let start = max(0, range.location - contextLimit)

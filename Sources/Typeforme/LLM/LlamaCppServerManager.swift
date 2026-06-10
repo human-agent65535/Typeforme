@@ -140,7 +140,7 @@ actor LlamaCppServerManager {
             throw LlamaServerError.modelMissing(path)
         }
 
-        terminateStaleServer()
+        await terminateStaleServer()
 
         // Try with flash-attn first if requested; fall back without on failure.
         let port: Int
@@ -293,7 +293,7 @@ actor LlamaCppServerManager {
     /// Reads the PID file, checks liveness, and terminates stale helpers only
     /// when the PID still belongs to our own llama-server binary.
     /// PIDs get recycled on macOS; killing blindly could nuke an unrelated app.
-    private func terminateStaleServer() {
+    private func terminateStaleServer() async {
         guard let pidStr = try? String(contentsOf: pidFile, encoding: .utf8),
               let pid = pid_t(pidStr.trimmingCharacters(in: .whitespacesAndNewlines))
         else { return }
@@ -301,7 +301,7 @@ actor LlamaCppServerManager {
         defer { try? FileManager.default.removeItem(at: pidFile) }
 
         guard kill(pid, 0) == 0 else { return }              // not alive — nothing to do
-        guard Self.pidMatches(pid, expectedBinary: binaryURL) else {
+        guard await Self.pidMatches(pid, expectedBinary: binaryURL) else {
             Log.llm.notice("pid \(pid) in llama.pid is not our llama-server (PID reused); skipping kill")
             return
         }
@@ -310,7 +310,7 @@ actor LlamaCppServerManager {
         _ = kill(pid, SIGTERM)
         for _ in 0..<20 {
             if kill(pid, 0) != 0 { return }
-            Thread.sleep(forTimeInterval: 0.1)
+            try? await Task.sleep(nanoseconds: 100_000_000)
         }
         Log.llm.notice("pid=\(pid) still alive; SIGKILL")
         _ = kill(pid, SIGKILL)
@@ -319,27 +319,29 @@ actor LlamaCppServerManager {
     /// True iff the given pid's executable path matches our bundled
     /// llama-server-arm64. Uses `/bin/ps -p PID -o comm=`, which returns the
     /// resolved executable path on macOS.
-    private static func pidMatches(_ pid: pid_t, expectedBinary: URL) -> Bool {
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/bin/ps")
-        proc.arguments = ["-p", "\(pid)", "-o", "comm="]
-        let pipe = Pipe()
-        proc.standardOutput = pipe
-        proc.standardError = FileHandle.nullDevice
-        do {
-            try proc.run()
-            proc.waitUntilExit()
-        } catch {
-            return false
-        }
-        guard proc.terminationStatus == 0 else { return false }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        let comm = (String(data: data, encoding: .utf8) ?? "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        // `comm` is either the full path or just the basename, depending on
-        // how the process was launched. Match either form.
-        let expectedName = expectedBinary.lastPathComponent
-        return comm == expectedBinary.path
-            || (comm as NSString).lastPathComponent == expectedName
+    private static func pidMatches(_ pid: pid_t, expectedBinary: URL) async -> Bool {
+        await Task.detached(priority: .utility) {
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: "/bin/ps")
+            proc.arguments = ["-p", "\(pid)", "-o", "comm="]
+            let pipe = Pipe()
+            proc.standardOutput = pipe
+            proc.standardError = FileHandle.nullDevice
+            do {
+                try proc.run()
+                proc.waitUntilExit()
+            } catch {
+                return false
+            }
+            guard proc.terminationStatus == 0 else { return false }
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            let comm = (String(data: data, encoding: .utf8) ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            // `comm` is either the full path or just the basename, depending on
+            // how the process was launched. Match either form.
+            let expectedName = expectedBinary.lastPathComponent
+            return comm == expectedBinary.path
+                || (comm as NSString).lastPathComponent == expectedName
+        }.value
     }
 }

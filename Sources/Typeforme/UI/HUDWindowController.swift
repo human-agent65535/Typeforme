@@ -48,6 +48,7 @@ final class HUDWindowController {
     /// Matches `HUDView.expandedPreviewBody`'s natural height exactly.
     private static let previewChromeHeight: CGFloat = 14 + 6 + 20 + 28 + 4
     private static let previewWarningHeight: CGFloat = 36
+    private static let livePartialWidthBucket: CGFloat = 72
     /// The anchor `y` is the BOTTOM edge of the panel. Persisted to disk in
     /// this key; older builds wrote the panel center, but bottom-anchoring
     /// stops the HUD from sliding lower whenever the preview grows tall.
@@ -224,6 +225,7 @@ final class HUDWindowController {
         let size = self.size(for: state)
         let frame = NSRect(origin: origin(for: state, size: size), size: size)
         panel.manualDragRegionHeight = dragRegionHeight(for: state, size: size)
+        guard !Self.frameApproximatelyEqual(panel.frame, frame) else { return }
         isProgrammaticallyMoving = true
         let release: @Sendable () -> Void = { [weak self] in
             Task { @MainActor in
@@ -430,8 +432,17 @@ final class HUDWindowController {
         guard !text.isEmpty else { return nil }
         let textWidth = Self.measuredTextWidth(for: text)
         let chrome = state == .recording ? CGFloat(190) : CGFloat(96)
-        let width = min(Self.previewWidth, max(CGFloat(240), ceil(textWidth + chrome)))
+        let rawWidth = max(CGFloat(240), ceil(textWidth + chrome))
+        let bucketedWidth = ceil(rawWidth / Self.livePartialWidthBucket) * Self.livePartialWidthBucket
+        let width = min(Self.previewWidth, bucketedWidth)
         return NSSize(width: width, height: Self.compactHeight)
+    }
+
+    private static func frameApproximatelyEqual(_ lhs: NSRect, _ rhs: NSRect) -> Bool {
+        abs(lhs.origin.x - rhs.origin.x) < 0.5
+            && abs(lhs.origin.y - rhs.origin.y) < 0.5
+            && abs(lhs.size.width - rhs.size.width) < 0.5
+            && abs(lhs.size.height - rhs.size.height) < 0.5
     }
 
     private static func measuredTextWidth(for text: String) -> CGFloat {

@@ -59,6 +59,7 @@ final class DictationCoordinator: ObservableObject {
     private static let degradedSuccessResetDelay: TimeInterval = 1.8
     private static let previewResetDelay: TimeInterval = 12.0
     private static let minimumToggleStopInterval: TimeInterval = 0.6
+    private static let recordingTailBufferNanoseconds: UInt64 = 200_000_000
     private static let previewWithoutRefineMessage = "Preview without refine"
     private static let insertedWithoutRefineMessage = "Inserted without refine"
 
@@ -116,32 +117,7 @@ final class DictationCoordinator: ObservableObject {
         stopAfterStart = false
         resetTask?.cancel(); resetTask = nil
         captureFrontmost()
-        let focusedTextContext = TextEditTargetCapture.focusedTextContext(in: frontmostSnapshot)
-        activeDictationContextBefore = focusedTextContext.before
-        activeDictationContextAfter = focusedTextContext.after
         activeTextEditIntent = intent
-        if let intent {
-            activeTextEditTarget = TextEditTargetCapture.snapshot(
-                in: frontmostSnapshot,
-                allowFocusedValue: intent == .command
-            )
-            guard activeTextEditTarget != nil else {
-                startInProgress = false
-                clearActiveSession()
-                clearTextEditRequest()
-                reportError("Select text or focus a text field first")
-                scheduleAutoReset(after: Self.errorResetDelay)
-                return
-            }
-        } else if AppSettings.voiceUXMode == .classic {
-            activeTextEditTarget = TextEditTargetCapture.snapshot(
-                in: frontmostSnapshot,
-                allowFocusedValue: false
-            )
-            activeTextEditIntent = activeTextEditTarget == nil ? nil : .repairSelection
-        } else {
-            clearTextEditRequest()
-        }
 
         let livePreviewPCMHandler = makeLivePartialPreviewPCMHandlerIfAvailable()
         do {
@@ -157,6 +133,17 @@ final class DictationCoordinator: ObservableObject {
                 return
             }
             transition(to: .recording)
+            guard captureDictationContextAndTarget(intent: intent) else {
+                if let stoppedURL = recorder.stop() {
+                    try? FileManager.default.removeItem(at: stoppedURL)
+                } else {
+                    try? FileManager.default.removeItem(at: startedURL)
+                }
+                audioLevel = 0
+                reportError("Select text or focus a text field first")
+                scheduleAutoReset(after: Self.errorResetDelay)
+                return
+            }
             scheduleAutoStop(after: AppSettings.maxRecordingDuration)
             if stopAfterStart {
                 stopAfterStart = false
@@ -171,6 +158,34 @@ final class DictationCoordinator: ObservableObject {
             reportError(error.localizedDescription)
             scheduleAutoReset(after: Self.errorResetDelay)
         }
+    }
+
+    private func captureDictationContextAndTarget(intent: TextEditIntent?) -> Bool {
+        clearDictationContext()
+        if let intent {
+            activeTextEditIntent = intent
+            activeTextEditTarget = TextEditTargetCapture.snapshot(
+                in: frontmostSnapshot,
+                allowFocusedValue: intent == .command
+            )
+            return activeTextEditTarget != nil
+        }
+
+        if AppSettings.voiceUXMode == .classic,
+           let target = TextEditTargetCapture.snapshot(
+               in: frontmostSnapshot,
+               allowFocusedValue: false
+           ) {
+            activeTextEditTarget = target
+            activeTextEditIntent = .repairSelection
+            return true
+        }
+
+        clearTextEditRequest()
+        let focusedTextContext = TextEditTargetCapture.focusedTextContext(in: frontmostSnapshot)
+        activeDictationContextBefore = focusedTextContext.before
+        activeDictationContextAfter = focusedTextContext.after
+        return true
     }
 
     func toggleCommandTextEdit() async {
@@ -261,14 +276,20 @@ final class DictationCoordinator: ObservableObject {
             scheduleAutoReset(after: Self.errorResetDelay)
             return
         }
+        // Keep the recorder open briefly after the stop trigger so the final
+        // syllable is not cut off. SFSpeech is ended after the tail so the
+        // preview can include the same audio that goes to the Mac ASR.
+        transition(to: .transcribing)
+        try? await Task.sleep(nanoseconds: Self.recordingTailBufferNanoseconds)
+        guard await isActive(sessionID: sessionID, token: cancelToken) else {
+            if let stoppedURL = recorder.stop() {
+                try? FileManager.default.removeItem(at: stoppedURL)
+            }
+            return
+        }
         let url = recorder.stop()
-        // Close the SFSpeech audio side so it finalises its last partial; we
-        // intentionally KEEP `livePartialTranscript` on screen until the Mac
-        // final replaces it. liveSnapshotAtCorrection is captured here so the
-        // value flowing into the corrector matches what the user just saw.
         endLivePartialPreviewAudio()
         audioLevel = 0
-        transition(to: .transcribing)
 
         guard let url else {
             reportError("No audio captured")
@@ -612,12 +633,8 @@ final class DictationCoordinator: ObservableObject {
         startInProgress = false
         stopAfterStart = false
         recordingStartedAt = nil
-        if state == .recording {
-            if let url = recorder.stop() {
-                try? FileManager.default.removeItem(at: url)
-            }
-        } else {
-            _ = recorder.stop()
+        if let url = recorder.stop() {
+            try? FileManager.default.removeItem(at: url)
         }
         audioLevel = 0
         reset()
