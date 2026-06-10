@@ -364,28 +364,6 @@ struct BridgeClient {
         correctionMode: String,
         contextBefore: String,
         contextAfter: String,
-        includeRawTranscript: Bool
-    ) throws -> (body: Data, contentType: String) {
-        try multipartDictateBody(
-            audioURL: audioURL,
-            audioExtension: audioExtension,
-            languageIDs: languageIDs,
-            correctionMode: correctionMode,
-            contextBefore: contextBefore,
-            contextAfter: contextAfter,
-            includeRawTranscript: includeRawTranscript,
-            clientJobID: nil,
-            alternateTranscript: nil
-        )
-    }
-
-    private static func multipartDictateBody(
-        audioURL: URL,
-        audioExtension: String,
-        languageIDs: [String],
-        correctionMode: String,
-        contextBefore: String,
-        contextAfter: String,
         includeRawTranscript: Bool,
         clientJobID: String?,
         alternateTranscript: String? = nil
