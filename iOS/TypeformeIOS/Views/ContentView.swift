@@ -958,6 +958,14 @@ private struct KeyboardSettingsView: View {
                 Text("Typing")
             }
             Section {
+                Toggle("Key Sound", isOn: keySoundBinding)
+                Toggle("Key Haptics", isOn: keyHapticsBinding)
+            } header: {
+                Text("Feedback")
+            } footer: {
+                Text("Key sound also follows the system keyboard click setting in Settings → Sounds & Haptics.")
+            }
+            Section {
                 Toggle("Auto-Capitalization", isOn: autoCapitalizationBinding)
             } header: {
                 Text("English")
@@ -1043,6 +1051,22 @@ private struct KeyboardSettingsView: View {
             state.keyboardCharacterPreviewEnabled
         } set: { enabled in
             state.setKeyboardCharacterPreviewEnabled(enabled)
+        }
+    }
+
+    private var keySoundBinding: Binding<Bool> {
+        Binding {
+            state.keyboardKeySoundEnabled
+        } set: { enabled in
+            state.setKeyboardKeySoundEnabled(enabled)
+        }
+    }
+
+    private var keyHapticsBinding: Binding<Bool> {
+        Binding {
+            state.keyboardKeyHapticsEnabled
+        } set: { enabled in
+            state.setKeyboardKeyHapticsEnabled(enabled)
         }
     }
 

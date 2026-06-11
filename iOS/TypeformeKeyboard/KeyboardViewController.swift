@@ -125,6 +125,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private final class KeyboardHaptics {
         private static let textKeyCooldown: CFTimeInterval = 0.035
 
+        /// Mirrors the host's Keyboard Settings → Feedback toggles. Sound
+        /// additionally follows the system keyboard-click setting because it
+        /// goes through UIDevice.playInputClick().
+        var clickSoundsEnabled = true
+        var hapticsEnabled = true
+
         // .rigid, not .light: light is a low-sharpness, slow-decay thump that
         // reads as soft and laggy under fast typing. Rigid is the short,
         // high-sharpness tick that matches the native keyboard's key click.
@@ -144,6 +150,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
 
         func playTextKeyPress() {
+            if clickSoundsEnabled {
+                UIDevice.current.playInputClick()
+            }
+            guard hapticsEnabled else { return }
             let now = CACurrentMediaTime()
             guard now - lastTextKeyFeedbackAt > Self.textKeyCooldown else { return }
             lastTextKeyFeedbackAt = now
@@ -152,12 +162,14 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
 
         func playControlTap() {
+            guard hapticsEnabled else { return }
             controlImpactGenerator.impactOccurred(intensity: 0.8)
             controlImpactGenerator.prepare()
             textKeyImpactGenerator.prepare()
         }
 
         func playSelectionChanged() {
+            guard hapticsEnabled else { return }
             selectionGenerator.selectionChanged()
             selectionGenerator.prepare()
             textKeyImpactGenerator.prepare()
@@ -682,7 +694,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         didSuppressInitialInputModeSwitchEvent = false
         isHoldingKeyboardPresentationUntilStable = true
         didCompleteKeyboardViewAppearForPresentation = false
-        let rootView = UIInputView(
+        let rootView = ClickFeedbackInputView(
             frame: CGRect(x: 0, y: 0, width: UIScreen.main.bounds.width, height: initialHeight),
             // `.keyboard` is required for full-keyboard replacements. `.default`
             // is for accessory views laid on top of the system keyboard; using
@@ -1793,6 +1805,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
         isAutoCapitalizationEnabled = payload.autoCapitalizationEnabled
         isCharacterPreviewEnabled = payload.characterPreviewEnabled
+        keyboardHaptics.clickSoundsEnabled = payload.keySoundEnabled
+        keyboardHaptics.hapticsEnabled = payload.keyHapticsEnabled
         isChineseInputEnabled = payload.chineseInputEnabled
         defaults.set(payload.chineseInputEnabled, forKey: hostChineseInputEnabledKey)
         chinesePunctuationStyle = payload.chinesePunctuationStyle
@@ -7672,8 +7686,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         // Expanded candidate grid cells are visual targets only. The scroll
         // view owns touch delivery so vertical drags always scroll; taps are
         // resolved by candidateGridTapRecognizer using the same row-local
-        // hit bands.
+        // hit bands. Accessibility opts back in so VoiceOver can reach them.
         button.isUserInteractionEnabled = false
+        button.isAccessibilityElement = true
+        button.accessibilityTraits = .button
+        button.accessibilityLabel = candidate.text
         button.heightAnchor.constraint(equalToConstant: Self.candidateGridRowHeight).isActive = true
         button.widthAnchor.constraint(equalToConstant: width).isActive = true
         button.setContentHuggingPriority(.required, for: .horizontal)
@@ -7730,6 +7747,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         // with the scroll view's pan recognizer.
         let button = UIButton(type: .system)
         button.isUserInteractionEnabled = false
+        // Taps resolve through the scroll view's gesture recognizer, so the
+        // disabled-interaction cells must opt back into accessibility or
+        // VoiceOver users cannot reach candidates at all. VoiceOver's
+        // activation tap lands at the element's center and flows through the
+        // same recognizer path.
+        button.isAccessibilityElement = true
+        button.accessibilityTraits = .button
         button.heightAnchor.constraint(equalToConstant: Self.candidateToolbarHeight).isActive = true
         let widthConstraint = button.widthAnchor.constraint(equalToConstant: 58)
         widthConstraint.isActive = true
@@ -7767,6 +7791,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         button.configuration = configuration
         button.titleLabel?.numberOfLines = 1
         button.titleLabel?.lineBreakMode = .byTruncatingTail
+        button.accessibilityLabel = candidate.text
         candidateButtonWidthConstraints[displayIndex].constant = candidateButtonMinimumWidth(for: candidate)
     }
 
@@ -10117,6 +10142,14 @@ private final class TextKeyTouchLearner {
     private static func clamp(_ value: Double, min lower: Double, max upper: Double) -> Double {
         Swift.min(Swift.max(value, lower), upper)
     }
+}
+
+/// UIInputView subclass opting into system keyboard clicks —
+/// UIDevice.playInputClick() is a no-op unless the active input view conforms
+/// to UIInputViewAudioFeedback. The system additionally gates the sound on
+/// the user's keyboard-click setting, matching the native keyboard.
+final class ClickFeedbackInputView: UIInputView, UIInputViewAudioFeedback {
+    var enableInputClicksWhenVisible: Bool { true }
 }
 
 /// Backing surface for blank keyboard areas. The owning controller paints it

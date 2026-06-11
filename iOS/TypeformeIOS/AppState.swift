@@ -276,6 +276,8 @@ final class AppState {
     var hostAudioSessionLength: HostAudioSessionLength
     var keyboardAutoCapitalizationEnabled: Bool
     var keyboardCharacterPreviewEnabled: Bool
+    var keyboardKeySoundEnabled: Bool
+    var keyboardKeyHapticsEnabled: Bool
     var keyboardLivePreviewEnabled: Bool
     var keyboardLivePreviewRecognitionMode: KeyboardLivePreviewRecognitionMode
     var keyboardChineseInputEnabled: Bool
@@ -326,6 +328,8 @@ final class AppState {
     private static let hostAudioSessionLengthKey = "keyboard.hostAudioSessionLength"
     private static let keyboardAutoCapitalizationKey = "keyboard.autoCapitalizationEnabled"
     private static let keyboardCharacterPreviewKey = "keyboard.characterPreviewEnabled"
+    private static let keyboardKeySoundKey = "keyboard.keySoundEnabled"
+    private static let keyboardKeyHapticsKey = "keyboard.keyHapticsEnabled"
     private static let keyboardLivePreviewKey = "keyboard.livePreviewEnabled"
     private static let keyboardLivePreviewRecognitionModeKey = "keyboard.livePreviewRecognitionMode"
     private static let keyboardChineseInputEnabledKey = "keyboard.chineseInputEnabled"
@@ -503,6 +507,10 @@ final class AppState {
             .map { _ in UserDefaults.standard.bool(forKey: Self.keyboardAutoCapitalizationKey) } ?? true
         self.keyboardCharacterPreviewEnabled = UserDefaults.standard.object(forKey: Self.keyboardCharacterPreviewKey)
             .map { _ in UserDefaults.standard.bool(forKey: Self.keyboardCharacterPreviewKey) } ?? false
+        self.keyboardKeySoundEnabled = UserDefaults.standard.object(forKey: Self.keyboardKeySoundKey)
+            .map { _ in UserDefaults.standard.bool(forKey: Self.keyboardKeySoundKey) } ?? true
+        self.keyboardKeyHapticsEnabled = UserDefaults.standard.object(forKey: Self.keyboardKeyHapticsKey)
+            .map { _ in UserDefaults.standard.bool(forKey: Self.keyboardKeyHapticsKey) } ?? true
         self.keyboardLivePreviewEnabled = UserDefaults.standard.object(forKey: Self.keyboardLivePreviewKey)
             .map { _ in UserDefaults.standard.bool(forKey: Self.keyboardLivePreviewKey) } ?? true
         self.keyboardLivePreviewRecognitionMode = UserDefaults.standard.string(forKey: Self.keyboardLivePreviewRecognitionModeKey)
@@ -631,6 +639,24 @@ final class AppState {
             \.keyboardCharacterPreviewEnabled,
             to: enabled,
             key: Self.keyboardCharacterPreviewKey
+        ) else { return }
+        publishKeyboardDefaults()
+    }
+
+    func setKeyboardKeySoundEnabled(_ enabled: Bool) {
+        guard updateStoredBoolPreference(
+            \.keyboardKeySoundEnabled,
+            to: enabled,
+            key: Self.keyboardKeySoundKey
+        ) else { return }
+        publishKeyboardDefaults()
+    }
+
+    func setKeyboardKeyHapticsEnabled(_ enabled: Bool) {
+        guard updateStoredBoolPreference(
+            \.keyboardKeyHapticsEnabled,
+            to: enabled,
+            key: Self.keyboardKeyHapticsKey
         ) else { return }
         publishKeyboardDefaults()
     }
@@ -927,6 +953,8 @@ final class AppState {
             correctionMode: config.correctionMode,
             autoCapitalizationEnabled: keyboardAutoCapitalizationEnabled,
             characterPreviewEnabled: keyboardCharacterPreviewEnabled,
+            keySoundEnabled: keyboardKeySoundEnabled,
+            keyHapticsEnabled: keyboardKeyHapticsEnabled,
             chineseInputEnabled: keyboardChineseInputEnabled,
             chinesePunctuationStyle: keyboardChinesePunctuationStyle,
             rimeDictionaryTier: keyboardRimeDictionaryTier,

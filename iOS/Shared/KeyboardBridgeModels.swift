@@ -242,6 +242,8 @@ struct KeyboardDefaultsPayload: Codable, Equatable {
     var correctionMode: CorrectionMode
     var autoCapitalizationEnabled: Bool
     var characterPreviewEnabled: Bool
+    var keySoundEnabled: Bool
+    var keyHapticsEnabled: Bool
     var chineseInputEnabled: Bool
     var chinesePunctuationStyle: KeyboardChinesePunctuationStyle
     var rimeDictionaryTier: KeyboardRimeDictionaryTier
@@ -259,6 +261,8 @@ struct KeyboardDefaultsPayload: Codable, Equatable {
         correctionMode: CorrectionMode,
         autoCapitalizationEnabled: Bool,
         characterPreviewEnabled: Bool,
+        keySoundEnabled: Bool = true,
+        keyHapticsEnabled: Bool = true,
         chineseInputEnabled: Bool,
         chinesePunctuationStyle: KeyboardChinesePunctuationStyle,
         rimeDictionaryTier: KeyboardRimeDictionaryTier,
@@ -276,6 +280,8 @@ struct KeyboardDefaultsPayload: Codable, Equatable {
         self.correctionMode = correctionMode
         self.autoCapitalizationEnabled = autoCapitalizationEnabled
         self.characterPreviewEnabled = characterPreviewEnabled
+        self.keySoundEnabled = keySoundEnabled
+        self.keyHapticsEnabled = keyHapticsEnabled
         self.chineseInputEnabled = chineseInputEnabled
         self.chinesePunctuationStyle = chinesePunctuationStyle
         self.rimeDictionaryTier = rimeDictionaryTier
@@ -297,6 +303,8 @@ struct KeyboardDefaultsPayload: Codable, Equatable {
         correctionMode = try container.decode(CorrectionMode.self, forKey: .correctionMode)
         autoCapitalizationEnabled = try container.decodeIfPresent(Bool.self, forKey: .autoCapitalizationEnabled) ?? true
         characterPreviewEnabled = try container.decodeIfPresent(Bool.self, forKey: .characterPreviewEnabled) ?? true
+        keySoundEnabled = try container.decodeIfPresent(Bool.self, forKey: .keySoundEnabled) ?? true
+        keyHapticsEnabled = try container.decodeIfPresent(Bool.self, forKey: .keyHapticsEnabled) ?? true
         chineseInputEnabled = try container.decodeIfPresent(Bool.self, forKey: .chineseInputEnabled) ?? true
         chinesePunctuationStyle = try container.decodeIfPresent(
             KeyboardChinesePunctuationStyle.self,
@@ -325,6 +333,8 @@ struct KeyboardDefaultsPayload: Codable, Equatable {
         case correctionMode = "correction_mode"
         case autoCapitalizationEnabled = "auto_capitalization_enabled"
         case characterPreviewEnabled = "character_preview_enabled"
+        case keySoundEnabled = "key_sound_enabled"
+        case keyHapticsEnabled = "key_haptics_enabled"
         case chineseInputEnabled = "chinese_input_enabled"
         case chinesePunctuationStyle = "chinese_punctuation_style"
         case rimeDictionaryTier = "rime_dictionary_tier"
