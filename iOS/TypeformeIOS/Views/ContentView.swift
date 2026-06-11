@@ -17,20 +17,15 @@ struct ContentView: View {
                 .navigationTitle("Typeforme")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
-                    ToolbarItem(placement: .topBarLeading) {
-                        if state.showsReturnButton {
+                    // The route status bar is the refresh affordance now; a
+                    // second arrow up here was redundant chrome.
+                    if state.showsReturnButton {
+                        ToolbarItem(placement: .topBarLeading) {
                             Button {
                                 Task { await state.returnToPreviousAppFromToolbar() }
                             } label: {
                                 Label("Return", systemImage: "chevron.left")
                             }
-                        } else {
-                            Button {
-                                Task { await state.refreshRoute(force: true) }
-                            } label: {
-                                Image(systemName: "arrow.clockwise")
-                            }
-                            .disabled(state.isBusy || state.isRefreshingRoute)
                         }
                     }
                     ToolbarItem(placement: .topBarTrailing) {
@@ -119,6 +114,16 @@ struct ContentView: View {
                     // so it sits at the bottom and can be dismissed.
                     VStack(spacing: 16) {
                         HeroRecordCard(audio: state.audioCoordinator)
+                        // Errors sit directly under the orb — at the old
+                        // position (below Result/Raw) they were off-screen
+                        // whenever the page had content.
+                        if let error = state.errorMessage, !error.isEmpty {
+                            ErrorBanner(message: error, canRepair: state.isConfigured) {
+                                showingPairing = true
+                            } onDismiss: {
+                                state.errorMessage = nil
+                            }
+                        }
                         if state.keyboardNeedsFullAccessSetup {
                             KeyboardFullAccessBanner {
                                 showingKeyboardGuide = true
@@ -128,13 +133,6 @@ struct ContentView: View {
                         LanguagesRow()
                         ResultCard()
                         RawTranscriptCard(expanded: $rawTranscriptExpanded)
-                        if let error = state.errorMessage, !error.isEmpty {
-                            ErrorBanner(message: error, canRepair: state.isConfigured) {
-                                showingPairing = true
-                            } onDismiss: {
-                                state.errorMessage = nil
-                            }
-                        }
                         SetupStatusCard(
                             onShowGuide: { showingKeyboardGuide = true }
                         )
@@ -832,6 +830,17 @@ private struct ModeChipsRow: View {
             .padding(.horizontal, 16)
         }
         .scrollClipDisabled()
+        // The last chip clips at the screen edge with no scroll cue — the
+        // trailing fade signals "more to the right" instead of looking broken.
+        .overlay(alignment: .trailing) {
+            LinearGradient(
+                colors: [Color(.systemBackground).opacity(0), Color(.systemBackground)],
+                startPoint: .leading,
+                endPoint: .trailing
+            )
+            .frame(width: 28)
+            .allowsHitTesting(false)
+        }
     }
 }
 
@@ -1642,6 +1651,8 @@ private struct MacSettingsView: View {
                     }
                     .pickerStyle(.menu)
 
+                    Toggle("Auto Insert on Mac", isOn: autoCommitBinding)
+
                 }
 
                 Section("Vocabulary") {
@@ -1821,6 +1832,14 @@ private struct MacSettingsView: View {
             draft?.correctionBackend ?? ""
         } set: { value in
             draft?.correctionBackend = value
+        }
+    }
+
+    private var autoCommitBinding: Binding<Bool> {
+        Binding {
+            draft?.autoCommit ?? true
+        } set: { value in
+            draft?.autoCommit = value
         }
     }
 
