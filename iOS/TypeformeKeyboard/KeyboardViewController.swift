@@ -1481,6 +1481,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         configureVoiceButton()
         configureUtilityRow()
         configureTextKeyboard()
+        attachToolbarHints()
         configureKeyboardDarwinBridge()
         applyKeyboardInterfaceStyle(force: true)
         updateKeyboardFocus(animated: false)
@@ -7248,6 +7249,70 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private func hideCandidatePreview() {
         candidatePreviewTarget = nil
         hideKeyPreview()
+    }
+
+    // MARK: - Toolbar hints
+    //
+    // The toolbar icons (wand / style / undo / mic / keyboard-switch / gear)
+    // have no labels and `help()` does nothing inside a keyboard extension,
+    // so their meaning was only discoverable in the host app's Guide. Holding
+    // an icon now shows its accessibility label in the preview bubble without
+    // triggering the action (the recognizer cancels the button's touch).
+
+    private func attachToolbarHints() {
+        [
+            settingsButton,
+            keyboardFocusButton,
+            textWandButton,
+            textStylePickerButton,
+            textUndoButton,
+            textToolsButton,
+            textKeyboardSwitchButton,
+            textHostSettingsButton,
+        ].forEach(attachToolbarHint)
+    }
+
+    private func attachToolbarHint(_ button: UIButton) {
+        let recognizer = UILongPressGestureRecognizer(target: self, action: #selector(handleToolbarHintLongPress(_:)))
+        recognizer.minimumPressDuration = 0.45
+        recognizer.cancelsTouchesInView = true
+        button.addGestureRecognizer(recognizer)
+    }
+
+    @objc private func handleToolbarHintLongPress(_ recognizer: UILongPressGestureRecognizer) {
+        guard let button = recognizer.view as? UIButton else { return }
+        switch recognizer.state {
+        case .began:
+            let text = button.accessibilityLabel?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            guard !text.isEmpty else { return }
+            keyboardHaptics.playSelectionChanged()
+            presentToolbarHintBubble(text: text, below: button)
+        case .ended, .cancelled, .failed:
+            hideKeyPreview()
+        default:
+            break
+        }
+    }
+
+    private func presentToolbarHintBubble(text: String, below control: UIControl) {
+        keyPreviewBubble.layer.removeAllAnimations()
+        keyPreviewLabel.font = .systemFont(ofSize: 13, weight: .semibold)
+        keyPreviewLabel.text = text
+        let controlFrame = control.convert(control.bounds, to: view)
+        let textWidth = ceil((text as NSString).size(withAttributes: [
+            .font: keyPreviewLabel.font as Any,
+        ]).width)
+        let bubbleWidth = min(textWidth + 24, view.bounds.width - 8)
+        let bubbleHeight: CGFloat = 32
+        let x = min(
+            max(controlFrame.midX - bubbleWidth / 2, 4),
+            max(4, view.bounds.width - bubbleWidth - 4)
+        )
+        keyPreviewBubble.frame = CGRect(x: x, y: controlFrame.maxY + 6, width: bubbleWidth, height: bubbleHeight)
+        view.bringSubviewToFront(keyPreviewBubble)
+        keyPreviewBubble.isHidden = false
+        keyPreviewBubble.alpha = 1
+        keyPreviewBubble.transform = .identity
     }
 
     @objc private func handleCandidateGridTap(_ recognizer: UITapGestureRecognizer) {
