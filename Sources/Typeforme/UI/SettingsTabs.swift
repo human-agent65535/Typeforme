@@ -2831,8 +2831,10 @@ struct BridgeSettingsView: View {
     @State private var authToken = ""
     @State private var showToken = false
     @State private var showingPairingQR = false
+    @State private var showingRotateConfirm = false
     @State private var copiedMessage = ""
     @ObservedObject private var connectionStore = BridgeConnectionStore.shared
+    @ObservedObject private var serverStatus = BridgeServerStatusStore.shared
 
     var body: some View {
         Form {
@@ -2841,8 +2843,14 @@ struct BridgeSettingsView: View {
                 HStack {
                     Text("Status")
                     Spacer()
-                    Text(enabled ? "Enabled" : "Off")
-                        .foregroundStyle(enabled ? .green : .secondary)
+                    Text(listenerStatusText)
+                        .foregroundStyle(listenerStatusColor)
+                }
+                if case .failed(let message) = serverStatus.status, enabled {
+                    Text(message)
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 IntegerSettingField(title: "Port", value: $port, range: 1024...65535, suffix: "")
                 Toggle("Allow LAN access", isOn: $lanEnabled)
@@ -2903,11 +2911,22 @@ struct BridgeSettingsView: View {
                         Label("Copy Token", systemImage: "key")
                     }
                     Button(role: .destructive) {
-                        authToken = AppSettings.rotateBridgeAuthToken()
-                        showToken = false
-                        copiedMessage = "Token rotated"
+                        showingRotateConfirm = true
                     } label: {
                         Label("Rotate Token", systemImage: "arrow.clockwise")
+                    }
+                    .confirmationDialog(
+                        "Rotate the pairing token?",
+                        isPresented: $showingRotateConfirm
+                    ) {
+                        Button("Rotate Token", role: .destructive) {
+                            authToken = AppSettings.rotateBridgeAuthToken()
+                            showToken = false
+                            copiedMessage = "Token rotated"
+                        }
+                        Button("Cancel", role: .cancel) {}
+                    } message: {
+                        Text("Every paired client (including your iPhone) loses access until it re-pairs with the new token.")
                     }
                     Spacer()
                     if !copiedMessage.isEmpty {
@@ -2974,6 +2993,27 @@ struct BridgeSettingsView: View {
 
     private var portString: String {
         String(port)
+    }
+
+    /// The toggle records intent; the status row shows what the socket
+    /// actually did. "Starting…" covers the brief window between the toggle
+    /// flipping and BridgeHTTPServer publishing a result.
+    private var listenerStatusText: String {
+        guard enabled else { return "Off" }
+        switch serverStatus.status {
+        case .running(_, let activePort): return "Listening on port \(activePort)"
+        case .failed: return "Failed"
+        case .stopped: return "Starting…"
+        }
+    }
+
+    private var listenerStatusColor: Color {
+        guard enabled else { return .secondary }
+        switch serverStatus.status {
+        case .running: return .green
+        case .failed: return .red
+        case .stopped: return .orange
+        }
     }
 
     private var availableLANAdapters: [BridgeLANAdapter] {

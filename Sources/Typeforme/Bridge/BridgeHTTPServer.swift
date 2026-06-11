@@ -88,6 +88,13 @@ final class BridgeHTTPServer: @unchecked Sendable {
         if task != nil {
             Log.app.info("Bridge stopping")
         }
+        publishStatus(.stopped)
+    }
+
+    private func publishStatus(_ status: BridgeServerStatusStore.Status) {
+        Task { @MainActor in
+            BridgeServerStatusStore.shared.set(status)
+        }
     }
 
     static func constantTimeEquals(_ supplied: String, _ expected: String) -> Bool {
@@ -146,6 +153,18 @@ final class BridgeHTTPServer: @unchecked Sendable {
     private func start(host: String, port: Int) {
         let runID = UUID()
         let app = makeApplication(host: host, port: port)
+
+        // Mark the run active and publish .running BEFORE spawning the server
+        // task: a fast bind failure checks `isActiveRun` and must find this
+        // run registered, and its .failed publish must come after .running.
+        stateLock.lock()
+        activePort = port
+        activeHost = host
+        activeRunID = runID
+        running = true
+        stateLock.unlock()
+        publishStatus(.running(host: host, port: port))
+
         let task = Task.detached(priority: .utility) { [weak self] in
             defer {
                 self?.markStopped(runID: runID)
@@ -156,18 +175,25 @@ final class BridgeHTTPServer: @unchecked Sendable {
                 Log.app.info("Bridge stopped")
             } catch {
                 Log.app.error("Bridge server failed: \(error.localizedDescription)")
+                // Only the still-active run may report failure — a stale run
+                // dying during a restart must not overwrite the new status.
+                if let self, self.isActiveRun(runID) {
+                    self.publishStatus(.failed(message: error.localizedDescription))
+                }
             }
         }
 
         stateLock.lock()
         serverTask = task
-        activePort = port
-        activeHost = host
-        activeRunID = runID
-        running = true
         stateLock.unlock()
 
         Log.app.info("Bridge listening on \(host):\(port)")
+    }
+
+    private func isActiveRun(_ runID: UUID) -> Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return activeRunID == runID
     }
 
     private func markStopped(runID: UUID) {
