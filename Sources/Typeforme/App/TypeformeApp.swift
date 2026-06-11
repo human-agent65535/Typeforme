@@ -14,10 +14,8 @@ struct TypeformeApp: App {
 
     var body: some Scene {
         // Native SwiftUI menu-bar item (macOS 13+). Replaces the AppKit
-        // NSStatusItem + NSMenu boilerplate; the label re-renders when
-        // coordinator state changes thanks to @ObservedObject, the
-        // "Always show HUD" toggle is bound via @AppStorage and stays in
-        // sync with Settings → Dictation.
+        // NSStatusItem + NSMenu boilerplate; the label and menu status line
+        // re-render when coordinator state changes thanks to @ObservedObject.
         MenuBarExtra {
             MenuBarMenu(
                 coordinator: appDelegate.coordinator,

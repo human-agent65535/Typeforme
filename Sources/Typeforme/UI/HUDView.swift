@@ -1,13 +1,12 @@
 import SwiftUI
 import KeyboardShortcuts
 
-/// Bottom-centered glass capsule HUD.
-///
-/// Visual targets:
-/// - ultraThinMaterial surface with a thin hairline border for contrast
-/// - state-tinted leading indicator (red while recording, green on success, …)
-/// - rich 20-bar waveform during recording, plus a pulsing dot + elapsed timer
-/// - inline preview text with readable correction mode chips
+/// Bottom-centered glass HUD. Idle collapses to a mic pip; clicking it (or
+/// starting a dictation) opens the expanded layout: live transcript text on
+/// top, action bar below. The bar morphs by state — Wand + style chips at
+/// idle, pulsing dot + waveform + elapsed timer while recording, processing
+/// label while transcribing/refining — and ✕ stays live as Cancel. Brief
+/// terminal states (inserting/success/error) use a compact capsule.
 struct HUDView: View {
     @ObservedObject var coordinator: DictationCoordinator
     /// Opens the Settings window — wired from AppDelegate so an error capsule

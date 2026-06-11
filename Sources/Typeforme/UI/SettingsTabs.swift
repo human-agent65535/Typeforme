@@ -452,6 +452,9 @@ struct ClientServerSettingsView: View {
 
             if let current = draft {
                 Section("Server Speech") {
+                    Text("Server sections edit a draft — nothing changes on the server until you press Save to Server below.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                     Picker("ASR Engine", selection: asrProviderBinding) {
                         ForEach(asrProviderOptions(for: current)) { option in
                             Text(option.displayName).tag(option.id)
@@ -2891,16 +2894,10 @@ struct DictionarySettingsView: View {
 
                     TextField("Term, e.g. Ada Lovelace, AcmeDB, GraphRAG", text: $surface)
                         .textFieldStyle(.roundedBorder)
+                        .onSubmit(addEntryIfValid)
 
-                    Button("Add") {
-                        store.add(
-                            type: resolvedType,
-                            surface: surface
-                        )
-                        clearForm()
-                    }
-                    .disabled(surface.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
-                              (selectedType == "custom" && customType.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
+                    Button("Add", action: addEntryIfValid)
+                        .disabled(!canAddEntry)
                 }
             }
 
@@ -2931,8 +2928,19 @@ struct DictionarySettingsView: View {
         selectedType == "custom" ? customType : selectedType
     }
 
-    private func clearForm() {
+    private var canAddEntry: Bool {
+        !surface.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !(selectedType == "custom" && customType.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+    }
+
+    private func addEntryIfValid() {
+        guard canAddEntry else { return }
+        store.add(type: resolvedType, surface: surface)
         surface = ""
+        customType = ""
+        if selectedType == "custom" {
+            selectedType = DictionaryEntry.suggestedTypes.first ?? "person"
+        }
     }
 }
 
@@ -3462,7 +3470,7 @@ private struct BridgeClientActivityRow: View {
             VStack(alignment: .trailing, spacing: 3) {
                 Text("\(client.requestCount)")
                     .font(.caption.monospacedDigit().weight(.medium))
-                Text("Origin \(client.lastLatencyMs) ms")
+                Text("Handled in \(client.lastLatencyMs) ms")
                     .font(.caption2.monospacedDigit())
                     .foregroundStyle(.secondary)
             }

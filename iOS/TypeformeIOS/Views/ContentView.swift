@@ -1650,9 +1650,6 @@ private struct MacSettingsView: View {
                         }
                     }
                     .pickerStyle(.menu)
-
-                    Toggle("Auto Insert on Mac", isOn: autoCommitBinding)
-
                 }
 
                 Section("Vocabulary") {
@@ -1832,14 +1829,6 @@ private struct MacSettingsView: View {
             draft?.correctionBackend ?? ""
         } set: { value in
             draft?.correctionBackend = value
-        }
-    }
-
-    private var autoCommitBinding: Binding<Bool> {
-        Binding {
-            draft?.autoCommit ?? true
-        } set: { value in
-            draft?.autoCommit = value
         }
     }
 
