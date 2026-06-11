@@ -187,6 +187,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settingsWindow.show()
     }
 
+    /// Exposed for the menu bar: rescue path when the HUD has been dragged
+    /// somewhere unreachable (e.g. onto a display that was unplugged).
+    func resetHUDPosition() {
+        hud.resetAnchor()
+    }
+
     private func syncLaunchAtLogin() {
         do {
             let status = try LaunchAtLoginController.syncDesiredState()

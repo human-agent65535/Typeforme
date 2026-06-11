@@ -19,7 +19,11 @@ struct TypeformeApp: App {
         // "Always show HUD" toggle is bound via @AppStorage and stays in
         // sync with Settings → Dictation.
         MenuBarExtra {
-            MenuBarMenu(onOpenSettings: { appDelegate.openSettings() })
+            MenuBarMenu(
+                coordinator: appDelegate.coordinator,
+                onOpenSettings: { appDelegate.openSettings() },
+                onResetHUDPosition: { appDelegate.resetHUDPosition() }
+            )
         } label: {
             MenuBarLabel(coordinator: appDelegate.coordinator)
         }
