@@ -45,6 +45,7 @@ enum KeyboardSharedDefaults {
     private static let keyboardStatusKey = "keyboard.status.v1"
     private static let hostHandoffKey = "keyboard.host-handoff.v1"
     private static let hostForegroundKey = "keyboard.host-foreground.v1"
+    private static let touchLearningStatsKey = "keyboard.touchLearningStats.v1"
 
     static func suite() -> UserDefaults? {
         UserDefaults(suiteName: appGroupIdentifier)
@@ -97,6 +98,22 @@ enum KeyboardSharedDefaults {
 
     static func makeBridgeToken() -> String {
         "\(UUID().uuidString).\(UUID().uuidString)"
+    }
+
+    /// The keyboard mirrors its per-key touch-offset stats here so the host
+    /// app can display them — the extension's own UserDefaults are invisible
+    /// to the host, which made touch learning unverifiable from the UI.
+    @discardableResult
+    static func saveTouchLearningSnapshot(_ snapshot: KeyboardTouchLearningSnapshot) -> Bool {
+        saveCodable(snapshot, key: touchLearningStatsKey)
+    }
+
+    static func loadTouchLearningSnapshot() -> KeyboardTouchLearningSnapshot? {
+        loadCodable(KeyboardTouchLearningSnapshot.self, key: touchLearningStatsKey)
+    }
+
+    static func clearTouchLearningSnapshot() {
+        suite()?.removeObject(forKey: touchLearningStatsKey)
     }
 
     @discardableResult
@@ -342,6 +359,36 @@ struct KeyboardDefaultsPayload: Codable, Equatable {
         }
         let digest = SHA256.hash(data: data)
         return digest.map { String(format: "%02x", $0) }.joined()
+    }
+}
+
+/// Read-only mirror of the keyboard's touch-learning model. Written by the
+/// keyboard extension on every stats persist; read by the host app's
+/// Keyboard Settings inspector. Offsets are normalized to key size
+/// (positive x = right of key center, positive y = below key center).
+struct KeyboardTouchLearningKeyStats: Codable, Equatable {
+    let sampleCount: Double
+    let meanX: Double
+    let meanY: Double
+    let updatedAt: TimeInterval
+
+    enum CodingKeys: String, CodingKey {
+        case sampleCount = "sample_count"
+        case meanX = "mean_x"
+        case meanY = "mean_y"
+        case updatedAt = "updated_at"
+    }
+}
+
+struct KeyboardTouchLearningSnapshot: Codable, Equatable {
+    let version: Int
+    let updatedAt: TimeInterval
+    let keys: [String: KeyboardTouchLearningKeyStats]
+
+    enum CodingKeys: String, CodingKey {
+        case version
+        case updatedAt = "updated_at"
+        case keys
     }
 }
 

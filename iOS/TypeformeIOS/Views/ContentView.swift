@@ -954,6 +954,11 @@ private struct KeyboardSettingsView: View {
                     Text("Automatic")
                         .foregroundStyle(.secondary)
                 }
+                NavigationLink {
+                    TouchLearningStatsView()
+                } label: {
+                    Text("Touch Learning Data")
+                }
                 Button(role: .destructive) {
                     state.resetKeyboardTouchLearning()
                 } label: {
@@ -2020,4 +2025,151 @@ private struct ServerVocabularyEntryEditorView: View {
         dismiss()
     }
 
+}
+
+// MARK: - Touch learning inspector
+
+/// Read-only view of the keyboard's per-key touch-offset learning. The
+/// keyboard mirrors its stats into the App Group on every persist; without
+/// this view the model was invisible and impossible to verify.
+private struct TouchLearningStatsView: View {
+    @State private var snapshot: KeyboardTouchLearningSnapshot?
+
+    private static let keyRows: [[String]] = [
+        ["q", "w", "e", "r", "t", "y", "u", "i", "o", "p"],
+        ["a", "s", "d", "f", "g", "h", "j", "k", "l"],
+        ["z", "x", "c", "v", "b", "n", "m"],
+    ]
+    /// Mirrors TextKeyTouchLearner.fullConfidenceSamples: the sample count at
+    /// which the keyboard trusts a key's learned mean at full weight. The dot
+    /// in the map shows the *effective* offset (mean × confidence) — exactly
+    /// what touch routing uses.
+    private static let fullConfidenceSamples = 24.0
+    private static let cellWidth: CGFloat = 30
+    private static let cellHeight: CGFloat = 42
+
+    var body: some View {
+        List {
+            if let snapshot, !snapshot.keys.isEmpty {
+                Section {
+                    LabeledContent("Keys learned", value: "\(snapshot.keys.count)")
+                    LabeledContent("Samples", value: "\(totalSamples(snapshot))")
+                    LabeledContent("Updated", value: Self.relativeDate(snapshot.updatedAt))
+                }
+                Section {
+                    keyboardMap(snapshot)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 6)
+                } header: {
+                    Text("Learned touch centers")
+                } footer: {
+                    Text("The dot is where your taps for that key actually land (key tint = confidence). A dot off center means the keyboard is compensating for your finger's bias on that key.")
+                }
+                Section("Per-key offsets") {
+                    ForEach(sortedEntries(snapshot), id: \.0) { key, stats in
+                        statsRow(key: key, stats: stats)
+                    }
+                }
+            } else {
+                Section {
+                    Text("No learning data yet.")
+                    Text("Type on the Typeforme keyboard (Full Access required). Accepted keys and backspace-corrections feed the model; data appears here after a few keystrokes.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .navigationTitle("Touch Learning")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    reload()
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .accessibilityLabel("Refresh learning data")
+            }
+        }
+        .refreshable { reload() }
+        .onAppear { reload() }
+    }
+
+    private func reload() {
+        snapshot = KeyboardSharedDefaults.loadTouchLearningSnapshot()
+    }
+
+    private func totalSamples(_ snapshot: KeyboardTouchLearningSnapshot) -> Int {
+        Int(snapshot.keys.values.reduce(0) { $0 + $1.sampleCount }.rounded())
+    }
+
+    private func sortedEntries(_ snapshot: KeyboardTouchLearningSnapshot) -> [(String, KeyboardTouchLearningKeyStats)] {
+        snapshot.keys.sorted { lhs, rhs in
+            if lhs.value.sampleCount != rhs.value.sampleCount {
+                return lhs.value.sampleCount > rhs.value.sampleCount
+            }
+            return lhs.key < rhs.key
+        }
+    }
+
+    private func keyboardMap(_ snapshot: KeyboardTouchLearningSnapshot) -> some View {
+        VStack(spacing: 5) {
+            ForEach(Self.keyRows, id: \.self) { row in
+                HStack(spacing: 4) {
+                    ForEach(row, id: \.self) { key in
+                        keyCell(key: key, stats: snapshot.keys[key])
+                    }
+                }
+            }
+        }
+    }
+
+    private func keyCell(key: String, stats: KeyboardTouchLearningKeyStats?) -> some View {
+        let confidence = min(1.0, (stats?.sampleCount ?? 0) / Self.fullConfidenceSamples)
+        let dx = CGFloat((stats?.meanX ?? 0) * confidence) * Self.cellWidth
+        let dy = CGFloat((stats?.meanY ?? 0) * confidence) * Self.cellHeight
+        return ZStack {
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(Color.accentColor.opacity(0.08 + 0.30 * confidence))
+            Text(key)
+                .font(.system(size: 13, weight: .medium, design: .monospaced))
+                .foregroundStyle(stats == nil ? Color.secondary : Color.primary)
+            if stats != nil {
+                Circle()
+                    .fill(Color.red)
+                    .frame(width: 5, height: 5)
+                    .offset(x: dx, y: dy)
+            }
+        }
+        .frame(width: Self.cellWidth, height: Self.cellHeight)
+    }
+
+    private func statsRow(key: String, stats: KeyboardTouchLearningKeyStats) -> some View {
+        HStack {
+            Text(key.uppercased())
+                .font(.system(.body, design: .monospaced).weight(.semibold))
+                .frame(width: 28, alignment: .leading)
+            Text("\(Int(stats.sampleCount.rounded())) samples")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Text(Self.offsetLabel(stats))
+                .font(.system(.subheadline, design: .monospaced))
+        }
+    }
+
+    private static func offsetLabel(_ stats: KeyboardTouchLearningKeyStats) -> String {
+        String(
+            format: "dx %+d%%  dy %+d%%",
+            Int((stats.meanX * 100).rounded()),
+            Int((stats.meanY * 100).rounded())
+        )
+    }
+
+    private static func relativeDate(_ timestamp: TimeInterval) -> String {
+        guard timestamp > 0 else { return "—" }
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .short
+        return formatter.localizedString(for: Date(timeIntervalSince1970: timestamp), relativeTo: Date())
+    }
 }

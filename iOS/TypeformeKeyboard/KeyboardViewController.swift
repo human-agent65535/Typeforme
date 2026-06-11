@@ -438,8 +438,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private static let orbDiameter: CGFloat = 132
     /// Smaller variant for the 32pt text-toolbar mic button.
     private static let textToolsReadyDotDiameter: CGFloat = 8
-    private static let portraitKeyboardContentHeight: CGFloat = 258
-    private static let compactKeyboardContentHeight: CGFloat = 244
+    // +9 vs the original 258/244 to fund the taller candidate strip; the orb
+    // container and key-row heights both derive as remainders and stay equal.
+    private static let portraitKeyboardContentHeight: CGFloat = 267
+    private static let compactKeyboardContentHeight: CGFloat = 253
     private static let rootHorizontalInset: CGFloat = 20.0 / 3.0
     private static let rootVerticalInset: CGFloat = 4
     private static let stackSpacing: CGFloat = 4
@@ -448,7 +450,14 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     /// the host app even when `point(inside:)` returns true.
     private static let keyboardTouchableBackgroundColor = UIColor.white.withAlphaComponent(0.01)
     private static let candidateExpandButtonWidth: CGFloat = 45
-    private static let candidateToolbarHeight: CGFloat = 25
+    /// 34pt (was 25): 20pt candidate text on a 25pt-tall strip was the single
+    /// most-missed target on the keyboard. The extra 9pt comes out of total
+    /// keyboard height (content height +9), so key rows are unchanged.
+    private static let candidateToolbarHeight: CGFloat = 34
+    /// Vertical touch overflow for the inline candidate strip. Combined with
+    /// the composing-time hand-off in `textCharacterTouchBandFrame`, the
+    /// effective candidate target is ~48pt tall while candidates are showing.
+    private static let candidateStripTouchOverflowY: CGFloat = 8
     private static let toolbarIconVerticalOffset: CGFloat = -2
     private static let textKeyboardTopProtectionInset: CGFloat = 2
     private static let textKeyboardToolbarKeyGap: CGFloat = 10
@@ -908,7 +917,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         if expandedFrame(of: candidateGridScrollView, dx: 0, dy: 4).contains(point) {
             return true
         }
-        guard expandedFrame(of: candidateScrollView, dx: 0, dy: 4).contains(point) else {
+        guard expandedFrame(of: candidateScrollView, dx: 0, dy: Self.candidateStripTouchOverflowY).contains(point) else {
             return false
         }
         if candidateScrollHitTarget(at: point) != nil {
@@ -981,9 +990,17 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         if !textToolbar.isHidden,
            textToolbar.alpha > 0.01,
            textToolbar.bounds.height > 0 {
+            // While the candidate strip is up, the strip owns most of the
+            // toolbar↔keys gap: low taps aimed at a candidate used to be
+            // routed to the q-row (which claimed everything below
+            // toolbar.maxY+2 with a 14pt rescue overflow on top), which is
+            // why candidates felt untappable. Keys keep a 4pt rescue band.
+            let isCandidateStripActive = !textCandidateGridButton.isHidden
+            let toolbarClearance: CGFloat = isCandidateStripActive ? 6 : 2
+            let rowOverflow: CGFloat = isCandidateStripActive ? 4 : TextKeyboardTouchModel.rowTopOverflow
             topLimit = max(
-                firstRow.frame.minY - TextKeyboardTouchModel.rowTopOverflow,
-                textToolbar.convert(textToolbar.bounds, to: view).maxY + 2
+                firstRow.frame.minY - rowOverflow,
+                textToolbar.convert(textToolbar.bounds, to: view).maxY + toolbarClearance
             )
         } else {
             topLimit = firstRow.frame.minY - TextKeyboardTouchModel.rowTopOverflow
@@ -1003,7 +1020,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         else { return nil }
 
         let scrollFrame = candidateScrollView.convert(candidateScrollView.bounds, to: view)
-        guard scrollFrame.insetBy(dx: 0, dy: -4).contains(point) else { return nil }
+        guard scrollFrame.insetBy(dx: 0, dy: -Self.candidateStripTouchOverflowY).contains(point) else { return nil }
         let buttons = candidateStack.arrangedSubviews.compactMap { $0 as? UIButton }
         return horizontalButtonBandTarget(
             in: buttons,
@@ -9566,6 +9583,7 @@ private final class TextKeyTouchLearner {
         dirtySampleCount = 0
         state = StoredState(version: Self.storageVersion, keys: [:])
         defaults.removeObject(forKey: storageKey)
+        KeyboardSharedDefaults.clearTouchLearningSnapshot()
     }
 
     func flush() {
@@ -9696,6 +9714,26 @@ private final class TextKeyTouchLearner {
     private func persist() {
         guard let data = try? JSONEncoder().encode(state) else { return }
         defaults.set(data, forKey: storageKey)
+        publishSharedSnapshot()
+    }
+
+    /// Mirror into the App Group (best-effort; requires Full Access) so the
+    /// host app's Keyboard Settings can show what has been learned.
+    private func publishSharedSnapshot() {
+        var keys: [String: KeyboardTouchLearningKeyStats] = [:]
+        for (character, stats) in state.keys {
+            keys[character] = KeyboardTouchLearningKeyStats(
+                sampleCount: stats.sampleCount,
+                meanX: stats.meanX,
+                meanY: stats.meanY,
+                updatedAt: stats.updatedAt
+            )
+        }
+        KeyboardSharedDefaults.saveTouchLearningSnapshot(KeyboardTouchLearningSnapshot(
+            version: Self.storageVersion,
+            updatedAt: Date().timeIntervalSince1970,
+            keys: keys
+        ))
     }
 
     private static func loadState(defaults: UserDefaults, storageKey: String) -> StoredState {
