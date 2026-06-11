@@ -46,6 +46,7 @@ enum KeyboardSharedDefaults {
     private static let hostHandoffKey = "keyboard.host-handoff.v1"
     private static let hostForegroundKey = "keyboard.host-foreground.v1"
     private static let touchLearningStatsKey = "keyboard.touchLearningStats.v1"
+    private static let chineseLearningKey = "keyboard.chineseLearning.v1"
 
     static func suite() -> UserDefaults? {
         UserDefaults(suiteName: appGroupIdentifier)
@@ -114,6 +115,22 @@ enum KeyboardSharedDefaults {
 
     static func clearTouchLearningSnapshot() {
         suite()?.removeObject(forKey: touchLearningStatsKey)
+    }
+
+    /// Recently committed Chinese phrases — the host-visible proxy for rime's
+    /// self-learning, whose user dictionary lives inside the extension
+    /// sandbox and cannot be enumerated from the host.
+    @discardableResult
+    static func saveChineseLearningSnapshot(_ snapshot: KeyboardChineseLearningSnapshot) -> Bool {
+        saveCodable(snapshot, key: chineseLearningKey)
+    }
+
+    static func loadChineseLearningSnapshot() -> KeyboardChineseLearningSnapshot? {
+        loadCodable(KeyboardChineseLearningSnapshot.self, key: chineseLearningKey)
+    }
+
+    static func clearChineseLearningSnapshot() {
+        suite()?.removeObject(forKey: chineseLearningKey)
     }
 
     @discardableResult
@@ -389,6 +406,28 @@ struct KeyboardTouchLearningSnapshot: Codable, Equatable {
         case version
         case updatedAt = "updated_at"
         case keys
+    }
+}
+
+struct KeyboardChineseLearningEntry: Codable, Equatable {
+    let text: String
+    let count: Int
+    let lastUsedAt: TimeInterval
+
+    enum CodingKeys: String, CodingKey {
+        case text
+        case count
+        case lastUsedAt = "last_used_at"
+    }
+}
+
+struct KeyboardChineseLearningSnapshot: Codable, Equatable {
+    let updatedAt: TimeInterval
+    let entries: [KeyboardChineseLearningEntry]
+
+    enum CodingKeys: String, CodingKey {
+        case updatedAt = "updated_at"
+        case entries
     }
 }
 

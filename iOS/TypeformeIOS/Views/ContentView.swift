@@ -934,15 +934,15 @@ private struct KeyboardSettingsView: View {
                 Text("Only active when the keyboard is in English mode.")
             }
             Section {
-                LabeledContent("Chinese self-learning") {
-                    Group {
-                        if state.keyboardChineseInputEnabled {
-                            Text("On")
-                        } else {
-                            Text("Off")
-                        }
+                NavigationLink {
+                    ChineseLearningStatsView()
+                } label: {
+                    HStack {
+                        Text("Chinese Learning Data")
+                        Spacer()
+                        Text(state.keyboardChineseInputEnabled ? "On" : "Off")
+                            .foregroundStyle(.secondary)
                     }
-                        .foregroundStyle(.secondary)
                 }
                 Button(role: .destructive) {
                     state.resetKeyboardRimeLearning()
@@ -2119,6 +2119,76 @@ private struct ServerVocabularyEntryEditorView: View {
         dismiss()
     }
 
+}
+
+// MARK: - Chinese learning inspector
+
+/// Read-only view of the phrases rime's self-learning has been fed. The
+/// keyboard mirrors every committed multi-character Chinese phrase into the
+/// App Group; the librime user dictionary itself lives in the extension
+/// sandbox and cannot be read from the host.
+private struct ChineseLearningStatsView: View {
+    @State private var snapshot: KeyboardChineseLearningSnapshot?
+
+    var body: some View {
+        List {
+            if let snapshot, !snapshot.entries.isEmpty {
+                Section {
+                    LabeledContent("Phrases tracked", value: "\(snapshot.entries.count)")
+                    LabeledContent("Updated", value: Self.relativeDate(snapshot.updatedAt))
+                } footer: {
+                    Text("Multi-character phrases committed on the keyboard — the signal Rime's self-learning trains on. Reset Chinese Learning clears both the dictionary and this list.")
+                }
+                Section("Recent phrases") {
+                    ForEach(snapshot.entries, id: \.text) { entry in
+                        HStack {
+                            Text(entry.text)
+                            Spacer()
+                            Text("\(entry.count)×")
+                                .font(.subheadline.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                            Text(Self.relativeDate(entry.lastUsedAt))
+                                .font(.caption)
+                                .foregroundStyle(.tertiary)
+                                .frame(minWidth: 64, alignment: .trailing)
+                        }
+                    }
+                }
+            } else {
+                Section {
+                    Text("No learning data yet.")
+                    Text("Type Chinese on the Typeforme keyboard (Full Access required). Committed phrases of two or more characters appear here.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .navigationTitle("Chinese Learning")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    reload()
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .accessibilityLabel("Refresh learning data")
+            }
+        }
+        .refreshable { reload() }
+        .onAppear { reload() }
+    }
+
+    private func reload() {
+        snapshot = KeyboardSharedDefaults.loadChineseLearningSnapshot()
+    }
+
+    private static func relativeDate(_ timestamp: TimeInterval) -> String {
+        guard timestamp > 0 else { return "—" }
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .short
+        return formatter.localizedString(for: Date(timeIntervalSince1970: timestamp), relativeTo: Date())
+    }
 }
 
 // MARK: - Touch learning inspector
