@@ -457,7 +457,13 @@ private struct HeroRecordCard: View {
                 Text(title)
                     .font(.title3.weight(.semibold))
                     .foregroundStyle(.primary)
-                if !detail.isEmpty {
+                if isRecording, let startedAt = state.recordingStartedAt {
+                    TimelineView(.periodic(from: startedAt, by: 1.0)) { context in
+                        Text(Self.elapsedString(from: startedAt, to: context.date))
+                            .font(.footnote.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                } else if !detail.isEmpty {
                     Text(detail)
                         .font(.footnote)
                         .foregroundStyle(.secondary)
@@ -588,6 +594,11 @@ private struct HeroRecordCard: View {
 
     private func lightImpact() {
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
+    }
+
+    private static func elapsedString(from start: Date, to now: Date) -> String {
+        let total = max(0, Int(now.timeIntervalSince(start)))
+        return String(format: "%d:%02d", total / 60, total % 60)
     }
 
     private var inputModeBinding: Binding<VoiceInputMode> {

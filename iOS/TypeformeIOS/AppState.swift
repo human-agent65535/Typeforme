@@ -303,6 +303,9 @@ final class AppState {
     private(set) var isStopAndSendInFlight = false
     /// Transient feedback ("Copied!", "Saved!") rendered as a toast.
     var transientMessage: String?
+    /// Set on entering `.recording`, cleared when the pipeline goes idle.
+    /// Drives the elapsed-time readout under the orb title.
+    private(set) var recordingStartedAt: Date?
 
     var keyboardNeedsFullAccessSetup: Bool {
         keyboardFullAccessRequired || !keyboardEverContacted
@@ -3129,6 +3132,11 @@ final class AppState {
 
     private func setPhase(_ next: AppPhase) {
         phase = next
+        if next == .recording {
+            recordingStartedAt = Date()
+        } else if !next.isBusy {
+            recordingStartedAt = nil
+        }
         if !next.isBusy {
             processingStatusMessage = nil
             cancelBridgeRefiningStatusDelay()
