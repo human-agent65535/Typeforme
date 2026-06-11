@@ -6892,7 +6892,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private func commitDisplayedRimeCompositionIfNeeded(from currentState: RimeKeyboardState? = nil) -> RimeKeyboardState {
         let state = currentState ?? rimeInput.state()
         guard state.isComposing else { return state }
-        let text = rimeMarkedText(for: state)
+        // Commit text differs from the DISPLAYED marked text: the preedit's
+        // syllable separators ("c laude") are display-only and must not be
+        // written into the document.
+        let text = state.committableCompositionText(
+            preferRawInput: shouldUseRawRimeInputAsMarkedText(state.input)
+        )
         let committedState = rimeInput.commitVisibleComposition(text)
         applyRimeState(committedState)
         return committedState
@@ -7705,9 +7710,14 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             textDocumentProxy.insertText(text)
             return
         }
-        let cursor = (text as NSString).length
-        textDocumentProxy.setMarkedText(text, selectedRange: NSRange(location: cursor, length: 0))
+        // Clear the marked range first, then insert plain text. The previous
+        // setMarkedText(final)+unmarkText() sequence left the composition
+        // underline rendered after commit in some hosts (observed: pressing
+        // Go/return to flush a composition kept the committed text
+        // underlined), while clear-then-insert commits identically everywhere.
+        textDocumentProxy.setMarkedText("", selectedRange: NSRange(location: 0, length: 0))
         textDocumentProxy.unmarkText()
+        textDocumentProxy.insertText(text)
     }
 
     private func shouldSkipResultCommitForConsumedLivePartial() -> Bool {

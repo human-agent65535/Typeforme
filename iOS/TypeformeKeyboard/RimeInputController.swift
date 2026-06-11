@@ -40,6 +40,27 @@ struct RimeKeyboardState {
         }
         return preedit.isEmpty ? input : preedit
     }
+
+    /// Text to COMMIT when flushing a still-visible composition. The displayed
+    /// preedit carries rime's syllable-segmentation separators ("ni hao",
+    /// "c laude"); space can never be typed *into* a composition (space
+    /// commits), so any separator in the preedit is display-only and must not
+    /// leak into the document. Unconverted compositions commit the raw input
+    /// verbatim; partially converted ones commit the preedit with separators
+    /// stripped.
+    func committableCompositionText(preferRawInput: Bool = false) -> String {
+        guard isComposing else { return "" }
+        if preferRawInput {
+            return input
+        }
+        guard !preedit.isEmpty else { return input }
+        let hasConvertedText = preedit.unicodeScalars.contains { $0.value > 0x7F }
+        guard hasConvertedText else { return input }
+        let stripped = preedit
+            .replacingOccurrences(of: " ", with: "")
+            .replacingOccurrences(of: "'", with: "")
+        return stripped.isEmpty ? input : stripped
+    }
 }
 
 enum RimeCharacterProcessResult {
@@ -643,12 +664,35 @@ final class RimeInputController {
     ) -> Bool {
         let code = input.lowercased()
         guard Self.isEnglishWordLookupCode(code),
-              englishWordCodes?.contains(code) == true,
               !candidates.contains(where: { $0.text.lowercased() == code && Self.isEnglishWordLookupCode($0.text.lowercased()) }),
               preedit != input,
               Self.containsRimeSegmentDelimiter(preedit)
         else { return false }
-        return true
+        if englishWordCodes?.contains(code) == true {
+            return true
+        }
+        // The wordlist misses proper nouns ("claude"). A stranded one-letter
+        // consonant segment in the preedit ("c laude") means pinyin
+        // segmentation failed on an English-looking token — offer the
+        // verbatim input as the first candidate so it stays recoverable by
+        // tap. Pure pinyin never produces such segments (only a/e/o are
+        // valid standalone syllables), so 你好-style input is unaffected.
+        return code.unicodeScalars.count >= Self.englishCompletionMinimumInputLength
+            && Self.containsStrandedConsonantSegment(preedit)
+    }
+
+    private static func containsStrandedConsonantSegment(_ preedit: String) -> Bool {
+        preedit
+            .split(whereSeparator: { character in
+                character == "'" || character == "\\" || character == " " || character == "|" || character == "`"
+            })
+            .contains { segment in
+                guard segment.count == 1,
+                      let scalar = segment.unicodeScalars.first,
+                      scalar.value >= 0x61, scalar.value <= 0x7A
+                else { return false }
+                return !"aeo".unicodeScalars.contains(scalar)
+            }
     }
 
     private static func isEnglishWordLookupCode(_ code: String) -> Bool {
