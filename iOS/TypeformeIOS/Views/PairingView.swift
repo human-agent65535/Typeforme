@@ -33,7 +33,7 @@ struct PairingView: View {
         NavigationStack {
             List {
                 Section {
-                    Text("Open the Mac app, copy the pairing JSON, then paste it here. Pairing only stores connection details. Languages are an iOS override on the main screen, and the default mode follows Dictation Settings.")
+                    Text("Open the Mac app, copy the pairing JSON, then paste it here. Pairing only stores connection details. Languages are an iOS override on the main screen, and the default mode follows Mac Settings.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -135,7 +135,7 @@ struct PairingView: View {
                         Label(
                             isPulling
                                 ? NSLocalizedString("Pulling…", comment: "Pairing settings pull in progress")
-                                : NSLocalizedString("Refresh Dictation Settings", comment: "Pull dictation settings button"),
+                                : NSLocalizedString("Refresh Mac Settings", comment: "Pull Mac settings button"),
                             systemImage: "arrow.down.doc"
                         )
                     }

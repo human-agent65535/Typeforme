@@ -43,7 +43,7 @@ struct ContentView: View {
                             Button {
                                 showingMacSettings = true
                             } label: {
-                                Label("Dictation Settings", systemImage: "waveform")
+                                Label("Mac Settings", systemImage: "desktopcomputer")
                             }
                             .disabled(!state.isConfigured)
                             Button {
@@ -368,32 +368,52 @@ private struct RouteStatusBar: View {
     @Environment(AppState.self) private var state
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 10) {
-                Circle()
-                    .fill(dotColor)
-                    .frame(width: 9, height: 9)
-                Text(state.routeStatus.activeKind.rawValue)
-                    .font(.subheadline.weight(.semibold))
-                if let detail = latencyDetail {
-                    Text("· \(detail)")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
+        // The whole bar is a tap target for a forced route refresh — the
+        // toolbar's refresh arrow does the same but is far from the status
+        // it refreshes.
+        Button {
+            Task { await state.refreshRoute(force: true) }
+        } label: {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 10) {
+                    Circle()
+                        .fill(dotColor)
+                        .frame(width: 9, height: 9)
+                    Text(state.routeStatus.activeKind.rawValue)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.primary)
+                    if let detail = latencyDetail {
+                        Text("· \(detail)")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                    if state.isRefreshingRoute {
+                        ProgressView()
+                            .controlSize(.mini)
+                    }
+                    Spacer()
                 }
-                Spacer()
+                // Install state and server timing coexist — previously the
+                // installing line suppressed timings for its whole duration.
+                if let installing = state.activeModelInstallText {
+                    Text(installing)
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .lineLimit(1)
+                }
+                if let timing = state.latestServerTiming?.displayText {
+                    Text(timing)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
             }
-            if let installing = state.activeModelInstallText {
-                Text(installing)
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-                    .lineLimit(1)
-            } else if let timing = state.latestServerTiming?.displayText {
-                Text(timing)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .disabled(state.isRefreshingRoute || state.isBusy)
+        .accessibilityLabel("Bridge route: \(state.routeStatus.activeKind.rawValue)")
+        .accessibilityHint("Double tap to re-check the connection")
         .padding(.horizontal, 16)
     }
 
@@ -987,7 +1007,7 @@ private struct KeyboardSettingsView: View {
             } header: {
                 Text("Audio")
             } footer: {
-                Text("On-device Only keeps preview audio local. Cloud Fallback uses on-device when available and Apple servers otherwise. Preview punctuation follows Dictation Settings. Host audio session controls how long keyboard dictation stays ready.")
+                Text("On-device Only keeps preview audio local. Cloud Fallback uses on-device when available and Apple servers otherwise. Preview punctuation follows Mac Settings. Host audio session controls how long keyboard dictation stays ready.")
             }
         }
         .navigationTitle("Keyboard Settings")
@@ -1266,7 +1286,7 @@ private struct KeyboardGuideView: View {
                 GuideStepRow(
                     icon: "desktopcomputer",
                     title: "Pair Typeforme on Mac",
-                    detail: "Paste the pairing JSON from the Mac app, then refresh Dictation Settings so iOS has the current languages and default mode."
+                    detail: "Paste the pairing JSON from the Mac app, then refresh Mac Settings so iOS has the current languages and default mode."
                 )
                 GuideStepRow(
                     icon: "keyboard",
@@ -1619,7 +1639,7 @@ private struct MacSettingsView: View {
                 Section {
                     HStack {
                         ProgressView()
-                        Text("Loading dictation settings")
+                        Text("Loading Mac settings")
                     }
                 }
             }
@@ -1658,9 +1678,22 @@ private struct MacSettingsView: View {
                 }
             }
         }
-        .navigationTitle("Dictation Settings")
+        .navigationTitle("Mac Settings")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            // Decimal pads have no return key; without this the only way to
+            // dismiss the keyboard is tapping a blank spot in the form.
+            ToolbarItemGroup(placement: .keyboard) {
+                Spacer()
+                Button("Done") {
+                    UIApplication.shared.sendAction(
+                        #selector(UIResponder.resignFirstResponder),
+                        to: nil,
+                        from: nil,
+                        for: nil
+                    )
+                }
+            }
             ToolbarItem(placement: .cancellationAction) {
                 Button("Cancel") { attemptDismiss() }
                     .disabled(isSaving)
@@ -1684,14 +1717,14 @@ private struct MacSettingsView: View {
         }
         .interactiveDismissDisabled(hasUnsavedChanges)
         .confirmationDialog(
-            "Discard dictation settings changes?",
+            "Discard Mac settings changes?",
             isPresented: $showingDiscardConfirmation,
             titleVisibility: .visible
         ) {
             Button("Discard Changes", role: .destructive) { dismiss() }
             Button("Keep Editing", role: .cancel) { }
         } message: {
-            Text("You have unsaved dictation changes that won't be pushed to the Mac.")
+            Text("You have unsaved Mac settings changes that won't be pushed to the Mac.")
         }
         .task {
             await load(force: false)
