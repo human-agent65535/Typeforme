@@ -4462,11 +4462,15 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         voiceDragOutCancelArmed = armed
         keyboardHaptics.playSelectionChanged()
         if armed {
-            voiceTitleLabel.text = NSLocalizedString("Release to Cancel", comment: "Hold-to-talk slide-up cancel hint")
+            // The hint and the hold-mode voiceprint share topRow's center —
+            // the voiceprint must fully yield or the text is unreadable.
+            topRowVoicePrint.alpha = 0
+            voiceTitleLabel.text = NSLocalizedString("Release to Cancel", comment: "Hold-to-talk drag-out cancel hint")
+            voiceTitleLabel.textColor = .systemRed
             voiceTitleLabel.alpha = 1
             voiceButton.alpha = 0.45
-            topRowVoicePrint.alpha = 0.3
         } else {
+            // updateUI restores the voiceprint, title text and color.
             updateUI(animated: false)
         }
     }
