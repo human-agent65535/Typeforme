@@ -61,10 +61,10 @@ final class HUDWindowController {
         return base
     }()
 
-    init(coordinator: DictationCoordinator) {
+    init(coordinator: DictationCoordinator, onOpenSettings: @escaping () -> Void) {
         self.coordinator = coordinator
         self.panel = HUDPanel()
-        let hosting = NSHostingView(rootView: HUDView(coordinator: coordinator))
+        let hosting = NSHostingView(rootView: HUDView(coordinator: coordinator, onOpenSettings: onOpenSettings))
         hosting.autoresizingMask = [.width, .height]
         // Empty sizing options: we explicitly do NOT want SwiftUI's preferred
         // content size to feed back into the hosting view's

@@ -55,7 +55,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
 
-        hud = HUDWindowController(coordinator: coordinator)
+        hud = HUDWindowController(coordinator: coordinator, onOpenSettings: { [weak self] in
+            self?.openSettings()
+        })
         // The HUD is always on screen: collapsed to the idle pip when nothing
         // is happening, expanded while dictating.
         hud.show()

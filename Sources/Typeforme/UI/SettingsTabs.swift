@@ -996,9 +996,16 @@ struct DictationInputSettingsView: View {
     @AppStorage(AppSettings.Keys.maxRecordingDuration) private var maxDuration: Double = 30
     @AppStorage(AppSettings.Keys.holdModifier)         private var holdModifierRaw: String = HoldModifier.rightOption.rawValue
     @AppStorage(AppSettings.Keys.voiceLivePreview)     private var voiceLivePreview: Bool = true
+    @AppStorage(AppSettings.Keys.soundFeedback)        private var soundFeedback: Bool = true
 
     var body: some View {
         Form {
+            Section("Feedback") {
+                Toggle("Play sounds", isOn: $soundFeedback)
+                Text("Short system sounds when recording starts, stops, or fails — so you don't need to look at the HUD to know the mic is live.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
             Section("Live Transcript") {
                 Toggle("Show live transcript while speaking", isOn: $voiceLivePreview)
                 Text("Uses Apple's on-device speech recognizer in parallel with recording to render a live transcript in the HUD. The final inserted text always comes from your selected ASR + correction pipeline; the preview also goes to the corrector as a supplementary hypothesis to help disambiguate. On-device only — audio does not leave your Mac. iOS can use Cloud Fallback for unsupported languages; macOS preview stays local-only.")
@@ -3471,9 +3478,35 @@ struct DiagnosticsSettingsView: View {
     @AppStorage(AppSettings.Keys.diagnosticsDebugMode) private var debugMode = false
     @AppStorage(AppSettings.Keys.diagnosticsDebugCaptureLimit) private var debugCaptureLimit = 10
     @State private var debugCaptureCount = 0
+    @ObservedObject private var errorLog = DictationErrorLog.shared
 
     var body: some View {
         Form {
+            Section("Recent errors") {
+                if errorLog.entries.isEmpty {
+                    Text("No dictation errors this session.")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(errorLog.entries) { entry in
+                        HStack(alignment: .firstTextBaseline, spacing: 10) {
+                            Text(entry.at, style: .time)
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                            Text(entry.message)
+                                .font(.callout)
+                                .textSelection(.enabled)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    HStack {
+                        Text("The HUD error capsule auto-dismisses; the last \(errorLog.entries.count) error\(errorLog.entries.count == 1 ? "" : "s") stay here until quit.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Clear") { errorLog.clear() }
+                    }
+                }
+            }
             Section("Debug capture") {
                 Toggle("Debug mode", isOn: $debugMode)
                 Text("When enabled, Typeforme keeps the latest \(AppSettings.diagnosticsDebugCaptureLimit) captures: received audio, ASR transcript, and the selected correction request/result.")

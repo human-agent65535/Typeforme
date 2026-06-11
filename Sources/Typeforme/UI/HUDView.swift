@@ -10,7 +10,9 @@ import KeyboardShortcuts
 /// - inline preview text with readable correction mode chips
 struct HUDView: View {
     @ObservedObject var coordinator: DictationCoordinator
-    @State private var recordingStartedAt: Date?
+    /// Opens the Settings window — wired from AppDelegate so an error capsule
+    /// can hand the user a fix path instead of just evaporating.
+    let onOpenSettings: () -> Void
 
     private static let cornerRadius: CGFloat = 24
 
@@ -43,11 +45,6 @@ struct HUDView: View {
                 compactBody
             }
         }
-        .onChange(of: coordinator.state) { _, newState in
-            if newState == .recording {
-                recordingStartedAt = Date()
-            }
-        }
     }
 
     /// Idle: a small circular presence indicator. The panel itself shrinks to
@@ -71,24 +68,32 @@ struct HUDView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    /// Compact capsule for the brief terminal states: inserting / success /
+    /// error. Recording and processing always use the expanded panel.
     private var compactBody: some View {
         HStack(spacing: 12) {
             leadingArea
                 .help(statusText)
-            // Error keeps the text — users need to know what failed.
-            // Active in-flight states (recording / transcribing / correcting)
-            // surface the live Apple-Speech partial when it's non-empty so the
-            // user sees their words appearing as they speak. The mic dot or
-            // ProcessingIndicator on the left still conveys stage.
-            // Otherwise: color + icon + (timer) carry the state; tooltip on
-            // leading exposes the literal phrasing.
             if coordinator.state == .error {
+                // Error keeps the text — users need to know what failed —
+                // plus a direct path to Settings to fix it.
                 Text(coordinator.lastError ?? "Error")
                     .font(.system(size: 13, weight: .medium, design: .rounded))
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
                     .truncationMode(.middle)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                Button {
+                    onOpenSettings()
+                } label: {
+                    Image(systemName: "gearshape")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 24, height: 24)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Open Settings")
             } else if coordinator.state == .success, let warningText {
                 Text(warningText)
                     .font(.system(size: 13, weight: .semibold, design: .rounded))
@@ -96,7 +101,7 @@ struct HUDView: View {
                     .lineLimit(1)
                     .truncationMode(.tail)
                     .frame(maxWidth: .infinity, alignment: .leading)
-            } else if showsLivePartial {
+            } else if coordinator.state == .inserting, !coordinator.livePartialTranscript.isEmpty {
                 Text(coordinator.livePartialTranscript)
                     .font(.system(size: 13.5, weight: .medium, design: .rounded))
                     .foregroundStyle(.primary)
@@ -106,20 +111,9 @@ struct HUDView: View {
             } else {
                 Spacer(minLength: 0)
             }
-            trailingArea
         }
         .padding(.horizontal, 18)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    private var showsLivePartial: Bool {
-        guard !coordinator.livePartialTranscript.isEmpty else { return false }
-        switch coordinator.state {
-        case .recording, .transcribing, .correcting, .inserting:
-            return true
-        default:
-            return false
-        }
     }
 
     private var expandedPreviewBody: some View {
@@ -143,10 +137,7 @@ struct HUDView: View {
                     .foregroundStyle(.orange)
                     .lineLimit(1)
             }
-            VoicePreviewActionBar(
-                coordinator: coordinator,
-                disabled: voicePreviewActionsDisabled
-            )
+            VoicePreviewActionBar(coordinator: coordinator)
         }
         .padding(.horizontal, voicePreviewText.isEmpty ? 6 : 18)
         .padding(.top, voicePreviewText.isEmpty ? 6 : 14)
@@ -170,15 +161,6 @@ struct HUDView: View {
             }
         }
         return coordinator.lastCorrected.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private var voicePreviewActionsDisabled: Bool {
-        switch coordinator.state {
-        case .idle:
-            return false
-        case .recording, .transcribing, .correcting, .inserting, .success, .error:
-            return true
-        }
     }
 
     // MARK: - Surface
@@ -218,18 +200,12 @@ struct HUDView: View {
         isExpandedPreview && voicePreviewText.isEmpty
     }
 
-    // MARK: - Leading (icon / waveform / recording dot)
+    // MARK: - Leading (state icon for the compact capsule)
 
     @ViewBuilder
     private var leadingArea: some View {
         switch coordinator.state {
-        case .recording:
-            HStack(spacing: 8) {
-                RecordingDot()
-                WaveformView(level: coordinator.audioLevel, state: .recording)
-                    .frame(height: 30)
-            }
-        case .transcribing, .correcting, .inserting:
+        case .inserting:
             ProcessingIndicator(symbol: iconSymbol, tint: stateColor)
         default:
             Image(systemName: iconSymbol)
@@ -238,23 +214,6 @@ struct HUDView: View {
                 .foregroundStyle(stateColor == .clear ? Color.accentColor : stateColor)
                 .frame(width: 22, height: 22)
                 .transition(.scale.combined(with: .opacity))
-        }
-    }
-
-    // MARK: - Trailing (timer / nothing in compact body)
-    //
-    // Chips live in the expanded preview layout, not here. The compact body
-    // is for states without a preview to show (idle / recording / first-time
-    // transcribing / inserting / success / error).
-
-    @ViewBuilder
-    private var trailingArea: some View {
-        if coordinator.state == .recording, let startedAt = recordingStartedAt {
-            TimelineView(.periodic(from: startedAt, by: 1.0)) { context in
-                Text(elapsedString(from: startedAt, to: context.date))
-                    .font(.system(size: 12, weight: .medium, design: .rounded).monospacedDigit())
-                    .foregroundStyle(.secondary)
-            }
         }
     }
 
@@ -329,10 +288,6 @@ struct HUDView: View {
         }
     }
 
-    private func elapsedString(from start: Date, to now: Date) -> String {
-        let total = max(0, Int(now.timeIntervalSince(start)))
-        return String(format: "%d:%02d", total / 60, total % 60)
-    }
 }
 
 // MARK: - Recording dot
@@ -472,30 +427,25 @@ private struct ChipStyle: ViewModifier {
 
 // MARK: - Voice Preview action bar
 
+/// The HUD's persistent control strip. Idle shows Wand + style chips; while
+/// a dictation is in flight the strip morphs into live recording feedback
+/// (pulsing dot, waveform, elapsed/limit timer) or a processing label, with
+/// ✕ staying live as Cancel the whole time.
 private struct VoicePreviewActionBar: View {
     @ObservedObject var coordinator: DictationCoordinator
-    let disabled: Bool
 
     var body: some View {
         HStack(spacing: 4) {
-            VoicePreviewBarButton(
-                title: "Wand",
-                systemImage: "wand.and.stars"
-            ) {
-                Task { await coordinator.togglePreviewCommand() }
+            switch coordinator.state {
+            case .recording:
+                recordingCluster
+            case .transcribing, .correcting:
+                processingCluster
+            default:
+                idleCluster
             }
-            .disabled(disabled)
 
-            Divider()
-                .frame(height: 18)
-
-            Image(systemName: "paintbrush.pointed")
-                .font(.system(size: 10, weight: .bold))
-                .foregroundStyle(.secondary)
-                .frame(width: 16, height: 26)
-                .help("Style")
-
-            ModeChipRow(coordinator: coordinator, disabled: disabled)
+            Spacer(minLength: 4)
 
             Divider()
                 .frame(height: 18)
@@ -513,10 +463,11 @@ private struct VoicePreviewActionBar: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
-            .help("Collapse (Esc)")
+            .foregroundStyle(coordinator.state == .idle ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.red))
+            .help(coordinator.state == .idle ? "Collapse (Esc)" : "Cancel (Esc)")
         }
         .padding(5)
+        .frame(maxWidth: .infinity)
         .background(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .fill(.ultraThinMaterial)
@@ -526,8 +477,81 @@ private struct VoicePreviewActionBar: View {
                 .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 0.5)
         )
         .shadow(color: Color.black.opacity(0.14), radius: 14, x: 0, y: 8)
-        .opacity(disabled ? 0.62 : 1.0)
-        .animation(.easeInOut(duration: 0.16), value: disabled)
+    }
+
+    private var idleCluster: some View {
+        HStack(spacing: 4) {
+            VoicePreviewBarButton(
+                title: "Wand",
+                systemImage: "wand.and.stars"
+            ) {
+                Task { await coordinator.togglePreviewCommand() }
+            }
+
+            Divider()
+                .frame(height: 18)
+
+            Image(systemName: "paintbrush.pointed")
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(.secondary)
+                .frame(width: 16, height: 26)
+                .help("Style")
+
+            ModeChipRow(coordinator: coordinator, disabled: false)
+        }
+    }
+
+    private var recordingCluster: some View {
+        HStack(spacing: 10) {
+            RecordingDot()
+                .padding(.leading, 8)
+            WaveformView(level: coordinator.audioLevel, state: .recording)
+                .frame(height: 24)
+            RecordingElapsedLabel(
+                startedAt: coordinator.recordingStartedAt ?? Date(),
+                maxDuration: AppSettings.maxRecordingDuration
+            )
+        }
+    }
+
+    private var processingCluster: some View {
+        HStack(spacing: 8) {
+            ProcessingIndicator(
+                symbol: coordinator.state == .correcting ? "sparkles" : "waveform",
+                tint: coordinator.state == .correcting ? .purple : .blue
+            )
+            .padding(.leading, 4)
+            Text(coordinator.state == .correcting
+                 ? NSLocalizedString("Refining…", comment: "HUD status")
+                 : NSLocalizedString("Transcribing…", comment: "HUD status"))
+                .font(.system(size: 11, weight: .semibold, design: .rounded))
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+
+/// Elapsed recording time; switches to "elapsed / limit" in orange when the
+/// auto-stop limit is a few seconds away so long thoughts aren't cut off
+/// without warning.
+private struct RecordingElapsedLabel: View {
+    let startedAt: Date
+    let maxDuration: TimeInterval
+
+    var body: some View {
+        TimelineView(.periodic(from: startedAt, by: 1.0)) { context in
+            let elapsed = max(0, context.date.timeIntervalSince(startedAt))
+            let nearLimit = maxDuration > 0 && maxDuration - elapsed <= 5.5
+            Text(nearLimit
+                 ? "\(Self.format(elapsed)) / \(Self.format(maxDuration))"
+                 : Self.format(elapsed))
+                .font(.system(size: 12, weight: .medium, design: .rounded).monospacedDigit())
+                .foregroundStyle(nearLimit ? AnyShapeStyle(Color.orange) : AnyShapeStyle(.secondary))
+        }
+    }
+
+    private static func format(_ seconds: TimeInterval) -> String {
+        let total = max(0, Int(seconds.rounded(.down)))
+        return String(format: "%d:%02d", total / 60, total % 60)
     }
 }
 

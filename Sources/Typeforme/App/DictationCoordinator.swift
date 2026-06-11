@@ -43,7 +43,9 @@ final class DictationCoordinator: ObservableObject {
     private var activeDictationContextAfter = ""
     private var startInProgress = false
     private var stopAfterStart = false
-    private var recordingStartedAt: Date?
+    /// Published so the HUD action bar can render the elapsed / remaining
+    /// recording timer from the same clock the auto-stop uses.
+    @Published private(set) var recordingStartedAt: Date?
     private var liveSpeechRecognizer: SFSpeechRecognizer?
     private var liveSpeechRequest: SFSpeechAudioBufferRecognitionRequest?
     private var liveSpeechTask: SFSpeechRecognitionTask?
@@ -51,7 +53,7 @@ final class DictationCoordinator: ObservableObject {
     /// LLM gets the same string the user just saw.
     private var liveSnapshotAtCorrection: String = ""
 
-    private static let errorResetDelay: TimeInterval = 4.0
+    private static let errorResetDelay: TimeInterval = 8.0
     private static let degradedSuccessResetDelay: TimeInterval = 1.8
     private static let minimumToggleStopInterval: TimeInterval = 0.6
     private static let recordingTailBufferNanoseconds: UInt64 = 200_000_000
@@ -473,6 +475,11 @@ final class DictationCoordinator: ObservableObject {
     func transition(to next: DictationState) {
         guard state != next else { return }
         Log.coordinator.debug("state: \(self.state.rawValue) → \(next.rawValue)")
+        if next == .recording {
+            DictationSoundPlayer.playStart()
+        } else if state == .recording, next == .transcribing {
+            DictationSoundPlayer.playStop()
+        }
         recordingStartedAt = next == .recording ? Date() : nil
         // Live preview lives only across the active in-flight states
         // (recording/transcribing/correcting/inserting). Any transition out of
@@ -551,6 +558,8 @@ final class DictationCoordinator: ObservableObject {
         lastError = message
         lastWarning = nil
         Log.coordinator.error("\(message, privacy: .public)")
+        DictationErrorLog.shared.record(message)
+        DictationSoundPlayer.playError()
         state = .error
     }
 
@@ -582,6 +591,9 @@ final class DictationCoordinator: ObservableObject {
     /// Cancels any active phase, tears down recording if needed, cancels
     /// pending timers, and returns to idle without inserting text.
     func cancelDictation() async {
+        if state == .recording {
+            DictationSoundPlayer.playStop()
+        }
         autoStopTask?.cancel(); autoStopTask = nil
         resetTask?.cancel();     resetTask = nil
         await activeCancelToken?.cancel()

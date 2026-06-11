@@ -12,6 +12,7 @@ enum AppSettings {
         static let maxRecordingDuration = "recording.maxDuration"   // seconds
         static let holdModifier         = "recording.holdModifier"  // HoldModifier raw
         static let voiceLivePreview     = "recording.voiceLivePreview" // Bool — show Apple Speech preview while recording
+        static let soundFeedback        = "recording.soundFeedback" // Bool — start/stop/error cues
         static let launchAtLogin        = "app.launchAtLogin"
 
         // ASR
@@ -106,6 +107,7 @@ enum AppSettings {
             Keys.maxRecordingDuration: 30.0,
             Keys.holdModifier:         HoldModifier.rightOption.rawValue,
             Keys.voiceLivePreview:     true,
+            Keys.soundFeedback:        true,
             Keys.launchAtLogin:        true,
 
             Keys.asrProvider:       "qwen3-asr-llama",
@@ -283,6 +285,7 @@ enum AppSettings {
 
     static var maxRecordingDuration: TimeInterval     { ud.double(forKey: Keys.maxRecordingDuration) }
     static var launchAtLogin: Bool                    { ud.bool(forKey: Keys.launchAtLogin) }
+    static var soundFeedback: Bool                    { ud.bool(forKey: Keys.soundFeedback) }
     /// When `true`, the recorder feeds PCM into Apple Speech on-device so the
     /// HUD can show a live transcript while the user is still speaking. The
     /// final text always comes from the Mac ASR + correction pipeline; the
