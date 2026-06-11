@@ -327,9 +327,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private var lastTextRecordingButtonsSignature = ""
     private var hasPresentedInitialFrame = false
     private var isVoicePressActive = false
-    private var voiceSlideCancelArmed = false
-    private var voicePressTrackingStartPoint: CGPoint?
+    private var voiceDragOutCancelArmed = false
     private var voiceUndoShowsCancel = false
+    private var textUndoShowsCancel = false
     private var keyboardRecordingStartedAt: TimeInterval = 0
     private var recordingElapsedTimer: Timer?
     /// Hold-mode "release-to-cancel" zone: set when the user drags the
@@ -369,11 +369,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private var pendingTextTouchCorrection: PendingTextTouchCorrection?
     private var deferredStartupWorkItem: DispatchWorkItem?
     private var keyboardDarwinObservers: [KeyboardDarwinNotificationObserver] = []
-    /// WeChat-style hold-to-talk cancel: slide up past the arm distance to
-    /// show "Release to Cancel"; slide back below the smaller distance to
-    /// disarm. Hysteresis keeps the boundary from flickering.
-    private static let voiceSlideCancelArmDistance: CGFloat = 70
-    private static let voiceSlideCancelDisarmDistance: CGFloat = 50
+    /// Hold-to-talk cancel: dragging OUT past the control's frame expanded
+    /// by the arm inset shows "Release to Cancel"; dragging back inside the
+    /// smaller expansion disarms. Hysteresis keeps the boundary calm.
+    private static let voiceDragOutCancelArmInset: CGFloat = 36
+    private static let voiceDragOutCancelDisarmInset: CGFloat = 16
     private let minimumHoldRecordingDuration: TimeInterval = 0.55
     /// Hold-mode releases shorter than this are treated as accidental brushes
     /// and cancel the in-flight start. iOS system mic accepts very short taps,
@@ -444,6 +444,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     /// the voiceprint's location and surfaces the bridge `status.message`
     /// (Audio received → Transcribing → Refining → …) plus terminal errors.
     private let textToolbarStatusLabel = UILabel()
+    /// Elapsed readout beside the text-toolbar voiceprint while recording.
+    private let textToolbarElapsedLabel = UILabel()
     /// Smoothed audioLevel driving pulse-ring brightness — louder voice =
     /// brighter rings, visible at the orb's edges even when a finger covers
     /// the rest of the orb.
@@ -1691,8 +1693,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         topRowVoicePrint.isActive = false
         textToolbarVoicePrint.isActive = false
         stopPulseRings()
-        voiceSlideCancelArmed = false
-        voicePressTrackingStartPoint = nil
+        voiceDragOutCancelArmed = false
         recordingElapsedTimer?.invalidate()
         recordingElapsedTimer = nil
         // Snap the popover closed without animation so a future appearance
@@ -2471,7 +2472,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         voiceButton.accessibilityTraits = .button
         voiceButton.isExclusiveTouch = true
         voiceButton.addTarget(self, action: #selector(voicePressDown), for: .touchDown)
-        attachSlideCancelTracker(voiceButton)
+        attachDragOutCancelTracker(voiceButton)
         voiceButton.addTarget(self, action: #selector(voicePressUp), for: .touchUpInside)
         // Hold mode: release outside the orb still ends the dictation (no
         // drag-out cancel — recording can only be ended, not aborted).
@@ -2949,7 +2950,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         commandButton.widthAnchor.constraint(equalToConstant: 48).isActive = true
         commandButton.accessibilityLabel = NSLocalizedString("Command selected text", comment: "Accessibility label for command/edit-selection button")
         commandButton.addTarget(self, action: #selector(commandPressDown), for: [.touchDown, .touchDragEnter])
-        attachSlideCancelTracker(commandButton)
+        attachDragOutCancelTracker(commandButton)
         commandButton.addTarget(self, action: #selector(commandPressUp), for: .touchUpInside)
         commandButton.addTarget(self, action: #selector(commandPressCancelled), for: [.touchUpOutside, .touchCancel, .touchDragExit])
 
@@ -3228,10 +3229,19 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         textToolbarStatusLabel.minimumScaleFactor = 0.7
         textToolbarStatusLabel.alpha = 0
         textToolbar.addSubview(textToolbarStatusLabel)
+
+        textToolbarElapsedLabel.translatesAutoresizingMaskIntoConstraints = false
+        textToolbarElapsedLabel.isUserInteractionEnabled = false
+        textToolbarElapsedLabel.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
+        textToolbarElapsedLabel.textColor = .secondaryLabel
+        textToolbarElapsedLabel.alpha = 0
+        textToolbar.addSubview(textToolbarElapsedLabel)
         NSLayoutConstraint.activate([
             textToolbarStatusLabel.leadingAnchor.constraint(equalTo: textToolbar.leadingAnchor, constant: 12),
             textToolbarStatusLabel.trailingAnchor.constraint(equalTo: textToolbar.trailingAnchor, constant: -12),
             textToolbarStatusLabel.centerYAnchor.constraint(equalTo: textToolbar.centerYAnchor),
+            textToolbarElapsedLabel.leadingAnchor.constraint(equalTo: textToolbarVoicePrint.trailingAnchor, constant: 10),
+            textToolbarElapsedLabel.centerYAnchor.constraint(equalTo: textToolbar.centerYAnchor),
         ])
 
         textKeyboardContainer.addArrangedSubview(keyRowsStack)
@@ -4090,8 +4100,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 // so the elapsed text needs its own 1Hz tick.
                 let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
                     guard let self else { return }
-                    if !self.voiceSlideCancelArmed {
+                    if !self.voiceDragOutCancelArmed {
                         self.statusLabel.text = self.statusText
+                    }
+                    if self.textToolbarElapsedLabel.alpha > 0 {
+                        self.textToolbarElapsedLabel.text = Self.elapsedOnlyText(startedAt: self.keyboardRecordingStartedAt)
                     }
                 }
                 RunLoop.main.add(timer, forMode: .common)
@@ -4142,7 +4155,20 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             textHostSettingsButton,
         ]
         let occupied = recording || sending
-        icons.forEach { $0.alpha = occupied ? 0 : 1 }
+        for icon in icons {
+            // During recording the undo slot is the ✕ cancel affordance —
+            // it must survive the overlay that hides the other icons.
+            if recording, icon === textUndoButton { continue }
+            icon.alpha = occupied ? 0 : 1
+        }
+        if recording {
+            textUndoButton.isHidden = false
+            textUndoButton.alpha = 1
+        }
+        textToolbarElapsedLabel.alpha = recording ? 1 : 0
+        if recording {
+            textToolbarElapsedLabel.text = Self.elapsedOnlyText(startedAt: keyboardRecordingStartedAt)
+        }
         candidateScrollView.alpha = occupied ? 0 : 1
     }
 
@@ -4388,43 +4414,52 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     /// Continuous location tracking alongside the button's target-actions
     /// (cancelsTouchesInView=false, minimumPressDuration=0 — observe-only).
-    /// Drives the hold-mode slide-up-to-cancel gesture.
-    private func attachSlideCancelTracker(_ control: UIControl) {
-        let tracker = UILongPressGestureRecognizer(target: self, action: #selector(handleSlideCancelTrack(_:)))
+    /// Drives the hold-mode drag-out-to-cancel gesture.
+    private func attachDragOutCancelTracker(_ control: UIControl) {
+        let tracker = UILongPressGestureRecognizer(target: self, action: #selector(handleDragOutCancelTrack(_:)))
         tracker.minimumPressDuration = 0
         tracker.cancelsTouchesInView = false
         tracker.delegate = self
         control.addGestureRecognizer(tracker)
     }
 
-    @objc private func handleSlideCancelTrack(_ recognizer: UILongPressGestureRecognizer) {
+    @objc private func handleDragOutCancelTrack(_ recognizer: UILongPressGestureRecognizer) {
         switch recognizer.state {
-        case .began:
-            voicePressTrackingStartPoint = recognizer.location(in: view)
         case .changed:
             guard inputMode == .hold,
                   isVoicePressActive || isCommandPressActive,
-                  let start = voicePressTrackingStartPoint
+                  let control = recognizer.view as? UIControl
             else { return }
-            let rise = start.y - recognizer.location(in: view).y
-            if voiceSlideCancelArmed {
-                if rise < Self.voiceSlideCancelDisarmDistance {
-                    setVoiceSlideCancelArmed(false)
+            let point = recognizer.location(in: view)
+            let frame = control.convert(control.bounds, to: view)
+            if voiceDragOutCancelArmed {
+                let disarmZone = frame.insetBy(
+                    dx: -Self.voiceDragOutCancelDisarmInset,
+                    dy: -Self.voiceDragOutCancelDisarmInset
+                )
+                if disarmZone.contains(point) {
+                    setVoiceDragOutCancelArmed(false)
                 }
-            } else if rise > Self.voiceSlideCancelArmDistance {
-                setVoiceSlideCancelArmed(true)
+            } else {
+                let armZone = frame.insetBy(
+                    dx: -Self.voiceDragOutCancelArmInset,
+                    dy: -Self.voiceDragOutCancelArmInset
+                )
+                if !armZone.contains(point) {
+                    setVoiceDragOutCancelArmed(true)
+                }
             }
         default:
             // Gesture recognizers receive the touch before the control's
             // target-actions fire, so the armed flag must survive into
             // endDictationPress/endCommandPress — they consume and reset it.
-            voicePressTrackingStartPoint = nil
+            break
         }
     }
 
-    private func setVoiceSlideCancelArmed(_ armed: Bool) {
-        guard voiceSlideCancelArmed != armed else { return }
-        voiceSlideCancelArmed = armed
+    private func setVoiceDragOutCancelArmed(_ armed: Bool) {
+        guard voiceDragOutCancelArmed != armed else { return }
+        voiceDragOutCancelArmed = armed
         keyboardHaptics.playSelectionChanged()
         if armed {
             voiceTitleLabel.text = NSLocalizedString("Release to Cancel", comment: "Hold-to-talk slide-up cancel hint")
@@ -4641,8 +4676,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private func endDictationPress() {
         guard isVoicePressActive else { return }
         guard hasFullAccess else { return }
-        if voiceSlideCancelArmed {
-            voiceSlideCancelArmed = false
+        if voiceDragOutCancelArmed {
+            voiceDragOutCancelArmed = false
             isVoicePressActive = false
             cancelActiveHoldRecording()
             updateUI(animated: false)
@@ -4726,8 +4761,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private func endCommandPress() {
         guard isCommandPressActive else { return }
         guard hasFullAccess else { return }
-        if voiceSlideCancelArmed {
-            voiceSlideCancelArmed = false
+        if voiceDragOutCancelArmed {
+            voiceDragOutCancelArmed = false
             isCommandPressActive = false
             cancelActiveHoldRecording()
             updateUI(animated: false)
@@ -5669,9 +5704,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         if canUndo {
             textUndoButton.isHidden = false
         }
-        // Recording morphs the voice-mode undo slot into ✕ cancel — the only
-        // way to abandon a tap-mode recording without sending it.
-        let showsCancel = currentBridgeStatus?.state == .recording
+        // Recording morphs the undo slots into ✕ cancel — but only where no
+        // held finger exists to drag out with: voice TAP mode and the text
+        // keyboard (whose mic/wand are tap-toggles). Hold mode cancels by
+        // dragging off the orb, so the ✕ would be dead weight there.
+        let isRecordingNow = currentBridgeStatus?.state == .recording
+        let showsCancel = isRecordingNow && inputMode == .tap
         if showsCancel != voiceUndoShowsCancel {
             voiceUndoShowsCancel = showsCancel
             configureCapsuleButton(
@@ -5691,8 +5729,25 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             voiceUndoButton.isEnabled = canUndo
             voiceUndoButton.alpha = canUndo ? 1 : 0.45
         }
-        textUndoButton.isEnabled = canUndo
-        textUndoButton.alpha = isBlocked ? 0 : (canUndo ? 1 : 0.35)
+        let textShowsCancel = isRecordingNow && keyboardFocus == .text
+        if textShowsCancel != textUndoShowsCancel {
+            textUndoShowsCancel = textShowsCancel
+            configureToolbarIconButton(textUndoButton, image: textShowsCancel ? "xmark" : "arrow.uturn.backward")
+            if textShowsCancel {
+                textUndoButton.configuration?.baseForegroundColor = .systemRed
+            }
+            textUndoButton.accessibilityLabel = textShowsCancel
+                ? NSLocalizedString("Cancel dictation", comment: "Accessibility label for cancelling the active recording")
+                : NSLocalizedString("Undo restyle", comment: "Accessibility label for undoing the latest restyle")
+        }
+        if textShowsCancel {
+            textUndoButton.isHidden = false
+            textUndoButton.isEnabled = true
+            textUndoButton.alpha = 1
+        } else {
+            textUndoButton.isEnabled = canUndo
+            textUndoButton.alpha = isBlocked ? 0 : (canUndo ? 1 : 0.35)
+        }
     }
 
     private func clearRestyleUndoStateForManualEdit() {
@@ -8761,9 +8816,14 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     /// legible instead of a surprise.
     private static func recordingStatusText(startedAt: TimeInterval) -> String {
         let base = NSLocalizedString("Recording", comment: "Status active recording")
-        guard startedAt > 0 else { return base }
+        guard let elapsed = elapsedOnlyText(startedAt: startedAt) else { return base }
+        return "\(base) \(elapsed)"
+    }
+
+    private static func elapsedOnlyText(startedAt: TimeInterval) -> String? {
+        guard startedAt > 0 else { return nil }
         let total = max(0, Int(Date().timeIntervalSince1970 - startedAt))
-        return String(format: "%@ %d:%02d", base, total / 60, total % 60)
+        return String(format: "%d:%02d", total / 60, total % 60)
     }
 
     private var readinessStatusText: String {
