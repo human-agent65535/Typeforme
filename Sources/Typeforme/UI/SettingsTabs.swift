@@ -1169,6 +1169,7 @@ struct ASRSettingsView: View {
     @AppStorage(AppSettings.Keys.asrQwenLlamaModelID) private var qwenModelID: String = QwenASRModelCatalog.defaultID
     @AppStorage(AppSettings.Keys.asrQwenLlamaMaxTokens) private var qwenMaxTokens: Int = 2048
     @State private var showAllLanguages = false
+    @State private var showAdvanced = false
 
     var body: some View {
         Form {
@@ -1187,15 +1188,6 @@ struct ASRSettingsView: View {
                         }
                     }
                     .pickerStyle(.menu)
-                    IntegerSettingField(
-                        title: "Timeout",
-                        value: Binding(
-                            get: { Int(nvidiaTimeoutSec) },
-                            set: { nvidiaTimeoutSec = Double($0) }
-                        ),
-                        range: 10...300,
-                        suffix: "s"
-                    )
                     Text(selectedNvidiaModel.note)
                         .font(.footnote)
                         .foregroundStyle(.secondary)
@@ -1208,34 +1200,7 @@ struct ASRSettingsView: View {
                         }
                     }
                     .pickerStyle(.menu)
-                    if isDualProvider {
-                        IntegerSettingField(
-                            title: "Timeout",
-                            value: crossCheckTimeoutBinding,
-                            range: 10...300,
-                            suffix: "s"
-                        )
-                    } else {
-                        IntegerSettingField(
-                            title: "Timeout",
-                            value: Binding(
-                                get: { Int(qwenTimeoutSec) },
-                                set: { qwenTimeoutSec = Double($0) }
-                            ),
-                            range: 10...300,
-                            suffix: "s"
-                        )
-                    }
-                    IntegerSettingField(
-                        title: "Max transcript tokens",
-                        value: $qwenMaxTokens,
-                        range: 128...8192,
-                        suffix: "tokens"
-                    )
                     Text(selectedQwenModel.note)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                    Text("This caps only Qwen-ASR transcript output. It is not the refine model token limit.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -1244,6 +1209,17 @@ struct ASRSettingsView: View {
                     Text("Runs Qwen and Nemotron in parallel. If the cross-check transcript is unavailable, Typeforme continues with the primary transcript and shows a warning.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
+                }
+
+                // Re-check every couple of seconds while the page is open so
+                // the warning clears as soon as the download below finishes —
+                // the download rows are separate views and can't poke us.
+                TimelineView(.periodic(from: .now, by: 2)) { _ in
+                    if !selectedEngineInstalled {
+                        Label("Selected model is not installed — download it below before dictating.", systemImage: "exclamationmark.triangle.fill")
+                            .font(.footnote)
+                            .foregroundStyle(.orange)
+                    }
                 }
             }
             Section("Languages") {
@@ -1293,6 +1269,68 @@ struct ASRSettingsView: View {
                 Section("NVIDIA Nemotron model") {
                     NvidiaNemotronASRModelRow(spec: selectedNvidiaModel)
                         .id(selectedNvidiaModel.id)
+                }
+            }
+            Section("Advanced") {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.16)) {
+                        showAdvanced.toggle()
+                    }
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: showAdvanced ? "chevron.down" : "chevron.right")
+                            .font(.system(size: 11, weight: .semibold))
+                            .frame(width: 16)
+                            .foregroundStyle(.secondary)
+                        Text("Timeouts and limits")
+                        Spacer()
+                    }
+                    .padding(.vertical, 8)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+
+                if showAdvanced {
+                    if isNvidiaProvider {
+                        IntegerSettingField(
+                            title: "Timeout",
+                            value: Binding(
+                                get: { Int(nvidiaTimeoutSec) },
+                                set: { nvidiaTimeoutSec = Double($0) }
+                            ),
+                            range: 10...300,
+                            suffix: "s"
+                        )
+                    }
+                    if usesQwenProvider {
+                        if isDualProvider {
+                            IntegerSettingField(
+                                title: "Timeout",
+                                value: crossCheckTimeoutBinding,
+                                range: 10...300,
+                                suffix: "s"
+                            )
+                        } else {
+                            IntegerSettingField(
+                                title: "Timeout",
+                                value: Binding(
+                                    get: { Int(qwenTimeoutSec) },
+                                    set: { qwenTimeoutSec = Double($0) }
+                                ),
+                                range: 10...300,
+                                suffix: "s"
+                            )
+                        }
+                        IntegerSettingField(
+                            title: "Max transcript tokens",
+                            value: $qwenMaxTokens,
+                            range: 128...8192,
+                            suffix: "tokens"
+                        )
+                        Text("This caps only Qwen-ASR transcript output. It is not the refine model token limit.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
         }
@@ -1347,6 +1385,40 @@ struct ASRSettingsView: View {
 
     private var selectedNvidiaModel: NvidiaNemotronASRModelSpec {
         NvidiaNemotronASRModelCatalog.spec(for: nvidiaModelID)
+    }
+
+    /// Mirrors the install checks the download rows below use, so the Engine
+    /// picker can warn about a missing model without scrolling.
+    private var selectedEngineInstalled: Bool {
+        if usesQwenProvider, !qwenModelInstalled { return false }
+        if usesNvidiaProvider, !nvidiaModelReady { return false }
+        return true
+    }
+
+    private var qwenModelInstalled: Bool {
+        let spec = selectedQwenModel
+        return FileManager.default.fileExists(atPath: effectivePath(forKey: spec.modelPathKey, fallback: spec.defaultModelPath))
+            && FileManager.default.fileExists(atPath: effectivePath(forKey: spec.mmprojPathKey, fallback: spec.defaultMMProjPath))
+    }
+
+    private var nvidiaModelReady: Bool {
+        let spec = selectedNvidiaModel
+        let status = NvidiaNemotronASRService.runtimeStatus(
+            runnerURL: AppPaths.bundledNvidiaNemotronRunner,
+            modelFiles: spec.files.map { file in
+                NvidiaNemotronASRModelFileStatus(
+                    spec: file,
+                    url: URL(fileURLWithPath: effectivePath(forKey: file.pathKey, fallback: file.defaultPath))
+                )
+            }
+        )
+        return status.isReady
+    }
+
+    private func effectivePath(forKey key: String, fallback: String) -> String {
+        let value = UserDefaults.standard.string(forKey: key)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return value.isEmpty ? fallback : value
     }
 
     private var selectedLanguageSummary: String {
@@ -2060,35 +2132,6 @@ struct CorrectionSettingsView: View {
                     }
                 }
                 .pickerStyle(.menu)
-                Picker("Mode", selection: $correctionModeRaw) {
-                    ForEach(CorrectionMode.allCases, id: \.rawValue) { mode in
-                        Text(mode.displayName).tag(mode.rawValue)
-                    }
-                }
-                .pickerStyle(.menu)
-                Text(correctionModeDescription)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-
-                Picker("Numbers", selection: $numberOutputPreferenceRaw) {
-                    ForEach(NumberOutputPreference.allCases) { preference in
-                        Text(preference.displayName).tag(preference.rawValue)
-                    }
-                }
-                .pickerStyle(.menu)
-                Text(numberOutputPreferenceDescription)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-
-                Picker("Punctuation", selection: $punctuationPreferenceRaw) {
-                    ForEach(PunctuationOutputPreference.allCases) { preference in
-                        Text(preference.displayName).tag(preference.rawValue)
-                    }
-                }
-                .pickerStyle(.menu)
-                Text(punctuationPreferenceDescription)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
 
                 if let modelLoadStatus {
                     HStack(spacing: 6) {
@@ -2151,6 +2194,37 @@ struct CorrectionSettingsView: View {
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
+            }
+            Section("Output") {
+                Picker("Mode", selection: $correctionModeRaw) {
+                    ForEach(CorrectionMode.allCases, id: \.rawValue) { mode in
+                        Text(mode.displayName).tag(mode.rawValue)
+                    }
+                }
+                .pickerStyle(.menu)
+                Text(correctionModeDescription)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+
+                Picker("Numbers", selection: $numberOutputPreferenceRaw) {
+                    ForEach(NumberOutputPreference.allCases) { preference in
+                        Text(preference.displayName).tag(preference.rawValue)
+                    }
+                }
+                .pickerStyle(.menu)
+                Text(numberOutputPreferenceDescription)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+
+                Picker("Punctuation", selection: $punctuationPreferenceRaw) {
+                    ForEach(PunctuationOutputPreference.allCases) { preference in
+                        Text(preference.displayName).tag(preference.rawValue)
+                    }
+                }
+                .pickerStyle(.menu)
+                Text(punctuationPreferenceDescription)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
             }
             Section("Local LLM models (Qwen3.5 via llama.cpp)") {
                 ForEach(localLlamaModels) { spec in
@@ -2576,6 +2650,10 @@ struct PromptsSettingsView: View {
     @State private var modePromptText: String = ""
     @State private var originalModePromptText: String = ""
     @State private var modePromptHasOverride: Bool = false
+    /// Unsaved per-mode edits, keyed by mode. Switching the mode picker
+    /// stashes the current editor text here and restores it on the way back,
+    /// so flipping between modes can't silently discard work.
+    @State private var modeDrafts: [CorrectionMode: String] = [:]
 
     var body: some View {
         ScrollView {
@@ -2583,6 +2661,7 @@ struct PromptsSettingsView: View {
                 promptHeader(
                     title: "System prompt",
                     hasOverride: systemHasOverride,
+                    isDirty: systemIsDirty,
                     reset: resetSystemOverride
                 )
 
@@ -2594,8 +2673,7 @@ struct PromptsSettingsView: View {
                         .foregroundStyle(.secondary)
                     Spacer()
                     Button("Save") { saveSystemOverride() }
-                        .keyboardShortcut("s")
-                        .disabled(systemPromptText == originalSystemPromptText || trimmed(systemPromptText).isEmpty)
+                        .disabled(!systemIsDirty || trimmed(systemPromptText).isEmpty)
                 }
 
                 Divider()
@@ -2610,6 +2688,7 @@ struct PromptsSettingsView: View {
                 promptHeader(
                     title: "Mode prompt",
                     hasOverride: modePromptHasOverride,
+                    isDirty: modeIsDirty,
                     reset: resetModeOverride
                 )
 
@@ -2621,7 +2700,7 @@ struct PromptsSettingsView: View {
                         .foregroundStyle(.secondary)
                     Spacer()
                     Button("Save") { saveModeOverride() }
-                        .disabled(modePromptText == originalModePromptText || trimmed(modePromptText).isEmpty)
+                        .disabled(!modeIsDirty || trimmed(modePromptText).isEmpty)
                 }
 
                 Divider()
@@ -2651,16 +2730,43 @@ struct PromptsSettingsView: View {
             loadSystemPrompt()
             loadModePrompt()
         }
-        .onChange(of: correctionMode) { _, _ in loadModePrompt() }
+        .onChange(of: correctionMode) { oldMode, _ in
+            stashModeDraft(for: oldMode)
+            loadModePrompt()
+        }
+        // ⌘S saves whichever prompt editors have unsaved changes; per-editor
+        // shortcuts would collide on the same key.
+        .background(
+            Button("") {
+                if systemIsDirty, !trimmed(systemPromptText).isEmpty { saveSystemOverride() }
+                if modeIsDirty, !trimmed(modePromptText).isEmpty { saveModeOverride() }
+            }
+            .keyboardShortcut("s")
+            .opacity(0)
+            .frame(width: 0, height: 0)
+            .accessibilityHidden(true)
+        )
     }
 
-    private func promptHeader(title: String, hasOverride: Bool, reset: @escaping () -> Void) -> some View {
+    private var systemIsDirty: Bool {
+        systemPromptText != originalSystemPromptText
+    }
+
+    private var modeIsDirty: Bool {
+        modePromptText != originalModePromptText
+    }
+
+    private func promptHeader(title: String, hasOverride: Bool, isDirty: Bool, reset: @escaping () -> Void) -> some View {
         HStack(spacing: 6) {
             Image(systemName: hasOverride ? "pencil.circle.fill" : "doc.circle")
                 .foregroundStyle(hasOverride ? Color.accentColor : Color.secondary)
             Text(title)
             Text(hasOverride ? "Custom override" : "Built-in default")
                 .foregroundStyle(.secondary)
+            if isDirty {
+                Text("• Unsaved")
+                    .foregroundStyle(.orange)
+            }
             Spacer()
             if hasOverride {
                 Button("Reset to default") { reset() }
@@ -2698,13 +2804,22 @@ struct PromptsSettingsView: View {
     private func loadModePrompt() {
         try? AppPaths.ensureDirectories()
         if let override = PromptOverrideStore.readModePrompt(for: correctionMode) {
-            modePromptText = override
+            originalModePromptText = override
             modePromptHasOverride = true
         } else {
-            modePromptText = BuiltInPrompts.modePrompt(correctionMode)
+            originalModePromptText = BuiltInPrompts.modePrompt(correctionMode)
             modePromptHasOverride = false
         }
-        originalModePromptText = modePromptText
+        // Restore an unsaved draft for this mode if one was stashed.
+        modePromptText = modeDrafts[correctionMode] ?? originalModePromptText
+    }
+
+    private func stashModeDraft(for mode: CorrectionMode) {
+        if modePromptText != originalModePromptText {
+            modeDrafts[mode] = modePromptText
+        } else {
+            modeDrafts[mode] = nil
+        }
     }
 
     private func saveSystemOverride() {
@@ -2726,6 +2841,7 @@ struct PromptsSettingsView: View {
             try modePromptText.write(to: file, atomically: true, encoding: .utf8)
             modePromptHasOverride = true
             originalModePromptText = modePromptText
+            modeDrafts[correctionMode] = nil
         } catch {
             Log.store.error("prompt override save failed: \(error.localizedDescription)")
         }
@@ -2738,6 +2854,7 @@ struct PromptsSettingsView: View {
 
     private func resetModeOverride() {
         try? FileManager.default.removeItem(at: PromptOverrideStore.modePromptFile(for: correctionMode))
+        modeDrafts[correctionMode] = nil
         loadModePrompt()
     }
 
