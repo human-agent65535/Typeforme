@@ -16,7 +16,6 @@ struct MenuBarLabel: View {
         case .idle:                                  return "mic"
         case .recording:                             return "mic.fill"
         case .transcribing, .correcting, .inserting: return "waveform"
-        case .preview:                               return "doc.text.magnifyingglass"
         case .success:                               return "checkmark.circle.fill"
         case .error:                                 return "exclamationmark.triangle.fill"
         }

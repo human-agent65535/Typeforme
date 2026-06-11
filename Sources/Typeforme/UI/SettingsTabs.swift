@@ -523,7 +523,6 @@ struct ClientServerSettingsView: View {
                     }
                     .pickerStyle(.menu)
 
-                    Toggle("Server local auto-commit", isOn: autoCommitBinding)
                     Toggle("Server debug capture", isOn: debugModeBinding)
                 }
 
@@ -623,14 +622,6 @@ struct ClientServerSettingsView: View {
         } set: { value in
             draft?.punctuationPreference = value
             normalizeDraft()
-        }
-    }
-
-    private var autoCommitBinding: Binding<Bool> {
-        Binding {
-            draft?.autoCommit ?? true
-        } set: { value in
-            draft?.autoCommit = value
         }
     }
 
@@ -1003,24 +994,11 @@ private struct ClientRouteRow: View {
 
 struct DictationInputSettingsView: View {
     @AppStorage(AppSettings.Keys.maxRecordingDuration) private var maxDuration: Double = 30
-    @AppStorage(AppSettings.Keys.alwaysShowHUD)        private var alwaysShowHUD: Bool = false
     @AppStorage(AppSettings.Keys.holdModifier)         private var holdModifierRaw: String = HoldModifier.rightOption.rawValue
-    @AppStorage(AppSettings.Keys.voiceUXMode)          private var voiceUXModeRaw: String = VoiceUXMode.classic.rawValue
     @AppStorage(AppSettings.Keys.voiceLivePreview)     private var voiceLivePreview: Bool = true
 
     var body: some View {
         Form {
-            Section("Dictation Mode") {
-                Picker("Mode", selection: $voiceUXModeRaw) {
-                    ForEach(VoiceUXMode.allCases) { mode in
-                        Text(mode.displayName).tag(mode.rawValue)
-                    }
-                }
-                .pickerStyle(.menu)
-                Text(selectedVoiceUXMode.helpText)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
             Section("Live Transcript") {
                 Toggle("Show live transcript while speaking", isOn: $voiceLivePreview)
                 Text("Uses Apple's on-device speech recognizer in parallel with recording to render a live transcript in the HUD. The final inserted text always comes from your selected ASR + correction pipeline; the preview also goes to the corrector as a supplementary hypothesis to help disambiguate. On-device only — audio does not leave your Mac. iOS can use Cloud Fallback for unsupported languages; macOS preview stays local-only.")
@@ -1066,12 +1044,6 @@ struct DictationInputSettingsView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
-            Section("HUD Display") {
-                Toggle("Always show HUD", isOn: $alwaysShowHUD)
-                Text("Off (default): the capsule overlay only appears while you're dictating. On: it stays visible at the bottom even when idle, showing the current hotkey.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
             Section("Recording Limit") {
                 HStack {
                     Slider(value: $maxDuration, in: 5...120, step: 5)
@@ -1083,10 +1055,6 @@ struct DictationInputSettingsView: View {
             }
         }
         .formStyle(.grouped)
-    }
-
-    private var selectedVoiceUXMode: VoiceUXMode {
-        VoiceUXMode(rawValue: voiceUXModeRaw) ?? .classic
     }
 
     private var selectedHoldModifier: HoldModifier {
@@ -2053,7 +2021,6 @@ struct CorrectionSettingsView: View {
     @AppStorage(AppSettings.Keys.correctionMaxTokens)     private var maxTokens: Int = 128
     @AppStorage(AppSettings.Keys.correctionContextSize)   private var contextSize: Int = 4096
     @AppStorage(AppSettings.Keys.correctionMode)   private var correctionModeRaw: String = CorrectionMode.polish.rawValue
-    @AppStorage(AppSettings.Keys.correctionAutoCommit)    private var autoCommit: Bool = true
     @AppStorage(AppSettings.Keys.numberOutputPreference)  private var numberOutputPreferenceRaw: String = NumberOutputPreference.automatic.rawValue
     @AppStorage(AppSettings.Keys.punctuationPreference)   private var punctuationPreferenceRaw: String = PunctuationOutputPreference.normal.rawValue
     @AppStorage(AppSettings.Keys.lmStudioBaseURL)         private var lmStudioBaseURL: String = "http://127.0.0.1:1234"
@@ -2116,15 +2083,6 @@ struct CorrectionSettingsView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
 
-                Toggle("Auto-commit in Classic", isOn: $autoCommit)
-
-                Text("Voice Preview keeps the HUD available as a small icon. Speech preview expands while recording, final text inserts directly, and Wand/Style act on the current selection or focused input.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-
-                Text("Pick an explicit engine so latency and quality tests are honest.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
                 if let modelLoadStatus {
                     HStack(spacing: 6) {
                         if loadingBackendRaw != nil {

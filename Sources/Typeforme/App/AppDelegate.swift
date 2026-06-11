@@ -15,18 +15,6 @@ private struct BridgeListenerSettings: Equatable {
     }
 }
 
-private struct HUDVisibilitySettings: Equatable {
-    let alwaysShow: Bool
-    let voiceUXMode: VoiceUXMode
-
-    static var current: HUDVisibilitySettings {
-        HUDVisibilitySettings(
-            alwaysShow: AppSettings.alwaysShowHUD,
-            voiceUXMode: AppSettings.voiceUXMode
-        )
-    }
-}
-
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let coordinator: DictationCoordinator
@@ -68,29 +56,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.accessory)
 
         hud = HUDWindowController(coordinator: coordinator)
-
-        // HUD visibility: show whenever something's happening, OR whenever
-        // the user has flipped on "Always show HUD" (Settings or menu bar).
-        let visibilitySettingChanges = NotificationCenter.default
-            .publisher(for: UserDefaults.didChangeNotification)
-            .map { _ in HUDVisibilitySettings.current }
-            .prepend(HUDVisibilitySettings.current)
-            .removeDuplicates()
-
-        Publishers.CombineLatest(
-            coordinator.$state.removeDuplicates(),
-            visibilitySettingChanges
-        )
-        .sink { [weak self] state, settings in
-            guard let self else { return }
-            let shouldShowIdleHUD = settings.alwaysShow || settings.voiceUXMode == .voicePreview
-            if state == .idle && !shouldShowIdleHUD {
-                self.hud.hide()
-            } else {
-                self.hud.show()
-            }
-        }
-        .store(in: &cancellables)
+        // The HUD is always on screen: collapsed to the idle pip when nothing
+        // is happening, expanded while dictating.
+        hud.show()
 
         // Combo shortcut → toggle (industry standard for combos). Key-down can
         // repeat while held, so we ignore repeats until key-up. A watchdog
@@ -316,7 +284,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             switch coordinator.state {
             case .idle:
                 await coordinator.startDictation()
-            case .preview, .success, .error:
+            case .success, .error:
                 coordinator.reset()
                 await coordinator.startDictation()
             default:

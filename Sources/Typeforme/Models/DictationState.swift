@@ -5,7 +5,6 @@ enum DictationState: String, Sendable, CustomStringConvertible {
     case recording
     case transcribing
     case correcting
-    case preview
     case inserting
     case success
     case error

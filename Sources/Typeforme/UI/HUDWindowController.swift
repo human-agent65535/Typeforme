@@ -10,15 +10,10 @@ final class HUDWindowController {
     private let coordinator: DictationCoordinator
     private var cancellables: Set<AnyCancellable> = []
     private var moveObserver: NSObjectProtocol?
-    /// Locks the panel at preview width across the preview→correcting→preview
-    /// round-trip that a chip click triggers — otherwise the HUD shrinks to
-    /// "correcting" width and bounces back, which is what made the preview
-    /// chip row feel frantic.
-    private var holdAtPreviewWidth = false
-    /// AppDelegate calls `show()` on every non-idle state change. We must not
-    /// re-run the entrance animation each time — that resets the panel frame
-    /// and clobbers the in-flight width animation from `applyWidth`. Track
-    /// shown-ness explicitly so `show()` becomes a true no-op once visible.
+    /// The panel is permanently on screen once shown (idle collapses it to a
+    /// pip instead of hiding). Guarding here keeps `show()` a no-op if called
+    /// again so the entrance animation can't clobber an in-flight width
+    /// animation from `applyWidth`.
     private var isShown = false
     /// User-anchored bottom-center of the panel. The HUD grows UPWARD from
     /// this point as state changes, so the bottom edge stays put and never
@@ -110,18 +105,6 @@ final class HUDWindowController {
             }
             .store(in: &cancellables)
 
-        NotificationCenter.default
-            .publisher(for: UserDefaults.didChangeNotification)
-            .map { _ in AppSettings.voiceUXMode }
-            .prepend(AppSettings.voiceUXMode)
-            .removeDuplicates()
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in
-                guard let self else { return }
-                self.applyWidth(for: self.coordinator.state, animated: true)
-            }
-            .store(in: &cancellables)
-
         panel.onManualDragBegan = { [weak self] in
             self?.isUserDragging = true
         }
@@ -154,8 +137,6 @@ final class HUDWindowController {
         }
     }
 
-    var isVisible: Bool { isShown }
-
     func show() {
         guard !isShown else { return }
         isShown = true
@@ -180,23 +161,6 @@ final class HUDWindowController {
         })
     }
 
-    func hide() {
-        guard isShown else { return }
-        isShown = false
-        holdAtPreviewWidth = false
-        let panel = self.panel
-        let shouldDeactivateAfterHide = panel.isKeyWindow
-        NSAnimationContext.runAnimationGroup({ ctx in
-            ctx.duration = 0.18
-            panel.animator().alphaValue = 0
-        }, completionHandler: {
-            panel.orderOut(nil)
-            if shouldDeactivateAfterHide {
-                NSApp.deactivate()
-            }
-        })
-    }
-
     /// Reset the HUD back to its default bottom-center anchor. Wired up
     /// via the menu bar when the user has dragged it somewhere unreachable.
     func resetAnchor() {
@@ -212,15 +176,6 @@ final class HUDWindowController {
 
     private func applyWidth(for state: DictationState, animated: Bool) {
         guard isShown, !isUserDragging else { return }
-
-        // Re-correct latch: see the chip-click width-thrash bug for context.
-        if state == .preview {
-            holdAtPreviewWidth = true
-        } else if state == .correcting && holdAtPreviewWidth {
-            return
-        } else {
-            holdAtPreviewWidth = false
-        }
 
         let size = self.size(for: state)
         let frame = NSRect(origin: origin(for: state, size: size), size: size)
@@ -325,7 +280,7 @@ final class HUDWindowController {
         ud.set(Double(anchorBottomCenter.y), forKey: Self.anchorYKey)
     }
 
-    /// Per-state target size. Preview height is `measuredTextHeight +
+    /// Per-state target size. Expanded height is `measuredTextHeight +
     /// previewChromeHeight` — sized to fit the SwiftUI VStack's natural
     /// height exactly, so no Spacer ends up growing to fill leftover space
     /// inside the HUD. Capped at `previewMaxHeight` so a 5-minute monologue
@@ -338,14 +293,8 @@ final class HUDWindowController {
         switch state {
         case .idle:
             return NSSize(width: Self.idleSize, height: Self.idleSize)
-        case .recording, .transcribing, .inserting:
-            return livePartialSize(for: state) ?? NSSize(width: Self.width(for: state), height: Self.compactHeight)
-        case .preview:
-            return previewSize()
-        case .correcting where !coordinator.lastCorrected.isEmpty:
-            return previewSize()
-        case .correcting:
-            return livePartialSize(for: state) ?? NSSize(width: Self.width(for: state), height: Self.compactHeight)
+        case .inserting:
+            return livePartialSize() ?? NSSize(width: Self.width(for: state), height: Self.compactHeight)
         case .success where coordinator.lastWarning?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false:
             return NSSize(width: Self.degradedSuccessWidth, height: Self.compactHeight)
         default:
@@ -354,11 +303,10 @@ final class HUDWindowController {
     }
 
     private func isVoicePreviewExpanded(for state: DictationState) -> Bool {
-        guard AppSettings.voiceUXMode == .voicePreview else { return false }
         switch state {
         case .idle:
             return coordinator.voicePreviewHUDExpanded
-        case .recording, .transcribing, .correcting, .preview:
+        case .recording, .transcribing, .correcting:
             return true
         case .inserting, .success, .error:
             return false
@@ -403,36 +351,13 @@ final class HUDWindowController {
         min(size.height, Self.compactHeight)
     }
 
-    private func previewSize() -> NSSize {
-        // Trim mirrors HUDView.previewText. The corrector occasionally
-        // emits trailing whitespace / newlines that SwiftUI's Text drops
-        // visually, but `NSString.boundingRect` would count them as full
-        // lines — left untreated, that's how a short preview ends up in
-        // a 200pt-tall panel with empty material below the chips.
-        let raw = coordinator.lastCorrected.trimmingCharacters(in: .whitespacesAndNewlines)
-        let text = raw.isEmpty ? "Preview" : raw
-        let warning = coordinator.lastWarning?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let cacheKey = warning.isEmpty ? text : "\(text)|warning:\(warning)"
-        if cachedPreviewText == cacheKey, let cachedPreviewSize {
-            return cachedPreviewSize
-        }
-        let textHeight = Self.measuredTextHeight(for: text, inWidth: Self.previewWidth - 36)
-        let warningHeight: CGFloat = !warning.isEmpty
-            ? Self.previewWarningHeight
-            : 0
-        let height = min(textHeight + warningHeight + Self.previewChromeHeight, Self.previewMaxHeight)
-        let size = NSSize(width: Self.previewWidth, height: height)
-        cachedPreviewText = cacheKey
-        cachedPreviewSize = size
-        return size
-    }
-
-    private func livePartialSize(for state: DictationState) -> NSSize? {
+    /// Compact-capsule width while `.inserting` still shows the live partial
+    /// text. All other live-partial states use the expanded panel.
+    private func livePartialSize() -> NSSize? {
         let text = coordinator.livePartialTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return nil }
         let textWidth = Self.measuredTextWidth(for: text)
-        let chrome = state == .recording ? CGFloat(190) : CGFloat(96)
-        let rawWidth = max(CGFloat(240), ceil(textWidth + chrome))
+        let rawWidth = max(CGFloat(240), ceil(textWidth + 96))
         let bucketedWidth = ceil(rawWidth / Self.livePartialWidthBucket) * Self.livePartialWidthBucket
         let width = min(Self.previewWidth, bucketedWidth)
         return NSSize(width: width, height: Self.compactHeight)
@@ -460,15 +385,15 @@ final class HUDWindowController {
         return ceil(bounds.height)
     }
 
-    /// Widths for the compact (non-idle, non-preview) capsule. Status text
-    /// lives in color + icon + timer + tooltip, so these widths only reserve
-    /// space for active controls.
+    /// Widths for the compact capsule states. Status text lives in color +
+    /// icon + tooltip, so these widths only reserve space for active controls.
+    /// Recording / transcribing / correcting never reach here — they always
+    /// use the expanded panel.
     private static func width(for state: DictationState) -> CGFloat {
         switch state {
         case .idle:                          return idleSize  // unused; size(for:) handles idle specially
         case .recording:                     return 240
         case .transcribing, .correcting:     return 120
-        case .preview:                       return previewWidth
         case .inserting:                     return 120
         case .success:                       return 100
         case .error:                         return 380

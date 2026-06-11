@@ -10,9 +10,7 @@ enum AppSettings {
     enum Keys {
         // Recording
         static let maxRecordingDuration = "recording.maxDuration"   // seconds
-        static let alwaysShowHUD        = "recording.alwaysShowHUD"
         static let holdModifier         = "recording.holdModifier"  // HoldModifier raw
-        static let voiceUXMode          = "recording.voiceUXMode"   // VoiceUXMode raw
         static let voiceLivePreview     = "recording.voiceLivePreview" // Bool — show Apple Speech preview while recording
         static let launchAtLogin        = "app.launchAtLogin"
 
@@ -106,9 +104,7 @@ enum AppSettings {
     static func registerDefaults() {
         let defaults: [String: Any] = [
             Keys.maxRecordingDuration: 30.0,
-            Keys.alwaysShowHUD:        false,
             Keys.holdModifier:         HoldModifier.rightOption.rawValue,
-            Keys.voiceUXMode:          VoiceUXMode.classic.rawValue,
             Keys.voiceLivePreview:     true,
             Keys.launchAtLogin:        true,
 
@@ -188,7 +184,6 @@ enum AppSettings {
         repairInvalidRawSetting(forKey: Keys.numberOutputPreference, default: NumberOutputPreference.automatic)
         repairInvalidRawSetting(forKey: Keys.punctuationPreference, default: PunctuationOutputPreference.normal)
         repairInvalidRawSetting(forKey: Keys.processingMode, default: ProcessingMode.client)
-        repairInvalidRawSetting(forKey: Keys.voiceUXMode, default: VoiceUXMode.classic)
         _ = ensureBridgeAuthToken()
     }
 
@@ -287,11 +282,7 @@ enum AppSettings {
     ]
 
     static var maxRecordingDuration: TimeInterval     { ud.double(forKey: Keys.maxRecordingDuration) }
-    static var alwaysShowHUD: Bool                    { ud.bool(forKey: Keys.alwaysShowHUD) }
     static var launchAtLogin: Bool                    { ud.bool(forKey: Keys.launchAtLogin) }
-    static var voiceUXMode: VoiceUXMode {
-        rawSetting(forKey: Keys.voiceUXMode, default: .classic)
-    }
     /// When `true`, the recorder feeds PCM into Apple Speech on-device so the
     /// HUD can show a live transcript while the user is still speaking. The
     /// final text always comes from the Mac ASR + correction pipeline; the

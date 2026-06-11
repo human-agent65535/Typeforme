@@ -4,7 +4,6 @@ import SwiftUI
 struct MenuBarMenu: View {
     let onOpenSettings: () -> Void
 
-    @AppStorage(AppSettings.Keys.alwaysShowHUD) private var alwaysShowHUD: Bool = false
     @State private var axTrusted = AccessibilityPermissions.isTrusted
 
     var body: some View {
@@ -25,10 +24,6 @@ struct MenuBarMenu: View {
 
                 Divider()
             }
-
-            Toggle("Always show HUD", isOn: $alwaysShowHUD)
-
-            Divider()
 
             Button("Settings…") { onOpenSettings() }
                 .keyboardShortcut(",", modifiers: .command)

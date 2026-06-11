@@ -11,26 +11,20 @@ import KeyboardShortcuts
 struct HUDView: View {
     @ObservedObject var coordinator: DictationCoordinator
     @State private var recordingStartedAt: Date?
-    @AppStorage(AppSettings.Keys.voiceUXMode) private var voiceUXModeRaw: String = VoiceUXMode.classic.rawValue
 
     private static let cornerRadius: CGFloat = 24
 
-    /// Preview state lays out as two rows: full-width wrapped text on top so
-    /// the user can actually verify what's about to be inserted, then chips
-    /// + Insert on the bottom. Other states stay as a single 52pt-tall row.
+    /// Expanded layout: live transcript text on top (when present), action
+    /// bar below. Active while dictating and while the idle bar is open.
     private var isExpandedPreview: Bool {
-        if isVoicePreviewMode {
-            switch coordinator.state {
-            case .idle:
-                return coordinator.voicePreviewHUDExpanded
-            case .recording, .transcribing, .correcting, .preview:
-                return true
-            case .inserting, .success, .error:
-                return false
-            }
+        switch coordinator.state {
+        case .idle:
+            return coordinator.voicePreviewHUDExpanded
+        case .recording, .transcribing, .correcting:
+            return true
+        case .inserting, .success, .error:
+            return false
         }
-        return coordinator.state == .preview ||
-            (coordinator.state == .correcting && !coordinator.lastCorrected.isEmpty)
     }
 
     var body: some View {
@@ -58,21 +52,15 @@ struct HUDView: View {
 
     /// Idle: a small circular presence indicator. The panel itself shrinks to
     /// a 40pt circle (see HUDWindowController). Hover surfaces the hotkey hint
-    /// without expanding the idle HUD.
-    @ViewBuilder
+    /// without expanding the idle HUD; click opens the action bar.
     private var idleDotBody: some View {
-        if isVoicePreviewMode {
-            Button {
-                coordinator.expandVoicePreviewHUD()
-            } label: {
-                idleDotImage
-            }
-            .buttonStyle(.plain)
-            .help("Ready · \(hotkeyDescription)")
-        } else {
+        Button {
+            coordinator.expandVoicePreviewHUD()
+        } label: {
             idleDotImage
-                .help("Ready · \(hotkeyDescription)")
         }
+        .buttonStyle(.plain)
+        .help("Ready · \(hotkeyDescription)")
     }
 
     private var idleDotImage: some View {
@@ -134,51 +122,8 @@ struct HUDView: View {
         }
     }
 
-    @ViewBuilder
     private var expandedPreviewBody: some View {
-        if isVoicePreviewMode {
-            voicePreviewBody
-        } else {
-            classicPreviewBody
-        }
-    }
-
-    private var classicPreviewBody: some View {
-        // Natural sizing only — no .frame(maxHeight: .infinity) here. With
-        // `maxHeight: .infinity`, SwiftUI advertises infinity as its desired
-        // height, which NSHostingView then propagated back to the panel as
-        // an intrinsic content size, growing the panel a few moments after
-        // our setFrame settled.
-        VStack(alignment: .leading, spacing: 20) {
-            // Top: full preview text — no line limit, no truncation.
-            Text(previewText)
-                .font(.system(size: 13.5, weight: .medium, design: .rounded))
-                .foregroundStyle(.primary)
-                .multilineTextAlignment(.leading)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .textSelection(.enabled)
-            if let warningText {
-                Label(warningText, systemImage: "exclamationmark.triangle.fill")
-                    .font(.system(size: 11.5, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.orange)
-                    .lineLimit(1)
-            }
-            // Bottom: tone chips on the left, primary commit on the right.
-            HStack(spacing: 8) {
-                ModeChipRow(coordinator: coordinator, disabled: coordinator.state == .correcting)
-                Spacer(minLength: 8)
-                InsertButton {
-                    Task { await coordinator.commitPreview() }
-                }
-                .disabled(coordinator.state == .correcting)
-                .opacity(coordinator.state == .correcting ? 0.55 : 1.0)
-            }
-        }
-        .padding(.horizontal, 18)
-        .padding(.top, 14)
-        .padding(.bottom, 6)
-        .frame(maxWidth: .infinity, alignment: .topLeading)
+        voicePreviewBody
     }
 
     private var voicePreviewBody: some View {
@@ -209,11 +154,6 @@ struct HUDView: View {
         .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
-    private var previewText: String {
-        let trimmed = coordinator.lastCorrected.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? "Preview" : trimmed
-    }
-
     private var warningText: String? {
         let trimmed = coordinator.lastWarning?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return trimmed.isEmpty ? nil : trimmed
@@ -234,15 +174,11 @@ struct HUDView: View {
 
     private var voicePreviewActionsDisabled: Bool {
         switch coordinator.state {
-        case .idle, .preview:
+        case .idle:
             return false
         case .recording, .transcribing, .correcting, .inserting, .success, .error:
             return true
         }
-    }
-
-    private var isVoicePreviewMode: Bool {
-        VoiceUXMode(rawValue: voiceUXModeRaw) == .voicePreview
     }
 
     // MARK: - Surface
@@ -279,7 +215,7 @@ struct HUDView: View {
     }
 
     private var usesActionBarOnlySurface: Bool {
-        isVoicePreviewMode && isExpandedPreview && voicePreviewText.isEmpty
+        isExpandedPreview && voicePreviewText.isEmpty
     }
 
     // MARK: - Leading (icon / waveform / recording dot)
@@ -332,7 +268,6 @@ struct HUDView: View {
         case .idle:         return "mic"
         case .transcribing: return "waveform"
         case .correcting:   return "sparkles"
-        case .preview:      return "text.bubble.fill"
         case .inserting:    return "text.cursor"
         case .success:      return "checkmark.circle.fill"
         case .error:        return "exclamationmark.triangle.fill"
@@ -341,7 +276,7 @@ struct HUDView: View {
     }
 
     private var stateColor: Color {
-        if warningText != nil, coordinator.state == .preview || coordinator.state == .success {
+        if warningText != nil, coordinator.state == .success {
             return .orange
         }
         switch coordinator.state {
@@ -349,7 +284,6 @@ struct HUDView: View {
         case .recording:    return .red
         case .transcribing: return .blue
         case .correcting:   return .purple
-        case .preview:      return .accentColor
         case .inserting:    return .accentColor
         case .success:      return .green
         case .error:        return .orange
@@ -368,10 +302,6 @@ struct HUDView: View {
             // text, so we still show the spinner copy.
             return coordinator.lastCorrected.isEmpty
                 ? NSLocalizedString("Refining…", comment: "HUD status")
-                : coordinator.lastCorrected
-        case .preview:
-            return coordinator.lastCorrected.isEmpty
-                ? NSLocalizedString("Preview", comment: "HUD status")
                 : coordinator.lastCorrected
         case .inserting:    return NSLocalizedString("Inserting…", comment: "HUD status")
         case .success:      return warningText ?? NSLocalizedString("Done", comment: "HUD status")
@@ -635,28 +565,3 @@ private struct VoicePreviewBarLabel: View {
     }
 }
 
-// MARK: - Insert button
-
-/// Primary action pill: commits the previewed text at the current cursor.
-private struct InsertButton: View {
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 5) {
-                Image(systemName: "checkmark")
-                    .font(.system(size: 10, weight: .bold))
-                Text("Insert")
-                    .font(.system(size: 11, weight: .semibold, design: .rounded))
-                    .lineLimit(1)
-            }
-            .fixedSize()
-            .padding(.horizontal, 10)
-            .padding(.vertical, 4)
-            .foregroundStyle(.white)
-            .background(Capsule(style: .continuous).fill(Color.accentColor))
-        }
-        .buttonStyle(.plain)
-        .help("Insert at current cursor")
-    }
-}
