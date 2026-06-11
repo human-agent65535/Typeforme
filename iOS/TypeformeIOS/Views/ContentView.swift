@@ -1478,8 +1478,9 @@ private struct MacSettingsView: View {
                     }
                     .pickerStyle(.menu)
 
-                    if BridgeMacSettingsPayload.providerUsesQwen(draft.asrProvider),
-                       !draft.asrModelOptions(for: draft.asrProvider).isEmpty {
+                    // Every provider with a model catalog gets the picker —
+                    // gating on providerUsesQwen hid Nemotron's model choices.
+                    if !draft.asrModelOptions(for: draft.asrProvider).isEmpty {
                         Picker("Model", selection: asrModelBinding) {
                             ForEach(draft.asrModelOptions(for: draft.asrProvider)) { option in
                                 Text(option.displayName).tag(option.id)
@@ -1520,6 +1521,22 @@ private struct MacSettingsView: View {
                         }
                     }
                     .pickerStyle(.menu)
+
+                    if draft.correctionBackend == "external_lm_studio" {
+                        LabeledContent("LM Studio URL") {
+                            TextField("http://127.0.0.1:1234", text: lmStudioBaseURLBinding)
+                                .textInputAutocapitalization(.never)
+                                .keyboardType(.URL)
+                                .autocorrectionDisabled()
+                                .multilineTextAlignment(.trailing)
+                        }
+                        LabeledContent("LM Studio Model") {
+                            TextField("model id", text: lmStudioModelBinding)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
+                                .multilineTextAlignment(.trailing)
+                        }
+                    }
 
                     TimeoutSecondsRow(
                         title: "Refine Timeout",
@@ -1567,6 +1584,18 @@ private struct MacSettingsView: View {
                                 .foregroundStyle(.secondary)
                                 .lineLimit(1)
                         }
+                    }
+                }
+
+                if !draft.modelStatuses.isEmpty {
+                    Section {
+                        ForEach(draft.modelStatuses) { status in
+                            ModelStatusRow(status: status)
+                        }
+                    } header: {
+                        Text("Models")
+                    } footer: {
+                        Text("Models live on the paired Mac. Selecting an uninstalled model triggers its download after Save.")
                     }
                 }
 
@@ -1702,6 +1731,22 @@ private struct MacSettingsView: View {
         }
     }
 
+    private var lmStudioBaseURLBinding: Binding<String> {
+        Binding {
+            draft?.lmStudioBaseURL ?? ""
+        } set: { value in
+            draft?.lmStudioBaseURL = value
+        }
+    }
+
+    private var lmStudioModelBinding: Binding<String> {
+        Binding {
+            draft?.lmStudioModel ?? ""
+        } set: { value in
+            draft?.lmStudioModel = value
+        }
+    }
+
     private var asrTimeoutSecondsBinding: Binding<Double> {
         Binding {
             draft?.asrTimeoutSec ?? 120
@@ -1808,6 +1853,55 @@ private struct MacSettingsView: View {
 
     private func vocabularySummary(for entries: [BridgeUserDictionaryEntry]) -> String {
         entries.count == 1 ? "1 entry" : "\(entries.count) entries"
+    }
+}
+
+/// One Mac-side model with install state. `detail` carries the Mac's
+/// human-readable status (progress, failure reason) and is shown verbatim.
+private struct ModelStatusRow: View {
+    let status: BridgeModelStatus
+
+    var body: some View {
+        HStack(spacing: 10) {
+            statusIcon
+                .frame(width: 22)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(status.displayName)
+                    .font(.subheadline)
+                if !detailText.isEmpty {
+                    Text(detailText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+            }
+            Spacer()
+            Text(status.kind == "asr" ? "ASR" : "Refine")
+                .font(.caption2.weight(.semibold))
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .background(Capsule().fill(Color(.tertiarySystemFill)))
+                .foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 2)
+    }
+
+    private var detailText: String {
+        status.detail.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    @ViewBuilder
+    private var statusIcon: some View {
+        if status.installing {
+            ProgressView()
+                .controlSize(.small)
+        } else if status.installed {
+            Image(systemName: "checkmark.circle.fill")
+                .foregroundStyle(.green)
+        } else {
+            Image(systemName: "arrow.down.circle.dotted")
+                .foregroundStyle(.orange)
+        }
     }
 }
 

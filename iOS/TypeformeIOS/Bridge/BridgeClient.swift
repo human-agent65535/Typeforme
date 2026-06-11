@@ -93,6 +93,8 @@ struct BridgeClient {
             correctionBackend: settings.correctionBackend,
             correctionTimeoutMs: settings.correctionTimeoutMs,
             correctionColdTimeoutMs: settings.correctionColdTimeoutMs,
+            lmStudioBaseURL: settings.lmStudioBaseURL,
+            lmStudioModel: settings.lmStudioModel,
             correctionMode: settings.correctionMode.rawValue,
             numberOutputPreference: settings.numberOutputPreference.rawValue,
             punctuationPreference: settings.punctuationPreference.rawValue,
