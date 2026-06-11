@@ -1533,6 +1533,10 @@ final class AppState {
             lastGeneratedResultText = nil
             applyKeyboardDefaultCorrectionMode(newMode)
             setPhase(.idle)
+            // Without a result to restyle, a chip tap silently changed the
+            // default style — invisible, and it also retargets the keyboard's
+            // default. Say so.
+            showTransient("Default style: \(newMode.title)")
             return
         }
         correctionMode = newMode

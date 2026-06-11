@@ -1108,6 +1108,16 @@ private struct ResultCard: View {
                 )
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
+                .overlay(alignment: .topLeading) {
+                    if !hasResult {
+                        Text("Dictation result appears here. Hold the orb and speak.")
+                            .font(.callout)
+                            .foregroundStyle(.tertiary)
+                            .padding(.horizontal, 14)
+                            .padding(.top, 16)
+                            .allowsHitTesting(false)
+                    }
+                }
             HStack(spacing: 10) {
                 Button {
                     state.copyResult()
@@ -1117,6 +1127,7 @@ private struct ResultCard: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.regular)
+                .disabled(!hasResult)
 
                 Button(role: .destructive) {
                     state.clearResult()
@@ -1126,6 +1137,7 @@ private struct ResultCard: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.regular)
+                .disabled(!hasResult && state.rawTranscript.isEmpty)
             }
         }
         .padding(14)
@@ -1133,6 +1145,10 @@ private struct ResultCard: View {
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .fill(Color(.secondarySystemBackground))
         )
+    }
+
+    private var hasResult: Bool {
+        !state.resultText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 }
 
@@ -1614,6 +1630,15 @@ private struct MacSettingsView: View {
                         Text(errorMessage)
                             .foregroundStyle(.red)
                         HStack(spacing: 10) {
+                            Button {
+                                // load(force:) clears errorMessage itself.
+                                Task { await load(force: true) }
+                            } label: {
+                                Label("Retry", systemImage: "arrow.clockwise")
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(isLoading)
+
                             Button {
                                 repairPairing(clearExisting: false)
                             } label: {
