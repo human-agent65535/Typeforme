@@ -100,10 +100,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         // bottom controls become accidental character keys.
         static let rowTopOverflow: CGFloat = 14
         static let rowBottomOverflow: CGFloat = 13
-        // Drag-to-correct: small finger jitter keeps the originally pressed key
-        // (first-touch sticking), but a deliberate drag past this distance that
-        // ends on a different text key commits the new key instead.
-        static let dragRescueThreshold: CGFloat = 14
         // Tap within this distance of a key/key midpoint triggers a librime
         // probe between the two candidate letters; outside the gutter we keep
         // the unambiguous midpoint resolution.
@@ -813,109 +809,70 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         kbLog.notice("touch \(event, privacy: .public) target=\(name, privacy: .public) key=\(key, privacy: .private) x=\(x, privacy: .public) y=\(y, privacy: .public) dx=\(dx, privacy: .public) focus=\(self.keyboardFocus.rawValue, privacy: .public)")
     }
 
-    fileprivate func beginKeyboardTouchTarget(_ target: KeyboardTouchTarget, point: CGPoint) {
-        logKeyboardTouchEvent("begin", target: target, point: point)
+    /// Begin a routed key touch. Character keys COMMIT here, on touch-down —
+    /// native-keyboard parity. Committing on release added the whole finger
+    /// dwell (~60–150ms) plus a multi-finger ordering hold-back to every
+    /// keystroke, which read as candidate-strip lag. Returns true when a text
+    /// key was committed (the release must not commit again).
+    fileprivate func pressKeyboardTouchTarget(_ target: KeyboardTouchTarget, point: CGPoint) -> Bool {
+        logKeyboardTouchEvent("press", target: target, point: point)
         switch target {
         case .textKey(let button):
             controlPressDown(button)
             let title = button.accessibilityValue ?? button.currentTitle ?? ""
             showKeyPreview(for: button, title: title)
+            return commitTextKey(button, point: point)
         case .candidateAction, .focusSurface:
-            break
+            return false
         }
     }
 
-    fileprivate func commitKeyboardTouchTarget(
-        _ target: KeyboardTouchTarget,
-        point: CGPoint,
-        touchPoint: CGPoint? = nil
-    ) {
-        logKeyboardTouchEvent("commit", target: target, point: point)
+    fileprivate func releaseKeyboardTouchTarget(_ target: KeyboardTouchTarget, point: CGPoint) {
+        logKeyboardTouchEvent("release", target: target, point: point)
         switch target {
         case .textKey(let button):
             resetPressedControlState(button)
-            guard let character = textKeyCommitCharacters[ObjectIdentifier(button)] else { return }
-            let shouldReturnToAlphabetKeyboard = shouldReturnToAlphabetKeyboardAfterSymbolInput(character)
-            let sample = textKeyTouchSample(
-                button: button,
-                character: character,
-                touchPoint: touchPoint ?? textCharacterIntentPoint(from: point)
-            )
-            if handleTextCharacter(character) {
-                if let sample {
-                    registerCommittedTextTouch(sample)
-                } else {
-                    finishNonLearnableTextTouch()
-                }
-                if shouldReturnToAlphabetKeyboard {
-                    returnToAlphabetKeyboardAfterSymbolInput()
-                }
-            }
         case .candidateAction, .focusSurface:
             break
         }
     }
 
-    fileprivate func commitTextKeyTouchWithDragRescue(
-        activeTarget: KeyboardTouchTarget,
-        startPoint: CGPoint,
-        endPoint: CGPoint
-    ) {
-        let resolvedTarget = dragRescuedTarget(
-            activeTarget: activeTarget,
-            startPoint: startPoint,
-            endPoint: endPoint
+    @discardableResult
+    private func commitTextKey(_ button: UIButton, point: CGPoint) -> Bool {
+        guard let character = textKeyCommitCharacters[ObjectIdentifier(button)] else { return false }
+        let shouldReturnToAlphabetKeyboard = shouldReturnToAlphabetKeyboardAfterSymbolInput(character)
+        let sample = textKeyTouchSample(
+            button: button,
+            character: character,
+            touchPoint: textCharacterIntentPoint(from: point)
         )
-        if case .textKey(let activeButton) = activeTarget,
-           case .textKey(let resolvedButton) = resolvedTarget,
-           ObjectIdentifier(activeButton) != ObjectIdentifier(resolvedButton) {
-            resetPressedControlState(activeButton)
+        guard handleTextCharacter(character) else { return false }
+        if let sample {
+            registerCommittedTextTouch(sample)
+        } else {
+            finishNonLearnableTextTouch()
         }
-        let touchPoint = keyboardTouchLearningPoint(
-            activeTarget: activeTarget,
-            resolvedTarget: resolvedTarget,
-            startPoint: startPoint,
-            endPoint: endPoint
-        )
-        commitKeyboardTouchTarget(resolvedTarget, point: endPoint, touchPoint: touchPoint)
+        if shouldReturnToAlphabetKeyboard {
+            returnToAlphabetKeyboardAfterSymbolInput()
+        }
+        return true
     }
 
-    private func keyboardTouchLearningPoint(
-        activeTarget: KeyboardTouchTarget,
-        resolvedTarget: KeyboardTouchTarget,
-        startPoint: CGPoint,
-        endPoint: CGPoint
-    ) -> CGPoint {
-        guard case .textKey(let activeButton) = activeTarget,
-              case .textKey(let resolvedButton) = resolvedTarget,
-              ObjectIdentifier(activeButton) != ObjectIdentifier(resolvedButton)
-        else {
-            return textCharacterIntentPoint(from: startPoint)
+    /// A horizontal focus swipe that started on a character key has already
+    /// typed it (commit happens on touch-down); remove that character before
+    /// switching surfaces.
+    fileprivate func undoTextKeyCommitForFocusSwipe() {
+        pendingTextTouchSample = nil
+        if !pendingRimeCharacters.isEmpty {
+            pendingRimeCharacters.removeLast()
+            applyRimeState(rimeInput.state())
+            return
         }
-        return textCharacterIntentPoint(from: endPoint)
-    }
-
-    private func dragRescuedTarget(
-        activeTarget: KeyboardTouchTarget,
-        startPoint: CGPoint,
-        endPoint: CGPoint
-    ) -> KeyboardTouchTarget {
-        guard case .textKey(let activeButton) = activeTarget else {
-            return activeTarget
+        if rimeInput.state().isComposing {
+            applyRimeState(rimeInput.processKeyCode(0xFF08))
+            return
         }
-        let dx = endPoint.x - startPoint.x
-        let dy = endPoint.y - startPoint.y
-        let threshold = TextKeyboardTouchModel.dragRescueThreshold
-        guard dx * dx + dy * dy > threshold * threshold else {
-            return activeTarget
-        }
-        guard let endTarget = keyboardOverlayTouchTarget(at: endPoint),
-              case .textKey(let endButton) = endTarget,
-              ObjectIdentifier(endButton) != ObjectIdentifier(activeButton)
-        else {
-            return activeTarget
-        }
-        return endTarget
+        textDocumentProxy.deleteBackward()
     }
 
     fileprivate func cancelKeyboardTouchTarget(_ target: KeyboardTouchTarget, point: CGPoint) {
@@ -9882,12 +9839,12 @@ final class KeyboardTouchOverlayView: UIView {
     private struct ActiveKeyboardTouch {
         let target: KeyboardTouchTarget
         let startPoint: CGPoint
-        let textKeySequence: UInt64?
+        /// Character keys commit on touch-down; a focus swipe that grows out
+        /// of this touch must undo that commit before switching surfaces.
+        let didCommitTextKey: Bool
     }
 
     private var activeTouches: [UITouch: ActiveKeyboardTouch] = [:]
-    private var pendingEndedTextKeyPoints: [UITouch: CGPoint] = [:]
-    private var nextTextKeySequence: UInt64 = 0
     private var pendingActivationTarget: KeyboardTouchTarget?
     private var pendingActivationPoint: CGPoint?
     private var pendingActivationResolvedAt: CFTimeInterval = 0
@@ -9953,19 +9910,15 @@ final class KeyboardTouchOverlayView: UIView {
             guard let target = resolveTouchTarget(at: controllerPoint, hitController: hitController) else { continue }
             releaseExistingTouchIfNeeded(for: target)
             clearPendingActivation()
-            let sequence: UInt64?
-            if case .textKey = target {
-                sequence = nextTextKeySequence
-                nextTextKeySequence += 1
-            } else {
-                sequence = nil
+            let didCommit = hitController.pressKeyboardTouchTarget(target, point: controllerPoint)
+            if didCommit {
+                lastTouchCommitTime = CACurrentMediaTime()
             }
             activeTouches[touch] = ActiveKeyboardTouch(
                 target: target,
                 startPoint: controllerPoint,
-                textKeySequence: sequence
+                didCommitTextKey: didCommit
             )
-            hitController.beginKeyboardTouchTarget(target, point: controllerPoint)
             handledAnyTouch = true
         }
         if !handledAnyTouch {
@@ -9992,6 +9945,9 @@ final class KeyboardTouchOverlayView: UIView {
             else { continue }
 
             hitController.cancelKeyboardTouchTarget(active.target, point: controllerPoint)
+            if active.didCommitTextKey {
+                hitController.undoTextKeyCommitForFocusSwipe()
+            }
             hitController.logKeyboardTouchEvent(
                 "swipe",
                 target: active.target,
@@ -9999,9 +9955,7 @@ final class KeyboardTouchOverlayView: UIView {
                 intent: horizontalIntent
             )
             hitController.switchKeyboardFocusFromFallbackSwipe(deltaX: horizontalIntent)
-            pendingEndedTextKeyPoints.removeValue(forKey: touch)
             activeTouches.removeValue(forKey: touch)
-            flushEndedTextKeyTouches()
         }
         if !handledAnyTouch {
             super.touchesMoved(touches, with: event)
@@ -10018,16 +9972,10 @@ final class KeyboardTouchOverlayView: UIView {
         for touch in orderedTouches(touches) {
             guard let active = activeTouches[touch] else { continue }
             let point = touch.location(in: hitController.view)
-            if active.textKeySequence != nil {
-                pendingEndedTextKeyPoints[touch] = point
-            } else {
-                hitController.commitKeyboardTouchTarget(active.target, point: point)
-                activeTouches.removeValue(forKey: touch)
-                lastTouchCommitTime = CACurrentMediaTime()
-            }
+            hitController.releaseKeyboardTouchTarget(active.target, point: point)
+            activeTouches.removeValue(forKey: touch)
             handledAnyTouch = true
         }
-        flushEndedTextKeyTouches()
         if !handledAnyTouch {
             super.touchesEnded(touches, with: event)
         }
@@ -10036,7 +9984,6 @@ final class KeyboardTouchOverlayView: UIView {
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
         guard let hitController else {
             activeTouches.removeAll()
-            pendingEndedTextKeyPoints.removeAll()
             super.touchesCancelled(touches, with: event)
             return
         }
@@ -10044,12 +9991,13 @@ final class KeyboardTouchOverlayView: UIView {
         var handledAnyTouch = false
         for touch in orderedTouches(touches) {
             guard let active = activeTouches[touch] else { continue }
+            // System-cancelled touches keep their committed character (the
+            // commit happened at touch-down, matching native behavior); only
+            // the pressed visual is reset.
             hitController.cancelKeyboardTouchTarget(active.target, point: touch.location(in: hitController.view))
-            pendingEndedTextKeyPoints.removeValue(forKey: touch)
             activeTouches.removeValue(forKey: touch)
             handledAnyTouch = true
         }
-        flushEndedTextKeyTouches()
         if !handledAnyTouch {
             super.touchesCancelled(touches, with: event)
         }
@@ -10069,8 +10017,10 @@ final class KeyboardTouchOverlayView: UIView {
         else { return }
 
         hitController.logKeyboardTouchEvent("activate", target: target, point: point)
-        hitController.beginKeyboardTouchTarget(target, point: point)
-        hitController.commitKeyboardTouchTarget(target, point: point)
+        if hitController.pressKeyboardTouchTarget(target, point: point) {
+            lastTouchCommitTime = CACurrentMediaTime()
+        }
+        hitController.releaseKeyboardTouchTarget(target, point: point)
         clearPendingActivation()
     }
 
@@ -10100,42 +10050,6 @@ final class KeyboardTouchOverlayView: UIView {
         pendingActivationResolvedAt = 0
     }
 
-    private func flushEndedTextKeyTouches() {
-        guard let hitController else { return }
-
-        while let next = nextEndedTextKeyReadyToCommit() {
-            hitController.commitTextKeyTouchWithDragRescue(
-                activeTarget: next.active.target,
-                startPoint: next.active.startPoint,
-                endPoint: next.point
-            )
-            pendingEndedTextKeyPoints.removeValue(forKey: next.touch)
-            activeTouches.removeValue(forKey: next.touch)
-            lastTouchCommitTime = CACurrentMediaTime()
-        }
-    }
-
-    private func nextEndedTextKeyReadyToCommit() -> (touch: UITouch, active: ActiveKeyboardTouch, point: CGPoint)? {
-        let endedTouches = activeTouches.compactMap { touch, active -> (touch: UITouch, active: ActiveKeyboardTouch, point: CGPoint)? in
-            guard active.textKeySequence != nil,
-                  let point = pendingEndedTextKeyPoints[touch]
-            else { return nil }
-            return (touch, active, point)
-        }
-        guard let next = endedTouches.min(by: { lhs, rhs in
-            (lhs.active.textKeySequence ?? 0) < (rhs.active.textKeySequence ?? 0)
-        }) else { return nil }
-        guard let nextSequence = next.active.textKeySequence else { return nil }
-
-        let hasOlderUnendedTextKey = activeTouches.contains { touch, active in
-            guard let sequence = active.textKeySequence,
-                  sequence < nextSequence
-            else { return false }
-            return pendingEndedTextKeyPoints[touch] == nil
-        }
-        return hasOlderUnendedTextKey ? nil : next
-    }
-
     private func releaseExistingTouchIfNeeded(for target: KeyboardTouchTarget) {
         guard let hitController,
               case .textKey(let button) = target,
@@ -10148,9 +10062,7 @@ final class KeyboardTouchOverlayView: UIView {
         else { return }
 
         hitController.cancelKeyboardTouchTarget(existing.value.target, point: existing.key.location(in: self))
-        pendingEndedTextKeyPoints.removeValue(forKey: existing.key)
         activeTouches.removeValue(forKey: existing.key)
-        flushEndedTextKeyTouches()
     }
 
     private func orderedTouches(_ touches: Set<UITouch>) -> [UITouch] {
