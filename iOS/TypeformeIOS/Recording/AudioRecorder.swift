@@ -26,8 +26,10 @@ enum IOSRecordingAudioSession {
         try configureActiveSessionCategory(purpose: purpose)
         do {
             try session.setActive(true)
+            // Mono is a preference, not a requirement: CarPlay / USB car-kit
+            // mic arrays and audio interfaces can present 2–4 input channels
+            // and ignore this hint. Capture paths downmix to mono themselves.
             try? session.setPreferredInputNumberOfChannels(1)
-            try requireMonoInputIfKnown()
         } catch {
             if !reuseActiveSession || purpose != .standby {
                 throw error
@@ -39,21 +41,6 @@ enum IOSRecordingAudioSession {
         let session = AVAudioSession.sharedInstance()
         try session.setCategory(category, mode: mode, options: options(for: purpose))
         try? session.setPreferredInputNumberOfChannels(1)
-    }
-
-    static func requireMonoInputIfKnown() throws {
-        let channels = AVAudioSession.sharedInstance().inputNumberOfChannels
-        guard channels <= 1 else {
-            throw monoInputError(channels: channels)
-        }
-    }
-
-    static func monoInputError(channels: Int) -> NSError {
-        NSError(
-            domain: "Typeforme",
-            code: 8,
-            userInfo: [NSLocalizedDescriptionKey: "Microphone input must be mono; got \(channels) channels"]
-        )
     }
 
     static func configureActiveSessionCategoryEventually(purpose: Purpose) {
@@ -137,9 +124,6 @@ final class AudioTapFileWriter {
     }
 
     func begin(format: AVAudioFormat) throws -> URL {
-        guard format.channelCount == 1 else {
-            throw IOSRecordingAudioSession.monoInputError(channels: Int(format.channelCount))
-        }
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("typeforme-keyboard-\(UUID().uuidString).m4a")
         let sampleRate = format.sampleRate > 0 ? format.sampleRate : 48_000
@@ -183,16 +167,7 @@ final class AudioTapFileWriter {
 
     func write(_ buffer: AVAudioPCMBuffer) {
         let frameLength = Int(buffer.frameLength)
-        let channelCount = Int(buffer.format.channelCount)
         guard frameLength > 0 else { return }
-        guard channelCount == 1 else {
-            lock.lock()
-            if writeError == nil {
-                writeError = IOSRecordingAudioSession.monoInputError(channels: channelCount)
-            }
-            lock.unlock()
-            return
-        }
 
         lock.lock()
         let recordingURL = currentURL
@@ -300,6 +275,9 @@ final class AudioTapFileWriter {
         }
     }
 
+    /// Converts an arbitrary input buffer into the mono float32 write format,
+    /// averaging across channels. Car-kit / CarPlay mic arrays and USB
+    /// interfaces can deliver 2–4 channels, interleaved or planar.
     private static func makeWriteBuffer(
         from buffer: AVAudioPCMBuffer,
         format: AVAudioFormat
@@ -309,6 +287,8 @@ final class AudioTapFileWriter {
         }
 
         let frameLength = Int(buffer.frameLength)
+        let channelCount = max(1, Int(buffer.format.channelCount))
+        let interleaved = buffer.format.isInterleaved
         guard let output = AVAudioPCMBuffer(
             pcmFormat: format,
             frameCapacity: AVAudioFrameCount(frameLength)
@@ -317,14 +297,25 @@ final class AudioTapFileWriter {
         }
         output.frameLength = AVAudioFrameCount(frameLength)
 
-        if let channels = buffer.floatChannelData {
-            destination.update(from: channels[0], count: frameLength)
+        if let data = buffer.floatChannelData {
+            for frame in 0..<frameLength {
+                var sum: Float = 0
+                for channel in 0..<channelCount {
+                    sum += interleaved ? data[0][frame * channelCount + channel] : data[channel][frame]
+                }
+                destination[frame] = sum / Float(channelCount)
+            }
             return output
         }
-        if let channels = buffer.int16ChannelData {
-            let source = channels[0]
-            for i in 0..<frameLength {
-                destination[i] = max(-1, min(1, Float(source[i]) / Float(Int16.max)))
+        if let data = buffer.int16ChannelData {
+            let scale = Float(Int16.max)
+            for frame in 0..<frameLength {
+                var sum: Float = 0
+                for channel in 0..<channelCount {
+                    let sample = interleaved ? data[0][frame * channelCount + channel] : data[channel][frame]
+                    sum += Float(sample) / scale
+                }
+                destination[frame] = max(-1, min(1, sum / Float(channelCount)))
             }
             return output
         }
@@ -673,10 +664,9 @@ final class StandbyAudioSession: ObservableObject {
     ) throws {
         try IOSRecordingAudioSession.activate(reuseActiveSession: reuseActiveSession, purpose: purpose)
         try enableVoiceProcessing()
+        // Multi-channel input (CarPlay / USB mic arrays) is fine here: the
+        // tap writer downmixes to mono before encoding.
         currentFormat = engine.inputNode.outputFormat(forBus: 0)
-        if let currentFormat, currentFormat.channelCount != 1 {
-            throw IOSRecordingAudioSession.monoInputError(channels: Int(currentFormat.channelCount))
-        }
         installInputTapIfNeeded()
         engine.prepare()
         if !engine.isRunning {
@@ -830,9 +820,6 @@ final class StandbyAudioSession: ObservableObject {
                 IOSRecordingAudioSession.configureActiveSessionCategoryEventually(purpose: .keyboardRecording)
             }
             currentFormat = currentFormat ?? engine.inputNode.outputFormat(forBus: 0)
-            if let currentFormat, currentFormat.channelCount != 1 {
-                throw IOSRecordingAudioSession.monoInputError(channels: Int(currentFormat.channelCount))
-            }
             needsEngineRestart = false
         }
         level = 0
@@ -921,25 +908,47 @@ final class StandbyAudioSession: ObservableObject {
 
         var sum: Float = 0
         var sampleCount = 0
+        let channelCount = max(1, Int(buffer.format.channelCount))
+        // Interleaved buffers expose one plane holding frame×channel samples;
+        // planar buffers expose one plane per channel. RMS over every sample
+        // is the same either way, so flatten the iteration per layout.
         if let channels = buffer.floatChannelData {
-            let channelCount = Int(buffer.format.channelCount)
-            for channel in 0..<channelCount {
-                let data = channels[channel]
-                for frame in 0..<frameLength {
-                    let sample = data[frame]
+            if buffer.format.isInterleaved {
+                let data = channels[0]
+                let total = frameLength * channelCount
+                for i in 0..<total {
+                    let sample = data[i]
                     sum += sample * sample
                     sampleCount += 1
                 }
+            } else {
+                for channel in 0..<channelCount {
+                    let data = channels[channel]
+                    for frame in 0..<frameLength {
+                        let sample = data[frame]
+                        sum += sample * sample
+                        sampleCount += 1
+                    }
+                }
             }
         } else if let channels = buffer.int16ChannelData {
-            let channelCount = Int(buffer.format.channelCount)
             let scale = Float(Int16.max)
-            for channel in 0..<channelCount {
-                let data = channels[channel]
-                for frame in 0..<frameLength {
-                    let sample = Float(data[frame]) / scale
+            if buffer.format.isInterleaved {
+                let data = channels[0]
+                let total = frameLength * channelCount
+                for i in 0..<total {
+                    let sample = Float(data[i]) / scale
                     sum += sample * sample
                     sampleCount += 1
+                }
+            } else {
+                for channel in 0..<channelCount {
+                    let data = channels[channel]
+                    for frame in 0..<frameLength {
+                        let sample = Float(data[frame]) / scale
+                        sum += sample * sample
+                        sampleCount += 1
+                    }
                 }
             }
         }

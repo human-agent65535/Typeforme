@@ -287,7 +287,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private var inputModeSwitchActivationAllowedAt: CFTimeInterval = 0
     private var didSuppressInitialInputModeSwitchEvent = false
     private var isHoldingKeyboardPresentationUntilStable = true
-    private var didCompleteKeyboardViewAppearForPresentation = false
+    private var didReachViewWillAppearForPresentation = false
+    private var presentationRevealFailsafe: DispatchWorkItem?
     private var lastPresentationGateLogKey = ""
     private var orbContainerHeightConstraint: NSLayoutConstraint?
     private var textKeyboardContainerHeightConstraint: NSLayoutConstraint?
@@ -695,7 +696,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         inputModeSwitchActivationAllowedAt = CACurrentMediaTime() + 0.45
         didSuppressInitialInputModeSwitchEvent = false
         isHoldingKeyboardPresentationUntilStable = true
-        didCompleteKeyboardViewAppearForPresentation = false
+        didReachViewWillAppearForPresentation = false
         let rootView = ClickFeedbackInputView(
             frame: CGRect(x: 0, y: 0, width: UIScreen.main.bounds.width, height: initialHeight),
             // `.keyboard` is required for full-keyboard replacements. `.default`
@@ -1547,7 +1548,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         inputModeSwitchActivationAllowedAt = CACurrentMediaTime() + 0.45
         didSuppressInitialInputModeSwitchEvent = false
         isHoldingKeyboardPresentationUntilStable = true
-        didCompleteKeyboardViewAppearForPresentation = false
+        didReachViewWillAppearForPresentation = false
         setKeyboardContentVisible(false)
         configureSystemKeyboardAffordances()
         setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
@@ -1562,12 +1563,33 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         refreshDynamicAppearance()
         configureKeyboardDarwinBridge()
         keyboardHaptics.prepareForKeyboardReady()
+        // Reveal as soon as geometry is stable — for keyboard switches the
+        // frame is already final here, so waiting for viewDidAppear added
+        // ~100–250ms of blank surface to every switch-in.
+        didReachViewWillAppearForPresentation = true
+        revealKeyboardContentIfPresentationStable()
+        schedulePresentationRevealFailsafe()
         logKeyboardPresentationLayout("viewWillAppear", force: true)
+    }
+
+    /// If the stability gate never passes (exotic window geometry), show the
+    /// keyboard anyway: briefly mis-laid-out keys beat an invisible keyboard.
+    private func schedulePresentationRevealFailsafe() {
+        presentationRevealFailsafe?.cancel()
+        let failsafe = DispatchWorkItem { [weak self] in
+            guard let self, self.isHoldingKeyboardPresentationUntilStable else { return }
+            let gate = self.keyboardPresentationGateState()
+            kbLog.error("presentation gate failsafe reveal: \(gate.reason, privacy: .public)")
+            self.isHoldingKeyboardPresentationUntilStable = false
+            self.lastPresentationGateLogKey = ""
+            self.setKeyboardContentVisible(true)
+        }
+        presentationRevealFailsafe = failsafe
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: failsafe)
     }
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
-        didCompleteKeyboardViewAppearForPresentation = true
         setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
         disableGestureRecognizerDelays()
         revealKeyboardContentIfPresentationStable()
@@ -1974,7 +1996,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         UIView.performWithoutAnimation {
-            self.view.alpha = visible ? 1 : 0
+            // The surface stays visible the whole time so switching keyboards
+            // shows a keyboard-colored panel immediately; only the key content
+            // is held back until geometry is stable.
+            self.view.alpha = 1
             self.keyboardContentView.alpha = visible ? 1 : 0
             self.keyboardTouchOverlay.alpha = visible ? 1 : 0
         }
@@ -1983,7 +2008,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     private func revealKeyboardContentIfPresentationStable() {
         guard isHoldingKeyboardPresentationUntilStable else { return }
-        guard didCompleteKeyboardViewAppearForPresentation else { return }
+        guard didReachViewWillAppearForPresentation else { return }
         let gate = keyboardPresentationGateState()
         guard gate.isStable else {
             if gate.logKey != lastPresentationGateLogKey {
@@ -1993,6 +2018,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             return
         }
         isHoldingKeyboardPresentationUntilStable = false
+        presentationRevealFailsafe?.cancel()
+        presentationRevealFailsafe = nil
         lastPresentationGateLogKey = ""
         setKeyboardContentVisible(true)
         kbLog.notice("revealed keyboard content after stable presentation height")
