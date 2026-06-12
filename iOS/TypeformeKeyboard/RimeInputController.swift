@@ -636,16 +636,19 @@ final class RimeInputController {
             englishCompletionCount += 1
             return true
         }
-        if shouldPrependLiteralEnglishCandidate(input: input, preedit: preedit, candidates: filteredCandidates) {
-            filteredCandidates.insert(
-                RimeKeyboardCandidate(
-                    text: input,
-                    comment: "",
-                    selectionIndex: RimeKeyboardCandidate.literalSelectionIndex,
-                    commitsLiteralInput: true
-                ),
-                at: 0
+        if let placement = literalEnglishCandidatePlacement(input: input, preedit: preedit, candidates: filteredCandidates) {
+            let literal = RimeKeyboardCandidate(
+                text: input,
+                comment: "",
+                selectionIndex: RimeKeyboardCandidate.literalSelectionIndex,
+                commitsLiteralInput: true
             )
+            switch placement {
+            case .first:
+                filteredCandidates.insert(literal, at: 0)
+            case .afterBestChinese:
+                filteredCandidates.insert(literal, at: min(1, filteredCandidates.count))
+            }
         }
         return filteredCandidates
     }
@@ -657,35 +660,54 @@ final class RimeInputController {
             }
     }
 
-    private func shouldPrependLiteralEnglishCandidate(
+    private enum LiteralEnglishPlacement {
+        case first
+        case afterBestChinese
+    }
+
+    /// Mirrors the native pinyin keyboard's handling of Latin input:
+    /// - A stranded one-letter consonant in a NON-trailing position ("c laude")
+    ///   means pinyin segmentation already failed and no further typing can
+    ///   repair it — the verbatim input leads, like the native keyboard does
+    ///   for unparseable letter runs. Pure pinyin never produces such segments
+    ///   (only a/e/o are valid standalone syllables), so 你好-style input is
+    ///   unaffected.
+    /// - A TRAILING stranded consonant ("ni h" mid-你好, "shen m" mid-什么) is
+    ///   just an unfinished next syllable; surfacing the literal there made
+    ///   the first candidate flicker to raw letters on every other keystroke.
+    ///   The native keyboard keeps Chinese first in that state, so we add no
+    ///   literal at all.
+    /// - English words that also parse as full pinyin ("shanghai", "mango",
+    ///   "menu") keep the Chinese conversion first — native ranks 上海 above
+    ///   "shanghai" — with the literal one tap away in second position.
+    ///   Return still commits the raw letters at any point, also native.
+    private func literalEnglishCandidatePlacement(
         input: String,
         preedit: String,
         candidates: [RimeKeyboardCandidate]
-    ) -> Bool {
+    ) -> LiteralEnglishPlacement? {
         let code = input.lowercased()
         guard Self.isEnglishWordLookupCode(code),
               !candidates.contains(where: { $0.text.lowercased() == code && Self.isEnglishWordLookupCode($0.text.lowercased()) }),
               preedit != input,
               Self.containsRimeSegmentDelimiter(preedit)
-        else { return false }
-        if englishWordCodes?.contains(code) == true {
-            return true
+        else { return nil }
+        if code.unicodeScalars.count >= Self.englishCompletionMinimumInputLength,
+           Self.containsNonTrailingStrandedConsonantSegment(preedit) {
+            return .first
         }
-        // The wordlist misses proper nouns ("claude"). A stranded one-letter
-        // consonant segment in the preedit ("c laude") means pinyin
-        // segmentation failed on an English-looking token — offer the
-        // verbatim input as the first candidate so it stays recoverable by
-        // tap. Pure pinyin never produces such segments (only a/e/o are
-        // valid standalone syllables), so 你好-style input is unaffected.
-        return code.unicodeScalars.count >= Self.englishCompletionMinimumInputLength
-            && Self.containsStrandedConsonantSegment(preedit)
+        if englishWordCodes?.contains(code) == true {
+            return .afterBestChinese
+        }
+        return nil
     }
 
-    private static func containsStrandedConsonantSegment(_ preedit: String) -> Bool {
+    private static func containsNonTrailingStrandedConsonantSegment(_ preedit: String) -> Bool {
         preedit
             .split(whereSeparator: { character in
                 character == "'" || character == "\\" || character == " " || character == "|" || character == "`"
             })
+            .dropLast()
             .contains { segment in
                 guard segment.count == 1,
                       let scalar = segment.unicodeScalars.first,
