@@ -284,8 +284,21 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private var activeMarkedText = ""
     private var activeMarkedTextOwner: MarkedTextOwner?
     private var heightConstraint: NSLayoutConstraint?
-    private var inputModeSwitchActivationAllowedAt: CFTimeInterval = 0
+    /// Time the keyboard content was revealed (became visible). The input-mode
+    /// (globe) switch suppression keys off this real-readiness signal instead of
+    /// a fixed activation window, so the globe responds the moment the keyboard
+    /// is up while still absorbing the entry touch that selected Typeforme.
+    private var keyboardContentRevealedAt: CFTimeInterval = 0
+    /// Suppress globe switches for this long after reveal so the system touch
+    /// that selected Typeforme can't immediately land on our globe and bounce.
+    private static let inputModeSwitchRevealGuard: CFTimeInterval = 0.15
     private var didSuppressInitialInputModeSwitchEvent = false
+    /// Last time a routed character key committed (on touch-down). A shift
+    /// toggle (touch-up) arriving within `adjacentKeyGuardWindow` is treated as
+    /// a stray second contact from the same fat press on the a↔shift seam and
+    /// ignored, so "a + shift" can't both fire from one press.
+    private var lastTextKeyCommitAt: CFTimeInterval = 0
+    private static let adjacentKeyGuardWindow: CFTimeInterval = 0.12
     private var isHoldingKeyboardPresentationUntilStable = true
     private var didReachViewWillAppearForPresentation = false
     private var presentationRevealFailsafe: DispatchWorkItem?
@@ -693,7 +706,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     override func loadView() {
         let initialHeight = currentKeyboardContentHeight + Self.topChromeCoverHeight
-        inputModeSwitchActivationAllowedAt = CACurrentMediaTime() + 0.45
+        keyboardContentRevealedAt = 0
         didSuppressInitialInputModeSwitchEvent = false
         isHoldingKeyboardPresentationUntilStable = true
         didReachViewWillAppearForPresentation = false
@@ -850,7 +863,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             controlPressDown(button)
             let title = button.accessibilityValue ?? button.currentTitle ?? ""
             showKeyPreview(for: button, title: title)
-            return commitTextKey(button, point: point)
+            let didCommit = commitTextKey(button, point: point)
+            if didCommit {
+                lastTextKeyCommitAt = CACurrentMediaTime()
+            }
+            return didCommit
         case .candidateAction, .focusSurface:
             return false
         }
@@ -1545,7 +1562,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
-        inputModeSwitchActivationAllowedAt = CACurrentMediaTime() + 0.45
+        keyboardContentRevealedAt = 0
         didSuppressInitialInputModeSwitchEvent = false
         isHoldingKeyboardPresentationUntilStable = true
         didReachViewWillAppearForPresentation = false
@@ -1605,8 +1622,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     override func handleInputModeList(from view: UIView, with event: UIEvent) {
-        let now = CACurrentMediaTime()
-        guard now >= inputModeSwitchActivationAllowedAt else {
+        guard !shouldSuppressInputModeSwitch() else {
             if !didSuppressInitialInputModeSwitchEvent {
                 didSuppressInitialInputModeSwitchEvent = true
                 kbLog.notice("suppressed initial input-mode switch event during keyboard activation")
@@ -1614,6 +1630,17 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             return
         }
         super.handleInputModeList(from: view, with: event)
+    }
+
+    /// The globe is suppressed only until the keyboard is visibly ready (plus a
+    /// short guard), not for a fixed window. Before reveal, the system touch
+    /// that selected Typeforme can land on our globe and bounce straight back;
+    /// once revealed the globe must respond at once so a deliberate fast
+    /// switch-away isn't eaten ("can't switch over").
+    private func shouldSuppressInputModeSwitch() -> Bool {
+        if isHoldingKeyboardPresentationUntilStable { return true }
+        if keyboardContentRevealedAt == 0 { return true }
+        return CACurrentMediaTime() - keyboardContentRevealedAt < Self.inputModeSwitchRevealGuard
     }
 
     private func disableGestureRecognizerDelays(in root: UIView? = nil) {
@@ -2013,6 +2040,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             self.keyboardTouchOverlay.alpha = visible ? 1 : 0
         }
         CATransaction.commit()
+        if visible, keyboardContentRevealedAt == 0 {
+            keyboardContentRevealedAt = CACurrentMediaTime()
+        }
     }
 
     private func revealKeyboardContentIfPresentationStable() {
@@ -6656,6 +6686,14 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     @objc private func toggleTextShift() {
         guard !isSymbolKeyboard else { return }
+        // Stray second contact from a fat press on the a↔shift seam: the routed
+        // character already committed on touch-down, so this shift touch-up is
+        // the same press's other contact. Ignore it so "a + shift" can't both
+        // fire. A deliberate shift tap comes well after the last commit.
+        if CACurrentMediaTime() - lastTextKeyCommitAt < Self.adjacentKeyGuardWindow {
+            kbLog.notice("ignored shift toggle adjacent to recent text-key commit")
+            return
+        }
         let now = CACurrentMediaTime()
         let autoCap = shouldAutoCapitalizeNextEnglishLetter()
         let isDoubleTap = now - lastShiftTapTime <= 0.42
