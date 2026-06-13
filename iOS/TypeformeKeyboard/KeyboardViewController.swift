@@ -1961,11 +1961,20 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
         keyboardSurfaceView.translatesAutoresizingMaskIntoConstraints = true
         keyboardSurfaceView.isUserInteractionEnabled = false
-        keyboardSurfaceView.isOpaque = true
+        // Both full-bounds layers below are translucent (0.01 white / clear) but
+        // sit on top of the keyboard. `isOpaque = true` on a non-opaque fill is a
+        // UIKit contract violation: on iOS 26+ the keyboard is composited into an
+        // out-of-process hosted window that the host wraps in a rounded Liquid
+        // Glass card with a drop shadow, and an "opaque" full-rect silhouette
+        // fights that rounded mask — surfacing as a square-cornered band + stray
+        // shadow above the keys. Keeping the 0.01 fill preserves blank-area hit
+        // eligibility (that depends on rendered pixel alpha, not this flag).
+        keyboardSurfaceView.isOpaque = false
         keyboardSurfaceView.backgroundColor = Self.keyboardTouchableBackgroundColor
 
         keyboardContentView.translatesAutoresizingMaskIntoConstraints = true
         keyboardContentView.backgroundColor = .clear
+        keyboardContentView.isOpaque = false
         keyboardContentView.clipsToBounds = false
 
         rootStack.axis = .vertical
