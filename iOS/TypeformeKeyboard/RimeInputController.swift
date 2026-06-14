@@ -126,6 +126,7 @@ final class RimeInputController {
     private static let candidateLimit: Int32 = 60
     private static let englishCompletionMinimumInputLength = 4
     private static let englishCompletionDisplayLimit = 1
+    private static let shortLiteralLatinMaximumInputLength = 6
     private static let startupRetryInterval: TimeInterval = 2.0
     private static var didSetup = false
     private static var didInitialize = false
@@ -665,28 +666,21 @@ final class RimeInputController {
         case afterBestChinese
     }
 
-    /// Mirrors the native pinyin keyboard's handling of Latin input:
-    /// - A stranded one-letter consonant in a NON-trailing position ("c laude")
-    ///   means pinyin segmentation already failed and no further typing can
-    ///   repair it — the verbatim input leads, like the native keyboard does
-    ///   for unparseable letter runs. Pure pinyin never produces such segments
-    ///   (only a/e/o are valid standalone syllables), so 你好-style input is
-    ///   unaffected.
-    /// - A TRAILING stranded consonant ("ni h" mid-你好, "shen m" mid-什么) is
-    ///   just an unfinished next syllable; surfacing the literal there made
-    ///   the first candidate flicker to raw letters on every other keystroke.
-    ///   The native keyboard keeps Chinese first in that state, so we add no
-    ///   literal at all.
-    /// - English words that also parse as full pinyin ("shanghai", "mango",
-    ///   "menu") keep the Chinese conversion first — native ranks 上海 above
-    ///   "shanghai" — with the literal one tap away in second position.
-    ///   Return still commits the raw letters at any point, also native.
+    /// Mirrors mainstream pinyin IME mixed-input behavior: Chinese candidates
+    /// stay primary unless we have strong evidence of literal Latin. Long
+    /// pinyin-like runs with a single stray consonant ("xian z kai ...") are
+    /// usually unfinished Chinese/jianpin, not English, so they must not put a
+    /// wide raw-letter candidate first. Known English words remain available
+    /// after the best Chinese candidate; short v-containing tokens such as
+    /// stock tickers ("nvda") surface literal first because pinyin treats `v`
+    /// as `ü`, which otherwise corrupts the intended Latin token.
     private func literalEnglishCandidatePlacement(
         input: String,
         preedit: String,
         candidates: [RimeKeyboardCandidate]
     ) -> LiteralEnglishPlacement? {
         let code = input.lowercased()
+        let isKnownEnglishWord = englishWordCodes?.contains(code) == true
         guard Self.isEnglishWordLookupCode(code),
               !candidates.contains(where: { $0.text.lowercased() == code && Self.isEnglishWordLookupCode($0.text.lowercased()) }),
               preedit != input,
@@ -694,12 +688,21 @@ final class RimeInputController {
         else { return nil }
         if code.unicodeScalars.count >= Self.englishCompletionMinimumInputLength,
            Self.containsNonTrailingStrandedConsonantSegment(preedit) {
-            return .first
+            if Self.isShortLiteralLatinToken(code) {
+                return .first
+            }
+            return isKnownEnglishWord ? .afterBestChinese : nil
         }
-        if englishWordCodes?.contains(code) == true {
+        if isKnownEnglishWord {
             return .afterBestChinese
         }
         return nil
+    }
+
+    private static func isShortLiteralLatinToken(_ code: String) -> Bool {
+        let length = code.unicodeScalars.count
+        guard length >= 2, length <= shortLiteralLatinMaximumInputLength else { return false }
+        return code.contains("v")
     }
 
     private static func containsNonTrailingStrandedConsonantSegment(_ preedit: String) -> Bool {

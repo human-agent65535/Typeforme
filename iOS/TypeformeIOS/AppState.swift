@@ -1283,7 +1283,12 @@ final class AppState {
         // already behave as stopped/sending.
         setPhase(.sending)
         if shouldPublishKeyboardProgress {
-            publishKeyboardStatus(.sending, commandID: effectiveKeyboardCommandID, message: recognitionStageLabels.transcribing)
+            publishKeyboardStatus(
+                .sending,
+                commandID: effectiveKeyboardCommandID,
+                message: recognitionStageLabels.transcribing,
+                processingStage: .transcribing
+            )
         }
         KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.dictationStopped)
         try? await Task.sleep(nanoseconds: Self.recordingTailBufferNanoseconds)
@@ -1349,7 +1354,12 @@ final class AppState {
         }()
         if isKeyboardPath {
             if let effectiveKeyboardCommandID {
-                publishKeyboardStatus(.sending, commandID: effectiveKeyboardCommandID, message: recognitionStageLabels.transcribing)
+                publishKeyboardStatus(
+                    .sending,
+                    commandID: effectiveKeyboardCommandID,
+                    message: recognitionStageLabels.transcribing,
+                    processingStage: .transcribing
+                )
             }
             if !routeIsFresh {
                 await preflightActiveBridgeRoute()
@@ -1375,7 +1385,8 @@ final class AppState {
                 commandID: effectiveKeyboardCommandID,
                 message: recognitionStageLabels.transcribing,
                 audioDurationSeconds: recordingInfo.durationSeconds,
-                audioByteCount: recordingInfo.byteCount
+                audioByteCount: recordingInfo.byteCount,
+                processingStage: .transcribing
             )
         }
         do {
@@ -1427,7 +1438,8 @@ final class AppState {
                         commandID: effectiveKeyboardCommandID,
                         message: editingStageLabels.refining,
                         audioDurationSeconds: recordingInfo.durationSeconds,
-                        audioByteCount: recordingInfo.byteCount
+                        audioByteCount: recordingInfo.byteCount,
+                        processingStage: .refining
                     )
                 }
                 let editJobID = "ios_\(UUID().uuidString.replacingOccurrences(of: "-", with: "_"))"
@@ -2594,14 +2606,20 @@ final class AppState {
                 publishKeyboardStatus(
                     .sending,
                     commandID: queuedKeyboardStopCommandID ?? commandID,
-                    message: recognitionStageLabels.transcribing
+                    message: recognitionStageLabels.transcribing,
+                    processingStage: .transcribing
                 )
             }
             return keyboardBridgeStatus
         }
 
         queuedKeyboardStopCommandID = commandID
-        publishKeyboardStatus(.sending, commandID: commandID, message: recognitionStageLabels.transcribing)
+        publishKeyboardStatus(
+            .sending,
+            commandID: commandID,
+            message: recognitionStageLabels.transcribing,
+            processingStage: .transcribing
+        )
         Task { @MainActor [weak self] in
             guard let self else { return }
             await self.stopAndSend(keyboardCommandID: commandID)
@@ -2631,7 +2649,11 @@ final class AppState {
         let preservedRawTranscript = rawTranscript
         correctionMode = requestedCorrectionMode
 
-        publishKeyboardStatus(.sending, commandID: command.id, message: NSLocalizedString("Refining", comment: "Bridge job stage"))
+        publishKeyboardStatus(
+            .sending,
+            commandID: command.id,
+            message: NSLocalizedString("Refining", comment: "Bridge job stage")
+        )
         // Happy-path: reuse cached route. Errors invalidate the cache below so
         // the next attempt re-probes naturally.
         await refreshRoute(force: false, probeAllEndpoints: false, showIndicator: false)
@@ -2643,6 +2665,12 @@ final class AppState {
 
         do {
             setPhase(.restyling)
+            publishKeyboardStatus(
+                .sending,
+                commandID: command.id,
+                message: NSLocalizedString("Refining", comment: "Bridge job stage"),
+                processingStage: .refining
+            )
             let client = BridgeClient(baseURL: baseURL, token: config.token)
             let restyleJobID = "ios_\(UUID().uuidString.replacingOccurrences(of: "-", with: "_"))"
             let keyboardCommandID = command.id
@@ -2850,7 +2878,8 @@ final class AppState {
         resultText: String? = nil,
         audioDurationSeconds: Double? = nil,
         audioByteCount: Int? = nil,
-        rawTranscriptLength: Int? = nil
+        rawTranscriptLength: Int? = nil,
+        processingStage: KeyboardBridgeProcessingStage? = nil
     ) {
         // Last-known Mac bridge reachability. `nil` (= never probed this
         // session) is intentionally NOT mapped to `false` — the keyboard's
@@ -2882,7 +2911,8 @@ final class AppState {
                 state: .recording,
                 message: "Recording",
                 defaultCorrectionMode: config.correctionMode.rawValue,
-                backendReachable: reachable
+                backendReachable: reachable,
+                correctionTimeoutMs: keyboardCorrectionTimeoutMsForStatus()
             ))
             return
         }
@@ -2898,9 +2928,15 @@ final class AppState {
             rawTranscriptLength: rawTranscriptLength,
             defaultCorrectionMode: config.correctionMode.rawValue,
             livePartialTranscript: partial,
-            backendReachable: reachable
+            backendReachable: reachable,
+            processingStage: state == .sending ? processingStage : nil,
+            correctionTimeoutMs: keyboardCorrectionTimeoutMsForStatus()
         )
         setKeyboardBridgeStatus(status)
+    }
+
+    private func keyboardCorrectionTimeoutMsForStatus() -> Int {
+        BridgeMacSettingsPayload.clampedCorrectionTimeoutMs(macSettings?.correctionTimeoutMs ?? 1500)
     }
 
     private func setKeyboardBridgeStatus(_ status: KeyboardBridgeStatus, persistSnapshot: Bool = true) {
@@ -3020,26 +3056,33 @@ final class AppState {
 
         let stageMessage: String?
         let keyboardState: KeyboardBridgeState
+        let keyboardProcessingStage: KeyboardBridgeProcessingStage?
         switch event.stage {
         case .audioReceived:
             stageMessage = stageLabels.transcribing
             keyboardState = .sending
+            keyboardProcessingStage = .transcribing
         case .transcribing:
             stageMessage = stageLabels.transcribing
             keyboardState = .sending
+            keyboardProcessingStage = .transcribing
         case .transcriptReady:
             stageMessage = stageLabels.refining
             keyboardState = .sending
+            keyboardProcessingStage = .refining
         case .refining:
             stageMessage = stageLabels.refining
             keyboardState = .sending
+            keyboardProcessingStage = .refining
         case .resultReady:
             stageMessage = stageLabels.resultReady
             keyboardState = .sending
+            keyboardProcessingStage = .refining
         case .failed:
             let trimmedError = event.error?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             stageMessage = trimmedError.isEmpty ? event.message : trimmedError
             keyboardState = .error
+            keyboardProcessingStage = nil
         }
 
         guard let stageMessage else { return }
@@ -3056,7 +3099,8 @@ final class AppState {
                 message: stageMessage,
                 audioDurationSeconds: recordingInfo?.durationSeconds,
                 audioByteCount: recordingInfo?.byteCount,
-                rawTranscriptLength: transcriptLength
+                rawTranscriptLength: transcriptLength,
+                processingStage: keyboardProcessingStage
             )
         }
     }
@@ -3078,7 +3122,8 @@ final class AppState {
                     commandID: keyboardCommandID,
                     message: message,
                     audioDurationSeconds: recordingInfo.durationSeconds,
-                    audioByteCount: recordingInfo.byteCount
+                    audioByteCount: recordingInfo.byteCount,
+                    processingStage: .transcribing
                 )
             }
         }

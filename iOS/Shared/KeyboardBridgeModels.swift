@@ -788,6 +788,11 @@ enum KeyboardBridgeState: String, Codable {
     case error
 }
 
+enum KeyboardBridgeProcessingStage: String, Codable, Equatable {
+    case transcribing
+    case refining
+}
+
 struct KeyboardBridgeStatus: Codable, Equatable {
     let commandID: String?
     let state: KeyboardBridgeState
@@ -812,6 +817,11 @@ struct KeyboardBridgeStatus: Codable, Equatable {
     /// session. Keyboard treats `nil` optimistically (assume reachable) —
     /// the orb's failure path surfaces the real error if dictation fails.
     let backendReachable: Bool?
+    /// Non-sensitive status metadata used by the keyboard extension to apply
+    /// the same refine timeout the Mac backend is using. `processingStage` is
+    /// explicit so command/editing workflows do not depend on localized text.
+    let processingStage: KeyboardBridgeProcessingStage?
+    let correctionTimeoutMs: Int?
     let updatedAt: TimeInterval
 
     init(
@@ -826,6 +836,8 @@ struct KeyboardBridgeStatus: Codable, Equatable {
         audioLevel: Float? = nil,
         livePartialTranscript: String? = nil,
         backendReachable: Bool? = nil,
+        processingStage: KeyboardBridgeProcessingStage? = nil,
+        correctionTimeoutMs: Int? = nil,
         updatedAt: TimeInterval = Date().timeIntervalSince1970
     ) {
         self.commandID = commandID
@@ -839,6 +851,8 @@ struct KeyboardBridgeStatus: Codable, Equatable {
         self.audioLevel = audioLevel
         self.livePartialTranscript = livePartialTranscript
         self.backendReachable = backendReachable
+        self.processingStage = processingStage
+        self.correctionTimeoutMs = correctionTimeoutMs
         self.updatedAt = updatedAt
     }
 
@@ -855,6 +869,8 @@ struct KeyboardBridgeStatus: Codable, Equatable {
             audioLevel: level,
             livePartialTranscript: livePartialTranscript,
             backendReachable: backendReachable,
+            processingStage: processingStage,
+            correctionTimeoutMs: correctionTimeoutMs,
             updatedAt: updatedAt
         )
     }
@@ -872,6 +888,8 @@ struct KeyboardBridgeStatus: Codable, Equatable {
             audioLevel: audioLevel,
             livePartialTranscript: text?.isEmpty == true ? nil : text,
             backendReachable: backendReachable,
+            processingStage: processingStage,
+            correctionTimeoutMs: correctionTimeoutMs,
             updatedAt: Date().timeIntervalSince1970
         )
     }
@@ -889,6 +907,8 @@ struct KeyboardBridgeStatus: Codable, Equatable {
             audioLevel: audioLevel,
             livePartialTranscript: livePartialTranscript,
             backendReachable: reachable,
+            processingStage: processingStage,
+            correctionTimeoutMs: correctionTimeoutMs,
             updatedAt: updatedAt
         )
     }
@@ -908,6 +928,8 @@ struct KeyboardBridgeStatus: Codable, Equatable {
             audioLevel: nil,
             livePartialTranscript: livePartialTranscript,
             backendReachable: backendReachable,
+            processingStage: processingStage,
+            correctionTimeoutMs: correctionTimeoutMs,
             updatedAt: updatedAt
         )
     }
