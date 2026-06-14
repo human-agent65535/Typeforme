@@ -122,6 +122,9 @@ enum PromptBuilder {
             if containsPromptLiteral(rawText) {
                 add(.cleanPromptLiteral)
             }
+            if containsDeploySequenceRepair(rawText) {
+                add(.cleanDeploySequenceRepair)
+            }
             if containsRepairMarker(rawText) {
                 add(isMostlyEnglish(rawText) ? .cleanVariableRepair : .cleanLabelRepair)
             }
@@ -137,6 +140,9 @@ enum PromptBuilder {
             return cappedExamples(selected, fallback: [.cleanFiller, .cleanCodeSwitch])
 
         case .polish:
+            if containsDeploySequenceRepair(rawText) {
+                add(.polishDeploySequenceRepair)
+            }
             if containsRepairMarker(rawText) {
                 if isMostlyEnglish(rawText) {
                     add(.polishButtonRepair)
@@ -168,8 +174,14 @@ enum PromptBuilder {
                 add(.polishPlusDeploySequence)
             }
             if containsRepairMarker(rawText) {
-                if containsShoppingOrQuantity(rawText) {
-                    add(containsProduceQuantityRepair(rawText) ? .polishPlusQuantityRepair : .polishPlusShoppingRepair)
+                if containsLabelRepair(rawText) {
+                    add(isMostlyEnglish(rawText) ? .polishPlusEnglishLabelRepair : .polishPlusLabelRepair)
+                } else if containsShoppingOrQuantity(rawText) {
+                    if containsAppleBananaQuantityRepair(rawText) {
+                        add(.polishPlusShoppingQuantity)
+                    } else {
+                        add(containsProduceQuantityRepair(rawText) ? .polishPlusQuantityRepair : .polishPlusShoppingRepair)
+                    }
                 } else {
                     add(.polishPlusEnglishRepair)
                 }
@@ -186,6 +198,9 @@ enum PromptBuilder {
             return cappedExamples(selected, fallback: [.polishPlusLatency, .polishPlusDeploySequence])
 
         case .structurePlus:
+            if containsLabelRepair(rawText) {
+                add(isMostlyEnglish(rawText) ? .structureEnglishLabelRepair : .structureLabelRepair)
+            }
             if containsURLOrPath(rawText) {
                 add(.structureURLPath)
             }
@@ -208,10 +223,12 @@ enum PromptBuilder {
                 add(.formalPromptLiteral)
             }
             if containsRepairMarker(rawText) {
-                if isMostlyEnglish(rawText) {
+                if containsLabelRepair(rawText) {
+                    add(isMostlyEnglish(rawText) ? .formalEnglishLabelRepair : .formalLabelRepair)
+                } else if isMostlyEnglish(rawText) {
                     add(.formalEnglishMeetingRepair)
                 } else if containsShoppingOrQuantity(rawText) {
-                    add(.formalProcurement)
+                    add(containsAppleBananaQuantityRepair(rawText) ? .formalShoppingQuantity : .formalProcurement)
                 } else {
                     add(.formalDeadlineRepair)
                 }
@@ -296,13 +313,34 @@ enum PromptBuilder {
         return lower.contains("番茄") || lower.contains("黄瓜")
     }
 
+    private static func containsAppleBananaQuantityRepair(_ text: String) -> Bool {
+        let lower = text.lowercased()
+        return lower.contains("苹果") && lower.contains("香蕉")
+    }
+
     private static func containsTechnicalToken(_ text: String) -> Bool {
         let lower = text.lowercased()
         let markers = [
             "host app", "keyboard", "latency", "server", "feature", "debug log",
-            "deploy", "ios", "api", "git", "release", "pr", "ui", "bug"
+            "deploy", "ios", "api", "git", "release", "pr", "ui", "bug",
+            "button label", "hold to"
         ]
         return markers.contains { lower.contains($0) }
+    }
+
+    private static func containsLabelRepair(_ text: String) -> Bool {
+        let lower = text.lowercased()
+        return lower.contains("hold to")
+            || lower.contains("button label")
+            || lower.contains("标签")
+            || lower.contains("键盘")
+    }
+
+    private static func containsDeploySequenceRepair(_ text: String) -> Bool {
+        let lower = text.lowercased()
+        return lower.contains("deploy")
+            && (lower.contains("ios") || lower.contains("debug log"))
+            && (containsSequenceMarker(text) || containsRepairMarker(text))
     }
 
     private static func containsTranslationLiteral(_ text: String) -> Bool {
@@ -398,6 +436,10 @@ fileprivate extension PromptBuilder.PromptExample {
         rawTranscript: "今天 ship 这个 feature 不要翻译 feature",
         outputText: "今天 ship 这个 feature，不要翻译 feature"
     )
+    static let cleanDeploySequenceRepair = Self(
+        rawTranscript: "先 deploy 到 iOS 不对先跑测试再 deploy 然后看 debug log",
+        outputText: "先跑测试再 deploy 到 iOS，然后看 debug log。"
+    )
     static let cleanChineseIntensifier = Self(
         rawTranscript: "这碗面好吃极了。",
         outputText: "这碗面好吃极了。"
@@ -423,6 +465,10 @@ fileprivate extension PromptBuilder.PromptExample {
         rawTranscript: "The button label hold to steak should be hold to speak",
         outputText: "The button label should be hold to speak."
     )
+    static let polishDeploySequenceRepair = Self(
+        rawTranscript: "先 deploy 到 iOS 不对先跑测试再 deploy 然后看 debug log",
+        outputText: "先跑测试再 deploy 到 iOS，然后看 debug log。"
+    )
     static let polishVietnameseRepair = Self(
         rawTranscript: "Loại vật liệu này là cây kéo dùng để dán giấy",
         outputText: "Loại vật liệu này là keo dùng để dán giấy."
@@ -444,6 +490,14 @@ fileprivate extension PromptBuilder.PromptExample {
         rawTranscript: "the bug repros on safari oh wait i mean firefox the safari one is a different issue",
         outputText: "The bug reproduces on Firefox. The Safari case is a separate issue."
     )
+    static let polishPlusLabelRepair = Self(
+        rawTranscript: "键盘里 hold to steak 应该是 hold to speak",
+        outputText: "键盘里 hold to speak。"
+    )
+    static let polishPlusEnglishLabelRepair = Self(
+        rawTranscript: "The button label hold to steak should be hold to speak",
+        outputText: "The button label should be hold to speak."
+    )
     static let polishPlusQuantityRepair = Self(
         rawTranscript: "明天去买番茄两个哦不对三个番茄黄瓜一个",
         outputText: "明天去买三个番茄和一个黄瓜。"
@@ -451,6 +505,10 @@ fileprivate extension PromptBuilder.PromptExample {
     static let polishPlusShoppingRepair = Self(
         rawTranscript: "去超市买火腿一个取消火腿改鸡腿萝卜一个改两个",
         outputText: "去超市买一个鸡腿和两个萝卜。"
+    )
+    static let polishPlusShoppingQuantity = Self(
+        rawTranscript: "明天买苹果两个梨子不要了香蕉一个改两个",
+        outputText: "明天买两个苹果和两个香蕉。"
     )
     static let polishPlusDeploySequence = Self(
         rawTranscript: "先 deploy 到 iOS 不对先跑测试再 deploy 然后看 debug log",
@@ -472,6 +530,14 @@ fileprivate extension PromptBuilder.PromptExample {
     static let structureURLPath = Self(
         rawTranscript: "打开 https://example.com/api/v1 然后看一下 /users 这个 path 有没有问题",
         outputText: "- 操作：打开 https://example.com/api/v1\n- 下一步：看一下 /users 这个 path 有没有问题"
+    )
+    static let structureLabelRepair = Self(
+        rawTranscript: "键盘里 hold to steak 应该是 hold to speak",
+        outputText: "- 键盘标签：hold to speak"
+    )
+    static let structureEnglishLabelRepair = Self(
+        rawTranscript: "The button label hold to steak should be hold to speak",
+        outputText: "Button label: hold to speak"
     )
     static let structureShopping = Self(
         rawTranscript: "去超市买鸡腿两个火腿不要了萝卜一个改两个",
@@ -509,6 +575,18 @@ fileprivate extension PromptBuilder.PromptExample {
     static let formalProcurement = Self(
         rawTranscript: "这次采购火腿不要了改成鸡腿萝卜一个改两个",
         outputText: "本次采购改为鸡腿和两个萝卜。"
+    )
+    static let formalShoppingQuantity = Self(
+        rawTranscript: "明天买苹果两个梨子不要了香蕉一个改两个",
+        outputText: "明天购买两个苹果和两个香蕉。"
+    )
+    static let formalLabelRepair = Self(
+        rawTranscript: "键盘里 hold to steak 应该是 hold to speak",
+        outputText: "键盘里的标签应为 hold to speak。"
+    )
+    static let formalEnglishLabelRepair = Self(
+        rawTranscript: "The button label hold to steak should be hold to speak",
+        outputText: "The button label should be hold to speak."
     )
     static let formalDeadlineRepair = Self(
         rawTranscript: "PR要赶在今天合 不对应该是明天合 deadline其实是周五",
