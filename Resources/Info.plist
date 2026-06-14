@@ -21,9 +21,9 @@
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.1.132</string>
+    <string>0.1.134</string>
     <key>CFBundleVersion</key>
-    <string>139</string>
+    <string>141</string>
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>
     <key>LSMultipleInstancesProhibited</key>
@@ -42,7 +42,7 @@
     <key>NSMicrophoneUsageDescription</key>
     <string>Typeforme 通过麦克风录制你的口述，仅在本机进行语音识别与文本整理。</string>
     <key>NSLocalNetworkUsageDescription</key>
-    <string>Typeforme 需要连接你配置的局域网 Bridge 或 LM Studio 服务。</string>
+    <string>Typeforme 需要连接你配置的局域网 Bridge 或兼容外部 LLM 服务。</string>
     <key>NSAppleEventsUsageDescription</key>
     <string>Typeforme 需要把整理后的文本插入当前 App。</string>
     <key>NSSpeechRecognitionUsageDescription</key>

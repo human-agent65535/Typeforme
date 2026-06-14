@@ -12,18 +12,27 @@ enum CorrectorChatRequestBuilder {
         model: String,
         system: String,
         user: String,
-        maxTokens: Int
+        maxTokens: Int,
+        baseURL: String? = nil
     ) -> OpenAIChatCompletionRequest {
-        let messages = QwenPromptHints
-            .openAIChatMessages(system: system, user: user, model: model)
+        let noThinkProfile = OpenAICompatibleReasoningHints.noThinkProfile(model: model, baseURL: baseURL)
+        let messages = chatMessages(
+            system: system,
+            user: user,
+            model: model,
+            noThinkProfile: noThinkProfile
+        )
             .map { message in
                 OpenAIChatMessage(
                     role: message["role"] ?? "user",
                     content: message["content"] ?? ""
                 )
             }
-        let templateKwargs = QwenPromptHints.prefersNoThink(model: model)
+        let templateKwargs = noThinkProfile == .qwen
             ? OpenAIChatTemplateKwargs(enableThinking: false)
+            : nil
+        let thinking = noThinkProfile == .deepSeekV4
+            ? OpenAIThinkingControl(type: "disabled")
             : nil
         return OpenAIChatCompletionRequest(
             model: model,
@@ -37,7 +46,24 @@ enum CorrectorChatRequestBuilder {
             repetitionPenalty: repetitionPenalty,
             maxTokens: maxTokens,
             stream: false,
+            thinking: thinking,
+            reasoningEffort: nil,
             chatTemplateKwargs: templateKwargs
         )
+    }
+
+    private static func chatMessages(
+        system: String,
+        user: String,
+        model: String,
+        noThinkProfile: OpenAICompatibleNoThinkProfile
+    ) -> [[String: String]] {
+        guard noThinkProfile == .qwen else {
+            return [
+                ["role": "system", "content": system],
+                ["role": "user", "content": user],
+            ]
+        }
+        return QwenPromptHints.openAIChatMessages(system: system, user: user, model: model)
     }
 }

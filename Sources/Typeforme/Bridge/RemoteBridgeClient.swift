@@ -97,8 +97,8 @@ private struct RemoteBridgeSettingsUpdateRequest: Encodable {
     let correctionBackend: String
     let correctionTimeoutMs: Int
     let correctionColdTimeoutMs: Int
-    let lmStudioBaseURL: String?
-    let lmStudioModel: String?
+    let externalLLMBaseURL: String?
+    let externalLLMModel: String?
     let correctionMode: String
     let numberOutputPreference: String
     let punctuationPreference: String
@@ -114,8 +114,8 @@ private struct RemoteBridgeSettingsUpdateRequest: Encodable {
         case correctionBackend = "correction_backend"
         case correctionTimeoutMs = "correction_timeout_ms"
         case correctionColdTimeoutMs = "correction_cold_timeout_ms"
-        case lmStudioBaseURL = "lm_studio_base_url"
-        case lmStudioModel = "lm_studio_model"
+        case externalLLMBaseURL = "external_llm_base_url"
+        case externalLLMModel = "external_llm_model"
         case correctionMode = "correction_mode"
         case numberOutputPreference = "number_output_preference"
         case punctuationPreference = "punctuation_preference"
@@ -197,8 +197,8 @@ struct RemoteBridgeClient {
             correctionBackend: settings.correctionBackend,
             correctionTimeoutMs: settings.correctionTimeoutMs,
             correctionColdTimeoutMs: settings.correctionColdTimeoutMs,
-            lmStudioBaseURL: settings.lmStudioBaseURL,
-            lmStudioModel: settings.lmStudioModel,
+            externalLLMBaseURL: settings.externalLLMBaseURL,
+            externalLLMModel: settings.externalLLMModel,
             correctionMode: settings.correctionMode,
             numberOutputPreference: settings.numberOutputPreference,
             punctuationPreference: settings.punctuationPreference,

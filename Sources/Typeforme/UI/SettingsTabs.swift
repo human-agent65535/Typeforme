@@ -2105,25 +2105,26 @@ struct CorrectionSettingsView: View {
     @AppStorage(AppSettings.Keys.correctionMode)   private var correctionModeRaw: String = CorrectionMode.polish.rawValue
     @AppStorage(AppSettings.Keys.numberOutputPreference)  private var numberOutputPreferenceRaw: String = NumberOutputPreference.automatic.rawValue
     @AppStorage(AppSettings.Keys.punctuationPreference)   private var punctuationPreferenceRaw: String = PunctuationOutputPreference.normal.rawValue
-    @AppStorage(AppSettings.Keys.lmStudioBaseURL)         private var lmStudioBaseURL: String = "http://127.0.0.1:1234"
-    @AppStorage(AppSettings.Keys.lmStudioAPIKey)          private var lmStudioAPIKey: String = ""
-    @AppStorage(AppSettings.Keys.lmStudioModel)           private var lmStudioModel: String = ""
+    @AppStorage(AppSettings.Keys.externalLLMBaseURL)      private var externalLLMBaseURL: String = "http://127.0.0.1:1234"
+    @AppStorage(AppSettings.Keys.externalLLMAPIKey)       private var externalLLMAPIKey: String = ""
+    @AppStorage(AppSettings.Keys.externalLLMModel)        private var externalLLMModel: String = ""
     @State private var showAdvanced = false
     @State private var modelLoadStatus: String?
     @State private var modelLoadIsError = false
     @State private var loadingBackendRaw: String?
-    @State private var isCheckingLMStudio = false
-    @State private var lmStudioStatus = "Not checked"
-    @State private var lmStudioDetail = "Start LM Studio's OpenAI-compatible server, then check the connection."
-    @State private var lmStudioModels: [String] = []
-    @State private var lmStudioCheckTask: Task<Void, Never>?
-    @State private var lmStudioCheckID = UUID()
+    @State private var isCheckingExternalLLM = false
+    @State private var externalLLMStatus = "Not checked"
+    @State private var externalLLMDetail = "Configure an OpenAI-compatible or Anthropic-compatible server, then refresh models."
+    @State private var externalLLMModels: [String] = []
+    @State private var externalLLMCheckTask: Task<Void, Never>?
+    @State private var externalLLMCheckID = UUID()
 
     private let selectableBackends: [CorrectionBackendKind] = [
         .qwen35_2B,
         .qwen35_4B,
         .qwen35_9B,
-        .externalLMStudio,
+        .externalOpenAICompatible,
+        .externalAnthropicCompatible,
     ]
 
     var body: some View {
@@ -2148,34 +2149,34 @@ struct CorrectionSettingsView: View {
                     }
                 }
             }
-            if backendRaw == CorrectionBackendKind.externalLMStudio.rawValue {
-                Section("LM Studio experiment") {
-                    TextField("Base URL", text: $lmStudioBaseURL)
+            if selectedBackendKind?.isExternalCompatible == true {
+                Section("External correction server") {
+                    TextField("Base URL", text: $externalLLMBaseURL)
                         .textFieldStyle(.roundedBorder)
-                    if lmStudioPickerModels.isEmpty {
-                        TextField("Model ID", text: $lmStudioModel)
+                    if externalLLMPickerModels.isEmpty {
+                        TextField("Model ID", text: $externalLLMModel)
                             .textFieldStyle(.roundedBorder)
                     } else {
-                        Picker("Model", selection: $lmStudioModel) {
-                            if lmStudioModel.isEmpty {
+                        Picker("Model", selection: $externalLLMModel) {
+                            if externalLLMModel.isEmpty {
                                 Text("Select a model").tag("")
                             }
-                            ForEach(lmStudioPickerModels, id: \.self) { model in
+                            ForEach(externalLLMPickerModels, id: \.self) { model in
                                 Text(model).tag(model)
                             }
                         }
                         .pickerStyle(.menu)
                     }
-                    SecureField("API key (optional)", text: $lmStudioAPIKey)
+                    SecureField("API key (optional)", text: $externalLLMAPIKey)
                         .textFieldStyle(.roundedBorder)
 
                     HStack(spacing: 10) {
                         Circle()
-                            .fill(lmStudioColor)
+                            .fill(externalLLMColor)
                             .frame(width: 8, height: 8)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(lmStudioStatus)
-                            Text(lmStudioDetail)
+                            Text(externalLLMStatus)
+                            Text(externalLLMDetail)
                                 .font(.footnote)
                                 .foregroundStyle(.secondary)
                                 .lineLimit(2)
@@ -2186,14 +2187,14 @@ struct CorrectionSettingsView: View {
 
                     HStack {
                         Button {
-                            startLMStudioCheck(selectFirstModel: lmStudioModel.isEmpty)
+                            startExternalLLMCheck(selectFirstModel: externalLLMModel.isEmpty)
                         } label: {
-                            Label(isCheckingLMStudio ? "Checking" : "Refresh Models", systemImage: "arrow.clockwise")
+                            Label(isCheckingExternalLLM ? "Checking" : "Refresh Models", systemImage: "arrow.clockwise")
                         }
-                        .disabled(isCheckingLMStudio)
+                        .disabled(isCheckingExternalLLM)
                     }
 
-                    Text("Uses any reachable LM Studio OpenAI-compatible server URL, including LAN URLs. Typeforme adds the OpenAI /v1 path for requests.")
+                    Text("Uses any reachable compatible server URL, including LAN URLs. Typeforme adds /v1/chat/completions for OpenAI-compatible requests and /v1/messages for Anthropic-compatible requests.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -2275,32 +2276,31 @@ struct CorrectionSettingsView: View {
         .formStyle(.grouped)
         .onAppear {
             normalizeBackendSelection()
-            if backendRaw == CorrectionBackendKind.externalLMStudio.rawValue {
-                startLMStudioCheck(selectFirstModel: lmStudioModel.isEmpty)
+            if selectedBackendKind?.isExternalCompatible == true {
+                startExternalLLMCheck(selectFirstModel: externalLLMModel.isEmpty)
             }
         }
         .onDisappear {
-            cancelLMStudioCheck()
+            cancelExternalLLMCheck()
         }
         .onChange(of: backendRaw) { _, _ in
             normalizeBackendSelection()
             preloadSelectedBackend()
         }
-        .onChange(of: lmStudioBaseURL) { _, _ in
-            resetLMStudioCheck(detail: "Refresh models after changing the server URL.")
+        .onChange(of: externalLLMBaseURL) { _, _ in
+            resetExternalLLMCheck(detail: "Refresh models after changing the server URL.")
         }
-        .onChange(of: lmStudioAPIKey) { _, _ in
-            resetLMStudioCheck(detail: "Refresh models after changing the API key.")
+        .onChange(of: externalLLMAPIKey) { _, _ in
+            resetExternalLLMCheck(detail: "Refresh models after changing the API key.")
         }
     }
 
     private func backendLabel(_ kind: CorrectionBackendKind) -> String {
-        switch kind {
-        case .qwen35_2B: return "Qwen3.5 2B (good)"
-        case .qwen35_4B: return "Qwen3.5 4B (better)"
-        case .qwen35_9B: return "Qwen3.5 9B (best)"
-        case .externalLMStudio: return "LM Studio (experimental)"
-        }
+        kind.displayName
+    }
+
+    private var selectedBackendKind: CorrectionBackendKind? {
+        CorrectionBackendKind(rawValue: backendRaw)
     }
 
     private var correctionModeDescription: String {
@@ -2316,9 +2316,9 @@ struct CorrectionSettingsView: View {
     }
 
     private var effectiveTimeoutHint: String? {
-        if backendRaw == CorrectionBackendKind.externalLMStudio.rawValue,
-           timeoutMs < LMStudioCorrectorService.minimumRequestTimeoutMs {
-            return "LM Studio requests use at least \(LMStudioCorrectorService.minimumRequestTimeoutMs) ms."
+        if selectedBackendKind?.isExternalCompatible == true,
+           timeoutMs < ExternalCompatibleCorrectorService.minimumRequestTimeoutMs {
+            return "External compatible requests use at least \(ExternalCompatibleCorrectorService.minimumRequestTimeoutMs) ms."
         }
         return nil
     }
@@ -2339,13 +2339,14 @@ struct CorrectionSettingsView: View {
         modelLoadStatus = "Loading \(backendLabel(kind))..."
         Task { @MainActor in
             await CorrectorFactory.shared.shutdownAll()
-            if kind == .externalLMStudio {
-                let report = await LMStudioCorrectorService.checkConfiguration()
+            if kind.isExternalCompatible,
+               let apiKind = try? ExternalCompatibleCorrectorService.apiKind(for: kind) {
+                let report = await ExternalCompatibleCorrectorService.checkConfiguration(apiKind: apiKind)
                 guard backendRaw == raw else { return }
                 loadingBackendRaw = nil
-                applyLMStudioReport(report, selectFirstModel: lmStudioModel.isEmpty)
+                applyExternalLLMReport(report, selectFirstModel: externalLLMModel.isEmpty)
                 modelLoadIsError = !report.ok
-                modelLoadStatus = report.ok ? "LM Studio is reachable." : "LM Studio is not ready."
+                modelLoadStatus = report.ok ? "\(kind.displayName) server is reachable." : "\(kind.displayName) server is not ready."
                 return
             }
             if let path = localModelPath(for: kind),
@@ -2375,77 +2376,81 @@ struct CorrectionSettingsView: View {
         }
     }
 
-    private var lmStudioColor: Color {
-        if isCheckingLMStudio { return .orange }
-        if lmStudioStatus == "Ready" { return .green }
-        if lmStudioStatus == "Failed" { return .red }
+    private var externalLLMColor: Color {
+        if isCheckingExternalLLM { return .orange }
+        if externalLLMStatus == "Ready" { return .green }
+        if externalLLMStatus == "Failed" { return .red }
         return .secondary
     }
 
-    private var lmStudioPickerModels: [String] {
-        var models = lmStudioModels
-        if !lmStudioModel.isEmpty && !models.contains(lmStudioModel) {
-            models.insert(lmStudioModel, at: 0)
+    private var externalLLMPickerModels: [String] {
+        var models = externalLLMModels
+        if !externalLLMModel.isEmpty && !models.contains(externalLLMModel) {
+            models.insert(externalLLMModel, at: 0)
         }
         return models
     }
 
     @MainActor
-    private func startLMStudioCheck(selectFirstModel: Bool) {
-        lmStudioCheckTask?.cancel()
+    private func startExternalLLMCheck(selectFirstModel: Bool) {
+        externalLLMCheckTask?.cancel()
+        guard let kind = selectedBackendKind,
+              let apiKind = try? ExternalCompatibleCorrectorService.apiKind(for: kind)
+        else { return }
         let checkID = UUID()
-        let baseURL = lmStudioBaseURL
-        let apiKey = lmStudioAPIKey
-        let model = lmStudioModel
-        lmStudioCheckID = checkID
-        isCheckingLMStudio = true
-        lmStudioStatus = "Checking"
-        lmStudioDetail = baseURL
-        lmStudioCheckTask = Task {
-            let report = await LMStudioCorrectorService.checkConfiguration(
+        let baseURL = externalLLMBaseURL
+        let apiKey = externalLLMAPIKey
+        let model = externalLLMModel
+        externalLLMCheckID = checkID
+        isCheckingExternalLLM = true
+        externalLLMStatus = "Checking"
+        externalLLMDetail = baseURL
+        externalLLMCheckTask = Task {
+            let report = await ExternalCompatibleCorrectorService.checkConfiguration(
+                apiKind: apiKind,
                 baseURL: baseURL,
                 apiKey: apiKey,
                 selectedModel: model
             )
             await MainActor.run {
-                guard lmStudioCheckID == checkID else { return }
-                lmStudioCheckTask = nil
-                isCheckingLMStudio = false
-                applyLMStudioReport(report, selectFirstModel: selectFirstModel)
+                guard externalLLMCheckID == checkID else { return }
+                externalLLMCheckTask = nil
+                isCheckingExternalLLM = false
+                applyExternalLLMReport(report, selectFirstModel: selectFirstModel)
                 modelLoadIsError = !report.ok
-                modelLoadStatus = report.ok ? "LM Studio is reachable." : "LM Studio is not ready."
+                modelLoadStatus = report.ok ? "\(kind.displayName) server is reachable." : "\(kind.displayName) server is not ready."
             }
         }
     }
 
     @MainActor
-    private func resetLMStudioCheck(detail: String) {
-        cancelLMStudioCheck()
-        lmStudioModels = []
-        lmStudioStatus = "Not checked"
-        lmStudioDetail = detail
+    private func resetExternalLLMCheck(detail: String) {
+        cancelExternalLLMCheck()
+        externalLLMModels = []
+        externalLLMStatus = "Not checked"
+        externalLLMDetail = detail
     }
 
     @MainActor
-    private func cancelLMStudioCheck() {
-        lmStudioCheckTask?.cancel()
-        lmStudioCheckTask = nil
-        lmStudioCheckID = UUID()
-        isCheckingLMStudio = false
+    private func cancelExternalLLMCheck() {
+        externalLLMCheckTask?.cancel()
+        externalLLMCheckTask = nil
+        externalLLMCheckID = UUID()
+        isCheckingExternalLLM = false
     }
 
-    private func applyLMStudioReport(_ report: LMStudioCheckReport, selectFirstModel: Bool) {
-        lmStudioStatus = report.status
-        lmStudioDetail = report.detail
-        lmStudioModels = report.modelIDs
+    private func applyExternalLLMReport(_ report: ExternalLLMCheckReport, selectFirstModel: Bool) {
+        externalLLMStatus = report.status
+        externalLLMDetail = report.detail
+        externalLLMModels = report.modelIDs
         if report.ok {
-            let refreshedModel = LMStudioCorrectorService.modelSelectionAfterRefresh(
-                current: lmStudioModel,
+            let refreshedModel = ExternalCompatibleCorrectorService.modelSelectionAfterRefresh(
+                current: externalLLMModel,
                 available: report.modelIDs,
                 selectFirstModel: selectFirstModel
             )
-            if refreshedModel != lmStudioModel {
-                lmStudioModel = refreshedModel
+            if refreshedModel != externalLLMModel {
+                externalLLMModel = refreshedModel
             }
         }
     }

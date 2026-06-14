@@ -69,9 +69,9 @@ enum AppSettings {
         static let llama4BDownloadURL      = "correction.llama4BDownloadURL"
         static let llama9BDownloadURL      = "correction.llama9BDownloadURL"
         static let llamaUseFlashAttn       = "correction.useFlashAttn"
-        static let lmStudioBaseURL         = "correction.lmStudioBaseURL"
-        static let lmStudioAPIKey          = "correction.lmStudioAPIKey"
-        static let lmStudioModel           = "correction.lmStudioModel"
+        static let externalLLMBaseURL      = "correction.externalLLMBaseURL"
+        static let externalLLMAPIKey       = "correction.externalLLMAPIKey"
+        static let externalLLMModel        = "correction.externalLLMModel"
 
         // Prompts
         static let promptOverrideFolder = "prompts.overrideFolder"
@@ -141,9 +141,9 @@ enum AppSettings {
             Keys.llama4BDownloadURL:      "https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf?download=true",
             Keys.llama9BDownloadURL:      "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf?download=true",
             Keys.llamaUseFlashAttn:       true,
-            Keys.lmStudioBaseURL:         "http://127.0.0.1:1234",
-            Keys.lmStudioAPIKey:          "",
-            Keys.lmStudioModel:           "",
+            Keys.externalLLMBaseURL:      "http://127.0.0.1:1234",
+            Keys.externalLLMAPIKey:       "",
+            Keys.externalLLMModel:        "",
 
             Keys.promptOverrideFolder: AppPaths.promptsDir.path,
             Keys.promptAdditionalSystem: "",
@@ -256,9 +256,9 @@ enum AppSettings {
         Keys.llama4BDownloadURL,
         Keys.llama9BDownloadURL,
         Keys.llamaUseFlashAttn,
-        Keys.lmStudioBaseURL,
-        Keys.lmStudioAPIKey,
-        Keys.lmStudioModel,
+        Keys.externalLLMBaseURL,
+        Keys.externalLLMAPIKey,
+        Keys.externalLLMModel,
         Keys.promptOverrideFolder,
         Keys.promptAdditionalSystem,
         Keys.bridgeEnabled,
@@ -388,16 +388,16 @@ enum AppSettings {
     static var llama4BDownloadURL: String { ud.string(forKey: Keys.llama4BDownloadURL) ?? "" }
     static var llama9BDownloadURL: String { ud.string(forKey: Keys.llama9BDownloadURL) ?? "" }
     static var llamaUseFlashAttn: Bool  { ud.bool(forKey: Keys.llamaUseFlashAttn) }
-    static var lmStudioBaseURL: String {
-        let value = ud.string(forKey: Keys.lmStudioBaseURL) ?? "http://127.0.0.1:1234"
+    static var externalLLMBaseURL: String {
+        let value = ud.string(forKey: Keys.externalLLMBaseURL) ?? "http://127.0.0.1:1234"
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? "http://127.0.0.1:1234" : trimmed
     }
-    static var lmStudioAPIKey: String {
-        ud.string(forKey: Keys.lmStudioAPIKey)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    static var externalLLMAPIKey: String {
+        ud.string(forKey: Keys.externalLLMAPIKey)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     }
-    static var lmStudioModel: String {
-        ud.string(forKey: Keys.lmStudioModel)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    static var externalLLMModel: String {
+        ud.string(forKey: Keys.externalLLMModel)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     }
 
     static var promptOverrideFolder: URL {

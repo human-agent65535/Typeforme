@@ -13,6 +13,10 @@ struct OpenAIChatTemplateKwargs: Codable, Equatable, Sendable {
     }
 }
 
+struct OpenAIThinkingControl: Codable, Equatable, Sendable {
+    let type: String
+}
+
 struct OpenAIChatCompletionRequest: Codable, Equatable, Sendable {
     let model: String
     let messages: [OpenAIChatMessage]
@@ -25,6 +29,8 @@ struct OpenAIChatCompletionRequest: Codable, Equatable, Sendable {
     let repetitionPenalty: Double
     let maxTokens: Int
     let stream: Bool
+    let thinking: OpenAIThinkingControl?
+    let reasoningEffort: String?
     let chatTemplateKwargs: OpenAIChatTemplateKwargs?
 
     enum CodingKeys: String, CodingKey {
@@ -39,6 +45,8 @@ struct OpenAIChatCompletionRequest: Codable, Equatable, Sendable {
         case repetitionPenalty = "repetition_penalty"
         case maxTokens = "max_tokens"
         case stream
+        case thinking
+        case reasoningEffort = "reasoning_effort"
         case chatTemplateKwargs = "chat_template_kwargs"
     }
 }
@@ -132,7 +140,7 @@ enum OpenAICompatibleClient {
             request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         }
 
-        let data = try await data(for: request, timeoutMs: timeoutMs, onTimeout: onTimeout)
+        let data = try await responseData(for: request, timeoutMs: timeoutMs, onTimeout: onTimeout)
         return try chatCompletionContent(from: data)
     }
 
@@ -144,7 +152,7 @@ enum OpenAICompatibleClient {
             request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         }
         let timeoutMs = max(1, Int((timeout * 1000).rounded()))
-        let data = try await data(for: request, timeoutMs: timeoutMs, onTimeout: nil)
+        let data = try await responseData(for: request, timeoutMs: timeoutMs, onTimeout: nil)
         return modelIDs(data: data)
     }
 
@@ -158,7 +166,7 @@ enum OpenAICompatibleClient {
         }
     }
 
-    private static func data(
+    static func responseData(
         for request: URLRequest,
         timeoutMs: Int,
         onTimeout: (@Sendable () async -> Void)?

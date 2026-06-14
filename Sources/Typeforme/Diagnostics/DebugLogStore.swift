@@ -629,8 +629,8 @@ enum DebugLogStore {
             return URL(fileURLWithPath: AppSettings.llama4BPath).lastPathComponent
         case .qwen35_9B:
             return URL(fileURLWithPath: AppSettings.llama9BPath).lastPathComponent
-        case .externalLMStudio:
-            return AppSettings.lmStudioModel
+        case .externalOpenAICompatible, .externalAnthropicCompatible:
+            return AppSettings.externalLLMModel
         }
     }
 

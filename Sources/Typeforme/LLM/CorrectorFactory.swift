@@ -19,12 +19,13 @@ final class CorrectorFactory {
             return makeLlama(modelPath: AppSettings.llama4BPath, kind: .qwen35_4B)
         case .qwen35_9B:
             return makeLlama(modelPath: AppSettings.llama9BPath, kind: .qwen35_9B)
-        case .externalLMStudio:
-            if let service = correctorServices["lmstudio"] {
+        case .externalOpenAICompatible, .externalAnthropicCompatible:
+            let key = AppSettings.correctionBackend.rawValue
+            if let service = correctorServices[key] {
                 return service
             }
-            let service = LMStudioCorrectorService()
-            correctorServices["lmstudio"] = service
+            let service = ExternalCompatibleCorrectorService(kind: AppSettings.correctionBackend)
+            correctorServices[key] = service
             return service
         }
     }
@@ -32,8 +33,8 @@ final class CorrectorFactory {
     @discardableResult
     func preloadActiveModels() async -> CorrectorPreloadResult {
         switch AppSettings.correctionBackend {
-        case .externalLMStudio:
-            return .ready(kind: .externalLMStudio, message: "LM Studio is reachable.")
+        case .externalOpenAICompatible, .externalAnthropicCompatible:
+            return .ready(kind: AppSettings.correctionBackend, message: "\(AppSettings.correctionBackend.displayName) server is configured.")
         case .qwen35_2B:
             return await preloadLlama(modelPath: AppSettings.llama2BPath, kind: .qwen35_2B)
         case .qwen35_4B:
@@ -126,7 +127,7 @@ final class CorrectorFactory {
             return AppSettings.llama4BDownloadURL
         case .qwen35_9B:
             return AppSettings.llama9BDownloadURL
-        case .externalLMStudio:
+        case .externalOpenAICompatible, .externalAnthropicCompatible:
             return ""
         }
     }

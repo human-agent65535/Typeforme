@@ -21,6 +21,8 @@ struct CorrectorChatRequestBuilderTests {
         #expect(body.repetitionPenalty == 1.0)
         #expect(body.maxTokens == 128)
         #expect(body.stream == false)
+        #expect(body.thinking == nil)
+        #expect(body.reasoningEffort == nil)
     }
 
     @Test func encodesOpenAICompatibleSnakeCaseKeys() throws {
@@ -53,6 +55,7 @@ struct CorrectorChatRequestBuilderTests {
 
         #expect(body.messages[1].content.contains("/no_think"))
         #expect(body.messages.last?.content == QwenPromptHints.noThinkAssistantPrefill)
+        #expect(body.thinking == nil)
         #expect(kwargs.enableThinking == false)
     }
 
@@ -65,6 +68,41 @@ struct CorrectorChatRequestBuilderTests {
         )
         #expect(body.messages.count == 2)
         #expect(body.messages[1].content == "user")
+        #expect(body.thinking == nil)
+        #expect(body.chatTemplateKwargs == nil)
+    }
+
+    @Test func addsDeepSeekV4ThinkingDisabled() throws {
+        let body = CorrectorChatRequestBuilder.body(
+            model: "deepseek-v4-pro",
+            system: "system",
+            user: "user",
+            maxTokens: 128,
+            baseURL: "https://api.deepseek.com"
+        )
+        let data = try JSONEncoder().encode(body)
+        let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let thinking = try #require(object["thinking"] as? [String: String])
+
+        #expect(body.messages.count == 2)
+        #expect(body.messages[1].content == "user")
+        #expect(thinking["type"] == "disabled")
+        #expect(object["reasoning_effort"] == nil)
+        #expect(object["chat_template_kwargs"] == nil)
+    }
+
+    @Test func doesNotDisableDeepSeekReasoningOnlyModel() throws {
+        let body = CorrectorChatRequestBuilder.body(
+            model: "deepseek-reasoner",
+            system: "system",
+            user: "user",
+            maxTokens: 128,
+            baseURL: "https://api.deepseek.com"
+        )
+
+        #expect(body.messages.count == 2)
+        #expect(body.thinking == nil)
+        #expect(body.reasoningEffort == nil)
         #expect(body.chatTemplateKwargs == nil)
     }
 }

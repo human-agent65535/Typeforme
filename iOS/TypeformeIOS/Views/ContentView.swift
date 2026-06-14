@@ -1602,16 +1602,16 @@ private struct MacSettingsView: View {
                     }
                     .pickerStyle(.menu)
 
-                    if draft.correctionBackend == "external_lm_studio" {
-                        LabeledContent("LM Studio URL") {
-                            TextField("http://127.0.0.1:1234", text: lmStudioBaseURLBinding)
+                    if isExternalCompatibleBackend(draft.correctionBackend) {
+                        LabeledContent("External URL") {
+                            TextField("http://127.0.0.1:1234", text: externalLLMBaseURLBinding)
                                 .textInputAutocapitalization(.never)
                                 .keyboardType(.URL)
                                 .autocorrectionDisabled()
                                 .multilineTextAlignment(.trailing)
                         }
-                        LabeledContent("LM Studio Model") {
-                            TextField("model id", text: lmStudioModelBinding)
+                        LabeledContent("External Model") {
+                            TextField("model id", text: externalLLMModelBinding)
                                 .textInputAutocapitalization(.never)
                                 .autocorrectionDisabled()
                                 .multilineTextAlignment(.trailing)
@@ -1832,20 +1832,24 @@ private struct MacSettingsView: View {
         }
     }
 
-    private var lmStudioBaseURLBinding: Binding<String> {
+    private var externalLLMBaseURLBinding: Binding<String> {
         Binding {
-            draft?.lmStudioBaseURL ?? ""
+            draft?.externalLLMBaseURL ?? ""
         } set: { value in
-            draft?.lmStudioBaseURL = value
+            draft?.externalLLMBaseURL = value
         }
     }
 
-    private var lmStudioModelBinding: Binding<String> {
+    private var externalLLMModelBinding: Binding<String> {
         Binding {
-            draft?.lmStudioModel ?? ""
+            draft?.externalLLMModel ?? ""
         } set: { value in
-            draft?.lmStudioModel = value
+            draft?.externalLLMModel = value
         }
+    }
+
+    private func isExternalCompatibleBackend(_ backend: String) -> Bool {
+        backend == "external_openai_compatible" || backend == "external_anthropic_compatible"
     }
 
     private var asrTimeoutSecondsBinding: Binding<Double> {

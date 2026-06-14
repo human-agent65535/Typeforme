@@ -127,11 +127,11 @@ final class BridgeService {
                 forKey: AppSettings.Keys.correctionColdTimeoutMs
             )
         }
-        if let rawURL = request.lmStudioBaseURL {
-            UserDefaults.standard.set(try normalizedLMStudioBaseURL(rawURL), forKey: AppSettings.Keys.lmStudioBaseURL)
+        if let rawURL = request.externalLLMBaseURL {
+            UserDefaults.standard.set(try normalizedExternalLLMBaseURL(rawURL), forKey: AppSettings.Keys.externalLLMBaseURL)
         }
-        if let rawModel = request.lmStudioModel {
-            UserDefaults.standard.set(rawModel.trimmingCharacters(in: .whitespacesAndNewlines), forKey: AppSettings.Keys.lmStudioModel)
+        if let rawModel = request.externalLLMModel {
+            UserDefaults.standard.set(rawModel.trimmingCharacters(in: .whitespacesAndNewlines), forKey: AppSettings.Keys.externalLLMModel)
         }
 
         if let rawMode = request.correctionMode {
@@ -851,7 +851,7 @@ final class BridgeService {
         return backend
     }
 
-    private func normalizedLMStudioBaseURL(_ raw: String) throws -> String {
+    private func normalizedExternalLLMBaseURL(_ raw: String) throws -> String {
         var value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         if value.isEmpty {
             return value
@@ -865,7 +865,7 @@ final class BridgeService {
               let host = url.host,
               Self.isLoopbackOrPrivateHost(host)
         else {
-            throw BridgeServiceError.invalidRequest("Invalid LM Studio base URL: \(raw)")
+            throw BridgeServiceError.invalidRequest("Invalid external LLM base URL: \(raw)")
         }
         return value
     }

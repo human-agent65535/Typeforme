@@ -214,8 +214,8 @@ struct BridgeSettingsPayload: Codable, Sendable {
     var correctionBackendOptions: [BridgeSettingOption]
     var correctionTimeoutMs: Int
     var correctionColdTimeoutMs: Int
-    var lmStudioBaseURL: String?
-    var lmStudioModel: String?
+    var externalLLMBaseURL: String?
+    var externalLLMModel: String?
     var correctionMode: String
     var numberOutputPreference: String
     var punctuationPreference: String
@@ -239,8 +239,8 @@ struct BridgeSettingsPayload: Codable, Sendable {
         case correctionBackendOptions = "correction_backend_options"
         case correctionTimeoutMs = "correction_timeout_ms"
         case correctionColdTimeoutMs = "correction_cold_timeout_ms"
-        case lmStudioBaseURL = "lm_studio_base_url"
-        case lmStudioModel = "lm_studio_model"
+        case externalLLMBaseURL = "external_llm_base_url"
+        case externalLLMModel = "external_llm_model"
         case correctionMode = "correction_mode"
         case numberOutputPreference = "number_output_preference"
         case punctuationPreference = "punctuation_preference"
@@ -276,7 +276,8 @@ struct BridgeSettingsPayload: Codable, Sendable {
         .qwen35_2B,
         .qwen35_4B,
         .qwen35_9B,
-        .externalLMStudio,
+        .externalOpenAICompatible,
+        .externalAnthropicCompatible,
     ]
 
     static let asrTimeoutRangeSec: ClosedRange<Double> = 10...300
@@ -317,8 +318,8 @@ struct BridgeSettingsPayload: Codable, Sendable {
             },
             correctionTimeoutMs: AppSettings.correctionTimeoutMs,
             correctionColdTimeoutMs: AppSettings.correctionColdTimeoutMs,
-            lmStudioBaseURL: AppSettings.lmStudioBaseURL,
-            lmStudioModel: AppSettings.lmStudioModel,
+            externalLLMBaseURL: AppSettings.externalLLMBaseURL,
+            externalLLMModel: AppSettings.externalLLMModel,
             correctionMode: resolved.correctionMode.rawValue,
             numberOutputPreference: AppSettings.numberOutputPreference.rawValue,
             punctuationPreference: AppSettings.punctuationPreference.rawValue,
@@ -495,7 +496,7 @@ struct BridgeSettingsPayload: Codable, Sendable {
     private static func selectedRestyleModelStatus(
         correctionBackend: CorrectionBackendKind
     ) -> BridgeModelStatus {
-        guard correctionBackend != .externalLMStudio else {
+        guard !correctionBackend.isExternalCompatible else {
             return BridgeModelStatus(
                 id: "restyle:\(correctionBackend.rawValue)",
                 kind: "restyle",
@@ -527,7 +528,7 @@ struct BridgeSettingsPayload: Codable, Sendable {
             return AppSettings.llama4BPath
         case .qwen35_9B:
             return AppSettings.llama9BPath
-        case .externalLMStudio:
+        case .externalOpenAICompatible, .externalAnthropicCompatible:
             return ""
         }
     }
@@ -590,8 +591,8 @@ struct BridgeSettingsPayload: Codable, Sendable {
         }
         numberOutputPreference = NumberOutputPreference.normalized(numberOutputPreference).rawValue
         punctuationPreference = PunctuationOutputPreference.normalized(punctuationPreference).rawValue
-        lmStudioBaseURL = lmStudioBaseURL?.trimmingCharacters(in: .whitespacesAndNewlines)
-        lmStudioModel = lmStudioModel?.trimmingCharacters(in: .whitespacesAndNewlines)
+        externalLLMBaseURL = externalLLMBaseURL?.trimmingCharacters(in: .whitespacesAndNewlines)
+        externalLLMModel = externalLLMModel?.trimmingCharacters(in: .whitespacesAndNewlines)
         asrTimeoutSec = Self.clampedASRTimeoutSec(asrTimeoutSec)
         correctionTimeoutMs = Self.clampedCorrectionTimeoutMs(correctionTimeoutMs)
         correctionColdTimeoutMs = Self.clampedCorrectionColdTimeoutMs(correctionColdTimeoutMs)
@@ -651,8 +652,8 @@ private struct BridgeResolvedSettings {
             },
             correctionTimeoutMs: AppSettings.correctionTimeoutMs,
             correctionColdTimeoutMs: AppSettings.correctionColdTimeoutMs,
-            lmStudioBaseURL: AppSettings.lmStudioBaseURL,
-            lmStudioModel: AppSettings.lmStudioModel,
+            externalLLMBaseURL: AppSettings.externalLLMBaseURL,
+            externalLLMModel: AppSettings.externalLLMModel,
             correctionMode: correctionMode.rawValue,
             numberOutputPreference: AppSettings.numberOutputPreference.rawValue,
             punctuationPreference: AppSettings.punctuationPreference.rawValue,
@@ -676,8 +677,8 @@ private struct BridgeSettingsRevisionPayload: Encodable {
     let correctionBackendOptions: [BridgeSettingOption]
     let correctionTimeoutMs: Int
     let correctionColdTimeoutMs: Int
-    let lmStudioBaseURL: String?
-    let lmStudioModel: String?
+    let externalLLMBaseURL: String?
+    let externalLLMModel: String?
     let correctionMode: String
     let numberOutputPreference: String
     let punctuationPreference: String
@@ -698,8 +699,8 @@ private struct BridgeSettingsRevisionPayload: Encodable {
         case correctionBackendOptions = "correction_backend_options"
         case correctionTimeoutMs = "correction_timeout_ms"
         case correctionColdTimeoutMs = "correction_cold_timeout_ms"
-        case lmStudioBaseURL = "lm_studio_base_url"
-        case lmStudioModel = "lm_studio_model"
+        case externalLLMBaseURL = "external_llm_base_url"
+        case externalLLMModel = "external_llm_model"
         case correctionMode = "correction_mode"
         case numberOutputPreference = "number_output_preference"
         case punctuationPreference = "punctuation_preference"
@@ -721,8 +722,8 @@ private struct BridgeSettingsRevisionPayload: Encodable {
         correctionBackendOptions: [BridgeSettingOption],
         correctionTimeoutMs: Int,
         correctionColdTimeoutMs: Int,
-        lmStudioBaseURL: String?,
-        lmStudioModel: String?,
+        externalLLMBaseURL: String?,
+        externalLLMModel: String?,
         correctionMode: String,
         numberOutputPreference: String,
         punctuationPreference: String,
@@ -742,8 +743,8 @@ private struct BridgeSettingsRevisionPayload: Encodable {
         self.correctionBackendOptions = correctionBackendOptions
         self.correctionTimeoutMs = correctionTimeoutMs
         self.correctionColdTimeoutMs = correctionColdTimeoutMs
-        self.lmStudioBaseURL = lmStudioBaseURL
-        self.lmStudioModel = lmStudioModel
+        self.externalLLMBaseURL = externalLLMBaseURL
+        self.externalLLMModel = externalLLMModel
         self.correctionMode = correctionMode
         self.numberOutputPreference = numberOutputPreference
         self.punctuationPreference = punctuationPreference
@@ -766,8 +767,8 @@ private struct BridgeSettingsRevisionPayload: Encodable {
             correctionBackendOptions: payload.correctionBackendOptions,
             correctionTimeoutMs: payload.correctionTimeoutMs,
             correctionColdTimeoutMs: payload.correctionColdTimeoutMs,
-            lmStudioBaseURL: payload.lmStudioBaseURL,
-            lmStudioModel: payload.lmStudioModel,
+            externalLLMBaseURL: payload.externalLLMBaseURL,
+            externalLLMModel: payload.externalLLMModel,
             correctionMode: payload.correctionMode,
             numberOutputPreference: payload.numberOutputPreference,
             punctuationPreference: payload.punctuationPreference,
@@ -786,8 +787,8 @@ struct BridgeSettingsUpdateRequest: Decodable {
     var correctionBackend: String?
     var correctionTimeoutMs: Int?
     var correctionColdTimeoutMs: Int?
-    var lmStudioBaseURL: String?
-    var lmStudioModel: String?
+    var externalLLMBaseURL: String?
+    var externalLLMModel: String?
     var correctionMode: String?
     var numberOutputPreference: String?
     var punctuationPreference: String?
@@ -803,8 +804,8 @@ struct BridgeSettingsUpdateRequest: Decodable {
         case correctionBackend = "correction_backend"
         case correctionTimeoutMs = "correction_timeout_ms"
         case correctionColdTimeoutMs = "correction_cold_timeout_ms"
-        case lmStudioBaseURL = "lm_studio_base_url"
-        case lmStudioModel = "lm_studio_model"
+        case externalLLMBaseURL = "external_llm_base_url"
+        case externalLLMModel = "external_llm_model"
         case correctionMode = "correction_mode"
         case numberOutputPreference = "number_output_preference"
         case punctuationPreference = "punctuation_preference"
