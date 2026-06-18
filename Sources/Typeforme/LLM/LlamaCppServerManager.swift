@@ -18,8 +18,7 @@ enum LlamaServerError: LocalizedError {
 }
 
 /// Launches the bundled llama-server helper on a free localhost port, using
-/// the configured context size and GPU settings. Flash attention is retried
-/// without `--flash-attn` if the primary launch fails.
+/// the configured context size and GPU settings.
 actor LlamaCppServerManager {
     enum Status: Equatable {
         case stopped
@@ -142,22 +141,12 @@ actor LlamaCppServerManager {
 
         await terminateStaleServer()
 
-        // Try with flash-attn first if requested; fall back without on failure.
         let port: Int
         do {
             port = try await launchWithPortRetries(flashAttn: useFlashAttn)
-        } catch let primary {
-            guard useFlashAttn else {
-                status = .failed(primary.localizedDescription)
-                throw primary
-            }
-            Log.llm.notice("primary launch failed (\(primary.localizedDescription, privacy: .public)); retrying without --flash-attn")
-            do {
-                port = try await launchWithPortRetries(flashAttn: false)
-            } catch {
-                status = .failed(error.localizedDescription)
-                throw error
-            }
+        } catch {
+            status = .failed(error.localizedDescription)
+            throw error
         }
 
         let pid = process?.processIdentifier ?? -1

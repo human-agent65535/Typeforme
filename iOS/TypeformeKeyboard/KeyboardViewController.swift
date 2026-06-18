@@ -286,17 +286,15 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     )
     private let chineseLearningRecorder = ChineseLearningRecorder()
     private var pendingRimeCharacters: [String] = []
+    private var pendingRimeDirectTextKeys: [String] = []
     private var activeMarkedText = ""
     private var activeMarkedTextOwner: MarkedTextOwner?
     private var heightConstraint: NSLayoutConstraint?
-    /// Time the keyboard content was revealed (became visible). The input-mode
-    /// (globe) switch suppression keys off this real-readiness signal instead of
-    /// a fixed activation window, so the globe responds the moment the keyboard
-    /// is up while still absorbing the entry touch that selected Typeforme.
-    private var keyboardContentRevealedAt: CFTimeInterval = 0
-    /// Suppress globe switches for this long after reveal so the system touch
-    /// that selected Typeforme can't immediately land on our globe and bounce.
-    private static let inputModeSwitchRevealGuard: CFTimeInterval = 0.15
+    /// While entering Typeforme from the system globe menu, UIKit may deliver
+    /// the original selection touch to our globe key as a non-began event.
+    /// Suppress only that carry-over touch; the first fresh touch-began is a
+    /// deliberate user action and must switch keyboards immediately.
+    private var isSuppressingCarryoverInputModeTouch = true
     private var didSuppressInitialInputModeSwitchEvent = false
     /// Last time a routed character key committed (on touch-down). A shift
     /// toggle (touch-up) arriving within `adjacentKeyGuardWindow` is treated as
@@ -304,9 +302,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     /// ignored, so "a + shift" can't both fire from one press.
     private var lastTextKeyCommitAt: CFTimeInterval = 0
     private static let adjacentKeyGuardWindow: CFTimeInterval = 0.12
-    private var isHoldingKeyboardPresentationUntilStable = true
-    private var didReachViewWillAppearForPresentation = false
-    private var presentationRevealFailsafe: DispatchWorkItem?
     private var lastPresentationGateLogKey = ""
     private var orbContainerHeightConstraint: NSLayoutConstraint?
     private var textKeyboardContainerHeightConstraint: NSLayoutConstraint?
@@ -718,10 +713,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     override func loadView() {
         let initialHeight = currentKeyboardContentHeight + Self.topChromeCoverHeight
-        keyboardContentRevealedAt = 0
+        isSuppressingCarryoverInputModeTouch = true
         didSuppressInitialInputModeSwitchEvent = false
-        isHoldingKeyboardPresentationUntilStable = true
-        didReachViewWillAppearForPresentation = false
         let rootView = ClickFeedbackInputView(
             frame: CGRect(x: 0, y: 0, width: UIScreen.main.bounds.width, height: initialHeight),
             // `.keyboard` is required for full-keyboard replacements. `.default`
@@ -735,7 +728,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         rootView.backgroundColor = .clear
         rootView.clipsToBounds = false
         rootView.layer.masksToBounds = false
-        rootView.alpha = 0
         let initialHeightConstraint = rootView.heightAnchor.constraint(equalToConstant: initialHeight)
         // 999 (not .required): system inputView transition constraints win the
         // first-frame race at .required, briefly clipping the toolbar top.
@@ -921,6 +913,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     /// switching surfaces.
     fileprivate func undoTextKeyCommitForFocusSwipe() {
         pendingTextTouchSample = nil
+        if !pendingRimeDirectTextKeys.isEmpty {
+            pendingRimeDirectTextKeys.removeLast()
+            applyRimeState(rimeInput.state())
+            return
+        }
         if !pendingRimeCharacters.isEmpty {
             pendingRimeCharacters.removeLast()
             applyRimeState(rimeInput.state())
@@ -1574,11 +1571,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
-        keyboardContentRevealedAt = 0
+        isSuppressingCarryoverInputModeTouch = true
         didSuppressInitialInputModeSwitchEvent = false
-        isHoldingKeyboardPresentationUntilStable = true
-        didReachViewWillAppearForPresentation = false
-        setKeyboardContentVisible(false)
         configureSystemKeyboardAffordances()
         setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
         configureRimeStateCallback()
@@ -1592,41 +1586,23 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         refreshDynamicAppearance()
         configureKeyboardDarwinBridge()
         keyboardHaptics.prepareForKeyboardReady()
-        // Reveal as soon as geometry is stable — for keyboard switches the
-        // frame is already final here, so waiting for viewDidAppear added
-        // ~100–250ms of blank surface to every switch-in.
-        didReachViewWillAppearForPresentation = true
-        revealKeyboardContentIfPresentationStable()
-        schedulePresentationRevealFailsafe()
+        setKeyboardContentVisible(true)
+        logKeyboardPresentationGateIfUnstable()
         logKeyboardPresentationLayout("viewWillAppear", force: true)
-    }
-
-    /// If the stability gate never passes (exotic window geometry), show the
-    /// keyboard anyway: briefly mis-laid-out keys beat an invisible keyboard.
-    private func schedulePresentationRevealFailsafe() {
-        presentationRevealFailsafe?.cancel()
-        let failsafe = DispatchWorkItem { [weak self] in
-            guard let self, self.isHoldingKeyboardPresentationUntilStable else { return }
-            let gate = self.keyboardPresentationGateState()
-            kbLog.error("presentation gate failsafe reveal: \(gate.reason, privacy: .public)")
-            self.isHoldingKeyboardPresentationUntilStable = false
-            self.lastPresentationGateLogKey = ""
-            self.setKeyboardContentVisible(true)
-        }
-        presentationRevealFailsafe = failsafe
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: failsafe)
     }
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
         disableGestureRecognizerDelays()
-        revealKeyboardContentIfPresentationStable()
+        setKeyboardContentVisible(true)
+        logKeyboardPresentationGateIfUnstable()
         keyboardHaptics.prepareForKeyboardReady()
         logKeyboardPresentationLayout("viewDidAppear", force: true)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
             self?.disableGestureRecognizerDelays()
-            self?.revealKeyboardContentIfPresentationStable()
+            self?.setKeyboardContentVisible(true)
+            self?.logKeyboardPresentationGateIfUnstable()
             self?.keyboardHaptics.prepareForKeyboardReady()
             self?.logKeyboardPresentationLayout("viewDidAppear+100ms", force: true)
         }
@@ -1634,25 +1610,24 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     override func handleInputModeList(from view: UIView, with event: UIEvent) {
-        guard !shouldSuppressInputModeSwitch() else {
+        guard !shouldSuppressCarryoverInputModeSwitch(event: event) else {
             if !didSuppressInitialInputModeSwitchEvent {
                 didSuppressInitialInputModeSwitchEvent = true
-                kbLog.notice("suppressed initial input-mode switch event during keyboard activation")
+                kbLog.notice("suppressed carry-over input-mode switch event during keyboard activation")
             }
             return
         }
         super.handleInputModeList(from: view, with: event)
     }
 
-    /// The globe is suppressed only until the keyboard is visibly ready (plus a
-    /// short guard), not for a fixed window. Before reveal, the system touch
-    /// that selected Typeforme can land on our globe and bounce straight back;
-    /// once revealed the globe must respond at once so a deliberate fast
-    /// switch-away isn't eaten ("can't switch over").
-    private func shouldSuppressInputModeSwitch() -> Bool {
-        if isHoldingKeyboardPresentationUntilStable { return true }
-        if keyboardContentRevealedAt == 0 { return true }
-        return CACurrentMediaTime() - keyboardContentRevealedAt < Self.inputModeSwitchRevealGuard
+    private func shouldSuppressCarryoverInputModeSwitch(event: UIEvent) -> Bool {
+        guard isSuppressingCarryoverInputModeTouch else { return false }
+        guard let touches = event.allTouches, !touches.isEmpty else { return true }
+        if touches.contains(where: { $0.phase == .began }) {
+            isSuppressingCarryoverInputModeTouch = false
+            return false
+        }
+        return true
     }
 
     private func disableGestureRecognizerDelays(in root: UIView? = nil) {
@@ -1727,6 +1702,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         resetAllPressedControlStates(animated: false)
         if keyboardFocus == .text {
             pendingRimeCharacters.removeAll()
+            pendingRimeDirectTextKeys.removeAll()
             commitDisplayedRimeCompositionIfNeeded()
         }
         textTouchLearner.flush()
@@ -2031,7 +2007,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         view.addSubview(keyboardContentView)
         keyboardContentView.addSubview(rootStack)
         view.addSubview(keyboardTouchOverlay)
-        setKeyboardContentVisible(false)
+        setKeyboardContentVisible(true)
 
         NSLayoutConstraint.activate([
             rootStack.leadingAnchor.constraint(equalTo: keyboardContentView.leadingAnchor, constant: Self.rootHorizontalInset),
@@ -2046,36 +2022,22 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         UIView.performWithoutAnimation {
-            // The surface stays visible the whole time so switching keyboards
-            // shows a keyboard-colored panel immediately; only the key content
-            // is held back until geometry is stable.
             self.view.alpha = 1
             self.keyboardContentView.alpha = visible ? 1 : 0
             self.keyboardTouchOverlay.alpha = visible ? 1 : 0
         }
         CATransaction.commit()
-        if visible, keyboardContentRevealedAt == 0 {
-            keyboardContentRevealedAt = CACurrentMediaTime()
-        }
     }
 
-    private func revealKeyboardContentIfPresentationStable() {
-        guard isHoldingKeyboardPresentationUntilStable else { return }
-        guard didReachViewWillAppearForPresentation else { return }
+    private func logKeyboardPresentationGateIfUnstable() {
         let gate = keyboardPresentationGateState()
-        guard gate.isStable else {
-            if gate.logKey != lastPresentationGateLogKey {
-                lastPresentationGateLogKey = gate.logKey
-                kbLog.notice("waiting keyboard presentation gate: \(gate.reason, privacy: .public)")
-            }
+        guard !gate.isStable else {
+            lastPresentationGateLogKey = ""
             return
         }
-        isHoldingKeyboardPresentationUntilStable = false
-        presentationRevealFailsafe?.cancel()
-        presentationRevealFailsafe = nil
-        lastPresentationGateLogKey = ""
-        setKeyboardContentVisible(true)
-        kbLog.notice("revealed keyboard content after stable presentation height")
+        guard gate.logKey != lastPresentationGateLogKey else { return }
+        lastPresentationGateLogKey = gate.logKey
+        kbLog.notice("keyboard presentation geometry unsettled: \(gate.reason, privacy: .public)")
     }
 
     private func keyboardPresentationGateState() -> (isStable: Bool, logKey: String, reason: String) {
@@ -2881,7 +2843,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         updateCandidateGridCollapseButtonFrame()
         applyToolbarIconLayoutTweaks()
         updateKeyboardOverlayOrdering()
-        revealKeyboardContentIfPresentationStable()
+        setKeyboardContentVisible(true)
+        logKeyboardPresentationGateIfUnstable()
         logKeyboardPresentationLayout("layout")
         logKeyboardTouchSurfaceLayoutIfNeeded()
         CATransaction.commit()
@@ -6937,14 +6900,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         )
         switch processResult {
         case .notReady(let state) where state.errorMessage != nil:
-            for queued in pendingRimeCharacters {
-                clearRestyleUndoStateForManualEdit()
-                textDocumentProxy.insertText(queued)
-            }
             pendingRimeCharacters.removeAll()
+            pendingRimeDirectTextKeys.removeAll()
             applyRimeState(state)
-            clearRestyleUndoStateForManualEdit()
-            textDocumentProxy.insertText(character)
             resetShiftIfSticky()
             renderRestyleSuggestionsIfIdle()
             return true
@@ -6958,38 +6916,74 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func queuePendingRimeCharacter(_ character: String, state: RimeKeyboardState) {
-        pendingRimeCharacters.append(character)
-        if pendingRimeCharacters.count > 64 {
-            pendingRimeCharacters.removeFirst(pendingRimeCharacters.count - 64)
+        guard pendingRimeDirectTextKeys.isEmpty else {
+            pendingRimeDirectTextKeys.append(character)
+            applyReadyRimeStateOrRender(state)
+            return
         }
+        pendingRimeCharacters.append(character)
         applyRimeState(state)
     }
 
+    private func queuePendingRimeDirectTextKey(_ text: String, state: RimeKeyboardState) {
+        pendingRimeDirectTextKeys.append(text)
+        applyReadyRimeStateOrRender(state)
+    }
+
     private func applyReadyRimeStateOrRender(_ state: RimeKeyboardState) {
-        guard state.isReady, !pendingRimeCharacters.isEmpty else {
+        guard state.isReady else {
             applyRimeState(state)
+            return
+        }
+        guard !pendingRimeCharacters.isEmpty else {
+            let queuedDirectText = pendingRimeDirectTextKeys.joined()
+            pendingRimeDirectTextKeys.removeAll()
+            applyRimeState(state)
+            guard !queuedDirectText.isEmpty else { return }
+            clearRestyleUndoStateForManualEdit()
+            textDocumentProxy.insertText(queuedDirectText)
+            if !resetShiftIfSticky() {
+                refreshEnglishLetterCasingIfNeeded()
+            }
+            renderRestyleSuggestionsIfIdle()
             return
         }
 
         let queuedCharacters = pendingRimeCharacters
+        let queuedDirectText = pendingRimeDirectTextKeys.joined()
         pendingRimeCharacters.removeAll()
+        pendingRimeDirectTextKeys.removeAll()
         var replayState = state
-        var unprocessed: ArraySlice<String> = []
-        for (index, character) in queuedCharacters.enumerated() {
+        var replayFailed = false
+        for character in queuedCharacters {
             replayState = rimeInput.processCharacter(
                 character,
                 asciiPunctuation: chinesePunctuationStyle == .english,
                 asciiMode: false
             )
             if !replayState.isReady || replayState.errorMessage != nil {
-                unprocessed = queuedCharacters[index...]
+                replayFailed = true
                 break
             }
         }
-        applyRimeState(replayState)
-        for character in unprocessed {
+        guard !replayFailed else {
+            applyRimeState(replayState)
+            return
+        }
+        if !queuedDirectText.isEmpty {
+            if replayState.isComposing {
+                applyRimeState(rimeInput.commitComposition())
+            } else {
+                applyRimeState(replayState)
+            }
             clearRestyleUndoStateForManualEdit()
-            textDocumentProxy.insertText(character)
+            textDocumentProxy.insertText(queuedDirectText)
+            if !resetShiftIfSticky() {
+                refreshEnglishLetterCasingIfNeeded()
+            }
+            renderRestyleSuggestionsIfIdle()
+        } else {
+            applyRimeState(replayState)
         }
     }
 
@@ -7002,9 +6996,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         // Recording locks regular keys; only space (stop-and-send) is live.
         if currentBridgeStatus?.state == .recording { return }
 
-        if !pendingRimeCharacters.isEmpty {
+        if !pendingRimeCharacters.isEmpty || !pendingRimeDirectTextKeys.isEmpty {
             beginTextTouchCorrectionFromBackspace(compositionActive: true)
-            pendingRimeCharacters.removeLast()
+            if !pendingRimeDirectTextKeys.isEmpty {
+                pendingRimeDirectTextKeys.removeLast()
+            } else {
+                pendingRimeCharacters.removeLast()
+            }
             applyRimeState(rimeInput.state())
             return
         }
@@ -8330,17 +8328,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         singleQuoteOpen = true
     }
 
-    private func shouldInsertDirectChinesePunctuation(_ character: String) -> Bool {
-        guard textInputLanguage == .chinese,
-              !isAlphabeticTextKey(character)
-        else { return false }
-        if isSymbolKeyboard { return true }
-        guard chinesePunctuationStyle == .chinese,
-              isChinesePunctuationContext
-        else { return false }
-        return ",.?!:;()\"'/\\|`~$^_<>-[]{}#%&*+=@€£¥•".contains(character)
-    }
-
     /// `false` when the host field hints it wants literal ASCII (URLs,
     /// emails, numeric input, etc.). Mirrors iOS system Simplified Chinese
     /// keyboard: in these field types, Chinese punctuation conversion is
@@ -8373,98 +8360,38 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     private func insertChineseDirectTextKey(_ character: String) {
         let currentState = rimeInput.state()
-        let shouldKeepRawInputDraft = shouldKeepRawRimeInputDraft(currentState, beforeDirectCharacter: character)
-        if currentState.isComposing {
-            if let quickSelectIndex = quickCandidateIndex(for: character),
-               quickSelectIndex < currentState.candidates.count {
-                let candidate = currentState.candidates[quickSelectIndex]
-                if candidate.commitsLiteralInput {
-                    commitRawRimeInput(candidate.text)
-                } else {
-                    applyRimeState(rimeInput.selectCandidate(at: candidate.selectionIndex))
-                }
-                return
-            }
-            if let literalText = latinLiteralCommitTextBeforePunctuation(currentState, character: character) {
-                commitRawRimeInput(literalText, appending: character)
-                resetShiftIfSticky()
-                renderRestyleSuggestionsIfIdle()
-                return
-            }
-            if shouldKeepRawInputDraft {
-                applyRimeState(
-                    rimeInput.processCharacter(
-                        character,
-                        asciiPunctuation: true,
-                        asciiMode: false
-                    )
-                )
-                resetShiftIfSticky()
-                renderRestyleSuggestionsIfIdle()
-                return
-            } else if isRimeCompositionControlKey(character) {
-                applyRimeState(
-                    rimeInput.processCharacter(
-                        character,
-                        asciiPunctuation: chinesePunctuationStyle == .english,
-                        asciiMode: false
-                    )
-                )
-                return
-            } else {
-                commitDisplayedRimeCompositionIfNeeded(from: currentState)
-            }
-        } else {
-            replaceMarkedText("")
-        }
-        if shouldInsertDirectChinesePunctuation(character) {
-            clearRestyleUndoStateForManualEdit()
-            textDocumentProxy.insertText(chineseDirectText(for: character))
+        let directText = chineseDirectText(for: character)
+        if !pendingRimeCharacters.isEmpty || !pendingRimeDirectTextKeys.isEmpty {
+            queuePendingRimeDirectTextKey(directText, state: currentState)
             resetShiftIfSticky()
             renderRestyleSuggestionsIfIdle()
             return
         }
-        let state = rimeInput.processCharacter(
-            character,
-            asciiPunctuation: chinesePunctuationStyle == .english,
-            asciiMode: false
-        )
-        applyRimeState(state)
-        if state.commitText.isEmpty, !state.isComposing {
-            clearRestyleUndoStateForManualEdit()
-            textDocumentProxy.insertText(chineseDirectText(for: character))
+        if currentState.isComposing {
+            if let literalText = latinLiteralCommitTextBeforeDirectKey(currentState, character: character) {
+                commitRawRimeInput(literalText, appending: directText)
+                resetShiftIfSticky()
+                renderRestyleSuggestionsIfIdle()
+                return
+            }
+            applyRimeState(rimeInput.commitComposition())
+        } else {
+            replaceMarkedText("")
         }
+        clearRestyleUndoStateForManualEdit()
+        textDocumentProxy.insertText(directText)
         resetShiftIfSticky()
         renderRestyleSuggestionsIfIdle()
     }
 
-    private func shouldKeepRawRimeInputDraft(_ state: RimeKeyboardState, beforeDirectCharacter character: String) -> Bool {
-        guard textInputLanguage == .chinese,
-              state.isComposing,
-              isRawLatinInput(state.input),
-              isLatinTokenContinuation(character)
-        else { return false }
-
-        if character == "@" { return true }
-        if isLiteralAsciiTextInputContext { return true }
-        if isContinuingLiteralAsciiTokenContext { return true }
-        if state.candidates.isEmpty { return true }
-        if isRawRimeInputLiteralToken(state.input) { return true }
-
-        let lowercasedInput = state.input.lowercased()
-        if character == ".", lowercasedInput == "www" { return true }
-        if character == ":", ["http", "https", "ftp", "mailto"].contains(lowercasedInput) { return true }
-        return false
-    }
-
-    private func latinLiteralCommitTextBeforePunctuation(
+    private func latinLiteralCommitTextBeforeDirectKey(
         _ state: RimeKeyboardState,
         character: String
     ) -> String? {
         guard textInputLanguage == .chinese,
               state.isComposing,
               isRawLatinInput(state.input),
-              isLatinTokenContinuation(character),
+              isLiteralAsciiDirectKeyContinuation(character),
               character != "@"
         else { return nil }
 
@@ -8478,6 +8405,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
 
         return exactLatinCandidateBeforeNonLatinCandidates(in: state)?.text
+    }
+
+    private func isLiteralAsciiDirectKeyContinuation(_ character: String) -> Bool {
+        guard character.count == 1,
+              let scalar = character.unicodeScalars.first
+        else { return false }
+        return isASCIIAlphanumeric(scalar) || ".@_+-':/".unicodeScalars.contains(scalar)
     }
 
     private func exactLatinCandidateBeforeNonLatinCandidates(in state: RimeKeyboardState) -> RimeKeyboardCandidate? {
@@ -8511,13 +8445,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             isASCIIAlphanumeric(scalar)
                 || "-_+.'@:/".unicodeScalars.contains(scalar)
         }
-    }
-
-    private func isLatinTokenContinuation(_ character: String) -> Bool {
-        guard character.count == 1,
-              let scalar = character.unicodeScalars.first
-        else { return false }
-        return ".@_+-':/".unicodeScalars.contains(scalar)
     }
 
     private func isRawRimeInputLiteralToken(_ input: String) -> Bool {
@@ -8570,21 +8497,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
         guard !tokenScalars.isEmpty else { return nil }
         return String(String.UnicodeScalarView(tokenScalars.reversed()))
-    }
-
-    private func quickCandidateIndex(for character: String) -> Int? {
-        guard character.count == 1,
-              let value = Int(character)
-        else { return nil }
-        switch value {
-        case 1...9: return value - 1
-        case 0: return 9
-        default: return nil
-        }
-    }
-
-    private func isRimeCompositionControlKey(_ character: String) -> Bool {
-        character == "," || character == "." || character == "-" || character == "="
     }
 
     @objc private func deletePressDown() {
