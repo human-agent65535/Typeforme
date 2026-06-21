@@ -1,7 +1,7 @@
 import Foundation
 import Network
 
-final class KeyboardLocalServer {
+final class KeyboardLocalServer: @unchecked Sendable {
     static let port: UInt16 = 18082
     private static let maxMessageBytes = 1 * 1024 * 1024
 
@@ -210,7 +210,7 @@ final class KeyboardLocalServer {
     private func sendHello(
         _ hello: KeyboardLocalBridgeHello,
         connection: NWConnection,
-        completion: @escaping (Bool) -> Void
+        completion: @escaping @Sendable (Bool) -> Void
     ) {
         guard let data = try? JSONEncoder().encode(hello) else {
             connection.cancel()

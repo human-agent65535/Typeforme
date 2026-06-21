@@ -5,6 +5,7 @@ import Network
 import ObjectiveC
 import Observation
 import OSLog
+import os.lock
 import Speech
 import UIKit
 
@@ -41,6 +42,37 @@ private final class LivePreviewTrace: @unchecked Sendable {
         }
         let pcmDelta = firstPCMAt.map { Int((now - $0) * 1_000) }
         return (isFirst, Int((now - startedAt) * 1_000), pcmDelta, pcmBufferCount)
+    }
+}
+
+private final class LiveSpeechRequestSink: @unchecked Sendable {
+    private let lock = NSLock()
+    private let request: SFSpeechAudioBufferRecognitionRequest
+    private var isOpen = true
+
+    init(request: SFSpeechAudioBufferRecognitionRequest) {
+        self.request = request
+    }
+
+    func append(_ buffer: AVAudioPCMBuffer) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard isOpen else { return }
+        request.append(buffer)
+    }
+
+    func endAudio() {
+        lock.lock()
+        defer { lock.unlock() }
+        guard isOpen else { return }
+        isOpen = false
+        request.endAudio()
+    }
+
+    func close() {
+        lock.lock()
+        defer { lock.unlock() }
+        isOpen = false
     }
 }
 
@@ -169,26 +201,23 @@ enum AppleSpeechPreviewCapability: Equatable {
 }
 
 enum AppleSpeechPreviewSupport {
-    private static let cacheLock = NSLock()
-    private static var cachedCapabilities: [String: AppleSpeechPreviewCapability] = [:]
+    private static let cachedCapabilities = OSAllocatedUnfairLock(initialState: [String: AppleSpeechPreviewCapability]())
     private static let supportedLocaleIDs: Set<String> = Set(
         SFSpeechRecognizer.supportedLocales().map { normalizedIdentifier($0.identifier) }
     )
 
     static func capability(languageID: String) -> AppleSpeechPreviewCapability {
         let normalizedID = normalizedIdentifier(languageID)
-        cacheLock.lock()
-        if let cached = cachedCapabilities[normalizedID] {
-            cacheLock.unlock()
+
+        if let cached = cachedCapabilities.withLock({ $0[normalizedID] }) {
             return cached
         }
-        cacheLock.unlock()
 
         let capability = resolveCapability(languageID: languageID, normalizedID: normalizedID)
 
-        cacheLock.lock()
-        cachedCapabilities[normalizedID] = capability
-        cacheLock.unlock()
+        cachedCapabilities.withLock { cache in
+            cache[normalizedID] = capability
+        }
         return capability
     }
 
@@ -371,6 +400,7 @@ final class AppState {
     private(set) var livePartialTranscript: String = ""
     private var liveSpeechRecognizer: SFSpeechRecognizer?
     private var liveSpeechRequest: SFSpeechAudioBufferRecognitionRequest?
+    private var liveSpeechRequestSink: LiveSpeechRequestSink?
     private var liveSpeechTask: SFSpeechRecognitionTask?
     private var livePreviewTrace: LivePreviewTrace?
     @ObservationIgnored private var lifecycleObservers: [NSObjectProtocol] = []
@@ -540,7 +570,7 @@ final class AppState {
         scheduleHostRecorderPreWarm()
     }
 
-    deinit {
+    isolated deinit {
         hostAudioSessionExpiryTask?.cancel()
         keyboardStandbyRefreshTask?.cancel()
         recorderPreWarmTask?.cancel()
@@ -2131,6 +2161,8 @@ final class AppState {
 
         liveSpeechRecognizer = recognizer
         liveSpeechRequest = request
+        let requestSink = LiveSpeechRequestSink(request: request)
+        liveSpeechRequestSink = requestSink
         let trace = LivePreviewTrace()
         livePreviewTrace = trace
         appLog.notice("live preview started: locale=\(primaryID, privacy: .public), mode=\(self.keyboardLivePreviewRecognitionMode.rawValue, privacy: .public), onDevice=\(request.requiresOnDeviceRecognition, privacy: .public)")
@@ -2160,10 +2192,8 @@ final class AppState {
             }
         }
 
-        // Fan the audio session's PCM tap into the recognition request. Capture
-        // a weak request so we never retain the recognizer after teardown.
-        keyboardAudioSession.onPCMBuffer = { [weak request, trace] buffer in
-            request?.append(buffer)
+        keyboardAudioSession.onPCMBuffer = { [requestSink, trace] buffer in
+            requestSink.append(buffer)
             let timing = trace.recordPCM()
             if timing.isFirst {
                 appLog.notice(
@@ -2179,7 +2209,7 @@ final class AppState {
     /// resulting text on screen until the Mac final result replaces it.
     private func endLivePartialPreviewAudio() {
         keyboardAudioSession.onPCMBuffer = nil
-        liveSpeechRequest?.endAudio()
+        liveSpeechRequestSink?.endAudio()
     }
 
     /// Called after the Mac final result is applied. Tears down the recognizer
@@ -2189,6 +2219,8 @@ final class AppState {
         keyboardAudioSession.onPCMBuffer = nil
         liveSpeechTask?.cancel()
         liveSpeechTask = nil
+        liveSpeechRequestSink?.close()
+        liveSpeechRequestSink = nil
         liveSpeechRequest = nil
         liveSpeechRecognizer = nil
         livePreviewTrace = nil
@@ -2241,7 +2273,10 @@ final class AppState {
             appendReturnTrace("resolvedReturnBundleID pidPathFailed pid=\(processID)")
             return nil
         }
-        let executablePath = String(cString: pathBuffer)
+        let executablePath = String(
+            decoding: pathBuffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) },
+            as: UTF8.self
+        )
         guard let appURL = appBundleURL(containingExecutablePath: executablePath) else {
             appendReturnTrace("resolvedReturnBundleID appPathMissing pid=\(processID)")
             return nil
@@ -3311,14 +3346,16 @@ final class AppState {
             object: AVAudioSession.sharedInstance(),
             queue: .main
         ) { [weak self] notification in
+            let rawType = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt
+            let rawOptions = notification.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
             Task { @MainActor [weak self] in
-                self?.handleAudioSessionInterruption(notification)
+                self?.handleAudioSessionInterruption(rawType: rawType, rawOptions: rawOptions)
             }
         })
     }
 
-    private func handleAudioSessionInterruption(_ notification: Notification) {
-        guard let rawType = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+    private func handleAudioSessionInterruption(rawType: UInt?, rawOptions: UInt) {
+        guard let rawType,
               let type = AVAudioSession.InterruptionType(rawValue: rawType)
         else { return }
 
@@ -3326,7 +3363,6 @@ final class AppState {
         case .began:
             handleAudioSessionInterruptionBegan()
         case .ended:
-            let rawOptions = notification.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
             let options = AVAudioSession.InterruptionOptions(rawValue: rawOptions)
             handleAudioSessionInterruptionEnded(shouldResume: options.contains(.shouldResume))
         @unknown default:

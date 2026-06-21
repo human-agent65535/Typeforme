@@ -138,7 +138,9 @@ private struct ReticleCorner: Shape {
 private struct QRScannerRepresentable: UIViewControllerRepresentable {
     let onFound: (String) -> Void
 
-    func makeCoordinator() -> Coordinator { Coordinator(onFound: onFound) }
+    func makeCoordinator() -> Coordinator {
+        Coordinator(payloadHandler: QRPayloadHandler(onFound: onFound))
+    }
 
     func makeUIViewController(context: Context) -> ScannerViewController {
         let vc = ScannerViewController()
@@ -148,10 +150,24 @@ private struct QRScannerRepresentable: UIViewControllerRepresentable {
 
     func updateUIViewController(_ uiViewController: ScannerViewController, context: Context) {}
 
-    final class Coordinator: NSObject, AVCaptureMetadataOutputObjectsDelegate {
+    @MainActor
+    final class QRPayloadHandler {
         let onFound: (String) -> Void
+
         init(onFound: @escaping (String) -> Void) {
             self.onFound = onFound
+        }
+
+        func found(_ payload: String) {
+            onFound(payload)
+        }
+    }
+
+    final class Coordinator: NSObject, AVCaptureMetadataOutputObjectsDelegate {
+        let payloadHandler: QRPayloadHandler
+
+        init(payloadHandler: QRPayloadHandler) {
+            self.payloadHandler = payloadHandler
         }
 
         func metadataOutput(
@@ -164,44 +180,17 @@ private struct QRScannerRepresentable: UIViewControllerRepresentable {
                 let payload = object.stringValue,
                 !payload.isEmpty
             else { return }
-            DispatchQueue.main.async {
-                self.onFound(payload)
+            Task { @MainActor [payloadHandler] in
+                payloadHandler.found(payload)
             }
         }
     }
 
-    final class ScannerViewController: UIViewController {
-        weak var coordinator: Coordinator?
+    private final class ScannerSessionController: @unchecked Sendable {
+        let session = AVCaptureSession()
+        private let queue = DispatchQueue(label: "\(TypeformeBundleConfiguration.hostBundleIdentifier).qr-scanner", qos: .userInitiated)
 
-        private let session = AVCaptureSession()
-        private var previewLayer: AVCaptureVideoPreviewLayer?
-
-        override func viewDidLoad() {
-            super.viewDidLoad()
-            view.backgroundColor = .black
-            configureSession()
-        }
-
-        override func viewWillAppear(_ animated: Bool) {
-            super.viewWillAppear(animated)
-            if !session.isRunning {
-                DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-                    self?.session.startRunning()
-                }
-            }
-        }
-
-        override func viewDidDisappear(_ animated: Bool) {
-            super.viewDidDisappear(animated)
-            if session.isRunning { session.stopRunning() }
-        }
-
-        override func viewDidLayoutSubviews() {
-            super.viewDidLayoutSubviews()
-            previewLayer?.frame = view.layer.bounds
-        }
-
-        private func configureSession() {
+        func configure(coordinator: Coordinator?) {
             session.beginConfiguration()
             defer { session.commitConfiguration() }
 
@@ -219,8 +208,63 @@ private struct QRScannerRepresentable: UIViewControllerRepresentable {
             // Adding the type AFTER addOutput, otherwise availableMetadataObjectTypes
             // is empty and the assignment is a no-op (a classic gotcha).
             output.metadataObjectTypes = [.qr]
+        }
 
-            let preview = AVCaptureVideoPreviewLayer(session: session)
+        func startIfNeeded() {
+            queue.async { [weak self] in
+                self?.startIfNeededOnQueue()
+            }
+        }
+
+        func stop() {
+            queue.async { [weak self] in
+                self?.stopOnQueue()
+            }
+        }
+
+        private func startIfNeededOnQueue() {
+            if !session.isRunning {
+                session.startRunning()
+            }
+        }
+
+        private func stopOnQueue() {
+            if session.isRunning {
+                session.stopRunning()
+            }
+        }
+    }
+
+    final class ScannerViewController: UIViewController {
+        weak var coordinator: Coordinator?
+
+        private let scannerSession = ScannerSessionController()
+        private var previewLayer: AVCaptureVideoPreviewLayer?
+
+        override func viewDidLoad() {
+            super.viewDidLoad()
+            view.backgroundColor = .black
+            configureSession()
+        }
+
+        override func viewWillAppear(_ animated: Bool) {
+            super.viewWillAppear(animated)
+            scannerSession.startIfNeeded()
+        }
+
+        override func viewDidDisappear(_ animated: Bool) {
+            super.viewDidDisappear(animated)
+            scannerSession.stop()
+        }
+
+        override func viewDidLayoutSubviews() {
+            super.viewDidLayoutSubviews()
+            previewLayer?.frame = view.layer.bounds
+        }
+
+        private func configureSession() {
+            scannerSession.configure(coordinator: coordinator)
+            let preview = AVCaptureVideoPreviewLayer(session: scannerSession.session)
             preview.videoGravity = .resizeAspectFill
             view.layer.addSublayer(preview)
             previewLayer = preview

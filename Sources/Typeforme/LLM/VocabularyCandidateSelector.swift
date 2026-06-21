@@ -1,4 +1,5 @@
 import Foundation
+import os.lock
 
 struct VocabularyCandidatePayload: Codable, Sendable, Equatable {
     let type: String
@@ -44,12 +45,9 @@ enum VocabularyCandidateSelector {
             extraContext: extraContextText,
             limit: limit
         )
-        cacheLock.lock()
-        if let cached = selectionCache[cacheKey] {
-            cacheLock.unlock()
+        if let cached = selectionCache.withLock({ cache in cache[cacheKey] }) {
             return cached
         }
-        cacheLock.unlock()
 
         let text = normalize(rawText)
         let context = normalize(extraContextText)
@@ -82,12 +80,12 @@ enum VocabularyCandidateSelector {
             }
             .prefix(limit)
             .map(\.0)
-        cacheLock.lock()
-        selectionCache[cacheKey] = selected
-        if selectionCache.count > maxCachedSelections {
-            selectionCache.removeAll(keepingCapacity: true)
+        selectionCache.withLock { cache in
+            cache[cacheKey] = selected
+            if cache.count > maxCachedSelections {
+                cache.removeAll(keepingCapacity: true)
+            }
         }
-        cacheLock.unlock()
         return selected
     }
 
@@ -559,7 +557,6 @@ enum VocabularyCandidateSelector {
             (97...122).contains(Int(value))
     }
 
-    private static let cacheLock = NSLock()
-    private static var selectionCache: [CacheKey: [DictionaryEntry]] = [:]
+    private static let selectionCache = OSAllocatedUnfairLock(initialState: [CacheKey: [DictionaryEntry]]())
     private static let maxCachedSelections = 64
 }

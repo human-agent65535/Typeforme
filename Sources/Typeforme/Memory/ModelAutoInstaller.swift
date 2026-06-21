@@ -1,4 +1,5 @@
 import Foundation
+import os.lock
 
 enum ModelAutoInstallError: LocalizedError {
     case emptyURL(label: String)
@@ -18,43 +19,43 @@ enum ModelAutoInstallError: LocalizedError {
 }
 
 private final class ModelAutoInstallDownloadRunner: NSObject, URLSessionDownloadDelegate {
+    private struct State {
+        var continuation: CheckedContinuation<Void, Error>?
+        var task: URLSessionDownloadTask?
+    }
+
     private let destination: URL
     private let label: String
     private let expectedSHA256: String?
     private let expectedBytes: Int64?
-    private let lock = NSLock()
-    private var continuation: CheckedContinuation<Void, Error>?
-    private var task: URLSessionDownloadTask?
-    private lazy var session: URLSession = {
-        let config = URLSessionConfiguration.default
-        config.timeoutIntervalForRequest = 60
-        config.timeoutIntervalForResource = 60 * 60 * 4
-        let queue = OperationQueue()
-        queue.maxConcurrentOperationCount = 1
-        return URLSession(configuration: config, delegate: self, delegateQueue: queue)
-    }()
+    private let state = OSAllocatedUnfairLock(initialState: State())
+    private let session = OSAllocatedUnfairLock<URLSession?>(initialState: nil)
 
     init(destination: URL, label: String, expectedSHA256: String?, expectedBytes: Int64?) {
         self.destination = destination
         self.label = label
         self.expectedSHA256 = expectedSHA256
         self.expectedBytes = expectedBytes
+        super.init()
+        session.withLock { session in
+            session = Self.makeSession(delegate: self)
+        }
     }
 
     func download(from url: URL) async throws {
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
-                self.lock.lock()
-                self.continuation = continuation
                 let resumeData = Self.loadResumeData(for: self.destination)
                 let nextTask: URLSessionDownloadTask
                 if let resumeData {
-                    nextTask = self.session.downloadTask(withResumeData: resumeData)
+                    nextTask = self.activeSession().downloadTask(withResumeData: resumeData)
                 } else {
-                    nextTask = self.session.downloadTask(with: URLRequest(url: url))
+                    nextTask = self.activeSession().downloadTask(with: URLRequest(url: url))
                 }
-                self.task = nextTask
-                self.lock.unlock()
+                self.state.withLock { state in
+                    state.continuation = continuation
+                    state.task = nextTask
+                }
                 nextTask.resume()
             }
         } onCancel: {
@@ -63,9 +64,9 @@ private final class ModelAutoInstallDownloadRunner: NSObject, URLSessionDownload
     }
 
     func cancel() {
-        lock.lock()
-        let activeTask = task
-        lock.unlock()
+        let activeTask = state.withLock { state in
+            state.task
+        }
         activeTask?.cancel { data in
             if let data, !data.isEmpty {
                 Self.storeResumeData(data, for: self.destination)
@@ -128,20 +129,39 @@ private final class ModelAutoInstallDownloadRunner: NSObject, URLSessionDownload
     }
 
     private func finish(_ result: Result<Void, Error>) {
-        lock.lock()
-        let cont = continuation
-        continuation = nil
-        task = nil
-        lock.unlock()
+        let cont = state.withLock { state in
+            let continuation = state.continuation
+            state.continuation = nil
+            state.task = nil
+            return continuation
+        }
 
         guard let cont else { return }
-        session.invalidateAndCancel()
+        activeSession().invalidateAndCancel()
         switch result {
         case .success:
             cont.resume()
         case .failure(let error):
             cont.resume(throwing: error)
         }
+    }
+
+    private func activeSession() -> URLSession {
+        session.withLock { session in
+            guard let session else {
+                preconditionFailure("Model auto-install session was not initialized")
+            }
+            return session
+        }
+    }
+
+    private static func makeSession(delegate: URLSessionDownloadDelegate) -> URLSession {
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 60
+        config.timeoutIntervalForResource = 60 * 60 * 4
+        let queue = OperationQueue()
+        queue.maxConcurrentOperationCount = 1
+        return URLSession(configuration: config, delegate: delegate, delegateQueue: queue)
     }
 
     private static func storeResumeData(_ data: Data, for destination: URL) {
@@ -165,25 +185,24 @@ private final class ModelAutoInstallDownloadRunner: NSObject, URLSessionDownload
 }
 
 enum ModelInstallRegistry {
-    private static let lock = NSLock()
-    private static var activeLabelsByPath: [String: String] = [:]
+    private static let activeLabelsByPath = OSAllocatedUnfairLock(initialState: [String: String]())
 
     static func markInstalling(path: String, label: String) {
-        lock.lock()
-        activeLabelsByPath[path] = label
-        lock.unlock()
+        activeLabelsByPath.withLock { labels in
+            labels[path] = label
+        }
     }
 
     static func markFinished(path: String) {
-        lock.lock()
-        activeLabelsByPath.removeValue(forKey: path)
-        lock.unlock()
+        activeLabelsByPath.withLock { labels in
+            labels[path] = nil
+        }
     }
 
     static func isInstalling(path: String) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return activeLabelsByPath[path] != nil
+        activeLabelsByPath.withLock { labels in
+            labels[path] != nil
+        }
     }
 }
 

@@ -29,11 +29,7 @@ let package = Package(
                 .product(name: "Hummingbird",       package: "hummingbird"),
             ],
             path: "Sources/Typeforme",
-            // Swift 6 strict concurrency requires invasive changes to NSLock
-            // usage, KeyboardShortcuts.Name globals, and Carbon CFString globals.
-            // Stay on Swift 5 language mode until concurrency hardening is
-            // handled as an intentional pass.
-            swiftSettings: [.swiftLanguageMode(.v5)]
+            swiftSettings: [.swiftLanguageMode(.v6)]
         ),
         .testTarget(
             name: "TypeformeTests",

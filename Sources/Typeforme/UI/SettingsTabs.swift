@@ -3234,7 +3234,7 @@ private struct BridgeActivityOverview: View {
     }
 
     private var title: String {
-        guard let latestClient else { return "Waiting for clients" }
+        guard !snapshot.clients.isEmpty else { return "Waiting for clients" }
         if snapshot.clients.count == 1 {
             return "1 client seen"
         }

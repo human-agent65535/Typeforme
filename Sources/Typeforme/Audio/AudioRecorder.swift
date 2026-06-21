@@ -20,11 +20,11 @@ enum AudioRecorderError: LocalizedError {
 
 /// AVAudioEngine-based capture. On device-change we stop recording and surface
 /// the interruption to the coordinator.
-/// Marked `@unchecked Sendable` — `isRunning` / `currentURL` / observer are
-/// only mutated from the main-actor coordinator's call sites. The tap closure
-/// writes through a captured writer and only weakly checks `self.isRunning`
-/// before delivering UI level updates after stop.
-final class AudioRecorder: @unchecked Sendable {
+/// Main-actor isolated because recording lifecycle state is driven by the
+/// coordinator and UI permission flow. The audio tap writes through captured,
+/// lock-protected helpers and hops back to the main actor for published state.
+@MainActor
+final class AudioRecorder {
     private let engine = AVAudioEngine()
     private let fileWriter = MonoM4ABufferWriter()
     private let levelThrottler = LevelUpdateThrottler(interval: 1.0 / 20.0)
@@ -36,7 +36,7 @@ final class AudioRecorder: @unchecked Sendable {
     var onLevel: (@MainActor (Float) -> Void)?
     /// Called on the main thread if the audio config changes mid-recording.
     var onConfigurationChanged: (@MainActor () -> Void)?
-    func start(pcmHandler: (@Sendable (AVAudioPCMBuffer) -> Void)? = nil) async throws -> URL {
+    func start(pcmHandler: ((AVAudioPCMBuffer) -> Void)? = nil) async throws -> URL {
         guard await Self.ensureMicrophonePermission() else {
             throw AudioRecorderError.permissionDenied
         }
@@ -52,7 +52,11 @@ final class AudioRecorder: @unchecked Sendable {
         let levelHandler = onLevel
         let levelThrottler = levelThrottler
         levelThrottler.reset()
-        input.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
+        input.installTap(
+            onBus: 0,
+            bufferSize: 1024,
+            format: format
+        ) { [writer, pcmHandler, levelHandler, levelThrottler, weak self] buffer, _ in
             // Tap closure runs on the audio thread; it only touches its own
             // buffer writer and snapshotted handlers.
             writer.write(buffer)
@@ -76,10 +80,12 @@ final class AudioRecorder: @unchecked Sendable {
         ) { [weak self] _ in
             guard let self else { return }
             Log.audio.notice("AVAudioEngineConfigurationChange — requesting recording stop")
-            if let h = self.onConfigurationChanged {
-                Task { @MainActor in h() }
-            } else {
-                _ = self.stop()
+            Task { @MainActor in
+                if let h = self.onConfigurationChanged {
+                    h()
+                } else {
+                    _ = self.stop()
+                }
             }
         }
 

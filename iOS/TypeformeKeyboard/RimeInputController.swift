@@ -104,7 +104,27 @@ struct RimeKeyboardProfile: Equatable {
     }
 }
 
-final class RimeInputController {
+final class RimeInputController: @unchecked Sendable {
+    private final class GlobalLifecycle: @unchecked Sendable {
+        private let lock = NSLock()
+        private var didSetup = false
+        private var didInitialize = false
+
+        func prepareIfNeeded(api: IRimeAPI, traits: IRimeTraits) {
+            lock.lock()
+            defer { lock.unlock() }
+
+            if !didSetup {
+                api.setup(traits)
+                didSetup = true
+            }
+            if !didInitialize {
+                api.initialize(traits)
+                didInitialize = true
+            }
+        }
+    }
+
     private enum StartupState {
         case idle
         case starting
@@ -128,8 +148,7 @@ final class RimeInputController {
     private static let englishCompletionDisplayLimit = 1
     private static let shortLiteralLatinMaximumInputLength = 6
     private static let startupRetryInterval: TimeInterval = 2.0
-    private static var didSetup = false
-    private static var didInitialize = false
+    private static let globalLifecycle = GlobalLifecycle()
 
     private let api = IRimeAPI()
     private let rimeQueue = DispatchQueue(label: "\(TypeformeBundleConfiguration.keyboardBundleIdentifier).rime", qos: .userInitiated)
@@ -244,14 +263,7 @@ final class RimeInputController {
             traits.distributionVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? ""
             traits.appName = Self.appName
 
-            if !Self.didSetup {
-                api.setup(traits)
-                Self.didSetup = true
-            }
-            if !Self.didInitialize {
-                api.initialize(traits)
-                Self.didInitialize = true
-            }
+            Self.globalLifecycle.prepareIfNeeded(api: api, traits: traits)
             if session == 0 {
                 session = api.createSession()
                 guard session != 0 else {

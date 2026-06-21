@@ -897,7 +897,10 @@ struct BridgePairingPayload: Codable, Sendable {
             )
             guard result == 0 else { continue }
 
-            let ip = String(cString: host)
+            let ip = String(
+                decoding: host.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) },
+                as: UTF8.self
+            )
             guard !ip.hasPrefix("169.254.") else { continue }
             let name = String(cString: current.pointee.ifa_name)
             let key = "\(name)|\(ip)"

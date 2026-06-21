@@ -713,7 +713,7 @@ final class DictationCoordinator: ObservableObject {
     // must support on-device recognition, and authorization must be granted.
     // Any failure silently degrades to "no preview" — recording still works.
 
-    private func makeLivePartialPreviewPCMHandlerIfAvailable() -> (@Sendable (AVAudioPCMBuffer) -> Void)? {
+    private func makeLivePartialPreviewPCMHandlerIfAvailable() -> ((AVAudioPCMBuffer) -> Void)? {
         teardownLivePartialPreview(clearText: true)
         guard AppSettings.voiceLivePreview else { return nil }
 

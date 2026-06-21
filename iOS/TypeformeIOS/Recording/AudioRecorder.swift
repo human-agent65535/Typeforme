@@ -107,7 +107,7 @@ enum VoiceProcessingError: LocalizedError {
     }
 }
 
-final class AudioTapFileWriter {
+final class AudioTapFileWriter: @unchecked Sendable {
     private let lock = NSLock()
     private var currentURL: URL?
     private var file: AVAudioFile?
@@ -535,6 +535,117 @@ final class AudioRecorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
     }
 }
 
+private final class AudioTapBufferSink: @unchecked Sendable {
+    private let lock = NSLock()
+    private var handler: (@Sendable (AVAudioPCMBuffer) -> Void)?
+
+    var currentHandler: (@Sendable (AVAudioPCMBuffer) -> Void)? {
+        lock.lock()
+        defer { lock.unlock() }
+        return handler
+    }
+
+    func setHandler(_ handler: (@Sendable (AVAudioPCMBuffer) -> Void)?) {
+        lock.lock()
+        self.handler = handler
+        lock.unlock()
+    }
+
+    func emit(_ buffer: AVAudioPCMBuffer) {
+        let handler = currentHandler
+        handler?(buffer)
+    }
+}
+
+private enum AudioTapLevelMeter {
+    static func normalizedLevel(from buffer: AVAudioPCMBuffer) -> Float {
+        let frameLength = Int(buffer.frameLength)
+        guard frameLength > 0 else { return 0 }
+
+        var sum: Float = 0
+        var sampleCount = 0
+        let channelCount = max(1, Int(buffer.format.channelCount))
+        // Interleaved buffers expose one plane holding frame x channel samples;
+        // planar buffers expose one plane per channel. RMS over every sample
+        // is the same either way, so flatten the iteration per layout.
+        if let channels = buffer.floatChannelData {
+            if buffer.format.isInterleaved {
+                let data = channels[0]
+                let total = frameLength * channelCount
+                for i in 0..<total {
+                    let sample = data[i]
+                    sum += sample * sample
+                    sampleCount += 1
+                }
+            } else {
+                for channel in 0..<channelCount {
+                    let data = channels[channel]
+                    for frame in 0..<frameLength {
+                        let sample = data[frame]
+                        sum += sample * sample
+                        sampleCount += 1
+                    }
+                }
+            }
+        } else if let channels = buffer.int16ChannelData {
+            let scale = Float(Int16.max)
+            if buffer.format.isInterleaved {
+                let data = channels[0]
+                let total = frameLength * channelCount
+                for i in 0..<total {
+                    let sample = Float(data[i]) / scale
+                    sum += sample * sample
+                    sampleCount += 1
+                }
+            } else {
+                for channel in 0..<channelCount {
+                    let data = channels[channel]
+                    for frame in 0..<frameLength {
+                        let sample = Float(data[frame]) / scale
+                        sum += sample * sample
+                        sampleCount += 1
+                    }
+                }
+            }
+        }
+        guard sampleCount > 0 else { return 0 }
+        let rms = sqrt(sum / Float(sampleCount))
+        guard rms.isFinite, rms > 0 else { return 0 }
+
+        // The standby keyboard path runs through iOS voice processing / AGC,
+        // so raw RMS can sit near a constant "loud" value. Convert to dB and
+        // apply the same floor curve as the host recorder to keep normal
+        // speech below saturation and preserve visible dynamics.
+        let db = 20 * log10f(max(rms, 0.00001))
+        let floor: Float = -45
+        let clamped = max(floor, min(0, db))
+        let linear = (clamped - floor) / -floor
+        return min(1, max(0, pow(linear, 0.55)))
+    }
+}
+
+private func installStandbyInputTap(
+    on input: AVAudioInputNode,
+    owner: StandbyAudioSession,
+    fileWriter: AudioTapFileWriter,
+    levelThrottler: LevelUpdateThrottler,
+    pcmBufferSink: AudioTapBufferSink
+) {
+    input.installTap(onBus: 0, bufferSize: 4096, format: nil) { [weak owner, fileWriter, levelThrottler, pcmBufferSink] buffer, _ in
+        guard fileWriter.isRecording else { return }
+        let level = AudioTapLevelMeter.normalizedLevel(from: buffer)
+        fileWriter.write(buffer)
+        // Fan the same buffer out to any live-preview consumer (e.g.
+        // SFSpeechRecognizer). Read the sink each call so late-attached
+        // handlers also receive frames.
+        pcmBufferSink.emit(buffer)
+        guard levelThrottler.shouldPublish() else { return }
+        Task { @MainActor [weak owner] in
+            owner?.publishTapLevel(level)
+        }
+    }
+}
+
 @MainActor
 final class StandbyAudioSession: ObservableObject {
     /// Optional second consumer of the input PCM tap. Used by the live-preview
@@ -543,13 +654,17 @@ final class StandbyAudioSession: ObservableObject {
     /// Read on the audio thread after recording begins. The host attaches this
     /// after the standby tap is already installed, so it intentionally remains a
     /// late-bound hook.
-    nonisolated(unsafe) var onPCMBuffer: (@Sendable (AVAudioPCMBuffer) -> Void)?
+    var onPCMBuffer: (@Sendable (AVAudioPCMBuffer) -> Void)? {
+        get { pcmBufferSink.currentHandler }
+        set { pcmBufferSink.setHandler(newValue) }
+    }
 
     @Published private(set) var isActive = false
     @Published private(set) var level: Float = 0
 
     private let engine = AVAudioEngine()
     private let fileWriter = AudioTapFileWriter()
+    private let pcmBufferSink = AudioTapBufferSink()
     private let levelThrottler = LevelUpdateThrottler(interval: 1.0 / 20.0)
     private var hasInstalledTap = false
     private var currentFormat: AVAudioFormat?
@@ -562,7 +677,7 @@ final class StandbyAudioSession: ObservableObject {
         observeAudioSessionInvalidations()
     }
 
-    deinit {
+    isolated deinit {
         for observer in notificationObservers {
             NotificationCenter.default.removeObserver(observer)
         }
@@ -609,24 +724,29 @@ final class StandbyAudioSession: ObservableObject {
                 object: AVAudioSession.sharedInstance(),
                 queue: nil
             ) { [weak self] notification in
+                let notificationName = notification.name.rawValue
+                let routeChangeReason = notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt
                 Task { @MainActor [weak self] in
-                    self?.handleAudioSessionNotification(notification)
+                    self?.handleAudioSessionNotification(
+                        name: notificationName,
+                        routeChangeReason: routeChangeReason
+                    )
                 }
             }
         }
     }
 
-    private func handleAudioSessionNotification(_ notification: Notification) {
-        switch notification.name {
+    private func handleAudioSessionNotification(name: String, routeChangeReason: UInt?) {
+        switch Notification.Name(name) {
         case AVAudioSession.routeChangeNotification:
-            handleRouteChange(notification)
+            handleRouteChange(reason: routeChangeReason)
         default:
             markEngineRestartNeeded()
         }
     }
 
-    private func handleRouteChange(_ notification: Notification) {
-        guard let rawReason = notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
+    private func handleRouteChange(reason rawReason: UInt?) {
+        guard let rawReason,
               let reason = AVAudioSession.RouteChangeReason(rawValue: rawReason)
         else {
             markEngineRestartNeeded()
@@ -716,22 +836,18 @@ final class StandbyAudioSession: ObservableObject {
 
     private func installInputTapIfNeeded() {
         guard !hasInstalledTap else { return }
-        let levelThrottler = levelThrottler
-        let input = engine.inputNode
-        input.installTap(onBus: 0, bufferSize: 4096, format: nil) { [weak self, fileWriter, levelThrottler] buffer, _ in
-            guard fileWriter.isRecording else { return }
-            let level = Self.normalizedLevel(from: buffer)
-            fileWriter.write(buffer)
-            // Fan the same buffer out to any live-preview consumer (e.g.
-            // SFSpeechRecognizer). Read the handler off `self` each call so
-            // late-attached handlers also receive frames.
-            self?.onPCMBuffer?(buffer)
-            guard levelThrottler.shouldPublish() else { return }
-            Task { @MainActor [weak self] in
-                self?.level = level
-            }
-        }
+        installStandbyInputTap(
+            on: engine.inputNode,
+            owner: self,
+            fileWriter: fileWriter,
+            levelThrottler: levelThrottler,
+            pcmBufferSink: pcmBufferSink
+        )
         hasInstalledTap = true
+    }
+
+    fileprivate func publishTapLevel(_ nextLevel: Float) {
+        level = nextLevel
     }
 
     private func removeInputTap() {
@@ -902,70 +1018,6 @@ final class StandbyAudioSession: ObservableObject {
         }
     }
 
-    private nonisolated static func normalizedLevel(from buffer: AVAudioPCMBuffer) -> Float {
-        let frameLength = Int(buffer.frameLength)
-        guard frameLength > 0 else { return 0 }
-
-        var sum: Float = 0
-        var sampleCount = 0
-        let channelCount = max(1, Int(buffer.format.channelCount))
-        // Interleaved buffers expose one plane holding frame×channel samples;
-        // planar buffers expose one plane per channel. RMS over every sample
-        // is the same either way, so flatten the iteration per layout.
-        if let channels = buffer.floatChannelData {
-            if buffer.format.isInterleaved {
-                let data = channels[0]
-                let total = frameLength * channelCount
-                for i in 0..<total {
-                    let sample = data[i]
-                    sum += sample * sample
-                    sampleCount += 1
-                }
-            } else {
-                for channel in 0..<channelCount {
-                    let data = channels[channel]
-                    for frame in 0..<frameLength {
-                        let sample = data[frame]
-                        sum += sample * sample
-                        sampleCount += 1
-                    }
-                }
-            }
-        } else if let channels = buffer.int16ChannelData {
-            let scale = Float(Int16.max)
-            if buffer.format.isInterleaved {
-                let data = channels[0]
-                let total = frameLength * channelCount
-                for i in 0..<total {
-                    let sample = Float(data[i]) / scale
-                    sum += sample * sample
-                    sampleCount += 1
-                }
-            } else {
-                for channel in 0..<channelCount {
-                    let data = channels[channel]
-                    for frame in 0..<frameLength {
-                        let sample = Float(data[frame]) / scale
-                        sum += sample * sample
-                        sampleCount += 1
-                    }
-                }
-            }
-        }
-        guard sampleCount > 0 else { return 0 }
-        let rms = sqrt(sum / Float(sampleCount))
-        guard rms.isFinite, rms > 0 else { return 0 }
-
-        // The standby keyboard path runs through iOS voice processing / AGC,
-        // so raw RMS can sit near a constant "loud" value. Convert to dB and
-        // apply the same floor curve as the host recorder to keep normal
-        // speech below saturation and preserve visible dynamics.
-        let db = 20 * log10f(max(rms, 0.00001))
-        let floor: Float = -45
-        let clamped = max(floor, min(0, db))
-        let linear = (clamped - floor) / -floor
-        return min(1, max(0, pow(linear, 0.55)))
-    }
 }
 
 private final class LevelUpdateThrottler: @unchecked Sendable {

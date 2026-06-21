@@ -44,8 +44,9 @@ enum AccessibilityPermissions {
     /// accessibility features" dialog with an "Open System Settings" button,
     /// and the app appears in Privacy → Accessibility (unchecked) so the
     /// user has something to toggle.
+    @MainActor
     static func requestTrustPrompt() {
-        let key = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
+        let key = "AXTrustedCheckOptionPrompt"
         _ = AXIsProcessTrustedWithOptions([key: true] as CFDictionary)
     }
 }

@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 
+@MainActor
 final class SingleInstanceGuard {
     static let shared = SingleInstanceGuard()
 

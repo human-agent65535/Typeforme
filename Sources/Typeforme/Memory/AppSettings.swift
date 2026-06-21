@@ -1,4 +1,5 @@
 import Foundation
+import os.lock
 
 /// Single source of truth for persisted settings. Backed by UserDefaults so
 /// SwiftUI `@AppStorage` and service-side reads stay in sync.
@@ -197,8 +198,7 @@ enum AppSettings {
     // MARK: - Service-side accessors
 
     private static var ud: UserDefaults { .standard }
-    private static let clientIdentityLock = NSLock()
-    private static var cachedClientIdentityID: String?
+    private static let cachedClientIdentityID = OSAllocatedUnfairLock<String?>(initialState: nil)
 
     private static func rawSetting<Value>(
         forKey key: String,
@@ -554,20 +554,19 @@ enum AppSettings {
 
     @discardableResult
     static func ensureClientIdentityID() -> String {
-        clientIdentityLock.lock()
-        defer { clientIdentityLock.unlock() }
-
-        if let cached = cleanClientIdentityID(cachedClientIdentityID) {
-            return cached
+        cachedClientIdentityID.withLock { cachedIdentityID in
+            if let cached = cleanClientIdentityID(cachedIdentityID) {
+                return cached
+            }
+            if let existing = cleanClientIdentityID(ud.string(forKey: Keys.clientIdentityID)) {
+                cachedIdentityID = existing
+                return existing
+            }
+            let identity = "mac-\(UUID().uuidString.lowercased())"
+            ud.set(identity, forKey: Keys.clientIdentityID)
+            cachedIdentityID = identity
+            return identity
         }
-        if let existing = cleanClientIdentityID(ud.string(forKey: Keys.clientIdentityID)) {
-            cachedClientIdentityID = existing
-            return existing
-        }
-        let identity = "mac-\(UUID().uuidString.lowercased())"
-        ud.set(identity, forKey: Keys.clientIdentityID)
-        cachedClientIdentityID = identity
-        return identity
     }
 
     private static func cleanClientIdentityID(_ value: String?) -> String? {

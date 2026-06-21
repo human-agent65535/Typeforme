@@ -9,7 +9,6 @@ final class HUDWindowController {
     private let panel: HUDPanel
     private let coordinator: DictationCoordinator
     private var cancellables: Set<AnyCancellable> = []
-    private var moveObserver: NSObjectProtocol?
     /// The panel is permanently on screen once shown (idle collapses it to a
     /// pip instead of hiding). Guarding here keeps `show()` a no-op if called
     /// again so the entrance animation can't clobber an in-flight width
@@ -120,21 +119,14 @@ final class HUDWindowController {
 
         // The user dragged the HUD — persist the new center so it sticks
         // across width changes and across app launches.
-        moveObserver = NotificationCenter.default.addObserver(
-            forName: NSWindow.didMoveNotification,
-            object: panel,
-            queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated {
-                self?.handleManualMove()
+        NotificationCenter.default.publisher(for: NSWindow.didMoveNotification, object: panel)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                Task { @MainActor in
+                    self?.handleManualMove()
+                }
             }
-        }
-    }
-
-    deinit {
-        if let m = moveObserver {
-            NotificationCenter.default.removeObserver(m)
-        }
+            .store(in: &cancellables)
     }
 
     func show() {

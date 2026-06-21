@@ -122,6 +122,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
     }
 
+    @MainActor
     private final class KeyboardHaptics {
         private static let textKeyCooldown: CFTimeInterval = 0.035
 
@@ -1679,7 +1680,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         refreshEnglishLetterCasingIfNeeded()
     }
 
-    deinit {
+    isolated deinit {
         deferredStartupWorkItem?.cancel()
         scheduledHostOpenTask?.cancel()
         scheduledStopTask?.cancel()
@@ -4142,12 +4143,14 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 // applyBridgeStatus skips updateUI when only audioLevel moves,
                 // so the elapsed text needs its own 1Hz tick.
                 let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
-                    guard let self else { return }
-                    if !self.voiceDragOutCancelArmed {
-                        self.statusLabel.text = self.statusText
-                    }
-                    if self.textToolbarElapsedLabel.alpha > 0 {
-                        self.textToolbarElapsedLabel.text = Self.elapsedOnlyText(startedAt: self.keyboardRecordingStartedAt)
+                    Task { @MainActor [weak self] in
+                        guard let self else { return }
+                        if !self.voiceDragOutCancelArmed {
+                            self.statusLabel.text = self.statusText
+                        }
+                        if self.textToolbarElapsedLabel.alpha > 0 {
+                            self.textToolbarElapsedLabel.text = Self.elapsedOnlyText(startedAt: self.keyboardRecordingStartedAt)
+                        }
                     }
                 }
                 RunLoop.main.add(timer, forMode: .common)
@@ -5080,15 +5083,18 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
         openHostApp(url, allowBundleFallback: allowBundleFallback) { [weak self] success in
             kbLog.notice("openHostAppForKeyboardAction: open success=\(success, privacy: .public)")
-            guard let self, !success else { return }
-            self.cancelHostWakeResetTask()
-            self.openingHostUntil = 0
-            self.tapRecordingActive = false
-            self.bridgeStatus = KeyboardBridgeStatus(state: .error, message: "Open Typeforme to prepare dictation.")
-            self.lastBridgeContactAt = Date().timeIntervalSince1970
-            self.updateUI()
-            if self.keyboardFocus == .text {
-                self.showTextKeyboardNotice(NSLocalizedString("Open Typeforme", comment: "Inline status when host app cannot be opened"))
+            guard !success else { return }
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.cancelHostWakeResetTask()
+                self.openingHostUntil = 0
+                self.tapRecordingActive = false
+                self.bridgeStatus = KeyboardBridgeStatus(state: .error, message: "Open Typeforme to prepare dictation.")
+                self.lastBridgeContactAt = Date().timeIntervalSince1970
+                self.updateUI()
+                if self.keyboardFocus == .text {
+                    self.showTextKeyboardNotice(NSLocalizedString("Open Typeforme", comment: "Inline status when host app cannot be opened"))
+                }
             }
         }
 
@@ -5139,10 +5145,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         updateUI()
         openHostApp(url) { [weak self] success in
             kbLog.notice("openHostForFullAccessSetup: open success=\(success, privacy: .public)")
-            guard let self, !success else { return }
-            self.cancelHostWakeResetTask()
-            self.openingHostUntil = 0
-            self.updateUI()
+            guard !success else { return }
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.cancelHostWakeResetTask()
+                self.openingHostUntil = 0
+                self.updateUI()
+            }
         }
     }
 
@@ -5154,7 +5163,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private func openHostApp(
         _ url: URL,
         allowBundleFallback: Bool = true,
-        completion: @escaping (Bool) -> Void
+        completion: @escaping @Sendable (Bool) -> Void
     ) {
         if let extensionContext {
             kbLog.notice("openHostApp: opening URL via extension context")
@@ -5189,7 +5198,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private func openHostAppViaWorkspaceFallbacks(
         _ url: URL,
         allowBundleFallback: Bool,
-        completion: @escaping (Bool) -> Void
+        completion: @escaping @Sendable (Bool) -> Void
     ) {
         // Non-public fallback: custom keyboards may not be allowed to open URLs
         // through NSExtensionContext. Keep private host-wake reflection here so
@@ -9195,7 +9204,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         stopStatusPolling()
         statusTimerInterval = interval
         statusTimer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
-            self?.refreshBridgeStatus(captureSelection: false)
+            Task { @MainActor [weak self] in
+                self?.refreshBridgeStatus(captureSelection: false)
+            }
         }
         if let statusTimer {
             RunLoop.current.add(statusTimer, forMode: .common)
@@ -9784,7 +9795,7 @@ private final class VoicePrintView: UIView {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) not supported") }
 
-    deinit {
+    isolated deinit {
         stopBarAnimations()
     }
 

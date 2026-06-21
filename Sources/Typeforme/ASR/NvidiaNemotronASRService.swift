@@ -125,54 +125,58 @@ final class NvidiaNemotronASRService: ASRService {
 
     private static func run(command: NvidiaASRCommand, timeout: TimeInterval) async throws -> NvidiaASRProcessResult {
         try await Task.detached(priority: .userInitiated) {
-            guard FileManager.default.isExecutableFile(atPath: command.executablePath) else {
-                throw ASRAudioSupportError.httpStatus(503, "NVIDIA Nemotron ASR runtime is missing or not executable")
-            }
-
-            try AppPaths.ensureDirectories()
-            let stdoutURL = AppPaths.asrWorkDir.appendingPathComponent("typeforme-nvidia-asr-\(UUID().uuidString).out")
-            let stderrURL = AppPaths.asrWorkDir.appendingPathComponent("typeforme-nvidia-asr-\(UUID().uuidString).err")
-            FileManager.default.createFile(atPath: stdoutURL.path, contents: nil)
-            FileManager.default.createFile(atPath: stderrURL.path, contents: nil)
-            defer {
-                try? FileManager.default.removeItem(at: stdoutURL)
-                try? FileManager.default.removeItem(at: stderrURL)
-            }
-
-            let stdout = try FileHandle(forWritingTo: stdoutURL)
-            let stderr = try FileHandle(forWritingTo: stderrURL)
-            defer {
-                try? stdout.close()
-                try? stderr.close()
-            }
-
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: command.executablePath)
-            process.arguments = command.arguments
-            process.standardOutput = stdout
-            process.standardError = stderr
-
-            let semaphore = DispatchSemaphore(value: 0)
-            process.terminationHandler = { _ in semaphore.signal() }
-            try process.run()
-
-            let deadline = DispatchTime.now() + timeout
-            if semaphore.wait(timeout: deadline) == .timedOut {
-                process.terminate()
-                _ = semaphore.wait(timeout: .now() + 2)
-                throw ASRAudioSupportError.timeout(seconds: timeout)
-            }
-
-            try? stdout.synchronize()
-            try? stderr.synchronize()
-            let stdoutText = (try? String(contentsOf: stdoutURL, encoding: .utf8)) ?? ""
-            let stderrText = (try? String(contentsOf: stderrURL, encoding: .utf8)) ?? ""
-            return NvidiaASRProcessResult(
-                exitCode: process.terminationStatus,
-                stdout: stdoutText,
-                stderr: stderrText
-            )
+            try runSynchronously(command: command, timeout: timeout)
         }.value
+    }
+
+    private static func runSynchronously(command: NvidiaASRCommand, timeout: TimeInterval) throws -> NvidiaASRProcessResult {
+        guard FileManager.default.isExecutableFile(atPath: command.executablePath) else {
+            throw ASRAudioSupportError.httpStatus(503, "NVIDIA Nemotron ASR runtime is missing or not executable")
+        }
+
+        try AppPaths.ensureDirectories()
+        let stdoutURL = AppPaths.asrWorkDir.appendingPathComponent("typeforme-nvidia-asr-\(UUID().uuidString).out")
+        let stderrURL = AppPaths.asrWorkDir.appendingPathComponent("typeforme-nvidia-asr-\(UUID().uuidString).err")
+        FileManager.default.createFile(atPath: stdoutURL.path, contents: nil)
+        FileManager.default.createFile(atPath: stderrURL.path, contents: nil)
+        defer {
+            try? FileManager.default.removeItem(at: stdoutURL)
+            try? FileManager.default.removeItem(at: stderrURL)
+        }
+
+        let stdout = try FileHandle(forWritingTo: stdoutURL)
+        let stderr = try FileHandle(forWritingTo: stderrURL)
+        defer {
+            try? stdout.close()
+            try? stderr.close()
+        }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: command.executablePath)
+        process.arguments = command.arguments
+        process.standardOutput = stdout
+        process.standardError = stderr
+
+        let semaphore = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in semaphore.signal() }
+        try process.run()
+
+        let deadline = DispatchTime.now() + timeout
+        if semaphore.wait(timeout: deadline) == .timedOut {
+            process.terminate()
+            _ = semaphore.wait(timeout: .now() + 2)
+            throw ASRAudioSupportError.timeout(seconds: timeout)
+        }
+
+        try? stdout.synchronize()
+        try? stderr.synchronize()
+        let stdoutText = (try? String(contentsOf: stdoutURL, encoding: .utf8)) ?? ""
+        let stderrText = (try? String(contentsOf: stderrURL, encoding: .utf8)) ?? ""
+        return NvidiaASRProcessResult(
+            exitCode: process.terminationStatus,
+            stdout: stdoutText,
+            stderr: stderrText
+        )
     }
 
     private static func parseTranscript(stdout: String) -> String {
@@ -242,7 +246,7 @@ final class NvidiaNemotronASRService: ASRService {
 
 }
 
-private struct NvidiaASRCommand {
+private struct NvidiaASRCommand: Sendable {
     let executablePath: String
     let arguments: [String]
 }
@@ -277,7 +281,7 @@ struct NvidiaNemotronASRRuntimeStatus: Equatable {
 
     var errorDetail: String {
         var parts: [String] = []
-        if let runnerURL {
+        if runnerURL != nil {
             if !runnerReady {
                 parts.append("Nemotron runtime is missing or not executable")
             }
@@ -299,7 +303,7 @@ struct NvidiaNemotronASRModelFileStatus: Equatable {
     var installed: Bool = false
 }
 
-private struct NvidiaASRProcessResult {
+private struct NvidiaASRProcessResult: Sendable {
     let exitCode: Int32
     let stdout: String
     let stderr: String

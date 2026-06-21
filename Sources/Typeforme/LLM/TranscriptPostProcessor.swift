@@ -1,4 +1,5 @@
 import Foundation
+import os.lock
 
 enum TranscriptPostProcessor {
     static func clean(
@@ -488,17 +489,14 @@ enum TranscriptPostProcessor {
     }
 
     private static func regex(for pattern: String) -> NSRegularExpression? {
-        regexLock.lock()
-        if let cached = regexCache[pattern] {
-            regexLock.unlock()
+        if let cached = regexCache.withLock({ cache in cache[pattern] }) {
             return cached
         }
-        regexLock.unlock()
 
         guard let compiled = try? NSRegularExpression(pattern: pattern) else { return nil }
-        regexLock.lock()
-        regexCache[pattern] = compiled
-        regexLock.unlock()
+        regexCache.withLock { cache in
+            cache[pattern] = compiled
+        }
         return compiled
     }
 
@@ -512,6 +510,5 @@ enum TranscriptPostProcessor {
 
     private static let terminalPunctuation: Set<Character> = [".", "!", "?", "。", "！", "？", "…", ":", "："]
     private static let trailingClosers: Set<Character> = ["\"", "'", "”", "’", ")", "]", "}", "）", "】", "》", "」", "』"]
-    private static let regexLock = NSLock()
-    private static var regexCache: [String: NSRegularExpression] = [:]
+    private static let regexCache = OSAllocatedUnfairLock(initialState: [String: NSRegularExpression]())
 }
