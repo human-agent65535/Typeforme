@@ -47,3 +47,7 @@ iOS/TypeformeKeyboard/RimeSharedSupport/user.yaml
 *.local
 .cloudflared/
 iOS/LocalSigning.xcconfig
+
+# Agent-local instructions
+AGENTS.md
+iOS/AGENTS.md
