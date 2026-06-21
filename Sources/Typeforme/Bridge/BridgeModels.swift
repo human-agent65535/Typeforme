@@ -634,7 +634,28 @@ struct BridgeSettingsPayload: Codable, Sendable {
     }
 
     func supportedLanguageOptionsForEnabledSources() -> [ASRLanguageOption] {
-        BridgeLanguageOption.asASROptions(supportedLanguages)
+        let sourceOptions = enabledSources.flatMap { source in
+            supportedLanguagesByRecognitionSource[source.rawValue] ?? []
+        }
+        let options = Self.orderedUniqueLanguageOptions(sourceOptions)
+        return BridgeLanguageOption.asASROptions(options.isEmpty ? supportedLanguages : options)
+    }
+
+    private static func orderedUniqueLanguageOptions(_ options: [BridgeLanguageOption]) -> [BridgeLanguageOption] {
+        var byID: [String: BridgeLanguageOption] = [:]
+        for option in options {
+            let id = option.id.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !id.isEmpty, byID[id] == nil else { continue }
+            byID[id] = option
+        }
+
+        var ordered = ASRLanguageSelection.all.compactMap { byID.removeValue(forKey: $0.id) }
+        ordered.append(contentsOf: byID.values.sorted {
+            let nameOrder = $0.displayName.localizedStandardCompare($1.displayName)
+            if nameOrder != .orderedSame { return nameOrder == .orderedAscending }
+            return $0.id < $1.id
+        })
+        return ordered
     }
 
     func asrModelOptions(for sourceID: String) -> [BridgeSettingOption] {

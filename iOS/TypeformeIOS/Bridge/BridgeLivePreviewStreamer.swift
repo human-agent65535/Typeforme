@@ -127,16 +127,16 @@ final class BridgeLivePreviewStreamer: @unchecked Sendable {
         pendingData.removeAll(keepingCapacity: true)
         uploadInFlight = true
         let client = self.client
-        Task { [weak self] in
+        Task {
             do {
                 let response = try await client.appendLivePreviewAudio(sessionID: sessionID, audioData: chunk)
-                self?.audioQueue.async { [weak self] in
-                    self?.handleAppendResponseOnAudioQueue(response)
+                self.audioQueue.async {
+                    self.handleAppendResponseOnAudioQueue(response)
                 }
             } catch {
                 let message = error.localizedDescription
-                self?.audioQueue.async { [weak self] in
-                    self?.handleFailureOnAudioQueue(message: message)
+                self.audioQueue.async {
+                    self.handleFailureOnAudioQueue(message: message)
                 }
             }
         }

@@ -108,9 +108,11 @@ final class NvidiaNemotronLivePreviewSession: @unchecked Sendable {
     }
 
     deinit {
-        try? stdinPipe.fileHandleForWriting.close()
+        closeInputImmediately()
         if process.isRunning {
             process.terminate()
+        } else {
+            drainRemainingOutput()
         }
         resumeTerminationWaiters()
         cleanup()
@@ -150,16 +152,14 @@ final class NvidiaNemotronLivePreviewSession: @unchecked Sendable {
     }
 
     func cancel() {
-        audioQueue.async {
-            self.closeInputOnAudioQueue()
-            if self.process.isRunning {
-                self.process.terminate()
-            }
+        closeInputImmediately()
+        if process.isRunning {
+            process.terminate()
         }
     }
 
     private func appendOnAudioQueue(_ buffer: AVAudioPCMBuffer) {
-        guard !inputClosed, process.isRunning else { return }
+        guard isInputOpen, process.isRunning else { return }
         guard let mono = Self.makeMonoBuffer(from: buffer),
               let output = resample(mono),
               let samples = output.floatChannelData?[0]
@@ -171,25 +171,42 @@ final class NvidiaNemotronLivePreviewSession: @unchecked Sendable {
         do {
             try stdinPipe.fileHandleForWriting.write(contentsOf: data)
         } catch {
-            inputClosed = true
+            closeInputImmediately()
             Log.asr.notice("Nemotron live preview stdin write failed: \(error.localizedDescription, privacy: .public)")
         }
     }
 
     private func appendPCM16kMonoFloat32DataOnAudioQueue(_ data: Data) {
-        guard !inputClosed, process.isRunning else { return }
+        guard isInputOpen, process.isRunning else { return }
         do {
             try stdinPipe.fileHandleForWriting.write(contentsOf: data)
         } catch {
-            inputClosed = true
+            closeInputImmediately()
             Log.asr.notice("Nemotron live preview stdin write failed: \(error.localizedDescription, privacy: .public)")
         }
     }
 
     private func closeInputOnAudioQueue() {
-        guard !inputClosed else { return }
-        inputClosed = true
-        try? stdinPipe.fileHandleForWriting.close()
+        closeInputImmediately()
+    }
+
+    private var isInputOpen: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return !inputClosed
+    }
+
+    private func closeInputImmediately() {
+        var shouldClose = false
+        lock.lock()
+        if !inputClosed {
+            inputClosed = true
+            shouldClose = true
+        }
+        lock.unlock()
+        if shouldClose {
+            try? stdinPipe.fileHandleForWriting.close()
+        }
     }
 
     private func resample(_ mono: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
@@ -276,7 +293,7 @@ final class NvidiaNemotronLivePreviewSession: @unchecked Sendable {
             let waiterID = UUID()
             var shouldResumeImmediately = false
             lock.lock()
-            if processTerminated || !process.isRunning {
+            if processTerminated {
                 shouldResumeImmediately = true
             } else {
                 terminationContinuations[waiterID] = continuation
@@ -307,6 +324,7 @@ final class NvidiaNemotronLivePreviewSession: @unchecked Sendable {
     }
 
     private func handleProcessTermination() {
+        drainRemainingOutput()
         resumeTerminationWaiters()
         cleanup()
     }
@@ -324,6 +342,24 @@ final class NvidiaNemotronLivePreviewSession: @unchecked Sendable {
         lock.unlock()
         for continuation in continuations {
             continuation.resume(returning: true)
+        }
+    }
+
+    private func drainRemainingOutput() {
+        lock.lock()
+        let shouldDrain = !cleanedUp
+        lock.unlock()
+        guard shouldDrain else { return }
+
+        drainAvailableData(from: stdoutPipe.fileHandleForReading, handler: handleStdout)
+        drainAvailableData(from: stderrPipe.fileHandleForReading, handler: handleStderr)
+    }
+
+    private func drainAvailableData(from handle: FileHandle, handler: (Data) -> Void) {
+        while true {
+            let data = handle.availableData
+            guard !data.isEmpty else { return }
+            handler(data)
         }
     }
 

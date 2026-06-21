@@ -422,6 +422,7 @@ final class AppState {
     private var liveSpeechTask: SFSpeechRecognitionTask?
     private var serverLivePreviewStreamer: BridgeLivePreviewStreamer?
     private var livePreviewTrace: LivePreviewTrace?
+    private var livePreviewGeneration: UInt64 = 0
     @ObservationIgnored private var lifecycleObservers: [NSObjectProtocol] = []
     @ObservationIgnored private var keyboardDarwinObservers: [KeyboardDarwinNotificationObserver] = []
     private var routeRefreshInFlightCount = 0
@@ -2151,6 +2152,7 @@ final class AppState {
     private func startLivePartialPreviewIfAvailable() -> Bool {
         // Tear down anything previous so re-press never leaks tasks.
         teardownLivePartialPreview(clearText: true)
+        let generation = nextLivePreviewGeneration()
 
         guard keyboardLivePreviewEnabled else {
             appLog.notice("live preview skipped: disabled")
@@ -2158,14 +2160,14 @@ final class AppState {
         }
         switch keyboardLivePreviewSource {
         case .appleSpeech:
-            return startAppleSpeechLivePreviewIfAvailable()
+            return startAppleSpeechLivePreviewIfAvailable(generation: generation)
         case .serverNemotron:
-            return startServerNemotronLivePreviewIfAvailable()
+            return startServerNemotronLivePreviewIfAvailable(generation: generation)
         }
     }
 
     @discardableResult
-    private func startAppleSpeechLivePreviewIfAvailable() -> Bool {
+    private func startAppleSpeechLivePreviewIfAvailable(generation: UInt64) -> Bool {
         let primaryID = activeLanguageIDs.first ?? "en-US"
         let capability = AppleSpeechPreviewSupport.capability(languageID: primaryID)
         guard keyboardLivePreviewRecognitionMode.canUse(capability) else {
@@ -2210,19 +2212,20 @@ final class AppState {
         let trace = LivePreviewTrace()
         livePreviewTrace = trace
         appLog.notice("live preview started: locale=\(primaryID, privacy: .public), mode=\(self.keyboardLivePreviewRecognitionMode.rawValue, privacy: .public), onDevice=\(request.requiresOnDeviceRecognition, privacy: .public)")
-        liveSpeechTask = recognizer.recognitionTask(with: request) { [weak self] result, error in
+        liveSpeechTask = recognizer.recognitionTask(with: request) { [weak self, trace] result, error in
             // The task callback runs off the main actor — hop back before
             // touching state.
             Task { @MainActor [weak self] in
                 guard let self else { return }
+                guard self.livePreviewGeneration == generation else { return }
                 if let result {
                     let text = result.bestTranscription.formattedString
                         .trimmingCharacters(in: .whitespacesAndNewlines)
                     if !text.isEmpty {
-                        let timing = self.livePreviewTrace?.recordPartial()
-                        if timing?.isFirst == true {
+                        let timing = trace.recordPartial()
+                        if timing.isFirst {
                             appLog.notice(
-                                "live preview first partial: startToPartialMs=\(timing?.startToPartialMS ?? -1, privacy: .public), firstPCMToPartialMs=\(timing?.firstPCMToPartialMS ?? -1, privacy: .public), pcmBuffers=\(timing?.pcmBufferCount ?? 0, privacy: .public), chars=\(text.count, privacy: .public)"
+                                "live preview first partial: startToPartialMs=\(timing.startToPartialMS, privacy: .public), firstPCMToPartialMs=\(timing.firstPCMToPartialMS ?? -1, privacy: .public), pcmBuffers=\(timing.pcmBufferCount, privacy: .public), chars=\(text.count, privacy: .public)"
                             )
                         }
                         self.livePartialTranscript = text
@@ -2249,7 +2252,7 @@ final class AppState {
     }
 
     @discardableResult
-    private func startServerNemotronLivePreviewIfAvailable() -> Bool {
+    private func startServerNemotronLivePreviewIfAvailable(generation: UInt64) -> Bool {
         guard macSettings?.supportsServerNemotronPreview == true else {
             appLog.notice("server live preview skipped: Mac Nemotron source is not enabled")
             return false
@@ -2268,6 +2271,7 @@ final class AppState {
             onTranscript: { [weak self, trace] text in
                 Task { @MainActor [weak self] in
                     guard let self else { return }
+                    guard self.livePreviewGeneration == generation else { return }
                     let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
                     guard !cleaned.isEmpty else { return }
                     let timing = trace.recordPartial()
@@ -2283,6 +2287,7 @@ final class AppState {
             onFailure: { [weak self] message in
                 Task { @MainActor [weak self] in
                     guard let self else { return }
+                    guard self.livePreviewGeneration == generation else { return }
                     appLog.notice("server live preview failed: \(message, privacy: .public)")
                     if self.serverLivePreviewStreamer != nil {
                         self.serverLivePreviewStreamer = nil
@@ -2322,6 +2327,7 @@ final class AppState {
     /// source and clears the on-screen partial — the keyboard / host now show
     /// the Mac final text.
     private func teardownLivePartialPreview(clearText: Bool) {
+        _ = nextLivePreviewGeneration()
         keyboardAudioSession.onPCMBuffer = nil
         liveSpeechTask?.cancel()
         liveSpeechTask = nil
@@ -2336,6 +2342,11 @@ final class AppState {
             livePartialTranscript = ""
             publishLivePartialTranscriptToKeyboard()
         }
+    }
+
+    private func nextLivePreviewGeneration() -> UInt64 {
+        livePreviewGeneration &+= 1
+        return livePreviewGeneration
     }
 
     private func resolvedReturnBundleID(
