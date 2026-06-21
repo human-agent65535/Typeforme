@@ -10,6 +10,7 @@ import SwiftUI
 /// content based on processingMode.
 struct SettingsView: View {
     @ObservedObject var dictionary: UserDictionaryStore
+    @StateObject private var modelDownloads = ModelDownloadRegistry()
     @State private var selection: Section = .general
     @AppStorage(AppSettings.Keys.processingMode) private var processingModeRaw = ProcessingMode.client.rawValue
 
@@ -57,6 +58,7 @@ struct SettingsView: View {
             }
         }
         .frame(minWidth: 760, minHeight: 520)
+        .environmentObject(modelDownloads)
         .onChange(of: processingModeRaw) { _, _ in
             if !visibleSections.contains(selection) {
                 selection = .general

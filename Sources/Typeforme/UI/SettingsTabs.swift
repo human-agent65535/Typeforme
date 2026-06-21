@@ -1624,15 +1624,32 @@ struct ASRSettingsView: View {
     }
 }
 
+private enum SettingsModelDownloadKey {
+    static func qwenModel(_ spec: QwenASRModelSpec) -> String {
+        "asr.qwen.\(spec.id).model"
+    }
+
+    static func qwenMMProj(_ spec: QwenASRModelSpec) -> String {
+        "asr.qwen.\(spec.id).mmproj"
+    }
+
+    static func nvidiaNemotronFile(model: NvidiaNemotronASRModelSpec, file: NvidiaNemotronASRFileSpec) -> String {
+        "asr.nvidia-nemotron.\(model.id).\(file.id)"
+    }
+
+    static func localLlama(_ spec: LocalLlamaModelSpec) -> String {
+        "correction.local-llama.\(spec.id)"
+    }
+}
+
 private struct QwenASRModelRow: View {
     let spec: QwenASRModelSpec
 
+    @EnvironmentObject private var modelDownloads: ModelDownloadRegistry
     @AppStorage private var modelPath: String
     @AppStorage private var mmprojPath: String
     @AppStorage private var modelURL: String
     @AppStorage private var mmprojURL: String
-    @StateObject private var modelDownloader = ModelDownloader()
-    @StateObject private var mmprojDownloader = ModelDownloader()
     @State private var deleteError: String?
 
     init(spec: QwenASRModelSpec) {
@@ -1796,6 +1813,14 @@ private struct QwenASRModelRow: View {
         mmprojPath.isEmpty ? spec.defaultMMProjPath : mmprojPath
     }
 
+    private var modelDownloader: ModelDownloader {
+        modelDownloads.downloader(for: SettingsModelDownloadKey.qwenModel(spec))
+    }
+
+    private var mmprojDownloader: ModelDownloader {
+        modelDownloads.downloader(for: SettingsModelDownloadKey.qwenMMProj(spec))
+    }
+
     private var modelExists: Bool {
         FileManager.default.fileExists(atPath: effectiveModelPath)
     }
@@ -1892,6 +1917,7 @@ private struct NvidiaNemotronASRModelRow: View {
     let spec: NvidiaNemotronASRModelSpec
     let files: [NvidiaNemotronASRFileSpec]
 
+    @EnvironmentObject private var modelDownloads: ModelDownloadRegistry
     @AppStorage private var encoderPath: String
     @AppStorage private var encoderDataPath: String
     @AppStorage private var decoderJointPath: String
@@ -1900,10 +1926,6 @@ private struct NvidiaNemotronASRModelRow: View {
     @AppStorage private var encoderDataURL: String
     @AppStorage private var decoderJointURL: String
     @AppStorage private var tokenizerURL: String
-    @StateObject private var encoderDownloader = ModelDownloader()
-    @StateObject private var encoderDataDownloader = ModelDownloader()
-    @StateObject private var decoderJointDownloader = ModelDownloader()
-    @StateObject private var tokenizerDownloader = ModelDownloader()
     @State private var deleteError: String?
 
     init(spec: NvidiaNemotronASRModelSpec) {
@@ -2082,6 +2104,26 @@ private struct NvidiaNemotronASRModelRow: View {
 
     private var effectiveModelPaths: [String] {
         [effectiveEncoderPath, effectiveEncoderDataPath, effectiveDecoderJointPath, effectiveTokenizerPath]
+    }
+
+    private var encoderDownloader: ModelDownloader {
+        downloader(for: files[0])
+    }
+
+    private var encoderDataDownloader: ModelDownloader {
+        downloader(for: files[1])
+    }
+
+    private var decoderJointDownloader: ModelDownloader {
+        downloader(for: files[2])
+    }
+
+    private var tokenizerDownloader: ModelDownloader {
+        downloader(for: files[3])
+    }
+
+    private func downloader(for file: NvidiaNemotronASRFileSpec) -> ModelDownloader {
+        modelDownloads.downloader(for: SettingsModelDownloadKey.nvidiaNemotronFile(model: spec, file: file))
     }
 
     private var modelInstalled: Bool {
@@ -2567,9 +2609,9 @@ private struct ModelDownloadRow: View {
     let spec: LocalLlamaModelSpec
     let isSelected: Bool
 
+    @EnvironmentObject private var modelDownloads: ModelDownloadRegistry
     @AppStorage private var path: String
     @AppStorage private var url:  String
-    @StateObject private var downloader = ModelDownloader()
     @State private var deleteError: String?
 
     init(spec: LocalLlamaModelSpec, isSelected: Bool) {
@@ -2732,6 +2774,10 @@ private struct ModelDownloadRow: View {
 
     private var effectiveURLString: String {
         url.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var downloader: ModelDownloader {
+        modelDownloads.downloader(for: SettingsModelDownloadKey.localLlama(spec))
     }
 
     private var modelExists: Bool {

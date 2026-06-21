@@ -164,6 +164,27 @@ final class ModelDownloader: ObservableObject {
     }
 }
 
+@MainActor
+final class ModelDownloadRegistry: ObservableObject {
+    private var downloaders: [String: ModelDownloader] = [:]
+    private var cancellables: [String: AnyCancellable] = [:]
+
+    func downloader(for key: String) -> ModelDownloader {
+        if let downloader = downloaders[key] {
+            return downloader
+        }
+
+        let downloader = ModelDownloader()
+        downloaders[key] = downloader
+        cancellables[key] = downloader.objectWillChange.sink { [weak self] _ in
+            Task { @MainActor in
+                self?.objectWillChange.send()
+            }
+        }
+        return downloader
+    }
+}
+
 private enum ModelDownloadCompletion: Sendable {
     case success(URL)
     case failure(message: String, resumeData: Data?, wasCancelled: Bool)

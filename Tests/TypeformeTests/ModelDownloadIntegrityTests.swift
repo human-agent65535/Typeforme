@@ -4,6 +4,17 @@ import Testing
 
 @Suite("ModelDownloadIntegrity")
 struct ModelDownloadIntegrityTests {
+    @MainActor
+    @Test func registryReusesDownloadersByStableKey() {
+        let registry = ModelDownloadRegistry()
+        let first = registry.downloader(for: "model-a")
+        let second = registry.downloader(for: "model-a")
+        let other = registry.downloader(for: "model-b")
+
+        #expect(first === second)
+        #expect(first !== other)
+    }
+
     @Test func canonicalHuggingFaceURLIgnoresDownloadQuery() throws {
         let url = try #require(URL(string: "https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-Q4_K_M.gguf?download=true"))
         #expect(ModelDownloadIntegrity.expectedSHA256(for: url) == "aaf42c8b7c3cab2bf3d69c355048d4a0ee9973d48f16c731c0520ee914699223")
