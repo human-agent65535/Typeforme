@@ -461,6 +461,17 @@ enum RecognitionSource: String, CaseIterable, Codable, Identifiable, Equatable {
         }
     }
 
+    func supportedLanguages() -> [ASRLanguageOption] {
+        switch self {
+        case .qwen:
+            return ASRLanguageSelection.qwenASRSupportedLanguages
+        case .nvidiaNemotron:
+            return ASRLanguageSelection.nvidiaNemotronASRSupportedLanguages
+        case .appleSpeech:
+            return ASRLanguageSelection.all
+        }
+    }
+
     static let defaultEnabled: [RecognitionSource] = [.qwen]
 
     static func normalizedSources(_ raw: [String]) -> [RecognitionSource] {
