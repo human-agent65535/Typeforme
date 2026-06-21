@@ -421,6 +421,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     private let rootStack = UIStackView()
     private let keyboardSurfaceView = KeyboardSurfaceView()
+    private let keyboardSurfaceMaskLayer = CAShapeLayer()
     private let keyboardContentView = UIView()
     private let keyboardTouchOverlay = KeyboardTouchOverlayView()
     private let topRow = UIView()
@@ -2039,16 +2040,14 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
         keyboardSurfaceView.translatesAutoresizingMaskIntoConstraints = true
         keyboardSurfaceView.isUserInteractionEnabled = false
-        // Both full-bounds layers below are translucent (0.01 white / clear) but
-        // sit on top of the keyboard. `isOpaque = true` on a non-opaque fill is a
-        // UIKit contract violation: on iOS 26+ the keyboard is composited into an
-        // out-of-process hosted window that the host wraps in a rounded Liquid
-        // Glass card with a drop shadow, and an "opaque" full-rect silhouette
-        // fights that rounded mask — surfacing as a square-cornered band + stray
-        // shadow above the keys. Keeping the 0.01 fill preserves blank-area hit
-        // eligibility (that depends on rendered pixel alpha, not this flag).
+        // iOS 27 wraps keyboard extensions in a rounded system card with its
+        // own shadow. Keep the 0.01-alpha rendered pixels required for gap
+        // touches, but mask them to actual keyboard hit regions so the system
+        // does not see a full-width top rectangle above the candidate strip.
         keyboardSurfaceView.isOpaque = false
         keyboardSurfaceView.backgroundColor = Self.keyboardTouchableBackgroundColor
+        keyboardSurfaceMaskLayer.fillColor = UIColor.black.cgColor
+        keyboardSurfaceView.layer.mask = keyboardSurfaceMaskLayer
 
         keyboardContentView.translatesAutoresizingMaskIntoConstraints = true
         keyboardContentView.backgroundColor = .clear
@@ -2246,6 +2245,148 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         textKeyboardContainerHeightConstraint?.constant = Self.textKeyboardBodyHeight(for: contentHeight)
         orbContainerHeightConstraint?.constant = Self.orbContainerHeight(for: contentHeight)
         keyboardContentView.setNeedsLayout()
+        updateKeyboardSurfaceMask()
+    }
+
+    private func updateKeyboardSurfaceMask() {
+        let bounds = keyboardSurfaceView.bounds
+        guard bounds.width > 1, bounds.height > 1 else {
+            keyboardSurfaceMaskLayer.path = nil
+            return
+        }
+
+        keyboardSurfaceMaskLayer.frame = bounds
+        let path = UIBezierPath()
+        var didAddRect = false
+
+        if keyboardFocus == .text, !textKeyboardContainer.isHidden {
+            didAddRect = appendTextKeyboardSurfaceRects(to: path) || didAddRect
+        } else {
+            didAddRect = appendVoiceKeyboardSurfaceRects(to: path) || didAddRect
+        }
+
+        keyboardSurfaceMaskLayer.path = didAddRect ? path.cgPath : nil
+    }
+
+    @discardableResult
+    private func appendTextKeyboardSurfaceRects(to path: UIBezierPath) -> Bool {
+        var didAddRect = false
+
+        if let characterBand = textCharacterTouchBandFrame() {
+            didAddRect = appendControllerSurfaceRect(characterBand, to: path) || didAddRect
+        }
+
+        if isCandidateGridExpanded {
+            for row in candidateGridStack.arrangedSubviews {
+                for view in row.subviews where view !== candidateTrailingSpacer {
+                    didAddRect = appendSurfaceView(view, to: path, horizontalExpansion: 2, verticalExpansion: 4) || didAddRect
+                }
+            }
+            didAddRect = appendSurfaceView(candidateGridCollapseButton, to: path, horizontalExpansion: 2, verticalExpansion: 4, cornerRadius: 4) || didAddRect
+            return didAddRect
+        }
+
+        let toolbarHitViews: [UIView] = [
+            textWandButton,
+            textStylePickerButton,
+            textUndoButton,
+            textToolsButton,
+            textCandidateGridButton,
+            textKeyboardSwitchButton,
+            textHostSettingsButton,
+            textToolbarVoicePrint,
+            textToolbarStatusLabel,
+            textToolbarElapsedLabel,
+        ]
+        for view in toolbarHitViews {
+            didAddRect = appendSurfaceView(view, to: path, horizontalExpansion: 2, verticalExpansion: 3, cornerRadius: 4) || didAddRect
+        }
+
+        for view in candidateStack.arrangedSubviews where view !== candidateTrailingSpacer {
+            didAddRect = appendSurfaceView(
+                view,
+                to: path,
+                horizontalExpansion: 2,
+                verticalExpansion: Self.candidateStripTouchOverflowY,
+                cornerRadius: 4
+            ) || didAddRect
+        }
+
+        let actionColumn = candidateActionColumnFrame()
+        if !actionColumn.isNull, !actionColumn.isEmpty {
+            didAddRect = appendControllerSurfaceRect(actionColumn, to: path, cornerRadius: 4) || didAddRect
+        }
+
+        return didAddRect
+    }
+
+    @discardableResult
+    private func appendVoiceKeyboardSurfaceRects(to path: UIBezierPath) -> Bool {
+        var didAddRect = false
+        let topHitViews: [UIView] = [
+            statusGroup,
+            voiceTitleLabel,
+            topRowVoicePrint,
+            keyboardFocusButton,
+            settingsButton,
+        ]
+        for view in topHitViews {
+            didAddRect = appendSurfaceView(view, to: path, horizontalExpansion: 4, verticalExpansion: 4, cornerRadius: 4) || didAddRect
+        }
+        didAddRect = appendSurfaceView(orbContainer, to: path, horizontalExpansion: 6, verticalExpansion: 2, cornerRadius: 10) || didAddRect
+        didAddRect = appendSurfaceView(utilityRow, to: path, horizontalExpansion: 4, verticalExpansion: 4, cornerRadius: 8) || didAddRect
+        return didAddRect
+    }
+
+    @discardableResult
+    private func appendSurfaceView(
+        _ view: UIView,
+        to path: UIBezierPath,
+        horizontalExpansion: CGFloat = 0,
+        verticalExpansion: CGFloat = 0,
+        cornerRadius: CGFloat = 0
+    ) -> Bool {
+        guard view.superview != nil,
+              !view.isHidden,
+              view.alpha > 0.01,
+              view.bounds.width > 0,
+              view.bounds.height > 0
+        else { return false }
+
+        let rect = view.convert(view.bounds, to: keyboardSurfaceView)
+            .insetBy(dx: -horizontalExpansion, dy: -verticalExpansion)
+        return appendSurfaceRect(rect, to: path, cornerRadius: cornerRadius)
+    }
+
+    @discardableResult
+    private func appendControllerSurfaceRect(
+        _ rect: CGRect,
+        to path: UIBezierPath,
+        cornerRadius: CGFloat = 0
+    ) -> Bool {
+        appendSurfaceRect(
+            keyboardSurfaceView.convert(rect, from: view),
+            to: path,
+            cornerRadius: cornerRadius
+        )
+    }
+
+    @discardableResult
+    private func appendSurfaceRect(
+        _ rect: CGRect,
+        to path: UIBezierPath,
+        cornerRadius: CGFloat = 0
+    ) -> Bool {
+        let clipped = rect.standardized.intersection(keyboardSurfaceView.bounds)
+        guard !clipped.isNull, clipped.width > 0.5, clipped.height > 0.5 else { return false }
+
+        if cornerRadius > 0 {
+            let radius = min(cornerRadius, clipped.width / 2, clipped.height / 2)
+            path.append(UIBezierPath(roundedRect: clipped, cornerRadius: radius))
+        } else {
+            path.append(UIBezierPath(rect: clipped))
+        }
+        return true
     }
 
     private func configureRimeStateCallback() {
@@ -2902,6 +3043,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
         updateCandidateScrollViewport()
         updateCandidateGridCollapseButtonFrame()
+        updateKeyboardSurfaceMask()
         applyToolbarIconLayoutTweaks()
         updateKeyboardOverlayOrdering()
         setKeyboardContentVisible(true)
@@ -6696,6 +6838,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         orbContainer.isHidden = isTextFocus
         utilityRow.isHidden = isTextFocus
         textKeyboardContainer.isHidden = !isTextFocus
+        updateKeyboardSurfaceMask()
         updateKeyboardOverlayOrdering()
         keyboardFocusButton.configuration?.image = UIImage(systemName: isTextFocus ? "mic.fill" : "keyboard")
         keyboardFocusButton.accessibilityLabel = isTextFocus
@@ -7385,6 +7528,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             textToolbar.setNeedsLayout()
             textToolbar.layoutIfNeeded()
             updateCandidateScrollViewport()
+            updateKeyboardSurfaceMask()
             removeCandidateRefreshAnimations()
         }
         CATransaction.commit()
@@ -7770,6 +7914,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         // looking at a grid with no visible way out.
         view.layoutIfNeeded()
         updateCandidateGridCollapseButtonFrame()
+        updateKeyboardSurfaceMask()
         updateKeyboardOverlayOrdering()
     }
 
@@ -10552,11 +10697,11 @@ final class ClickFeedbackInputView: UIInputView, UIInputViewAudioFeedback {
     var enableInputClicksWhenVisible: Bool { true }
 }
 
-/// Backing surface for blank keyboard areas. The owning controller paints it
-/// with `keyboardTouchableBackgroundColor` (0.01 alpha); do not make it
-/// `.clear`. iOS custom keyboards also consider rendered pixel alpha for
-/// hit-test eligibility, so `point(inside:)` alone is not enough to stop gap
-/// touches from leaking to the host app.
+/// Backing surface for blank keyboard hit regions. The owning controller paints
+/// it with `keyboardTouchableBackgroundColor` (0.01 alpha) and masks it to the
+/// active touch geometry. iOS custom keyboards also consider rendered pixel
+/// alpha for hit-test eligibility, so `point(inside:)` alone is not enough to
+/// stop gap touches from leaking to the host app.
 final class KeyboardSurfaceView: UIView {
     override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
         guard isUserInteractionEnabled, !isHidden, alpha > 0.01 else { return false }
