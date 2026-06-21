@@ -206,6 +206,7 @@
 "Changes apply immediately. Controls how long Typeforme keeps keyboard dictation ready after the host app is opened." = "Changes apply immediately. Controls how long Typeforme keeps keyboard dictation ready after the host app is opened.";
 "This preview setting is local to the iPhone keyboard and applies immediately. It does not change the Mac live transcript setting." = "This preview setting is local to the iPhone keyboard and applies immediately. It does not change the Mac live transcript setting.";
 "This preview setting is saved to the paired Mac when you tap Done. It does not change the iPhone keyboard preview." = "This preview setting is saved to the paired Mac when you tap Done. It does not change the iPhone keyboard preview.";
+"Update Typeforme on the paired Mac, then try again." = "Update Typeforme on the paired Mac, then try again.";
 "On-device Only keeps preview audio local. Cloud Fallback uses on-device when available and Apple servers otherwise. Preview punctuation follows Dictation Settings. Host audio session controls how long keyboard dictation stays ready." = "On-device Only keeps preview audio local. Cloud Fallback uses on-device when available and Apple servers otherwise. Preview punctuation follows Dictation Settings. Host audio session controls how long keyboard dictation stays ready.";
 "Dictation Vocabulary" = "Dictation Vocabulary";
 "Start Typeforme on Mac, then refresh before recording." = "Start Typeforme on Mac, then refresh before recording.";

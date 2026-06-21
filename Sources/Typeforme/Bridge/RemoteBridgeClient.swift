@@ -410,7 +410,7 @@ struct RemoteBridgeClient {
         switch error {
         case .invalidURL:
             return RemoteBridgeClientError.invalidURL
-        case .invalidResponse, .decodingFailed:
+        case .invalidResponse, .decodingFailed(_):
             return RemoteBridgeClientError.invalidResponse
         case .unauthorized:
             return RemoteBridgeClientError.unauthorized

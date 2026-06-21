@@ -4,6 +4,7 @@ enum BridgeClientError: LocalizedError {
     case invalidURL
     case unauthorizedOrUnavailable
     case invalidResponse
+    case macAppUpdateRequired
     case server(String)
     case unsupportedAudioFormat(String)
 
@@ -15,6 +16,11 @@ enum BridgeClientError: LocalizedError {
             return "Bridge unavailable or token rejected"
         case .invalidResponse:
             return "Bridge returned an invalid response"
+        case .macAppUpdateRequired:
+            return NSLocalizedString(
+                "Update Typeforme on the paired Mac, then try again.",
+                comment: "Bridge settings decode failed because paired Mac app is too old"
+            )
         case .server(let message):
             return message
         case .unsupportedAudioFormat(let detail):
@@ -442,7 +448,12 @@ struct BridgeClient: Sendable {
         switch error {
         case .invalidURL:
             return BridgeClientError.invalidURL
-        case .invalidResponse, .decodingFailed:
+        case .invalidResponse:
+            return BridgeClientError.invalidResponse
+        case .decodingFailed(let detail):
+            if detail.contains("live_preview_source") || detail.contains("livePreviewSource") {
+                return BridgeClientError.macAppUpdateRequired
+            }
             return BridgeClientError.invalidResponse
         case .unauthorized, .forbidden, .notFound:
             return BridgeClientError.unauthorizedOrUnavailable

@@ -7,7 +7,7 @@ enum BridgeHTTPClientCoreError: Error {
     case forbidden
     case notFound
     case server(String)
-    case decodingFailed
+    case decodingFailed(String)
 }
 
 struct BridgeHTTPClientCore {
@@ -118,7 +118,25 @@ struct BridgeHTTPClientCore {
         do {
             return try JSONDecoder().decode(T.self, from: data)
         } catch {
-            throw BridgeHTTPClientCoreError.decodingFailed
+            throw BridgeHTTPClientCoreError.decodingFailed(Self.decodingErrorDescription(error))
+        }
+    }
+
+    private static func decodingErrorDescription(_ error: Error) -> String {
+        let path: ([CodingKey]) -> String = { keys in
+            keys.map(\.stringValue).joined(separator: ".")
+        }
+        switch error {
+        case DecodingError.keyNotFound(let key, let context):
+            let base = path(context.codingPath + [key])
+            return base.isEmpty ? "Missing key \(key.stringValue)" : "Missing key \(base)"
+        case DecodingError.typeMismatch(_, let context),
+             DecodingError.valueNotFound(_, let context),
+             DecodingError.dataCorrupted(let context):
+            let base = path(context.codingPath)
+            return base.isEmpty ? context.debugDescription : "\(base): \(context.debugDescription)"
+        default:
+            return error.localizedDescription
         }
     }
 }

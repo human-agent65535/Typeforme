@@ -1742,7 +1742,7 @@ private struct MacSettingsView: View {
                     }
                 }
 
-            } else {
+            } else if isLoading || errorMessage == nil {
                 Section {
                     HStack {
                         ProgressView()
@@ -1753,15 +1753,18 @@ private struct MacSettingsView: View {
 
             if let errorMessage {
                 Section {
-                    VStack(alignment: .leading, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 14) {
                         Text(errorMessage)
                             .foregroundStyle(.red)
-                        HStack(spacing: 10) {
+                            .fixedSize(horizontal: false, vertical: true)
+
+                        VStack(spacing: 10) {
                             Button {
                                 // load(force:) clears errorMessage itself.
                                 Task { await load(force: true) }
                             } label: {
                                 Label("Retry", systemImage: "arrow.clockwise")
+                                    .frame(maxWidth: .infinity, minHeight: 38)
                             }
                             .buttonStyle(.borderedProminent)
                             .disabled(isLoading)
@@ -1770,6 +1773,7 @@ private struct MacSettingsView: View {
                                 repairPairing(clearExisting: false)
                             } label: {
                                 Label("Repair Pairing", systemImage: "qrcode.viewfinder")
+                                    .frame(maxWidth: .infinity, minHeight: 38)
                             }
                             .buttonStyle(.bordered)
 
@@ -1777,6 +1781,7 @@ private struct MacSettingsView: View {
                                 repairPairing(clearExisting: true)
                             } label: {
                                 Label("Unpair", systemImage: "link.badge.minus")
+                                    .frame(maxWidth: .infinity, minHeight: 38)
                             }
                             .buttonStyle(.bordered)
                         }
@@ -1821,7 +1826,7 @@ private struct MacSettingsView: View {
                             : NSLocalizedString("Done", comment: "Close or save Mac settings button"))
                     }
                 }
-                .disabled(draft == nil || isSaving)
+                .disabled(isSaving || (draft == nil && isLoading))
             }
         }
         .interactiveDismissDisabled(hasUnsavedChanges)
