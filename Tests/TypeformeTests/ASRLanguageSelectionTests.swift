@@ -48,6 +48,12 @@ struct ASRLanguageSelectionTests {
         #expect(ASRLanguageSelection.validatedIDs(["zh-TW", "ja"], sources: [.nvidiaNemotron]) == ["ja"])
     }
 
+    @Test func effectiveIDsDoNotFallbackForUnsupportedSourceLanguages() {
+        #expect(ASRLanguageSelection.effectiveIDs(["zh-TW"], for: .nvidiaNemotron).isEmpty)
+        #expect(ASRLanguageSelection.effectiveIDs(["zh-TW", "ja"], for: .nvidiaNemotron) == ["ja"])
+        #expect(ASRLanguageSelection.effectiveIDs(["auto"], for: .nvidiaNemotron).isEmpty)
+    }
+
     @Test func multiSourceLanguageCatalogUsesSourceUnion() {
         let ids = Set(ASRLanguageSelection.supportedOptions(for: [.qwen, .nvidiaNemotron]).map(\.id))
         #expect(ids.contains("zh-CN"))

@@ -184,6 +184,68 @@ struct BridgeClient: Sendable {
         )
     }
 
+    @discardableResult
+    func streamLivePreviewEvents(
+        sessionID: String,
+        onEvent: @Sendable (BridgeLivePreviewEvent) async -> Void
+    ) async throws -> Bool {
+        guard let encodedSessionID = sessionID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) else {
+            throw BridgeClientError.invalidURL
+        }
+        let request: URLRequest
+        do {
+            request = try http.makeRequest(
+                path: "/v1/live-preview/\(encodedSessionID)/events",
+                method: "GET",
+                timeout: 60,
+                accept: "text/event-stream",
+                acceptEncoding: nil
+            )
+        } catch {
+            throw mapHTTPError(error)
+        }
+
+        let (bytes, response) = try await URLSession.shared.bytes(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw BridgeClientError.invalidResponse
+        }
+        guard http.statusCode != 401 && http.statusCode != 403 && http.statusCode != 404 else {
+            throw BridgeClientError.unauthorizedOrUnavailable
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            throw BridgeClientError.server("HTTP \(http.statusCode)")
+        }
+
+        var dataLines: [String] = []
+        for try await rawLine in bytes.lines {
+            try Task.checkCancellation()
+            let line = rawLine.trimmingCharacters(in: CharacterSet(charactersIn: "\r"))
+            if line.isEmpty {
+                guard !dataLines.isEmpty else { continue }
+                let dataText = dataLines.joined(separator: "\n")
+                dataLines.removeAll(keepingCapacity: true)
+                guard let data = dataText.data(using: .utf8),
+                      let event = try? JSONDecoder().decode(BridgeLivePreviewEvent.self, from: data)
+                else {
+                    continue
+                }
+                await onEvent(event)
+                if event.isFinal {
+                    return true
+                }
+                continue
+            }
+            if line.hasPrefix(":") {
+                continue
+            }
+            if line.hasPrefix("data:") {
+                let value = line.dropFirst(5)
+                dataLines.append(String(value).trimmingCharacters(in: .whitespaces))
+            }
+        }
+        return false
+    }
+
     func restyle(
         sessionID: String?,
         rawTranscript: String?,

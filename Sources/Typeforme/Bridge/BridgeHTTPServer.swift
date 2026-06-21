@@ -307,6 +307,17 @@ final class BridgeHTTPServer: @unchecked Sendable {
             }
         }
 
+        router.get("v1/live-preview/:sessionID/events") { request, context async -> Response in
+            await Self.authorizedRecordedRequest(
+                .livePreviewEvents,
+                request: request,
+                context: context
+            ) {
+                let sessionID = try context.parameters.require("sessionID")
+                return Self.livePreviewEventsResponse(sessionID: sessionID)
+            }
+        }
+
         router.post("v1/live-preview/:sessionID/finish") { request, context async -> Response in
             await Self.authorizedRecordedRequest(
                 .livePreviewFinish,
@@ -604,6 +615,36 @@ final class BridgeHTTPServer: @unchecked Sendable {
                 payload += "data: \(json)\n\n"
                 try await writer.write(ByteBuffer(string: payload))
                 if event.stage.isTerminal {
+                    break
+                }
+            }
+            try await writer.finish(nil)
+        }
+        return Response(status: .ok, headers: headers, body: body)
+    }
+
+    private static func livePreviewEventsResponse(sessionID: String) -> Response {
+        var headers = HTTPFields()
+        headers[.contentType] = "text/event-stream; charset=utf-8"
+        headers[.cacheControl] = "no-store"
+        if let bufferingHeader = HTTPField.Name("X-Accel-Buffering") {
+            headers[bufferingHeader] = "no"
+        }
+
+        let body = ResponseBody { writer in
+            let stream = await BridgeLivePreviewEventCenter.shared.subscribe(sessionID: sessionID)
+            try await writer.write(ByteBuffer(string: ": typeforme live preview\n\n"))
+            for await event in stream {
+                guard let data = try? BridgeJSON.encodeSorted(event),
+                      let json = String(data: data, encoding: .utf8)
+                else {
+                    continue
+                }
+                let eventName = event.isFinal ? "final" : "partial"
+                var payload = "event: \(eventName)\n"
+                payload += "data: \(json)\n\n"
+                try await writer.write(ByteBuffer(string: payload))
+                if event.isFinal {
                     break
                 }
             }

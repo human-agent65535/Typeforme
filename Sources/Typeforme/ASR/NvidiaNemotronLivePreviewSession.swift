@@ -32,10 +32,13 @@ final class NvidiaNemotronLivePreviewSession: @unchecked Sendable {
         languageIDs: [String],
         onTranscript: @escaping (String) -> Void
     ) throws -> NvidiaNemotronLivePreviewSession {
-        let supportedLanguageIDs = ASRLanguageSelection.validatedIDs(
-            languageIDs,
-            supportedOptions: ASRLanguageSelection.nvidiaNemotronASRSupportedLanguages
-        )
+        let supportedLanguageIDs = ASRLanguageSelection.effectiveIDs(languageIDs, for: .nvidiaNemotron)
+        guard !supportedLanguageIDs.isEmpty else {
+            throw ASRAudioSupportError.httpStatus(
+                422,
+                "NVIDIA Nemotron ASR does not support the selected live preview languages"
+            )
+        }
         let runtimeStatus = NvidiaNemotronASRService.bundledRuntimeStatus()
         guard runtimeStatus.isReady,
               let runnerURL = runtimeStatus.runnerURL

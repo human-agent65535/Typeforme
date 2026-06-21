@@ -1126,8 +1126,13 @@ private struct KeyboardSettingsView: View {
 private struct LivePreviewSettingsSection: View {
     @Environment(AppState.self) private var state
     let serverNemotronAvailable: Bool?
+    let title: LocalizedStringKey
 
-    init(serverNemotronAvailable: Bool? = nil) {
+    init(
+        title: LocalizedStringKey = "iPhone Keyboard Preview",
+        serverNemotronAvailable: Bool? = nil
+    ) {
+        self.title = title
         self.serverNemotronAvailable = serverNemotronAvailable
     }
 
@@ -1149,9 +1154,9 @@ private struct LivePreviewSettingsSection: View {
             .pickerStyle(.menu)
             .disabled(!state.keyboardLivePreviewEnabled || state.keyboardLivePreviewSource != .appleSpeech || state.isBusy)
         } header: {
-            Text("Preview")
+            Text(title)
         } footer: {
-            Text("Server Nemotron appears when the paired Mac has Nemotron enabled. Apple Speech preview runs on this iPhone.")
+            Text("This preview setting is local to the iPhone keyboard and applies immediately. It does not change the Mac live transcript setting.")
         }
     }
 

@@ -223,6 +223,13 @@ enum ASRLanguageSelection {
         return selected.isEmpty ? defaultIDs(for: options) : selected
     }
 
+    static func filteredIDs(_ ids: [String], supportedOptions: [ASRLanguageOption]) -> [String] {
+        guard !supportedOptions.isEmpty else { return [] }
+        let canonical = Set(ids.compactMap(canonicalID(for:)))
+        guard !canonical.isEmpty else { return [] }
+        return supportedOptions.map(\.id).filter { canonical.contains($0) }
+    }
+
     static func option(for id: String) -> ASRLanguageOption? {
         guard let canonical = canonicalID(for: id) else { return nil }
         return optionsByID[canonical]
@@ -238,8 +245,7 @@ enum ASRLanguageSelection {
     }
 
     static func effectiveIDs(_ ids: [String], for source: RecognitionSource) -> [String] {
-        let supportedIDs = Set(source.supportedLanguages().map(\.id))
-        return validatedIDs(ids).filter { supportedIDs.contains($0) }
+        filteredIDs(ids, supportedOptions: source.supportedLanguages())
     }
 
     static func languageCodes(for ids: [String]) -> [String] {

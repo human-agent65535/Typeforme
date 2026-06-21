@@ -247,7 +247,13 @@ final class BridgeService {
         }
 
         let id = UUID().uuidString
-        let languageIDs = resolveLanguageIDs(ids: request.languageIDs, mode: request.languageMode)
+        let requestedLanguageIDs = resolveLivePreviewLanguageIDs(ids: request.languageIDs, mode: request.languageMode)
+        let languageIDs = ASRLanguageSelection.effectiveIDs(requestedLanguageIDs, for: .nvidiaNemotron)
+        guard !languageIDs.isEmpty else {
+            throw BridgeServiceError.invalidRequest(
+                "NVIDIA Nemotron ASR does not support the selected live preview languages"
+            )
+        }
         let process = try NvidiaNemotronLivePreviewSession.start(languageIDs: languageIDs) { [weak self] text in
             Task { @MainActor [weak self] in
                 self?.recordLivePreviewTranscript(sessionID: id, text: text)
@@ -303,6 +309,7 @@ final class BridgeService {
             session.process.cancel()
         }
         let transcript = session.process.currentTranscript() ?? session.lastTranscript
+        publishLivePreviewEvent(session: session, text: transcript, isFinal: true)
         livePreviewSessions.removeValue(forKey: sessionID)
         let finishedAt = Date()
         return BridgeLivePreviewFinishResponse(
@@ -949,6 +956,22 @@ final class BridgeService {
         }
     }
 
+    private func resolveLivePreviewLanguageIDs(ids: [String]?, mode: String?) -> [String] {
+        if let ids, !ids.isEmpty {
+            return ids
+        }
+        switch mode?.lowercased() {
+        case "zh", "zh-cn", "chinese", "chinese_simplified":
+            return ["zh-CN"]
+        case "en", "en-us", "english":
+            return ["en-US"]
+        case "mixed", "multi", "multilingual", "zh-en":
+            return ["zh-CN", "en-US"]
+        default:
+            return AppSettings.asrLanguageIDs
+        }
+    }
+
     private func resolveRecognitionSources(_ raw: [String]?) throws -> [RecognitionSource]? {
         guard let raw else { return nil }
         var sources: [RecognitionSource] = []
@@ -1058,7 +1081,7 @@ final class BridgeService {
             .filter { $0.updatedAt < cutoff }
             .map(\.id)
         for id in expiredIDs {
-            livePreviewSessions.removeValue(forKey: id)?.process.cancel()
+            removeLivePreviewSession(id: id)
         }
         guard livePreviewSessions.count > Self.maxLivePreviewSessions else { return }
         let overflow = livePreviewSessions.count - Self.maxLivePreviewSessions
@@ -1067,7 +1090,7 @@ final class BridgeService {
             .prefix(overflow)
             .map(\.id)
         for id in overflowIDs {
-            livePreviewSessions.removeValue(forKey: id)?.process.cancel()
+            removeLivePreviewSession(id: id)
         }
     }
 
@@ -1075,6 +1098,31 @@ final class BridgeService {
         guard let session = livePreviewSessions[sessionID] else { return }
         session.lastTranscript = text
         session.updatedAt = Date()
+        publishLivePreviewEvent(session: session, text: text, isFinal: false)
+    }
+
+    private func removeLivePreviewSession(id: String) {
+        guard let session = livePreviewSessions.removeValue(forKey: id) else { return }
+        session.process.cancel()
+        publishLivePreviewEvent(session: session, text: session.lastTranscript, isFinal: true)
+    }
+
+    private func publishLivePreviewEvent(
+        session: BridgeLivePreviewSession,
+        text: String?,
+        isFinal: Bool
+    ) {
+        let cleaned = text?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let event = BridgeLivePreviewEvent(
+            sessionID: session.id,
+            provider: session.provider,
+            text: cleaned?.isEmpty == true ? nil : cleaned,
+            isFinal: isFinal,
+            updatedAt: Date().timeIntervalSince1970
+        )
+        Task {
+            await BridgeLivePreviewEventCenter.shared.publish(event)
+        }
     }
 
     private func storeSession(_ session: BridgeSession) {

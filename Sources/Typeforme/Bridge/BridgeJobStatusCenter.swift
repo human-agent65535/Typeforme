@@ -77,3 +77,81 @@ actor BridgeJobStatusCenter {
         }
     }
 }
+
+actor BridgeLivePreviewEventCenter {
+    static let shared = BridgeLivePreviewEventCenter()
+
+    private static let maxEventsPerSession = 64
+    private static let maxSessionAge: TimeInterval = 10 * 60
+
+    private struct SessionEvents {
+        var events: [BridgeLivePreviewEvent] = []
+        var updatedAt = Date()
+    }
+
+    private var eventsBySessionID: [String: SessionEvents] = [:]
+    private var subscribersBySessionID: [String: [UUID: AsyncStream<BridgeLivePreviewEvent>.Continuation]] = [:]
+
+    func publish(_ event: BridgeLivePreviewEvent) {
+        pruneExpiredSessions()
+
+        var sessionEvents = eventsBySessionID[event.sessionID] ?? SessionEvents()
+        sessionEvents.events.append(event)
+        if sessionEvents.events.count > Self.maxEventsPerSession {
+            sessionEvents.events.removeFirst(sessionEvents.events.count - Self.maxEventsPerSession)
+        }
+        sessionEvents.updatedAt = Date()
+        eventsBySessionID[event.sessionID] = sessionEvents
+
+        let continuations = subscribersBySessionID[event.sessionID] ?? [:]
+        for continuation in continuations.values {
+            continuation.yield(event)
+        }
+        if event.isFinal {
+            for continuation in continuations.values {
+                continuation.finish()
+            }
+            subscribersBySessionID[event.sessionID] = nil
+        }
+    }
+
+    func subscribe(sessionID: String) -> AsyncStream<BridgeLivePreviewEvent> {
+        pruneExpiredSessions()
+        let subscriberID = UUID()
+        var continuation: AsyncStream<BridgeLivePreviewEvent>.Continuation!
+        let stream = AsyncStream<BridgeLivePreviewEvent>(bufferingPolicy: .bufferingNewest(64)) {
+            continuation = $0
+        }
+
+        subscribersBySessionID[sessionID, default: [:]][subscriberID] = continuation
+        continuation.onTermination = { [weak self] _ in
+            Task {
+                await self?.unsubscribe(sessionID: sessionID, subscriberID: subscriberID)
+            }
+        }
+
+        let replayEvents = eventsBySessionID[sessionID]?.events ?? []
+        for event in replayEvents {
+            continuation.yield(event)
+        }
+        if replayEvents.last?.isFinal == true {
+            continuation.finish()
+            subscribersBySessionID[sessionID]?[subscriberID] = nil
+        }
+        return stream
+    }
+
+    private func unsubscribe(sessionID: String, subscriberID: UUID) {
+        subscribersBySessionID[sessionID]?[subscriberID] = nil
+        if subscribersBySessionID[sessionID]?.isEmpty == true {
+            subscribersBySessionID[sessionID] = nil
+        }
+    }
+
+    private func pruneExpiredSessions() {
+        let cutoff = Date().addingTimeInterval(-Self.maxSessionAge)
+        eventsBySessionID = eventsBySessionID.filter { _, value in
+            value.updatedAt >= cutoff
+        }
+    }
+}

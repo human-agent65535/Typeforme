@@ -15,7 +15,7 @@ final class BridgeLivePreviewStreamer: @unchecked Sendable {
         channels: 1,
         interleaved: false
     )!
-    private static let flushByteCount = 16_000
+    private static let flushByteCount = 8_192
     private static let maxPendingByteCount = 512 * 1024
 
     private let client: BridgeClient
@@ -33,6 +33,7 @@ final class BridgeLivePreviewStreamer: @unchecked Sendable {
     private var converter: AVAudioConverter?
     private var converterInputSampleRate = 0.0
     private var lastTranscript = ""
+    private var eventTask: Task<Void, Never>?
 
     init(
         client: BridgeClient,
@@ -44,6 +45,10 @@ final class BridgeLivePreviewStreamer: @unchecked Sendable {
         self.languageIDs = languageIDs
         self.onTranscript = onTranscript
         self.onFailure = onFailure
+    }
+
+    deinit {
+        eventTask?.cancel()
     }
 
     func start() {
@@ -103,6 +108,7 @@ final class BridgeLivePreviewStreamer: @unchecked Sendable {
             return
         }
         sessionID = response.sessionID
+        startEventStreamOnAudioQueue(sessionID: response.sessionID)
         flushOnAudioQueue(force: true)
     }
 
@@ -157,6 +163,7 @@ final class BridgeLivePreviewStreamer: @unchecked Sendable {
         }
         if cancelPendingAfterUpload {
             cancelPendingAfterUpload = false
+            stopEventStreamOnAudioQueue()
             sendCancelOnAudioQueue()
             return
         }
@@ -181,6 +188,7 @@ final class BridgeLivePreviewStreamer: @unchecked Sendable {
             cancelPendingAfterUpload = true
             return
         }
+        stopEventStreamOnAudioQueue()
         sendCancelOnAudioQueue()
     }
 
@@ -198,6 +206,7 @@ final class BridgeLivePreviewStreamer: @unchecked Sendable {
         pendingData.removeAll(keepingCapacity: false)
         uploadInFlight = false
         startInFlight = false
+        stopEventStreamOnAudioQueue()
         sendCancelOnAudioQueue()
         bridgeLivePreviewLog.notice("server live preview stopped: \(message, privacy: .public)")
         onFailure(message)
@@ -222,6 +231,9 @@ final class BridgeLivePreviewStreamer: @unchecked Sendable {
                !text.isEmpty {
                 self.onTranscript(text)
             }
+            self.audioQueue.async {
+                self.stopEventStreamOnAudioQueue()
+            }
         }
     }
 
@@ -229,6 +241,55 @@ final class BridgeLivePreviewStreamer: @unchecked Sendable {
         guard let sessionID else { return }
         let client = self.client
         Task { try? await client.finishLivePreview(sessionID: sessionID) }
+    }
+
+    private func startEventStreamOnAudioQueue(sessionID: String) {
+        guard eventTask == nil else { return }
+        let client = self.client
+        eventTask = Task { [weak self] in
+            var attempt = 0
+            while !Task.isCancelled {
+                do {
+                    let completed = try await client.streamLivePreviewEvents(sessionID: sessionID) { [weak self] event in
+                        self?.handleLivePreviewEvent(event)
+                    }
+                    if completed {
+                        return
+                    }
+                } catch is CancellationError {
+                    return
+                } catch {
+                    bridgeLivePreviewLog.notice("server live preview event stream failed: \(error.localizedDescription, privacy: .public)")
+                }
+                attempt += 1
+                let delayMs = min(1_000, 120 * attempt)
+                try? await Task.sleep(nanoseconds: UInt64(delayMs) * 1_000_000)
+            }
+        }
+    }
+
+    private func handleLivePreviewEvent(_ event: BridgeLivePreviewEvent) {
+        audioQueue.async {
+            self.handleLivePreviewEventOnAudioQueue(event)
+        }
+    }
+
+    private func handleLivePreviewEventOnAudioQueue(_ event: BridgeLivePreviewEvent) {
+        guard event.sessionID == sessionID else { return }
+        if let text = event.text?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !text.isEmpty,
+           text != lastTranscript {
+            lastTranscript = text
+            onTranscript(text)
+        }
+        if event.isFinal {
+            eventTask = nil
+        }
+    }
+
+    private func stopEventStreamOnAudioQueue() {
+        eventTask?.cancel()
+        eventTask = nil
     }
 
     private func resample(_ mono: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {

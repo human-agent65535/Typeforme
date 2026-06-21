@@ -228,3 +228,19 @@ struct BridgeLivePreviewFinishResponse: Codable, Sendable {
         case finishedAt = "finished_at"
     }
 }
+
+struct BridgeLivePreviewEvent: Codable, Sendable {
+    let sessionID: String
+    let provider: String
+    let text: String?
+    let isFinal: Bool
+    let updatedAt: TimeInterval
+
+    enum CodingKeys: String, CodingKey {
+        case sessionID = "session_id"
+        case provider
+        case text
+        case isFinal = "is_final"
+        case updatedAt = "updated_at"
+    }
+}
