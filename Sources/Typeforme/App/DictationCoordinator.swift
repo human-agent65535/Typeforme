@@ -753,11 +753,13 @@ final class DictationCoordinator: ObservableObject {
         guard AppSettings.enabledRecognitionSources.contains(.appleSpeech) else {
             return nil
         }
-        let primaryID = AppSettings.activeLanguageIDs.first ?? "en-US"
-        let locale = Locale(identifier: primaryID)
-        guard Self.supportedSpeechLocalesContain(locale) else {
+        guard let localeID = AppSettings.activeLanguageIDs.lazy.compactMap({
+            AppleSpeechLanguageSupport.cachedBestLocaleIdentifier(for: $0)
+        }).first else {
+            AppleSpeechLanguageSupport.refreshInBackgroundIfNeeded()
             return nil
         }
+        let locale = Locale(identifier: localeID)
         guard let recognizer = SFSpeechRecognizer(locale: locale),
               recognizer.isAvailable,
               recognizer.supportsOnDeviceRecognition
@@ -816,20 +818,6 @@ final class DictationCoordinator: ObservableObject {
         } else {
             liveSnapshotAtCorrection = text
         }
-    }
-
-    private static func supportedSpeechLocalesContain(_ locale: Locale) -> Bool {
-        let target = normalizedSpeechLocaleIdentifier(locale.identifier)
-        return SFSpeechRecognizer.supportedLocales().contains { candidate in
-            let normalized = normalizedSpeechLocaleIdentifier(candidate.identifier)
-            return normalized == target || normalized.hasPrefix("\(target)-")
-        }
-    }
-
-    private static func normalizedSpeechLocaleIdentifier(_ identifier: String) -> String {
-        Locale(identifier: identifier).identifier
-            .replacingOccurrences(of: "_", with: "-")
-            .lowercased()
     }
 
     /// Called when stopDictation() pulls the audio file. Closes the audio side

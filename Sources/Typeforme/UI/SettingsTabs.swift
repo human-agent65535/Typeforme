@@ -1246,6 +1246,7 @@ struct ASRSettingsView: View {
     @AppStorage(AppSettings.Keys.asrQwenLlamaMaxTokens) private var qwenMaxTokens: Int = 2048
     @State private var showAllLanguages = false
     @State private var showAdvanced = false
+    @State private var appleSpeechLanguageSupportRevision = 0
 
     var body: some View {
         Form {
@@ -1409,6 +1410,7 @@ struct ASRSettingsView: View {
         .formStyle(.grouped)
         .onAppear {
             normalizeSources()
+            refreshAppleSpeechLanguageSupportIfNeeded()
             clampLanguageSelection()
         }
         .onChange(of: qwenEnabled) { _, _ in
@@ -1421,10 +1423,15 @@ struct ASRSettingsView: View {
         }
         .onChange(of: appleSpeechEnabled) { _, _ in
             normalizeSources()
+            refreshAppleSpeechLanguageSupportIfNeeded()
             clampLanguageSelection()
         }
         .onChange(of: qwenModelID) { _, _ in
             Task { @MainActor in await ASRFactory.shared.stopQwenLlama() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .appleSpeechLanguageSupportDidChange)) { _ in
+            appleSpeechLanguageSupportRevision &+= 1
+            clampLanguageSelection()
         }
     }
 
@@ -1497,11 +1504,13 @@ struct ASRSettingsView: View {
     }
 
     private var supportedLanguageOptions: [ASRLanguageOption] {
-        ASRLanguageSelection.supportedOptions(for: selectedSources)
+        _ = appleSpeechLanguageSupportRevision
+        return ASRLanguageSelection.supportedOptions(for: selectedSources)
     }
 
     private var commonLanguageOptions: [ASRLanguageOption] {
-        ASRLanguageSelection.commonOptions(for: selectedSources)
+        _ = appleSpeechLanguageSupportRevision
+        return ASRLanguageSelection.commonOptions(for: selectedSources)
     }
 
     private var languageColumns: [GridItem] {
@@ -1593,6 +1602,9 @@ struct ASRSettingsView: View {
                     nvidiaEnabled = enabled
                 case .appleSpeech:
                     appleSpeechEnabled = enabled
+                    if enabled {
+                        AppleSpeechLanguageSupport.refreshInBackgroundIfNeeded()
+                    }
                 }
                 normalizeSources()
             }
@@ -1604,6 +1616,11 @@ struct ASRSettingsView: View {
             .filter { ASRLanguageSelection.effectiveIDs([option.id], for: $0).contains(option.id) }
             .map(\.displayName)
         return names.isEmpty ? "No enabled source" : names.joined(separator: ", ")
+    }
+
+    private func refreshAppleSpeechLanguageSupportIfNeeded() {
+        guard appleSpeechEnabled else { return }
+        AppleSpeechLanguageSupport.refreshInBackgroundIfNeeded()
     }
 }
 

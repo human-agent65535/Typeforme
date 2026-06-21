@@ -3,12 +3,10 @@ import Foundation
 
 struct AppleSpeechASRService: ASRService {
     func transcribe(audioFileURL: URL, languageIDs: [String]) async throws -> String {
-        let effectiveLanguageIDs = AppleSpeechLanguageSupport.effectiveLanguageIDs(languageIDs)
-        guard let languageID = effectiveLanguageIDs.first,
-              let localeID = AppleSpeechLanguageSupport.bestLocaleIdentifier(for: languageID)
-        else {
+        guard let resolved = await AppleSpeechLanguageSupport.bestSupportedLocaleIdentifier(for: languageIDs) else {
             throw ASRAudioSupportError.httpStatus(422, "Apple Speech does not support the selected languages on device")
         }
+        let localeID = resolved.localeID
 
         let status = await Self.ensureAuthorized()
         guard status == .authorized else {
