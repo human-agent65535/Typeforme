@@ -2303,19 +2303,72 @@ private struct ChineseLearningStatsView: View {
 /// this view the model was invisible and impossible to verify.
 private struct TouchLearningStatsView: View {
     @State private var snapshot: KeyboardTouchLearningSnapshot?
+    @State private var displayMode: TouchLearningDisplayMode = .centers
+
+    private enum TouchLearningDisplayMode: String, CaseIterable, Identifiable {
+        case centers = "Centers"
+        case gaps = "Gaps"
+        case bands = "Bands"
+
+        var id: String { rawValue }
+
+        var footerText: String {
+            switch self {
+            case .centers:
+                return "The dot is where your taps for that key actually land (key tint = confidence). A dot off center means the keyboard is compensating for your finger's bias on that key."
+            case .gaps:
+                return "Gap colors show the spatial fallback route for the empty area between two keys. Chinese composing can still prefer Rime's pinyin-valid key before this fallback runs."
+            case .bands:
+                return "Orange strips show the narrow visible-key edge band where the learned spatial model can override geometric routing. Key centers remain anchored."
+            }
+        }
+    }
+
+    private enum GapWinner {
+        case left
+        case right
+        case fallback
+    }
+
+    private struct GapDecision {
+        let leftKey: String
+        let rightKey: String
+        let winner: GapWinner
+        let leftSamples: Double
+        let rightSamples: Double
+        let leftBias: Double
+        let rightBias: Double
+        let margin: Double
+
+        var routedKey: String? {
+            switch winner {
+            case .left:
+                return leftKey
+            case .right:
+                return rightKey
+            case .fallback:
+                return nil
+            }
+        }
+    }
 
     private static let keyRows: [[String]] = [
         ["q", "w", "e", "r", "t", "y", "u", "i", "o", "p"],
         ["a", "s", "d", "f", "g", "h", "j", "k", "l"],
         ["z", "x", "c", "v", "b", "n", "m"],
     ]
-    /// Mirrors TextKeyTouchLearner.fullConfidenceSamples: the sample count at
+    /// Mirrors KeyboardTouchGapPolicy.fullConfidenceSamples: the sample count at
     /// which the keyboard trusts a key's learned mean at full weight. The dot
     /// in the map shows the *effective* offset (mean × confidence) — exactly
     /// what touch routing uses.
-    private static let fullConfidenceSamples = 24.0
+    private static let gutterRadiusPoints: CGFloat = 6
+    private static let representativeKeyWidthPoints: CGFloat = 33
     private static let cellWidth: CGFloat = 30
     private static let cellHeight: CGFloat = 42
+    private static let cellGapWidth: CGFloat = 8
+    private static var edgeBandWidth: CGFloat {
+        min(cellWidth * 0.35, max(3, cellWidth * gutterRadiusPoints / representativeKeyWidthPoints))
+    }
 
     var body: some View {
         List {
@@ -2326,13 +2379,27 @@ private struct TouchLearningStatsView: View {
                     LabeledContent("Updated", value: Self.relativeDate(snapshot.updatedAt))
                 }
                 Section {
-                    keyboardMap(snapshot)
+                    Picker("Map", selection: $displayMode) {
+                        ForEach(TouchLearningDisplayMode.allCases) { mode in
+                            Text(mode.rawValue).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+
+                    keyboardMap(snapshot, mode: displayMode)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 6)
                 } header: {
-                    Text("Learned touch centers")
+                    Text("Touch map")
                 } footer: {
-                    Text("The dot is where your taps for that key actually land (key tint = confidence). A dot off center means the keyboard is compensating for your finger's bias on that key.")
+                    Text(displayMode.footerText)
+                }
+                if displayMode == .gaps {
+                    Section("Pairwise gaps") {
+                        ForEach(gapDecisions(snapshot), id: \.leftKey) { decision in
+                            gapDecisionRow(decision)
+                        }
+                    }
                 }
                 Section("Per-key offsets") {
                     ForEach(sortedEntries(snapshot), id: \.0) { key, stats in
@@ -2372,6 +2439,14 @@ private struct TouchLearningStatsView: View {
         Int(snapshot.keys.values.reduce(0) { $0 + $1.sampleCount }.rounded())
     }
 
+    private func gapDecisions(_ snapshot: KeyboardTouchLearningSnapshot) -> [GapDecision] {
+        Self.keyRows.flatMap { row in
+            row.indices.dropLast().map { index in
+                gapDecision(left: row[index], right: row[index + 1], snapshot: snapshot)
+            }
+        }
+    }
+
     private func sortedEntries(_ snapshot: KeyboardTouchLearningSnapshot) -> [(String, KeyboardTouchLearningKeyStats)] {
         snapshot.keys.sorted { lhs, rhs in
             if lhs.value.sampleCount != rhs.value.sampleCount {
@@ -2381,29 +2456,64 @@ private struct TouchLearningStatsView: View {
         }
     }
 
-    private func keyboardMap(_ snapshot: KeyboardTouchLearningSnapshot) -> some View {
+    private func keyboardMap(_ snapshot: KeyboardTouchLearningSnapshot, mode: TouchLearningDisplayMode) -> some View {
         VStack(spacing: 5) {
             ForEach(Self.keyRows, id: \.self) { row in
-                HStack(spacing: 4) {
-                    ForEach(row, id: \.self) { key in
-                        keyCell(key: key, stats: snapshot.keys[key])
+                HStack(spacing: 0) {
+                    ForEach(row.indices, id: \.self) { index in
+                        let key = row[index]
+                        keyCell(
+                            key: key,
+                            stats: snapshot.keys[key],
+                            mode: mode,
+                            hasLeftNeighbor: index > row.startIndex,
+                            hasRightNeighbor: index < row.index(before: row.endIndex)
+                        )
+                        if index < row.index(before: row.endIndex) {
+                            gapCell(
+                                decision: gapDecision(left: key, right: row[index + 1], snapshot: snapshot),
+                                mode: mode
+                            )
+                        }
                     }
                 }
             }
         }
     }
 
-    private func keyCell(key: String, stats: KeyboardTouchLearningKeyStats?) -> some View {
+    private func keyCell(
+        key: String,
+        stats: KeyboardTouchLearningKeyStats?,
+        mode: TouchLearningDisplayMode,
+        hasLeftNeighbor: Bool,
+        hasRightNeighbor: Bool
+    ) -> some View {
         let confidence = min(1.0, (stats?.sampleCount ?? 0) / Self.fullConfidenceSamples)
         let dx = CGFloat((stats?.meanX ?? 0) * confidence) * Self.cellWidth
         let dy = CGFloat((stats?.meanY ?? 0) * confidence) * Self.cellHeight
         return ZStack {
             RoundedRectangle(cornerRadius: 6, style: .continuous)
                 .fill(Color.accentColor.opacity(0.08 + 0.30 * confidence))
+            if mode == .bands {
+                HStack(spacing: 0) {
+                    if hasLeftNeighbor {
+                        Rectangle()
+                            .fill(Color.orange.opacity(0.28))
+                            .frame(width: Self.edgeBandWidth)
+                    }
+                    Spacer(minLength: 0)
+                    if hasRightNeighbor {
+                        Rectangle()
+                            .fill(Color.orange.opacity(0.28))
+                            .frame(width: Self.edgeBandWidth)
+                    }
+                }
+                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+            }
             Text(key)
                 .font(.system(size: 13, weight: .medium, design: .monospaced))
                 .foregroundStyle(stats == nil ? Color.secondary : Color.primary)
-            if stats != nil {
+            if stats != nil, mode == .centers {
                 Circle()
                     .fill(Color.red)
                     .frame(width: 5, height: 5)
@@ -2411,6 +2521,45 @@ private struct TouchLearningStatsView: View {
             }
         }
         .frame(width: Self.cellWidth, height: Self.cellHeight)
+    }
+
+    private func gapCell(decision: GapDecision, mode: TouchLearningDisplayMode) -> some View {
+        let color: Color = {
+            guard mode == .gaps else { return .clear }
+            switch decision.winner {
+            case .left:
+                return .blue.opacity(0.55)
+            case .right:
+                return .green.opacity(0.55)
+            case .fallback:
+                return .gray.opacity(0.20)
+            }
+        }()
+        return RoundedRectangle(cornerRadius: 2, style: .continuous)
+            .fill(color)
+            .overlay {
+                if mode == .gaps {
+                    Text(decision.routedKey?.uppercased() ?? "-")
+                        .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(.primary)
+                }
+            }
+            .frame(width: Self.cellGapWidth, height: Self.cellHeight)
+            .accessibilityLabel(gapAccessibilityLabel(decision))
+    }
+
+    private func gapDecisionRow(_ decision: GapDecision) -> some View {
+        HStack {
+            Text("\(decision.leftKey.uppercased())/\(decision.rightKey.uppercased())")
+                .font(.system(.body, design: .monospaced).weight(.semibold))
+                .frame(width: 44, alignment: .leading)
+            Text(gapDecisionSummary(decision))
+                .font(.subheadline)
+            Spacer()
+            Text(Self.percentLabel(decision.margin))
+                .font(.system(.subheadline, design: .monospaced))
+                .foregroundStyle(.secondary)
+        }
     }
 
     private func statsRow(key: String, stats: KeyboardTouchLearningKeyStats) -> some View {
@@ -2427,12 +2576,78 @@ private struct TouchLearningStatsView: View {
         }
     }
 
+    private func gapDecision(
+        left: String,
+        right: String,
+        snapshot: KeyboardTouchLearningSnapshot
+    ) -> GapDecision {
+        let leftStats = snapshot.keys[left]
+        let rightStats = snapshot.keys[right]
+        let decision = KeyboardTouchGapPolicy.decide(
+            left: Self.gapPolicyStats(leftStats),
+            right: Self.gapPolicyStats(rightStats)
+        )
+        let leftBias = max(0, Self.effectiveMeanX(leftStats))
+        let rightBias = max(0, -Self.effectiveMeanX(rightStats))
+        let winner: GapWinner
+        switch decision?.side {
+        case .some(.left):
+            winner = .left
+        case .some(.right):
+            winner = .right
+        case .none:
+            winner = .fallback
+        }
+        return GapDecision(
+            leftKey: left,
+            rightKey: right,
+            winner: winner,
+            leftSamples: leftStats?.sampleCount ?? 0,
+            rightSamples: rightStats?.sampleCount ?? 0,
+            leftBias: leftBias,
+            rightBias: rightBias,
+            margin: decision?.margin ?? abs(leftBias - rightBias)
+        )
+    }
+
+    private func gapDecisionSummary(_ decision: GapDecision) -> String {
+        if let routedKey = decision.routedKey {
+            return "gap -> \(routedKey.uppercased())"
+        }
+        if max(decision.leftSamples, decision.rightSamples) < KeyboardTouchGapPolicy.minimumDecisionSamples {
+            return "needs samples"
+        }
+        return "geometric"
+    }
+
+    private func gapAccessibilityLabel(_ decision: GapDecision) -> String {
+        let summary = gapDecisionSummary(decision)
+        return "\(decision.leftKey.uppercased()) \(decision.rightKey.uppercased()) gap, \(summary)"
+    }
+
     private static func offsetLabel(_ stats: KeyboardTouchLearningKeyStats) -> String {
         String(
             format: "dx %+d%%  dy %+d%%",
             Int((stats.meanX * 100).rounded()),
             Int((stats.meanY * 100).rounded())
         )
+    }
+
+    private static func effectiveMeanX(_ stats: KeyboardTouchLearningKeyStats?) -> Double {
+        KeyboardTouchGapPolicy.effectiveMeanX(gapPolicyStats(stats))
+    }
+
+    private static var fullConfidenceSamples: Double {
+        KeyboardTouchGapPolicy.fullConfidenceSamples
+    }
+
+    private static func gapPolicyStats(_ stats: KeyboardTouchLearningKeyStats?) -> KeyboardTouchGapPolicy.KeyStats? {
+        guard let stats else { return nil }
+        return KeyboardTouchGapPolicy.KeyStats(sampleCount: stats.sampleCount, meanX: stats.meanX)
+    }
+
+    private static func percentLabel(_ value: Double) -> String {
+        String(format: "%+d%%", Int((value * 100).rounded()))
     }
 
     private static func relativeDate(_ timestamp: TimeInterval) -> String {

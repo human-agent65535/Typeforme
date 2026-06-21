@@ -100,9 +100,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         // bottom controls become accidental character keys.
         static let rowTopOverflow: CGFloat = 14
         static let rowBottomOverflow: CGFloat = 13
-        // Tap within this distance of a key/key midpoint triggers a librime
-        // probe between the two candidate letters; outside the gutter we keep
-        // the unambiguous midpoint resolution.
+        // True inter-key gaps can be reassigned as a whole by touch learning.
+        // This radius is only the extra visible-key edge band where we allow
+        // probabilistic correction without stealing each key's center anchor.
         static let gutterRadius: CGFloat = 6
     }
 
@@ -1244,6 +1244,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                point.x > rightBoundary {
                 return nil
             }
+            if let chosen = learnedInterKeyGapWinner(buttons: buttons, index: index, point: point) {
+                return chosen
+            }
             let isLastButton = index == buttons.index(before: buttons.endIndex)
             if point.x >= leftBoundary && (point.x < rightBoundary || (isLastButton && point.x <= rightBoundary)) {
                 return resolveGutterCandidate(
@@ -1254,6 +1257,24 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                     point: point
                 )
             }
+        }
+        return nil
+    }
+
+    private func learnedInterKeyGapWinner(
+        buttons: [TextKeyboardHitButton],
+        index: Int,
+        point: CGPoint
+    ) -> UIButton? {
+        if index > buttons.startIndex,
+           point.x >= buttons[index - 1].frame.maxX,
+           point.x <= buttons[index].frame.minX {
+            return interKeyGapWinner(left: index - 1, right: index, buttons: buttons)
+        }
+        if index < buttons.index(before: buttons.endIndex),
+           point.x >= buttons[index].frame.maxX,
+           point.x <= buttons[index + 1].frame.minX {
+            return interKeyGapWinner(left: index, right: index + 1, buttons: buttons)
         }
         return nil
     }
@@ -1277,6 +1298,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             return chosen
         }
         return buttons[index].button
+    }
+
+    private func interKeyGapWinner(left: Int, right: Int, buttons: [TextKeyboardHitButton]) -> UIButton? {
+        if let probeWinner = gutterProbeWinner(left: left, right: right, buttons: buttons) {
+            return probeWinner
+        }
+        return gutterGapBiasWinner(left: left, right: right, buttons: buttons)
     }
 
     private func gutterResolutionWinner(
@@ -1304,6 +1332,38 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             return buttons[right].button
         }
         return nil
+    }
+
+    private func gutterGapBiasWinner(
+        left: Int,
+        right: Int,
+        buttons: [TextKeyboardHitButton]
+    ) -> UIButton? {
+        guard let leftCharacter = learnableTextKeyCharacter(for: buttons[left].button),
+              let rightCharacter = learnableTextKeyCharacter(for: buttons[right].button)
+        else { return nil }
+        let leftCandidate = TextKeyTouchLearner.Candidate(
+            character: leftCharacter,
+            frame: buttons[left].frame
+        )
+        let rightCandidate = TextKeyTouchLearner.Candidate(
+            character: rightCharacter,
+            frame: buttons[right].frame
+        )
+        guard let decision = textTouchLearner.gapWinner(
+            left: leftCandidate,
+            right: rightCandidate
+        ) else { return nil }
+        let leftSamples = Int(decision.leftSamples.rounded())
+        let rightSamples = Int(decision.rightSamples.rounded())
+        let marginPercent = Int((decision.margin * 100).rounded())
+        kbLog.info("touch gap pick side=\(decision.side.rawValue, privacy: .public) leftSamples=\(leftSamples, privacy: .public) rightSamples=\(rightSamples, privacy: .public) marginPct=\(marginPercent, privacy: .public)")
+        switch decision.side {
+        case .left:
+            return buttons[left].button
+        case .right:
+            return buttons[right].button
+        }
     }
 
     private func gutterGaussianWinner(
@@ -10245,8 +10305,7 @@ private final class TextKeyTouchLearner {
 
     private static let storageVersion = 1
     private static let maxEffectiveSamples = 800.0
-    private static let fullConfidenceSamples = 24.0
-    private static let minimumDecisionSamples = 5.0
+    private static let minimumDecisionSamples = KeyboardTouchGapPolicy.minimumDecisionSamples
     private static let decisionMargin = 0.28
     private static let correctionWeight = 3.0
     private static let acceptedWeight = 1.0
@@ -10256,7 +10315,6 @@ private final class TextKeyTouchLearner {
     private static let sigmaY = 0.70
     private static let maxObservationX = 0.75
     private static let maxObservationY = 0.75
-    private static let maxMeanX = 0.34
     private static let maxMeanY = 0.28
     private static let persistDebounceInterval: TimeInterval = 0.5
     private static let persistSampleBatchSize = 5
@@ -10325,8 +10383,8 @@ private final class TextKeyTouchLearner {
         let alpha = weight / max(nextCount, weight)
         stats.meanX = Self.clamp(
             stats.meanX + (observedX - stats.meanX) * alpha,
-            min: -Self.maxMeanX,
-            max: Self.maxMeanX
+            min: -KeyboardTouchGapPolicy.maxMeanX,
+            max: KeyboardTouchGapPolicy.maxMeanX
         )
         stats.meanY = Self.clamp(
             stats.meanY + (observedY - stats.meanY) * alpha,
@@ -10372,14 +10430,49 @@ private final class TextKeyTouchLearner {
         )
     }
 
+    func gapWinner(
+        left: Candidate,
+        right: Candidate
+    ) -> Decision? {
+        guard areHorizontalNeighbors(left.frame, right.frame),
+              left.frame.maxX <= right.frame.minX
+        else { return nil }
+
+        let leftStats = state.keys[left.character]
+        let rightStats = state.keys[right.character]
+        guard let decision = KeyboardTouchGapPolicy.decide(
+            left: Self.gapPolicyStats(leftStats),
+            right: Self.gapPolicyStats(rightStats)
+        ) else { return nil }
+        return Decision(
+            side: decision.side == .left ? .left : .right,
+            leftSamples: decision.leftSamples,
+            rightSamples: decision.rightSamples,
+            margin: decision.margin
+        )
+    }
+
     private func score(offset: (x: Double, y: Double), stats: KeyStats?) -> Double {
-        let confidence = min(1, (stats?.sampleCount ?? 0) / Self.fullConfidenceSamples)
-        let meanX = Self.clamp((stats?.meanX ?? 0) * confidence, min: -Self.maxMeanX, max: Self.maxMeanX)
-        let meanY = Self.clamp((stats?.meanY ?? 0) * confidence, min: -Self.maxMeanY, max: Self.maxMeanY)
+        let meanX = effectiveMeanX(stats)
+        let meanY = effectiveMeanY(stats)
         let dx = offset.x - meanX
         let dy = offset.y - meanY
         return -((dx * dx) / (2 * Self.sigmaX * Self.sigmaX)
             + (dy * dy) / (2 * Self.sigmaY * Self.sigmaY))
+    }
+
+    private func effectiveMeanX(_ stats: KeyStats?) -> Double {
+        KeyboardTouchGapPolicy.effectiveMeanX(Self.gapPolicyStats(stats))
+    }
+
+    private func effectiveMeanY(_ stats: KeyStats?) -> Double {
+        let confidence = min(1, (stats?.sampleCount ?? 0) / KeyboardTouchGapPolicy.fullConfidenceSamples)
+        return Self.clamp((stats?.meanY ?? 0) * confidence, min: -Self.maxMeanY, max: Self.maxMeanY)
+    }
+
+    private static func gapPolicyStats(_ stats: KeyStats?) -> KeyboardTouchGapPolicy.KeyStats? {
+        guard let stats else { return nil }
+        return KeyboardTouchGapPolicy.KeyStats(sampleCount: stats.sampleCount, meanX: stats.meanX)
     }
 
     private func normalizedOffset(_ point: CGPoint, in frame: CGRect) -> (x: Double, y: Double)? {
