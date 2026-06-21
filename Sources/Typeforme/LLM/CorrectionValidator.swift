@@ -19,19 +19,10 @@ enum CorrectionValidationError: LocalizedError {
 /// Parses the model JSON payload and enforces output guardrails before commit.
 enum CorrectionValidator {
     static func parseAndValidate(rawOutput: String, for request: CorrectionRequest) throws -> CorrectionResult {
-        let cleaned = ModelOutputCleaner.clean(rawOutput)
-        guard let jsonString = ModelOutputCleaner.extractFirstJSONObject(cleaned) else {
-            throw CorrectionValidationError.parseFailed("no JSON object found")
-        }
-        guard let data = jsonString.data(using: .utf8) else {
-            throw CorrectionValidationError.parseFailed("not utf-8")
-        }
-        let payload: CorrectionPayload
-        do {
-            payload = try BridgeJSON.decode(CorrectionPayload.self, from: data)
-        } catch {
-            throw CorrectionValidationError.parseFailed(error.localizedDescription)
-        }
+        let payload: CorrectionPayload = try ModelJSONOutputValidator.decodePayload(
+            rawOutput: rawOutput,
+            parseError: CorrectionValidationError.parseFailed
+        )
         let result = CorrectionResult(
             action: payload.action ?? .commit,
             text: payload.text,
@@ -42,31 +33,19 @@ enum CorrectionValidator {
     }
 
     static func validate(_ result: CorrectionResult, for request: CorrectionRequest) throws {
-        let trimmed = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        if trimmed.isEmpty {
-            throw CorrectionValidationError.emptyText
-        }
-
         // Keep a guardrail against hallucinated essays, but allow normal
         // expansion from punctuation, mixed-language spacing, and structured
         // correction modes.
         let cap = maxOutputCharacters(for: request)
-        if result.text.count > cap {
-            throw CorrectionValidationError.textTooLong(actual: result.text.count, cap: cap)
-        }
-
-        if containsMarkupOrJSON(result.text) {
-            throw CorrectionValidationError.containsMarkupOrJSON
-        }
-    }
-
-    private static func containsMarkupOrJSON(_ s: String) -> Bool {
-        if s.contains("```") { return true }
-        if s.contains("<think>") || s.contains("</think>") { return true }
-        let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.hasPrefix("{") && trimmed.hasSuffix("}") { return true }
-        return false
+        try ModelJSONOutputValidator.validateText(
+            result.text,
+            cap: cap,
+            emptyError: CorrectionValidationError.emptyText,
+            tooLongError: { actual, cap in
+                CorrectionValidationError.textTooLong(actual: actual, cap: cap)
+            },
+            containsMarkupOrJSONError: CorrectionValidationError.containsMarkupOrJSON
+        )
     }
 
     private static func maxOutputCharacters(for request: CorrectionRequest) -> Int {

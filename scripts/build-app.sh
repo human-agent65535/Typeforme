@@ -46,6 +46,8 @@ if [ -f "$ROOT/.env" ]; then
 fi
 # shellcheck source=scripts/lib/xcode-tools.sh
 . "$ROOT/scripts/lib/xcode-tools.sh"
+# shellcheck source=scripts/lib/macho-bundle.sh
+. "$ROOT/scripts/lib/macho-bundle.sh"
 typeforme_configure_xcode "build Typeforme"
 
 TYPEFORME_BUNDLE_PREFIX="${TYPEFORME_BUNDLE_PREFIX:-com.example}"
@@ -123,82 +125,6 @@ install_app_bundle() {
         open "$installed_app"
         echo "launched: $installed_app"
     fi
-}
-
-is_system_dep() {
-    local dep="$1"
-    [[ "$dep" == /usr/lib/* || "$dep" == /System/Library/* ]]
-}
-
-is_relative_dep() {
-    local dep="$1"
-    [[ "$dep" == @rpath/* || "$dep" == @loader_path/* || "$dep" == @executable_path/* ]]
-}
-
-strip_rpaths_to_loader_path() {
-    local file="$1"
-    while read -r rp; do
-        [ -z "$rp" ] && continue
-        install_name_tool -delete_rpath "$rp" "$file" 2>/dev/null || true
-    done < <(otool -l "$file" 2>/dev/null | awk '/LC_RPATH/{getline; getline; print $2}')
-    install_name_tool -add_rpath "@loader_path" "$file" 2>/dev/null || true
-}
-
-normalize_install_names() {
-    local file="$1"
-    local dir="$2"
-    local base
-    base="$(basename "$file")"
-    if [[ "$file" == *.dylib ]]; then
-        install_name_tool -id "@rpath/$base" "$file" 2>/dev/null || true
-    fi
-
-    while read -r dep; do
-        [ -n "$dep" ] || continue
-        is_system_dep "$dep" && continue
-        local dep_base
-        dep_base="$(basename "$dep")"
-        [ -f "$dir/$dep_base" ] || continue
-        install_name_tool -change "$dep" "@rpath/$dep_base" "$file" 2>/dev/null || true
-    done < <(otool -L "$file" 2>/dev/null | tail -n +2 | awk '{print $1}')
-}
-
-bundle_non_system_deps() {
-    local dir="$1"
-    local main_binary="$2"
-    local queue=("$dir/$main_binary")
-    for dy in "$dir"/*.dylib; do
-        [ -e "$dy" ] && queue+=("$dy")
-    done
-
-    local i=0
-    while [ "$i" -lt "${#queue[@]}" ]; do
-        local file="${queue[$i]}"
-        i=$((i + 1))
-        while read -r dep; do
-            [ -n "$dep" ] || continue
-            is_relative_dep "$dep" && continue
-            is_system_dep "$dep" && continue
-            if [ ! -f "$dep" ]; then
-                echo "warn: non-system dylib not found: $dep (needed by $(basename "$file"))" >&2
-                continue
-            fi
-            local base
-            base="$(basename "$dep")"
-            if [ ! -f "$dir/$base" ]; then
-                cp "$dep" "$dir/$base"
-                queue+=("$dir/$base")
-            fi
-        done < <(otool -L "$file" 2>/dev/null | tail -n +2 | awk '{print $1}')
-    done
-
-    strip_rpaths_to_loader_path "$dir/$main_binary"
-    normalize_install_names "$dir/$main_binary" "$dir"
-    for dy in "$dir"/*.dylib; do
-        [ -e "$dy" ] || continue
-        strip_rpaths_to_loader_path "$dy"
-        normalize_install_names "$dy" "$dir"
-    done
 }
 
 cd "$ROOT"
@@ -281,7 +207,7 @@ if [ -x "$LLAMA_SRC" ]; then
     for sib in "$ROOT"/vendor/*.dylib "$ROOT"/vendor/*.metallib; do
         [ -e "$sib" ] && cp "$sib" "$LLAMA_DIR/"
     done
-    bundle_non_system_deps "$LLAMA_DIR" "llama-server-arm64"
+    typeforme_bundle_non_system_deps "$LLAMA_DIR" "llama-server-arm64"
     # Sign the helper FIRST (deepest first), then the app bundle below.
     codesign --force --options runtime --entitlements "$LLAMA_ENT" \
              --sign "$SIGN_IDENTITY" "$LLAMA_DIR/llama-server-arm64"
@@ -300,7 +226,7 @@ if [ -x "$NVIDIA_NEMOTRON_BIN" ]; then
     for sib in "$NVIDIA_NEMOTRON_SRC"/*.dylib; do
         [ -e "$sib" ] && cp "$sib" "$NVIDIA_NEMOTRON_DIR/"
     done
-    bundle_non_system_deps "$NVIDIA_NEMOTRON_DIR" "typeforme-nemotron-asr"
+    typeforme_bundle_non_system_deps "$NVIDIA_NEMOTRON_DIR" "typeforme-nemotron-asr"
     codesign --force --options runtime --sign "$SIGN_IDENTITY" "$NVIDIA_NEMOTRON_DIR/typeforme-nemotron-asr"
     for sib in "$NVIDIA_NEMOTRON_DIR"/*.dylib; do
         [ -e "$sib" ] || continue

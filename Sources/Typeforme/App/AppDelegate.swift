@@ -126,7 +126,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         installEscMonitor()
 
-        if !AccessibilityPermissions.isTrusted {
+        if !AppPermissions.accessibilityTrusted {
             Log.app.notice("AX trust not granted; automatic text insertion will fail until granted")
         }
         applyProcessingMode(AppSettings.processingMode)

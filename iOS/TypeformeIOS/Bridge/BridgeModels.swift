@@ -297,7 +297,7 @@ struct PairingConfig: Codable, Equatable {
     }
 }
 
-struct PairingLanguageOption: Codable, Equatable, Identifiable {
+struct PairingLanguageOption: Codable, Equatable, Identifiable, BridgeLanguageOptionRepresentable {
     let id: String
     let displayName: String
 
@@ -551,36 +551,36 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
         case settingsRevision = "settings_revision"
     }
 
-    static let asrTimeoutSecondsRange: ClosedRange<Double> = 10...300
-    static let correctionTimeoutMillisecondsRange: ClosedRange<Int> = 100...30_000
-    static let correctionColdTimeoutMillisecondsRange: ClosedRange<Int> = 1_000...60_000
+    static let asrTimeoutSecondsRange = BridgeSettingsNormalization.asrTimeoutSecondsRange
+    static let correctionTimeoutMillisecondsRange = BridgeSettingsNormalization.correctionTimeoutMillisecondsRange
+    static let correctionColdTimeoutMillisecondsRange = BridgeSettingsNormalization.correctionColdTimeoutMillisecondsRange
 
     static var correctionTimeoutSecondsRange: ClosedRange<Double> {
-        secondsRange(for: correctionTimeoutMillisecondsRange)
+        BridgeSettingsNormalization.correctionTimeoutSecondsRange
     }
 
     static var correctionColdTimeoutSecondsRange: ClosedRange<Double> {
-        secondsRange(for: correctionColdTimeoutMillisecondsRange)
+        BridgeSettingsNormalization.correctionColdTimeoutSecondsRange
     }
 
     static func clampedASRTimeoutSec(_ value: Double) -> Double {
-        clamped(value, to: asrTimeoutSecondsRange)
+        BridgeSettingsNormalization.clampedASRTimeoutSec(value)
     }
 
     static func clampedCorrectionTimeoutMs(_ value: Int) -> Int {
-        clamped(value, to: correctionTimeoutMillisecondsRange)
+        BridgeSettingsNormalization.clampedCorrectionTimeoutMs(value)
     }
 
     static func clampedCorrectionColdTimeoutMs(_ value: Int) -> Int {
-        clamped(value, to: correctionColdTimeoutMillisecondsRange)
+        BridgeSettingsNormalization.clampedCorrectionColdTimeoutMs(value)
     }
 
     static func correctionTimeoutMs(fromSeconds value: Double) -> Int {
-        milliseconds(fromSeconds: value, range: correctionTimeoutMillisecondsRange)
+        BridgeSettingsNormalization.correctionTimeoutMs(fromSeconds: value)
     }
 
     static func correctionColdTimeoutMs(fromSeconds value: Double) -> Int {
-        milliseconds(fromSeconds: value, range: correctionColdTimeoutMillisecondsRange)
+        BridgeSettingsNormalization.correctionColdTimeoutMs(fromSeconds: value)
     }
 
     init(
@@ -666,19 +666,15 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
 
     mutating func normalize() {
         enabledRecognitionSources = RecognitionSource.normalizedSources(enabledRecognitionSources).map(\.rawValue)
-        for (sourceID, options) in asrModelOptionsByRecognitionSource {
-            guard !options.isEmpty else {
-                asrModelIDsByRecognitionSource.removeValue(forKey: sourceID)
-                continue
-            }
-            let selected = asrModelIDsByRecognitionSource[sourceID]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            if !options.contains(where: { $0.id == selected }) {
-                asrModelIDsByRecognitionSource[sourceID] = options[0].id
-            }
-        }
-        for (sourceID, timeout) in asrTimeoutSecByRecognitionSource {
-            asrTimeoutSecByRecognitionSource[sourceID] = Self.clampedASRTimeoutSec(timeout)
-        }
+        asrModelIDsByRecognitionSource = BridgeSettingsNormalization.normalizedASRModelIDs(
+            currentModelIDs: asrModelIDsByRecognitionSource,
+            incomingModelIDs: asrModelIDsByRecognitionSource,
+            optionsBySource: asrModelOptionsByRecognitionSource,
+            defaultID: { sourceID in asrModelOptionsByRecognitionSource[sourceID]?.first?.id ?? "" }
+        )
+        asrTimeoutSecByRecognitionSource = BridgeSettingsNormalization.clampedASRTimeoutSeconds(
+            asrTimeoutSecByRecognitionSource
+        )
         languageIDs = ASRLanguageSelection.validatedIDs(languageIDs, supportedOptions: supportedLanguageOptionsForEnabledSources())
         correctionTimeoutMs = Self.clampedCorrectionTimeoutMs(correctionTimeoutMs)
         correctionColdTimeoutMs = Self.clampedCorrectionColdTimeoutMs(correctionColdTimeoutMs)
@@ -701,20 +697,7 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
     }
 
     private static func orderedUniqueLanguageOptions(_ options: [PairingLanguageOption]) -> [PairingLanguageOption] {
-        var byID: [String: PairingLanguageOption] = [:]
-        for option in options {
-            let id = option.id.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !id.isEmpty, byID[id] == nil else { continue }
-            byID[id] = option
-        }
-
-        var ordered = ASRLanguageSelection.all.compactMap { byID.removeValue(forKey: $0.id) }
-        ordered.append(contentsOf: byID.values.sorted {
-            let nameOrder = $0.displayName.localizedStandardCompare($1.displayName)
-            if nameOrder != .orderedSame { return nameOrder == .orderedAscending }
-            return $0.id < $1.id
-        })
-        return ordered
+        BridgeSettingsNormalization.orderedUniqueLanguageOptions(options)
     }
 
     func asrModelOptions(for sourceID: String) -> [BridgeSettingOption] {
@@ -743,36 +726,7 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
     }
 
     private static func rimeUserPhrases(from entries: [BridgeUserDictionaryEntry]) -> [String] {
-        var seen = Set<String>()
-        var output: [String] = []
-        for entry in entries {
-            let cleaned = BridgeUserDictionaryEntry.cleanedSurface(entry.surface)
-            guard !cleaned.isEmpty else { continue }
-            let key = cleaned.folding(
-                options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
-                locale: .current
-            )
-            guard seen.insert(key).inserted else { continue }
-            output.append(cleaned)
-        }
-        return output.sorted()
-    }
-
-    private static func secondsRange(for range: ClosedRange<Int>) -> ClosedRange<Double> {
-        (Double(range.lowerBound) / 1000)...(Double(range.upperBound) / 1000)
-    }
-
-    private static func milliseconds(fromSeconds seconds: Double, range: ClosedRange<Int>) -> Int {
-        let clampedSeconds = clamped(seconds, to: secondsRange(for: range))
-        return clamped(Int((clampedSeconds * 1000).rounded()), to: range)
-    }
-
-    private static func clamped(_ value: Double, to range: ClosedRange<Double>) -> Double {
-        min(max(value, range.lowerBound), range.upperBound)
-    }
-
-    private static func clamped(_ value: Int, to range: ClosedRange<Int>) -> Int {
-        min(max(value, range.lowerBound), range.upperBound)
+        BridgeSettingsNormalization.rimeUserPhrases(from: entries.map(\.surface))
     }
 }
 

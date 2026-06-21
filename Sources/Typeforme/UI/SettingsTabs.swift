@@ -73,7 +73,7 @@ private struct IntegerSettingField: View {
 struct GeneralSettingsView: View {
     @AppStorage(AppSettings.Keys.processingMode) private var processingModeRaw = ProcessingMode.client.rawValue
     @AppStorage(AppSettings.Keys.launchAtLogin) private var launchAtLogin = true
-    @State private var axTrusted = AccessibilityPermissions.isTrusted
+    @State private var axTrusted = AppPermissions.accessibilityTrusted
     @State private var microphoneStatus = AppPermissions.microphoneStatus
     @State private var launchAtLoginStatus = LaunchAtLoginController.status
     @State private var launchAtLoginError: String?
@@ -134,21 +134,21 @@ struct GeneralSettingsView: View {
                         .foregroundStyle(axTrusted ? .green : .orange)
                     if !axTrusted {
                         Button("Open System Settings…") {
-                            AccessibilityPermissions.openAccessibilitySettings()
+                            AppPermissions.openAccessibilitySettings()
                         }
                     }
                     Menu {
                         Button("Refresh now") {
-                            axTrusted = AccessibilityPermissions.isTrusted
+                            axTrusted = AppPermissions.accessibilityTrusted
                         }
                         Button("Reset & re-prompt") {
                             // tccutil reset wipes the record but doesn't re-register
                             // us in the Accessibility list; we have to "knock" via
                             // AXIsProcessTrustedWithOptions(prompt:true) to make
                             // macOS add Typeforme back so there's something to toggle.
-                            _ = AccessibilityPermissions.resetGrant()
-                            AccessibilityPermissions.requestTrustPrompt()
-                            axTrusted = AccessibilityPermissions.isTrusted
+                            _ = AppPermissions.resetAccessibilityGrant()
+                            AppPermissions.requestAccessibility()
+                            axTrusted = AppPermissions.accessibilityTrusted
                         }
                     } label: {
                         Image(systemName: "ellipsis.circle")
@@ -199,7 +199,7 @@ struct GeneralSettingsView: View {
         // the moment the user toggles it in System Settings → Privacy.
         .task {
             while !Task.isCancelled {
-                let now = AccessibilityPermissions.isTrusted
+                let now = AppPermissions.accessibilityTrusted
                 if now != axTrusted { axTrusted = now }
                 let mic = AppPermissions.microphoneStatus
                 if mic != microphoneStatus { microphoneStatus = mic }
@@ -211,7 +211,7 @@ struct GeneralSettingsView: View {
         // Belt-and-braces: also re-check the instant the user switches back
         // to Typeforme after granting in System Settings.
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-            axTrusted = AccessibilityPermissions.isTrusted
+            axTrusted = AppPermissions.accessibilityTrusted
             microphoneStatus = AppPermissions.microphoneStatus
             launchAtLoginStatus = LaunchAtLoginController.status
         }

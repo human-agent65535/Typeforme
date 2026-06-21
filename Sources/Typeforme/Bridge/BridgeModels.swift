@@ -316,20 +316,20 @@ struct BridgeSettingsPayload: Codable, Sendable {
         .externalAnthropicCompatible,
     ]
 
-    static let asrTimeoutRangeSec: ClosedRange<Double> = 10...300
-    static let correctionTimeoutRangeMs: ClosedRange<Int> = 100...30_000
-    static let correctionColdTimeoutRangeMs: ClosedRange<Int> = 1_000...60_000
+    static let asrTimeoutRangeSec = BridgeSettingsNormalization.asrTimeoutSecondsRange
+    static let correctionTimeoutRangeMs = BridgeSettingsNormalization.correctionTimeoutMillisecondsRange
+    static let correctionColdTimeoutRangeMs = BridgeSettingsNormalization.correctionColdTimeoutMillisecondsRange
 
     static func clampedASRTimeoutSec(_ value: Double) -> Double {
-        min(max(value, asrTimeoutRangeSec.lowerBound), asrTimeoutRangeSec.upperBound)
+        BridgeSettingsNormalization.clampedASRTimeoutSec(value)
     }
 
     static func clampedCorrectionTimeoutMs(_ value: Int) -> Int {
-        min(max(value, correctionTimeoutRangeMs.lowerBound), correctionTimeoutRangeMs.upperBound)
+        BridgeSettingsNormalization.clampedCorrectionTimeoutMs(value)
     }
 
     static func clampedCorrectionColdTimeoutMs(_ value: Int) -> Int {
-        min(max(value, correctionColdTimeoutRangeMs.lowerBound), correctionColdTimeoutRangeMs.upperBound)
+        BridgeSettingsNormalization.clampedCorrectionColdTimeoutMs(value)
     }
 
     static func current(userDictionary: [DictionaryEntry] = []) -> BridgeSettingsPayload {
@@ -429,21 +429,7 @@ struct BridgeSettingsPayload: Codable, Sendable {
     }
 
     private static func rimeUserPhrases(from entries: [DictionaryEntry]) -> [String] {
-        var seen = Set<String>()
-        var phrases: [String] = []
-        for entry in entries {
-            let phrase = entry.surface
-                .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !phrase.isEmpty else { continue }
-            let key = phrase.folding(
-                options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
-                locale: .current
-            )
-            guard seen.insert(key).inserted else { continue }
-            phrases.append(phrase)
-        }
-        return phrases.sorted()
+        BridgeSettingsNormalization.rimeUserPhrases(from: entries.map(\.surface))
     }
 
     private static func selectedModelStatuses(
@@ -585,28 +571,17 @@ struct BridgeSettingsPayload: Codable, Sendable {
         enabledRecognitionSources = RecognitionSource.normalizedSources(enabledRecognitionSources).map(\.rawValue)
 
         asrModelOptionsByRecognitionSource = Self.controllableASRModelOptionsByRecognitionSource
-        var normalizedModelIDs = Self.currentASRModelIDsByRecognitionSource
-        for (sourceID, options) in asrModelOptionsByRecognitionSource {
-            guard !options.isEmpty else {
-                normalizedModelIDs.removeValue(forKey: sourceID)
-                continue
-            }
-            let rawModelID = asrModelIDsByRecognitionSource[sourceID] ?? Self.defaultASRModelID(sourceID: sourceID)
-            if options.contains(where: { $0.id == rawModelID }) {
-                normalizedModelIDs[sourceID] = rawModelID
-            } else {
-                let defaultID = Self.defaultASRModelID(sourceID: sourceID)
-                normalizedModelIDs[sourceID] = options.first(where: { $0.id == defaultID })?.id ?? options[0].id
-            }
-        }
-        asrModelIDsByRecognitionSource = normalizedModelIDs
+        asrModelIDsByRecognitionSource = BridgeSettingsNormalization.normalizedASRModelIDs(
+            currentModelIDs: Self.currentASRModelIDsByRecognitionSource,
+            incomingModelIDs: asrModelIDsByRecognitionSource,
+            optionsBySource: asrModelOptionsByRecognitionSource,
+            defaultID: Self.defaultASRModelID(sourceID:)
+        )
 
-        var normalizedTimeouts = Self.currentASRTimeoutSecByRecognitionSource
-        for (sourceID, timeout) in asrTimeoutSecByRecognitionSource {
-            guard normalizedTimeouts[sourceID] != nil else { continue }
-            normalizedTimeouts[sourceID] = Self.clampedASRTimeoutSec(timeout)
-        }
-        asrTimeoutSecByRecognitionSource = normalizedTimeouts
+        asrTimeoutSecByRecognitionSource = BridgeSettingsNormalization.normalizedASRTimeoutSeconds(
+            currentTimeouts: Self.currentASRTimeoutSecByRecognitionSource,
+            incomingTimeouts: asrTimeoutSecByRecognitionSource
+        )
 
         supportedLanguagesByRecognitionSource = Self.supportedLanguagesByRecognitionSource
         supportedLanguages = ASRLanguageSelection.supportedOptions(for: enabledSources).map(BridgeLanguageOption.init)
@@ -642,20 +617,7 @@ struct BridgeSettingsPayload: Codable, Sendable {
     }
 
     private static func orderedUniqueLanguageOptions(_ options: [BridgeLanguageOption]) -> [BridgeLanguageOption] {
-        var byID: [String: BridgeLanguageOption] = [:]
-        for option in options {
-            let id = option.id.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !id.isEmpty, byID[id] == nil else { continue }
-            byID[id] = option
-        }
-
-        var ordered = ASRLanguageSelection.all.compactMap { byID.removeValue(forKey: $0.id) }
-        ordered.append(contentsOf: byID.values.sorted {
-            let nameOrder = $0.displayName.localizedStandardCompare($1.displayName)
-            if nameOrder != .orderedSame { return nameOrder == .orderedAscending }
-            return $0.id < $1.id
-        })
-        return ordered
+        BridgeSettingsNormalization.orderedUniqueLanguageOptions(options)
     }
 
     func asrModelOptions(for sourceID: String) -> [BridgeSettingOption] {
@@ -1018,7 +980,7 @@ struct BridgePairingPayload: Codable, Sendable {
     }
 }
 
-struct BridgeLanguageOption: Codable, Sendable, Identifiable, Hashable {
+struct BridgeLanguageOption: Codable, Sendable, Identifiable, Hashable, BridgeLanguageOptionRepresentable {
     let id: String
     let displayName: String
 

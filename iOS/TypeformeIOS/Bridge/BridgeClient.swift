@@ -23,10 +23,6 @@ enum BridgeClientError: LocalizedError {
     }
 }
 
-private struct BridgeErrorResponse: Decodable {
-    let error: String
-}
-
 struct BridgeClient: Sendable {
     let baseURL: URL
     let token: String
@@ -287,13 +283,18 @@ struct BridgeClient: Sendable {
         else {
             throw BridgeClientError.invalidURL
         }
-        let request = try makeRequest(
-            path: "/v1/jobs/\(encodedJobID)/events",
-            method: "GET",
-            timeout: 60,
-            accept: "text/event-stream",
-            acceptEncoding: nil
-        )
+        let request: URLRequest
+        do {
+            request = try http.makeRequest(
+                path: "/v1/jobs/\(encodedJobID)/events",
+                method: "GET",
+                timeout: 60,
+                accept: "text/event-stream",
+                acceptEncoding: nil
+            )
+        } catch {
+            throw mapHTTPError(error)
+        }
 
         let (bytes, response) = try await URLSession.shared.bytes(for: request)
         guard let http = response as? HTTPURLResponse else {
@@ -342,8 +343,11 @@ struct BridgeClient: Sendable {
         json body: Body,
         timeout: TimeInterval
     ) async throws -> T {
-        let data = try JSONEncoder().encode(body)
-        return try await request(path: path, method: method, body: data, contentType: "application/json", timeout: timeout)
+        do {
+            return try await http.request(path: path, method: method, json: body, timeout: timeout)
+        } catch {
+            throw mapHTTPError(error)
+        }
     }
 
     private func request<T: Decodable>(
@@ -353,56 +357,35 @@ struct BridgeClient: Sendable {
         contentType: String? = nil,
         timeout: TimeInterval
     ) async throws -> T {
-        var request = try makeRequest(
-            path: path,
-            method: method,
-            timeout: timeout,
-            accept: "application/json",
-            acceptEncoding: "gzip"
-        )
-        if let body {
-            request.httpBody = body
-            request.setValue(contentType ?? "application/octet-stream", forHTTPHeaderField: "Content-Type")
+        do {
+            return try await http.request(
+                path: path,
+                method: method,
+                body: body,
+                contentType: contentType,
+                timeout: timeout
+            )
+        } catch {
+            throw mapHTTPError(error)
         }
-
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse else {
-            throw BridgeClientError.invalidResponse
-        }
-        guard http.statusCode != 401 && http.statusCode != 403 && http.statusCode != 404 else {
-            throw BridgeClientError.unauthorizedOrUnavailable
-        }
-        guard (200..<300).contains(http.statusCode) else {
-            let message = (try? JSONDecoder().decode(BridgeErrorResponse.self, from: data).error)
-                ?? String(data: data, encoding: .utf8)
-                ?? "HTTP \(http.statusCode)"
-            throw BridgeClientError.server(message)
-        }
-        return try JSONDecoder().decode(T.self, from: data)
     }
 
-    private func makeRequest(
-        path: String,
-        method: String,
-        timeout: TimeInterval,
-        accept: String,
-        acceptEncoding: String?
-    ) throws -> URLRequest {
-        guard let url = URL(string: path, relativeTo: baseURL)?.absoluteURL else {
-            throw BridgeClientError.invalidURL
+    private var http: BridgeHTTPClientCore {
+        BridgeHTTPClientCore(baseURL: baseURL, token: token, applyClientIdentity: BridgeClientIdentity.apply(to:))
+    }
+
+    private func mapHTTPError(_ error: Error) -> Error {
+        guard let error = error as? BridgeHTTPClientCoreError else { return error }
+        switch error {
+        case .invalidURL:
+            return BridgeClientError.invalidURL
+        case .invalidResponse, .decodingFailed:
+            return BridgeClientError.invalidResponse
+        case .unauthorized, .forbidden, .notFound:
+            return BridgeClientError.unauthorizedOrUnavailable
+        case .server(let message):
+            return BridgeClientError.server(message)
         }
-        var request = URLRequest(url: url)
-        request.httpMethod = method
-        request.timeoutInterval = timeout
-        request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        request.setValue(accept, forHTTPHeaderField: "Accept")
-        if let acceptEncoding {
-            request.setValue(acceptEncoding, forHTTPHeaderField: "Accept-Encoding")
-        }
-        request.setValue("no-store", forHTTPHeaderField: "Cache-Control")
-        BridgeClientIdentity.apply(to: &request)
-        return request
     }
 
     private static func multipartDictateBody(

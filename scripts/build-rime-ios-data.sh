@@ -5,6 +5,9 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RIME_DIR="$ROOT/iOS/TypeformeKeyboard/RimeSharedSupport"
 BUILD_DIR="$RIME_DIR/build"
 
+# shellcheck source=scripts/lib/rime-ios-schemas.sh
+. "$ROOT/scripts/lib/rime-ios-schemas.sh"
+
 if ! command -v rime_deployer >/dev/null 2>&1; then
     cat >&2 <<'EOF'
 error: rime_deployer is required.
@@ -31,15 +34,10 @@ generate_no_correction_schema() {
     perl -0pi -e "s/schema_id: ${source_schema}/schema_id: ${target_schema}/; s/^  name: .*$/  name: ${display_name}/m; s/enable_correction: true/enable_correction: false/" "$target_file"
 }
 
-generate_no_correction_schema "typeforme_pinyin" "typeforme_pinyin_no_correction" "Typeforme Pinyin No Correction"
-generate_no_correction_schema "typeforme_pinyin_ext" "typeforme_pinyin_ext_no_correction" "Typeforme Pinyin Extended No Correction"
-generate_no_correction_schema "typeforme_pinyin_large" "typeforme_pinyin_large_no_correction" "Typeforme Pinyin Large No Correction"
-
-perl -0pi -e '
-  s/^  - schema: typeforme_pinyin\n/  - schema: typeforme_pinyin\n  - schema: typeforme_pinyin_no_correction\n/m;
-  s/^  - schema: typeforme_pinyin_ext\n/  - schema: typeforme_pinyin_ext\n  - schema: typeforme_pinyin_ext_no_correction\n/m;
-  s/^  - schema: typeforme_pinyin_large\n/  - schema: typeforme_pinyin_large\n  - schema: typeforme_pinyin_large_no_correction\n/m;
-' "$TMP_RIME_DIR/default.yaml"
+while IFS=$'\t' read -r source_schema target_schema display_name; do
+    generate_no_correction_schema "$source_schema" "$target_schema" "$display_name"
+    perl -0pi -e "s/^  - schema: ${source_schema}\n/  - schema: ${source_schema}\n  - schema: ${target_schema}\n/m;" "$TMP_RIME_DIR/default.yaml"
+done < <(typeforme_rime_no_correction_schema_variants)
 
 rm -rf "$BUILD_DIR"
 mkdir -p "$BUILD_DIR"

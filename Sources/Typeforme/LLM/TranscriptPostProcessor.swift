@@ -13,7 +13,7 @@ enum TranscriptPostProcessor {
         var out = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !out.isEmpty else { return out }
 
-        let preferChinesePunctuation = containsCJK(out)
+        let preferChinesePunctuation = UnicodeScriptClassifier.containsHanCore(out)
 
         out = normalizeLineBreaks(out)
         out = removeMandarinSentenceParticles(out)
@@ -401,7 +401,7 @@ enum TranscriptPostProcessor {
 
     private static func appendMissingTerminalPunctuation(_ text: String, preferChinesePunctuation: Bool) -> String {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, preferChinesePunctuation || containsCJK(trimmed) else { return trimmed }
+        guard !trimmed.isEmpty, preferChinesePunctuation || UnicodeScriptClassifier.containsHanCore(trimmed) else { return trimmed }
         guard !hasTerminalPunctuation(trimmed) else { return trimmed }
         return trimmed + (isQuestionLike(trimmed) ? "？" : "。")
     }
@@ -498,14 +498,6 @@ enum TranscriptPostProcessor {
             cache[pattern] = compiled
         }
         return compiled
-    }
-
-    private static func containsCJK(_ text: String) -> Bool {
-        text.unicodeScalars.contains { scalar in
-            (0x4E00...0x9FFF).contains(Int(scalar.value)) ||
-            (0x3400...0x4DBF).contains(Int(scalar.value)) ||
-            (0x20000...0x2A6DF).contains(Int(scalar.value))
-        }
     }
 
     private static let terminalPunctuation: Set<Character> = [".", "!", "?", "。", "！", "？", "…", ":", "："]

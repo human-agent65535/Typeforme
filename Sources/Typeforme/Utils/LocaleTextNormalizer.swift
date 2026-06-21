@@ -57,9 +57,9 @@ enum LocaleTextNormalizer {
 
         for character in text {
             let scalars = character.unicodeScalars
-            if scalars.contains(where: { isHan($0) || isKana($0) }) {
+            if scalars.contains(where: { UnicodeScriptClassifier.isHanBroad($0) || UnicodeScriptClassifier.isKana($0) }) {
                 run.append(character)
-                if scalars.contains(where: isKana) {
+                if scalars.contains(where: UnicodeScriptClassifier.isKana) {
                     runContainsKana = true
                 }
             } else {
@@ -71,21 +71,4 @@ enum LocaleTextNormalizer {
         return output
     }
 
-    private static func isHan(_ scalar: Unicode.Scalar) -> Bool {
-        let value = scalar.value
-        return (0x3400...0x4DBF).contains(value)
-            || (0x4E00...0x9FFF).contains(value)
-            || (0xF900...0xFAFF).contains(value)
-            || (0x20000...0x2A6DF).contains(value)
-            || (0x2A700...0x2B73F).contains(value)
-            || (0x2B740...0x2B81F).contains(value)
-            || (0x2B820...0x2CEAF).contains(value)
-    }
-
-    private static func isKana(_ scalar: Unicode.Scalar) -> Bool {
-        let value = scalar.value
-        return (0x3040...0x309F).contains(value)
-            || (0x30A0...0x30FF).contains(value)
-            || (0x31F0...0x31FF).contains(value)
-    }
 }

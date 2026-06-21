@@ -6,7 +6,7 @@ struct MenuBarMenu: View {
     let onOpenSettings: () -> Void
     let onResetHUDPosition: () -> Void
 
-    @State private var axTrusted = AccessibilityPermissions.isTrusted
+    @State private var axTrusted = AppPermissions.accessibilityTrusted
 
     var body: some View {
         Group {
@@ -22,8 +22,8 @@ struct MenuBarMenu: View {
 
             if !axTrusted {
                 Button {
-                    AccessibilityPermissions.requestTrustPrompt()
-                    AccessibilityPermissions.openAccessibilitySettings()
+                    AppPermissions.requestAccessibility()
+                    AppPermissions.openAccessibilitySettings()
                     refreshAccessibilityState()
                 } label: {
                     Label("Grant Accessibility…", systemImage: "exclamationmark.triangle")
@@ -97,7 +97,7 @@ struct MenuBarMenu: View {
     }
 
     private func refreshAccessibilityState() {
-        let trusted = AccessibilityPermissions.isTrusted
+        let trusted = AppPermissions.accessibilityTrusted
         if trusted != axTrusted {
             axTrusted = trusted
         }

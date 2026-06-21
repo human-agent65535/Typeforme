@@ -309,7 +309,7 @@ enum VocabularyCandidateSelector {
     }
 
     private static func chinesePhoneticEvidence(for term: String, in evidenceText: EvidenceText) -> CandidateEvidence? {
-        guard cjkCount(in: term) >= 2 else { return nil }
+        guard UnicodeScriptClassifier.hanBMPCount(in: term) >= 2 else { return nil }
         let termPhonetic = phoneticKey(term)
         guard termPhonetic.count >= 4 else { return nil }
 
@@ -317,7 +317,7 @@ enum VocabularyCandidateSelector {
         if let windowEvidence = bestChineseWindowEvidence(
             termPhonetic: termPhonetic,
             looseTermPhonetic: looseTerm,
-            termCJKCount: cjkCount(in: term),
+            termCJKCount: UnicodeScriptClassifier.hanBMPCount(in: term),
             evidenceText: evidenceText
         ) {
             return windowEvidence
@@ -395,7 +395,7 @@ enum VocabularyCandidateSelector {
     }
 
     private static func englishPhoneticEvidence(for term: String, in evidenceText: EvidenceText) -> CandidateEvidence? {
-        guard containsLatinLetter(term) else { return nil }
+        guard UnicodeScriptClassifier.containsASCIILatinLetter(term) else { return nil }
         var best: CandidateEvidence?
 
         for variant in acronymSpokenVariants(for: term) where variant.compact.count >= 3 {
@@ -593,7 +593,7 @@ enum VocabularyCandidateSelector {
     }
 
     private static func phoneticKey(_ text: String) -> String {
-        guard text.unicodeScalars.contains(where: { isCJKScalar($0) }) else {
+        guard text.unicodeScalars.contains(where: UnicodeScriptClassifier.isHanBMP) else {
             return compactNormalized(text)
         }
         let mutable = NSMutableString(string: text) as CFMutableString
@@ -603,7 +603,7 @@ enum VocabularyCandidateSelector {
     }
 
     private static func spacedPinyinKey(_ text: String) -> String {
-        guard containsCJK(text) else { return normalize(text) }
+        guard UnicodeScriptClassifier.containsHanBMP(text) else { return normalize(text) }
         let mutable = NSMutableString(string: text) as CFMutableString
         CFStringTransform(mutable, nil, kCFStringTransformMandarinLatin, false)
         CFStringTransform(mutable, nil, kCFStringTransformStripCombiningMarks, false)
@@ -611,7 +611,7 @@ enum VocabularyCandidateSelector {
     }
 
     private static func loosePinyinKey(_ text: String) -> String {
-        guard containsCJK(text) else { return compactNormalized(text) }
+        guard UnicodeScriptClassifier.containsHanBMP(text) else { return compactNormalized(text) }
         return loosenPinyin(phoneticKey(text))
     }
 
@@ -659,7 +659,7 @@ enum VocabularyCandidateSelector {
         var runs: [String] = []
         var current = ""
         for character in text {
-            if character.unicodeScalars.contains(where: isCJKScalar) {
+            if character.unicodeScalars.contains(where: UnicodeScriptClassifier.isHanBMP) {
                 current.append(character)
             } else if !current.isEmpty {
                 runs.append(current)
@@ -674,10 +674,10 @@ enum VocabularyCandidateSelector {
 
     private static func pronunciationHints(for surface: String) -> [String] {
         var hints: [String] = []
-        if containsCJK(surface) {
+        if UnicodeScriptClassifier.containsHanBMP(surface) {
             hints.append(spacedPinyinKey(surface))
         }
-        if containsLatinLetter(surface) {
+        if UnicodeScriptClassifier.containsASCIILatinLetter(surface) {
             hints.append(normalize(splitCamelCase(surface)))
             hints.append(compactNormalized(surface))
             hints.append(contentsOf: acronymSpokenVariants(for: surface).map(\.spoken))
@@ -866,26 +866,6 @@ enum VocabularyCandidateSelector {
             of: needle,
             options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive]
         )
-    }
-
-    private static func containsCJK(_ text: String) -> Bool {
-        cjkCount(in: text) > 0
-    }
-
-    private static func cjkCount(in text: String) -> Int {
-        text.unicodeScalars.reduce(0) { count, scalar in
-            isCJKScalar(scalar) ? count + 1 : count
-        }
-    }
-
-    private static func isCJKScalar(_ scalar: Unicode.Scalar) -> Bool {
-        (0x4E00...0x9FFF).contains(Int(scalar.value))
-    }
-
-    private static func containsLatinLetter(_ text: String) -> Bool {
-        text.unicodeScalars.contains { scalar in
-            (65...90).contains(Int(scalar.value)) || (97...122).contains(Int(scalar.value))
-        }
     }
 
     private static func isASCIIUppercase(_ character: Character) -> Bool {

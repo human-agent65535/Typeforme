@@ -50,6 +50,10 @@ enum SpeechRecognitionPermissionStatus: Equatable {
 }
 
 enum AppPermissions {
+    static var accessibilityTrusted: Bool {
+        AccessibilityPermissions.isTrusted
+    }
+
     static var microphoneStatus: MicrophonePermissionStatus {
         MicrophonePermissionStatus.current
     }
@@ -84,6 +88,20 @@ enum AppPermissions {
         @unknown default:
             return SpeechRecognitionPermissionStatus.current
         }
+    }
+
+    @MainActor
+    static func requestAccessibility() {
+        AccessibilityPermissions.requestTrustPrompt()
+    }
+
+    @discardableResult
+    static func resetAccessibilityGrant() -> Bool {
+        AccessibilityPermissions.resetGrant()
+    }
+
+    static func openAccessibilitySettings() {
+        AccessibilityPermissions.openAccessibilitySettings()
     }
 
     static func openMicrophoneSettings() {

@@ -98,8 +98,8 @@ final class DictationCoordinator: ObservableObject {
 
     func startDictation(intent: TextEditIntent? = nil) async {
         guard state == .idle, !startInProgress else { return }
-        if !AccessibilityPermissions.isTrusted {
-            AccessibilityPermissions.requestTrustPrompt()
+        if !AppPermissions.accessibilityTrusted {
+            AppPermissions.requestAccessibility()
         }
 
         let sessionID = UUID()
@@ -765,17 +765,15 @@ final class DictationCoordinator: ObservableObject {
               recognizer.supportsOnDeviceRecognition
         else { return nil }
 
-        switch SFSpeechRecognizer.authorizationStatus() {
-        case .authorized:
+        switch AppPermissions.speechRecognitionStatus {
+        case .granted:
             break
         case .notDetermined:
             // First-time use: kick the system prompt asynchronously so the
             // NEXT recording can use it. Don't block the current one.
-            SFSpeechRecognizer.requestAuthorization { _ in }
+            Task { _ = await AppPermissions.requestSpeechRecognition() }
             return nil
-        case .denied, .restricted:
-            return nil
-        @unknown default:
+        case .denied, .restricted, .unknown:
             return nil
         }
 
@@ -985,8 +983,8 @@ final class DictationCoordinator: ObservableObject {
 
     private func restyleFocusedInput(to newMode: CorrectionMode) async {
         guard !startInProgress else { return }
-        if !AccessibilityPermissions.isTrusted {
-            AccessibilityPermissions.requestTrustPrompt()
+        if !AppPermissions.accessibilityTrusted {
+            AppPermissions.requestAccessibility()
         }
 
         let snapshot = FrontmostAppCapture.snapshot()

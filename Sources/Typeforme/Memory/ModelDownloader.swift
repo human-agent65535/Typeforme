@@ -1,6 +1,5 @@
 import Combine
 import Foundation
-import os.lock
 
 /// Streams a single GGUF (or any large file) from a URL to disk with live
 /// progress, suitable for binding from SwiftUI via `@ObservedObject`.
@@ -17,11 +16,11 @@ final class ModelDownloader: ObservableObject {
     @Published private(set) var state: State = .idle
 
     private var task: URLSessionDownloadTask?
-    private var session: URLSession?
-    private var delegate: ModelDownloadDelegate?
+    private var runner: ResumableModelDownloadRunner?
     private var destination: URL?
     private var resumeData: Data?
     private var resumeDestination: URL?
+    private var runID: UUID?
 
     func start(
         from url: URL,
@@ -34,47 +33,39 @@ final class ModelDownloader: ObservableObject {
         }
 
         self.destination = destination
+        let runID = UUID()
+        self.runID = runID
         state = .downloading(received: 0, total: 0)
 
-        let delegate = ModelDownloadDelegate(
+        let runner = ResumableModelDownloadRunner(
             destination: destination,
+            label: destination.lastPathComponent,
             expectedSHA256: expectedSHA256,
             expectedBytes: expectedBytes,
             onProgress: { [weak self] received, total in
                 Task { @MainActor in
+                    guard self?.runID == runID else { return }
                     self?.state = .downloading(received: received, total: total)
                 }
             },
             onCompletion: { [weak self] completion in
                 Task { @MainActor in
+                    guard self?.runID == runID else { return }
                     self?.handleCompletion(completion)
                 }
             }
         )
-        let session = URLSession(
-            configuration: Self.sessionConfiguration(),
-            delegate: delegate,
-            delegateQueue: Self.delegateQueue()
-        )
-
         let matchingResumeData = resumeDestination == destination ? resumeData : nil
-        let diskResumeData = matchingResumeData ?? ModelDownloadResumeStore.load(for: destination)
-        let nextTask: URLSessionDownloadTask
-        if let data = matchingResumeData {
-            nextTask = session.downloadTask(withResumeData: data)
+        if matchingResumeData != nil {
             resumeData = nil
-        } else if let diskResumeData {
-            nextTask = session.downloadTask(withResumeData: diskResumeData)
         } else {
             resumeData = nil
-            nextTask = session.downloadTask(with: URLRequest(url: url))
         }
 
         resumeDestination = destination
-        self.delegate = delegate
-        self.session = session
+        self.runner = runner
+        let nextTask = runner.start(from: url, resumeData: matchingResumeData)
         task = nextTask
-        nextTask.resume()
     }
 
     func cancel() {
@@ -84,7 +75,7 @@ final class ModelDownloader: ObservableObject {
         }
 
         let cancelledDestination = destination
-        task.cancel { [weak self] data in
+        runner?.cancel { [weak self] data in
             Task { @MainActor in
                 guard let self else { return }
                 if let data, !data.isEmpty {
@@ -103,6 +94,7 @@ final class ModelDownloader: ObservableObject {
 
     func reset() {
         cancel()
+        runID = nil
         resumeData = nil
         resumeDestination = nil
         ModelDownloadResumeStore.remove(for: destination)
@@ -114,20 +106,6 @@ final class ModelDownloader: ObservableObject {
             return Double(received) / Double(total)
         }
         return 0
-    }
-
-    private static func sessionConfiguration() -> URLSessionConfiguration {
-        let config = URLSessionConfiguration.default
-        config.timeoutIntervalForRequest = 60
-        config.timeoutIntervalForResource = 60 * 60 * 4
-        return config
-    }
-
-    private static func delegateQueue() -> OperationQueue {
-        let queue = OperationQueue()
-        queue.maxConcurrentOperationCount = 1
-        queue.qualityOfService = .utility
-        return queue
     }
 
     private func handleCompletion(_ completion: ModelDownloadCompletion) {
@@ -151,9 +129,8 @@ final class ModelDownloader: ObservableObject {
 
     private func finishActiveTask() {
         task = nil
-        session?.invalidateAndCancel()
-        session = nil
-        delegate = nil
+        runner = nil
+        runID = nil
     }
 
     private func storeResumeData(_ data: Data, for destination: URL?) {
@@ -182,130 +159,5 @@ final class ModelDownloadRegistry: ObservableObject {
             }
         }
         return downloader
-    }
-}
-
-private enum ModelDownloadCompletion: Sendable {
-    case success(URL)
-    case failure(message: String, resumeData: Data?, wasCancelled: Bool)
-}
-
-private final class ModelDownloadDelegate: NSObject, URLSessionDownloadDelegate {
-    private let destination: URL
-    private let expectedSHA256: String?
-    private let expectedBytes: Int64?
-    private let onProgress: @Sendable (Int64, Int64) -> Void
-    private let onCompletion: @Sendable (ModelDownloadCompletion) -> Void
-    private let didComplete = OSAllocatedUnfairLock(initialState: false)
-
-    init(
-        destination: URL,
-        expectedSHA256: String?,
-        expectedBytes: Int64?,
-        onProgress: @escaping @Sendable (Int64, Int64) -> Void,
-        onCompletion: @escaping @Sendable (ModelDownloadCompletion) -> Void
-    ) {
-        self.destination = destination
-        self.expectedSHA256 = expectedSHA256
-        self.expectedBytes = expectedBytes
-        self.onProgress = onProgress
-        self.onCompletion = onCompletion
-    }
-
-    func urlSession(
-        _ session: URLSession,
-        downloadTask: URLSessionDownloadTask,
-        didWriteData bytesWritten: Int64,
-        totalBytesWritten: Int64,
-        totalBytesExpectedToWrite: Int64
-    ) {
-        onProgress(totalBytesWritten, totalBytesExpectedToWrite)
-    }
-
-    func urlSession(
-        _ session: URLSession,
-        downloadTask: URLSessionDownloadTask,
-        didFinishDownloadingTo location: URL
-    ) {
-        if let http = downloadTask.response as? HTTPURLResponse,
-           !(200...299).contains(http.statusCode) {
-            ModelDownloadResumeStore.remove(for: destination)
-            finish(.failure(message: "HTTP \(http.statusCode)", resumeData: nil, wasCancelled: false))
-            return
-        }
-
-        do {
-            let fileManager = FileManager.default
-            try fileManager.createDirectory(
-                at: destination.deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
-            try ModelDownloadIntegrity.validateFile(
-                at: location,
-                expectedSHA256: expectedSHA256,
-                expectedBytes: expectedBytes,
-                label: destination.lastPathComponent
-            )
-            try? fileManager.removeItem(at: destination)
-            try fileManager.moveItem(at: location, to: destination)
-            ModelDownloadResumeStore.remove(for: destination)
-            finish(.success(destination))
-        } catch {
-            finish(.failure(message: error.localizedDescription, resumeData: nil, wasCancelled: false))
-        }
-    }
-
-    func urlSession(
-        _ session: URLSession,
-        task: URLSessionTask,
-        didCompleteWithError error: Error?
-    ) {
-        guard let error else { return }
-        let nsError = error as NSError
-        let producedResumeData = nsError.userInfo[NSURLSessionDownloadTaskResumeData] as? Data
-        if let producedResumeData, !producedResumeData.isEmpty {
-            ModelDownloadResumeStore.store(producedResumeData, for: destination)
-        } else if nsError.code != NSURLErrorCancelled {
-            ModelDownloadResumeStore.remove(for: destination)
-        }
-        finish(
-            .failure(
-                message: error.localizedDescription,
-                resumeData: producedResumeData,
-                wasCancelled: nsError.code == NSURLErrorCancelled
-            )
-        )
-    }
-
-    private func finish(_ completion: ModelDownloadCompletion) {
-        let shouldComplete = didComplete.withLock { didComplete in
-            guard !didComplete else { return false }
-            didComplete = true
-            return true
-        }
-        guard shouldComplete else { return }
-        onCompletion(completion)
-    }
-}
-
-private enum ModelDownloadResumeStore {
-    static func store(_ data: Data, for destination: URL) {
-        try? data.write(to: resumeDataURL(for: destination), options: .atomic)
-    }
-
-    static func load(for destination: URL) -> Data? {
-        let url = resumeDataURL(for: destination)
-        guard let data = try? Data(contentsOf: url), !data.isEmpty else { return nil }
-        return data
-    }
-
-    static func remove(for destination: URL?) {
-        guard let destination else { return }
-        try? FileManager.default.removeItem(at: resumeDataURL(for: destination))
-    }
-
-    private static func resumeDataURL(for destination: URL) -> URL {
-        destination.deletingLastPathComponent()
-            .appendingPathComponent(".\(destination.lastPathComponent).resumeData")
     }
 }

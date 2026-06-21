@@ -27,7 +27,7 @@ final class PasteboardTextCommitter: TextCommitter {
     ) async throws {
         try await checkCancelled(cancelToken)
 
-        guard AccessibilityPermissions.isTrusted else {
+        guard AppPermissions.accessibilityTrusted else {
             Self.copyForManualPaste(text)
             throw TextCommitterError.accessibilityNotTrusted
         }
@@ -63,7 +63,7 @@ final class PasteboardTextCommitter: TextCommitter {
     ) async throws {
         try await checkCancelled(cancelToken)
 
-        guard AccessibilityPermissions.isTrusted else {
+        guard AppPermissions.accessibilityTrusted else {
             Self.copyForManualPaste(text)
             throw TextCommitterError.accessibilityNotTrusted
         }

@@ -31,7 +31,7 @@ enum ProtectedSpanPostProcessor {
         var scalars = String.UnicodeScalarView()
         var sawCJK = false
         for scalar in trimmed.unicodeScalars {
-            if isCJK(scalar) {
+            if UnicodeScriptClassifier.isHanCore(scalar) {
                 sawCJK = true
                 break
             }
@@ -57,7 +57,7 @@ enum ProtectedSpanPostProcessor {
         var sawCJK = false
         while index < trimmed.endIndex {
             let character = trimmed[index]
-            if character.unicodeScalars.contains(where: isCJK) {
+            if character.unicodeScalars.contains(where: UnicodeScriptClassifier.isHanCore) {
                 sawCJK = true
             }
             if sawCJK, leadingClauseTerminators.contains(character) {
@@ -69,7 +69,7 @@ enum ProtectedSpanPostProcessor {
             index = trimmed.index(after: index)
         }
 
-        if trimmed.unicodeScalars.prefix(3).contains(where: isCJK) {
+        if trimmed.unicodeScalars.prefix(3).contains(where: UnicodeScriptClassifier.isHanCore) {
             return span + " " + trimmed
         }
         return text
@@ -88,10 +88,10 @@ enum ProtectedSpanPostProcessor {
     }
 
     private static func looksLikeUnrequestedCrossScriptTranslation(rawTranscript: String, output: String) -> Bool {
-        let rawLatin = rawTranscript.unicodeScalars.filter(isLatinLetter).count
-        let rawCJK = rawTranscript.unicodeScalars.filter(isCJK).count
-        let outputLatin = output.unicodeScalars.filter(isLatinLetter).count
-        let outputCJK = output.unicodeScalars.filter(isCJK).count
+        let rawLatin = rawTranscript.unicodeScalars.filter(UnicodeScriptClassifier.isLatinLetter).count
+        let rawCJK = rawTranscript.unicodeScalars.filter(UnicodeScriptClassifier.isHanCore).count
+        let outputLatin = output.unicodeScalars.filter(UnicodeScriptClassifier.isLatinLetter).count
+        let outputCJK = output.unicodeScalars.filter(UnicodeScriptClassifier.isHanCore).count
 
         // CJK-dominant input rewritten as predominantly Latin output: raw is
         // ≥2× more CJK than Latin yet output keeps <25% of the CJK content.
@@ -145,20 +145,6 @@ enum ProtectedSpanPostProcessor {
             return true
         }
         return false
-    }
-
-    private static func isCJK(_ scalar: Unicode.Scalar) -> Bool {
-        let value = Int(scalar.value)
-        return (0x4E00...0x9FFF).contains(value) ||
-            (0x3400...0x4DBF).contains(value) ||
-            (0x20000...0x2A6DF).contains(value)
-    }
-
-    private static func isLatinLetter(_ scalar: Unicode.Scalar) -> Bool {
-        let value = Int(scalar.value)
-        return (0x41...0x5A).contains(value) ||
-            (0x61...0x7A).contains(value) ||
-            (0x00C0...0x024F).contains(value)
     }
 
     private static func regexReplace(_ text: String, regex: NSRegularExpression, with template: String) -> String {

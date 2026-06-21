@@ -166,12 +166,7 @@ struct RemoteBridgeClient {
     }
 
     func health(timeout: TimeInterval = 4) async throws -> BridgeHealthResponse {
-        try await request(
-            path: "/v1/health",
-            method: "GET",
-            body: Optional<Data>.none,
-            timeout: timeout
-        )
+        try await request(path: "/v1/health", method: "GET", body: Optional<Data>.none, timeout: timeout)
     }
 
     func settings(timeout: TimeInterval = 10) async throws -> BridgeSettingsPayload {
@@ -354,8 +349,11 @@ struct RemoteBridgeClient {
         json body: Body,
         timeout: TimeInterval
     ) async throws -> T {
-        let data = try BridgeJSON.encode(body)
-        return try await request(path: path, method: method, body: data, contentType: "application/json", timeout: timeout)
+        do {
+            return try await http.request(path: path, method: method, json: body, timeout: timeout)
+        } catch {
+            throw mapHTTPError(error)
+        }
     }
 
     private func request<T: Decodable>(
@@ -365,14 +363,17 @@ struct RemoteBridgeClient {
         contentType: String? = nil,
         timeout: TimeInterval
     ) async throws -> T {
-        var request = try makeRequest(path: path, method: method, timeout: timeout)
-        if let body {
-            request.httpBody = body
-            request.setValue(contentType ?? "application/octet-stream", forHTTPHeaderField: "Content-Type")
+        do {
+            return try await http.request(
+                path: path,
+                method: method,
+                body: body,
+                contentType: contentType,
+                timeout: timeout
+            )
+        } catch {
+            throw mapHTTPError(error)
         }
-
-        let (data, response) = try await URLSession.shared.data(for: request)
-        return try decodeResponse(data: data, response: response)
     }
 
     private func request<T: Decodable>(
@@ -383,55 +384,39 @@ struct RemoteBridgeClient {
         contentType: String,
         timeout: TimeInterval
     ) async throws -> T {
-        var request = try makeRequest(path: path, method: method, timeout: timeout)
-        request.setValue(contentType, forHTTPHeaderField: "Content-Type")
-        request.setValue(String(contentLength), forHTTPHeaderField: "Content-Length")
-        request.httpBodyStream = InputStream(url: bodyFileURL)
-
-        let (data, response) = try await URLSession.shared.data(for: request)
-        return try decodeResponse(data: data, response: response)
-    }
-
-    private func makeRequest(path: String, method: String, timeout: TimeInterval) throws -> URLRequest {
-        guard let url = URL(string: path, relativeTo: baseURL)?.absoluteURL else {
-            throw RemoteBridgeClientError.invalidURL
-        }
-        var request = URLRequest(url: url)
-        request.httpMethod = method
-        request.timeoutInterval = timeout
-        request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.setValue("gzip", forHTTPHeaderField: "Accept-Encoding")
-        request.setValue("no-store", forHTTPHeaderField: "Cache-Control")
-        BridgeClientIdentity.apply(to: &request)
-        return request
-    }
-
-    private func decodeResponse<T: Decodable>(data: Data, response: URLResponse) throws -> T {
-        guard let http = response as? HTTPURLResponse else {
-            throw RemoteBridgeClientError.invalidResponse
-        }
-        switch http.statusCode {
-        case 401:
-            throw RemoteBridgeClientError.unauthorized
-        case 403:
-            throw RemoteBridgeClientError.forbidden
-        case 404:
-            throw RemoteBridgeClientError.notFound
-        default:
-            break
-        }
-        guard (200..<300).contains(http.statusCode) else {
-            let message = (try? BridgeJSON.decode(BridgeErrorResponse.self, from: data).error)
-                ?? String(data: data, encoding: .utf8)
-                ?? "HTTP \(http.statusCode)"
-            throw RemoteBridgeClientError.server(message)
-        }
         do {
-            return try BridgeJSON.decode(T.self, from: data)
+            return try await http.request(
+                path: path,
+                method: method,
+                bodyFileURL: bodyFileURL,
+                contentLength: contentLength,
+                contentType: contentType,
+                timeout: timeout
+            )
         } catch {
-            throw RemoteBridgeClientError.invalidResponse
+            throw mapHTTPError(error)
+        }
+    }
+
+    private var http: BridgeHTTPClientCore {
+        BridgeHTTPClientCore(baseURL: baseURL, token: token, applyClientIdentity: BridgeClientIdentity.apply(to:))
+    }
+
+    private func mapHTTPError(_ error: Error) -> Error {
+        guard let error = error as? BridgeHTTPClientCoreError else { return error }
+        switch error {
+        case .invalidURL:
+            return RemoteBridgeClientError.invalidURL
+        case .invalidResponse, .decodingFailed:
+            return RemoteBridgeClientError.invalidResponse
+        case .unauthorized:
+            return RemoteBridgeClientError.unauthorized
+        case .forbidden:
+            return RemoteBridgeClientError.forbidden
+        case .notFound:
+            return RemoteBridgeClientError.notFound
+        case .server(let message):
+            return RemoteBridgeClientError.server(message)
         }
     }
 

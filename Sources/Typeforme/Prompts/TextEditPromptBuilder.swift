@@ -223,7 +223,7 @@ enum TextEditPromptBuilder {
                 if lowerInstruction.contains("natural") || instruction.contains("自然") || request.targetText.contains("按住") {
                     examples.append(naturalVietnameseButtonExample)
                 }
-                if containsCJK(request.targetText) {
+                if UnicodeScriptClassifier.containsEastAsianScript(request.targetText) {
                     examples.append(chineseVoiceInputToVietnameseExample)
                 } else {
                     examples.append(englishVoiceInputToVietnameseExample)
@@ -442,10 +442,10 @@ enum TextEditPromptBuilder {
         let selectedLanguages = ASRLanguageSelection.displayNames(
             for: ASRLanguageSelection.validatedIDs(request.languageIDs)
         ).joined(separator: ", ")
-        let targetHasCJK = containsCJK(target)
-        let targetHasLatin = containsLatinLetter(target)
-        let targetHasLatinDiacritics = containsLatinDiacritic(target)
-        let surroundingHasLatinDiacritics = containsLatinDiacritic(surrounding)
+        let targetHasCJK = UnicodeScriptClassifier.containsEastAsianScript(target)
+        let targetHasLatin = UnicodeScriptClassifier.containsLatinLetter(target)
+        let targetHasLatinDiacritics = UnicodeScriptClassifier.containsLatinDiacritic(target)
+        let surroundingHasLatinDiacritics = UnicodeScriptClassifier.containsLatinDiacritic(surrounding)
         switch (targetHasCJK, targetHasLatin) {
         case (true, true):
             return "mixed-script target_text; preserve the same local language mix unless explicitly instructed to translate"
@@ -457,8 +457,8 @@ enum TextEditPromptBuilder {
             }
             return "Latin-script target_text; infer the specific language from target/context and selected languages (\(selectedLanguages)); do not assume English solely from Latin script and do not translate unless explicitly instructed"
         case (false, false):
-            let surroundingHasCJK = containsCJK(surrounding)
-            let surroundingHasLatin = containsLatinLetter(surrounding)
+            let surroundingHasCJK = UnicodeScriptClassifier.containsEastAsianScript(surrounding)
+            let surroundingHasLatin = UnicodeScriptClassifier.containsLatinLetter(surrounding)
             switch (surroundingHasCJK, surroundingHasLatin) {
             case (true, true):
                 return "target_text has no clear script; surrounding context is mixed, so preserve the local language mix"
@@ -475,26 +475,4 @@ enum TextEditPromptBuilder {
         }
     }
 
-    private static func containsCJK(_ text: String) -> Bool {
-        text.unicodeScalars.contains { scalar in
-            (0x4E00...0x9FFF).contains(Int(scalar.value))
-                || (0x3400...0x4DBF).contains(Int(scalar.value))
-                || (0x3040...0x30FF).contains(Int(scalar.value))
-                || (0xAC00...0xD7AF).contains(Int(scalar.value))
-        }
-    }
-
-    private static func containsLatinLetter(_ text: String) -> Bool {
-        text.unicodeScalars.contains { scalar in
-            (0x41...0x5A).contains(Int(scalar.value))
-                || (0x61...0x7A).contains(Int(scalar.value))
-                || (0x00C0...0x024F).contains(Int(scalar.value))
-        }
-    }
-
-    private static func containsLatinDiacritic(_ text: String) -> Bool {
-        text.unicodeScalars.contains { scalar in
-            (0x00C0...0x024F).contains(Int(scalar.value))
-        }
-    }
 }

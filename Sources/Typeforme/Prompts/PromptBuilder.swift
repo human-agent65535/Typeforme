@@ -136,7 +136,7 @@ enum PromptBuilder {
                 add(.cleanShoppingLiteral)
             }
             if containsIntensifier(rawText) {
-                add(containsCJK(rawText) ? .cleanChineseIntensifier : .cleanEnglishIntensifier)
+                add(UnicodeScriptClassifier.containsHanBMPOrExtensionA(rawText) ? .cleanChineseIntensifier : .cleanEnglishIntensifier)
             }
             return cappedExamples(selected, fallback: [.cleanFiller, .cleanCodeSwitch])
 
@@ -355,24 +355,13 @@ enum PromptBuilder {
     }
 
     private static func containsMixedLanguage(_ text: String) -> Bool {
-        containsCJK(text) && containsLatinLetter(text)
+        UnicodeScriptClassifier.containsHanBMPOrExtensionA(text) &&
+            UnicodeScriptClassifier.containsASCIILatinLetter(text)
     }
 
     private static func isMostlyEnglish(_ text: String) -> Bool {
-        containsLatinLetter(text) && !containsCJK(text)
-    }
-
-    private static func containsCJK(_ text: String) -> Bool {
-        text.unicodeScalars.contains {
-            (0x4E00...0x9FFF).contains(Int($0.value))
-                || (0x3400...0x4DBF).contains(Int($0.value))
-        }
-    }
-
-    private static func containsLatinLetter(_ text: String) -> Bool {
-        text.unicodeScalars.contains {
-            (65...90).contains(Int($0.value)) || (97...122).contains(Int($0.value))
-        }
+        UnicodeScriptClassifier.containsASCIILatinLetter(text) &&
+            !UnicodeScriptClassifier.containsHanBMPOrExtensionA(text)
     }
 
     private static func containsVietnameseDiacritics(_ text: String) -> Bool {

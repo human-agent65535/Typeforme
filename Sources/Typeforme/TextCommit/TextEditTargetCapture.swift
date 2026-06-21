@@ -23,7 +23,7 @@ enum TextEditTargetCapture {
         in appSnapshot: FrontmostAppSnapshot?,
         allowFocusedValue: Bool
     ) -> TextEditTargetSnapshot? {
-        guard AccessibilityPermissions.isTrusted else { return nil }
+        guard AppPermissions.accessibilityTrusted else { return nil }
         guard let appSnapshot else { return nil }
         let app = AXUIElementCreateApplication(appSnapshot.pid)
         AXUIElementSetMessagingTimeout(app, 0.25)
@@ -61,7 +61,7 @@ enum TextEditTargetCapture {
     }
 
     static func currentSelectedText(in appSnapshot: FrontmostAppSnapshot?) -> String? {
-        guard AccessibilityPermissions.isTrusted else { return nil }
+        guard AppPermissions.accessibilityTrusted else { return nil }
         guard let appSnapshot else { return nil }
         let app = AXUIElementCreateApplication(appSnapshot.pid)
         AXUIElementSetMessagingTimeout(app, 0.25)
@@ -73,7 +73,7 @@ enum TextEditTargetCapture {
 
     @MainActor
     static func focusedTextContext(in appSnapshot: FrontmostAppSnapshot?) -> (before: String, after: String) {
-        guard AccessibilityPermissions.isTrusted else { return ("", "") }
+        guard AppPermissions.accessibilityTrusted else { return ("", "") }
         guard let appSnapshot else { return ("", "") }
         let app = AXUIElementCreateApplication(appSnapshot.pid)
         AXUIElementSetMessagingTimeout(app, 0.25)

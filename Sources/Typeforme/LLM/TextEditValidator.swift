@@ -20,19 +20,10 @@ enum TextEditValidationError: LocalizedError {
 
 enum TextEditValidator {
     static func parseAndValidate(rawOutput: String, for request: TextEditRequest) throws -> TextEditResult {
-        let cleaned = ModelOutputCleaner.clean(rawOutput)
-        guard let jsonString = ModelOutputCleaner.extractFirstJSONObject(cleaned) else {
-            throw TextEditValidationError.parseFailed("no JSON object found")
-        }
-        guard let data = jsonString.data(using: .utf8) else {
-            throw TextEditValidationError.parseFailed("not utf-8")
-        }
-        let payload: TextEditPayload
-        do {
-            payload = try BridgeJSON.decode(TextEditPayload.self, from: data)
-        } catch {
-            throw TextEditValidationError.parseFailed(error.localizedDescription)
-        }
+        let payload: TextEditPayload = try ModelJSONOutputValidator.decodePayload(
+            rawOutput: rawOutput,
+            parseError: TextEditValidationError.parseFailed
+        )
 
         let action = payload.action ?? .replaceTarget
         guard action == .replaceTarget else {
@@ -44,17 +35,16 @@ enum TextEditValidator {
     }
 
     private static func validate(_ result: TextEditResult, for request: TextEditRequest) throws {
-        let trimmed = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty {
-            throw TextEditValidationError.emptyText
-        }
         let cap = maxOutputCharacters(for: request)
-        if result.text.count > cap {
-            throw TextEditValidationError.textTooLong(actual: result.text.count, cap: cap)
-        }
-        if containsMarkupOrJSON(result.text) {
-            throw TextEditValidationError.containsMarkupOrJSON
-        }
+        try ModelJSONOutputValidator.validateText(
+            result.text,
+            cap: cap,
+            emptyError: TextEditValidationError.emptyText,
+            tooLongError: { actual, cap in
+                TextEditValidationError.textTooLong(actual: actual, cap: cap)
+            },
+            containsMarkupOrJSONError: TextEditValidationError.containsMarkupOrJSON
+        )
     }
 
     private static func maxOutputCharacters(for request: TextEditRequest) -> Int {
@@ -65,14 +55,6 @@ enum TextEditValidator {
         case .command:
             return max(160, baseline * 8)
         }
-    }
-
-    private static func containsMarkupOrJSON(_ s: String) -> Bool {
-        if s.contains("```") { return true }
-        if s.contains("<think>") || s.contains("</think>") { return true }
-        let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.hasPrefix("{") && trimmed.hasSuffix("}") { return true }
-        return false
     }
 
     private struct TextEditPayload: Decodable {

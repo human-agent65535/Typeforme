@@ -8,8 +8,8 @@ struct AppleSpeechASRService: ASRService {
         }
         let localeID = resolved.localeID
 
-        let status = await Self.ensureAuthorized()
-        guard status == .authorized else {
+        let status = await AppPermissions.requestSpeechRecognition()
+        guard status == .granted else {
             throw ASRAudioSupportError.httpStatus(403, "Apple Speech recognition permission is not authorized")
         }
 
@@ -33,19 +33,6 @@ struct AppleSpeechASRService: ASRService {
         let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleaned.isEmpty else { throw ASRAudioSupportError.emptyTranscript }
         return cleaned
-    }
-
-    private static func ensureAuthorized() async -> SFSpeechRecognizerAuthorizationStatus {
-        switch SFSpeechRecognizer.authorizationStatus() {
-        case .notDetermined:
-            return await withCheckedContinuation { continuation in
-                SFSpeechRecognizer.requestAuthorization { status in
-                    continuation.resume(returning: status)
-                }
-            }
-        default:
-            return SFSpeechRecognizer.authorizationStatus()
-        }
     }
 
     private static func runRecognition(

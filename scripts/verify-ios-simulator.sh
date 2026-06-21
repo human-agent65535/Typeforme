@@ -14,6 +14,8 @@ PREFERRED_SIMULATOR_NAME="${PREFERRED_SIMULATOR_NAME:-iPhone 17 Pro Max}"
 
 # shellcheck source=scripts/lib/xcode-tools.sh
 . "$ROOT/scripts/lib/xcode-tools.sh"
+# shellcheck source=scripts/lib/ios-bundle-checks.sh
+. "$ROOT/scripts/lib/ios-bundle-checks.sh"
 typeforme_configure_xcode "run iOS simulator verification"
 typeforme_configure_xcrun
 
@@ -138,47 +140,9 @@ else
 fi
 
 APP_PATH="$DERIVED/Build/Products/${CONFIG}-iphonesimulator/Typeforme.app"
-if [ ! -d "$APP_PATH" ]; then
-    echo "error: built app not found at $APP_PATH" >&2
-    exit 1
-fi
 KEYBOARD_APPEX_PATH="$APP_PATH/PlugIns/TypeformeKeyboard.appex"
-if [ ! -d "$KEYBOARD_APPEX_PATH" ]; then
-    echo "error: built keyboard extension not found at $KEYBOARD_APPEX_PATH" >&2
-    exit 1
-fi
-
-plist_value() {
-    /usr/libexec/PlistBuddy -c "Print :$1" "$2"
-}
-
-BUNDLE_ID="$(plist_value CFBundleIdentifier "$APP_PATH/Info.plist")"
-HOST_VERSION="$(plist_value CFBundleShortVersionString "$APP_PATH/Info.plist")"
-HOST_BUILD="$(plist_value CFBundleVersion "$APP_PATH/Info.plist")"
-KEYBOARD_VERSION="$(plist_value CFBundleShortVersionString "$KEYBOARD_APPEX_PATH/Info.plist")"
-KEYBOARD_BUILD="$(plist_value CFBundleVersion "$KEYBOARD_APPEX_PATH/Info.plist")"
-KEYBOARD_BUNDLE_ID="$(plist_value TypeformeKeyboardBundleIdentifier "$APP_PATH/Info.plist")"
-KEYBOARD_BUILT_BUNDLE_ID="$(plist_value CFBundleIdentifier "$KEYBOARD_APPEX_PATH/Info.plist")"
-HOST_APP_GROUP_ID="$(plist_value TypeformeAppGroupIdentifier "$APP_PATH/Info.plist")"
-KEYBOARD_APP_GROUP_ID="$(plist_value TypeformeAppGroupIdentifier "$KEYBOARD_APPEX_PATH/Info.plist")"
-KEYBOARD_EXTENSION_POINT="$(plist_value NSExtension:NSExtensionPointIdentifier "$KEYBOARD_APPEX_PATH/Info.plist")"
-
-if [ "$KEYBOARD_BUILT_BUNDLE_ID" != "$KEYBOARD_BUNDLE_ID" ]; then
-    echo "error: keyboard bundle id mismatch: built=$KEYBOARD_BUILT_BUNDLE_ID host expects=$KEYBOARD_BUNDLE_ID" >&2
-    exit 1
-fi
-if [ "$HOST_APP_GROUP_ID" != "$KEYBOARD_APP_GROUP_ID" ]; then
-    echo "error: app group mismatch: host=$HOST_APP_GROUP_ID keyboard=$KEYBOARD_APP_GROUP_ID" >&2
-    exit 1
-fi
-if [ "$KEYBOARD_EXTENSION_POINT" != "com.apple.keyboard-service" ]; then
-    echo "error: keyboard extension point mismatch: $KEYBOARD_EXTENSION_POINT" >&2
-    exit 1
-fi
-if [ "$KEYBOARD_VERSION" != "$HOST_VERSION" ] || [ "$KEYBOARD_BUILD" != "$HOST_BUILD" ]; then
-    echo "error: host and keyboard versions diverged: host $HOST_VERSION ($HOST_BUILD), keyboard $KEYBOARD_VERSION ($KEYBOARD_BUILD)" >&2
-    exit 1
-fi
+typeforme_verify_ios_host_keyboard_bundle "$APP_PATH" "$KEYBOARD_APPEX_PATH" "built"
+BUNDLE_ID="$TYPEFORME_IOS_HOST_BUNDLE_ID"
 
 echo "==> Built identifiers verified"
 echo "==> Installing built app"

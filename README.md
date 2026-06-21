@@ -151,13 +151,7 @@ scripts/run-tests.sh
 iOS or shared Bridge changes need an iOS simulator build:
 
 ```sh
-/Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild \
-  -project iOS/TypeformeIOS.xcodeproj \
-  -scheme TypeformeIOS \
-  -configuration Debug \
-  -destination 'generic/platform=iOS Simulator' \
-  -derivedDataPath .build/ios-derived \
-  build
+scripts/verify-ios-simulator.sh
 ```
 
 Bridge and iOS keyboard behavior need verification over a real device link.
