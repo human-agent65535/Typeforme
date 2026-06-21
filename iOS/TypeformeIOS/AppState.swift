@@ -267,6 +267,22 @@ enum KeyboardLivePreviewRecognitionMode: String, CaseIterable, Identifiable {
     }
 }
 
+enum KeyboardLivePreviewSource: String, CaseIterable, Identifiable {
+    case appleSpeech = "apple_speech"
+    case serverNemotron = "server_nemotron"
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .appleSpeech:
+            return NSLocalizedString("Apple Speech", comment: "Apple Speech live preview source")
+        case .serverNemotron:
+            return NSLocalizedString("Server Nemotron", comment: "Server-side Nemotron live preview source")
+        }
+    }
+}
+
 struct ServerTimingSummary: Equatable {
     var transcriptionLatencyMs: Int?
     var correctionLatencyMs: Int?
@@ -308,6 +324,7 @@ final class AppState {
     var keyboardKeySoundEnabled: Bool
     var keyboardKeyHapticsEnabled: Bool
     var keyboardLivePreviewEnabled: Bool
+    var keyboardLivePreviewSource: KeyboardLivePreviewSource
     var keyboardLivePreviewRecognitionMode: KeyboardLivePreviewRecognitionMode
     var keyboardChineseInputEnabled: Bool
     var keyboardChinesePunctuationStyle: KeyboardChinesePunctuationStyle
@@ -360,6 +377,7 @@ final class AppState {
     private static let keyboardKeySoundKey = "keyboard.keySoundEnabled"
     private static let keyboardKeyHapticsKey = "keyboard.keyHapticsEnabled"
     private static let keyboardLivePreviewKey = "keyboard.livePreviewEnabled"
+    private static let keyboardLivePreviewSourceKey = "keyboard.livePreviewSource"
     private static let keyboardLivePreviewRecognitionModeKey = "keyboard.livePreviewRecognitionMode"
     private static let keyboardChineseInputEnabledKey = "keyboard.chineseInputEnabled"
     private static let keyboardChinesePunctuationStyleKey = "keyboard.chinesePunctuationStyle"
@@ -393,8 +411,8 @@ final class AppState {
     private var initialRenderDelayTask: Task<Void, Never>?
     @ObservationIgnored private var recorderPreWarmTask: Task<Void, Never>?
     private var bridgeRefiningStatusTask: Task<Void, Never>?
-    /// Live-preview transcript fed by SFSpeechRecognizer while the user is
-    /// recording (and held in place until the Mac final result replaces it).
+    /// Live-preview transcript fed by the selected preview source while the
+    /// user is recording (and held until the Mac final result replaces it).
     /// Empty string = no preview surfaced (unsupported language, denied
     /// permission, or no recording in progress).
     private(set) var livePartialTranscript: String = ""
@@ -402,6 +420,7 @@ final class AppState {
     private var liveSpeechRequest: SFSpeechAudioBufferRecognitionRequest?
     private var liveSpeechRequestSink: LiveSpeechRequestSink?
     private var liveSpeechTask: SFSpeechRecognitionTask?
+    private var serverLivePreviewStreamer: BridgeLivePreviewStreamer?
     private var livePreviewTrace: LivePreviewTrace?
     @ObservationIgnored private var lifecycleObservers: [NSObjectProtocol] = []
     @ObservationIgnored private var keyboardDarwinObservers: [KeyboardDarwinNotificationObserver] = []
@@ -525,6 +544,14 @@ final class AppState {
         )
     }
 
+    var keyboardLivePreviewSourceOptions: [KeyboardLivePreviewSource] {
+        var options: [KeyboardLivePreviewSource] = [.appleSpeech]
+        if macSettings?.supportsServerNemotronPreview == true || keyboardLivePreviewSource == .serverNemotron {
+            options.append(.serverNemotron)
+        }
+        return options
+    }
+
     init() {
         let saved = PairingStore().load()
         self.config = saved
@@ -543,6 +570,8 @@ final class AppState {
             .map { _ in UserDefaults.standard.bool(forKey: Self.keyboardKeyHapticsKey) } ?? true
         self.keyboardLivePreviewEnabled = UserDefaults.standard.object(forKey: Self.keyboardLivePreviewKey)
             .map { _ in UserDefaults.standard.bool(forKey: Self.keyboardLivePreviewKey) } ?? true
+        self.keyboardLivePreviewSource = UserDefaults.standard.string(forKey: Self.keyboardLivePreviewSourceKey)
+            .flatMap(KeyboardLivePreviewSource.init(rawValue:)) ?? .appleSpeech
         self.keyboardLivePreviewRecognitionMode = UserDefaults.standard.string(forKey: Self.keyboardLivePreviewRecognitionModeKey)
             .flatMap(KeyboardLivePreviewRecognitionMode.init(rawValue:)) ?? .onDeviceOnly
         self.keyboardChineseInputEnabled = UserDefaults.standard.object(forKey: Self.keyboardChineseInputEnabledKey)
@@ -700,6 +729,14 @@ final class AppState {
         if !enabled {
             teardownLivePartialPreview(clearText: true)
         }
+    }
+
+    func setKeyboardLivePreviewSource(_ source: KeyboardLivePreviewSource) {
+        updateStoredRawPreference(
+            \.keyboardLivePreviewSource,
+            to: source,
+            key: Self.keyboardLivePreviewSourceKey
+        )
     }
 
     func setKeyboardLivePreviewRecognitionMode(_ mode: KeyboardLivePreviewRecognitionMode) {
@@ -1066,9 +1103,8 @@ final class AppState {
         stageLabels: BridgeStageLabels,
         recordingInfo: RecordingFileInfo
     ) async throws -> BridgeDictateResponse {
-        // Snapshot the live preview text *before* tearing down — Mac uses it
-        // as a supplementary hypothesis (neutral framing, no "from Apple
-        // Speech" attribution; see prompt design in baseSystem).
+        // Snapshot the live preview text before tearing down. Mac uses it as a
+        // supplementary hypothesis with neutral framing, regardless of source.
         let alternate = livePartialTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
         let alternateForBridge: String? = alternate.isEmpty ? nil : alternate
         func dictate(to baseURL: URL) async throws -> BridgeDictateResponse {
@@ -1328,9 +1364,9 @@ final class AppState {
         if isKeyboardCapture, !keyboardAudioSession.isActive {
             startSilentStandbyKeeperIfNeeded()
         }
-        // Close the SFSpeechRecognizer audio side so it finalizes its last
-        // partial. We intentionally do NOT clear livePartialTranscript yet —
-        // keep the user's preview visible until Mac returns the final text.
+        // Close the live preview audio side so it finalizes its last partial.
+        // We intentionally do NOT clear livePartialTranscript yet — keep the
+        // user's preview visible until Mac returns the final text.
         endLivePartialPreviewAudio()
         hostRecordingUsesKeyboardAudioSession = false
         let keyboardTextEditContext = pendingKeyboardTextEditContext
@@ -2101,17 +2137,15 @@ final class AppState {
         _ = await UIApplication.shared.open(url)
     }
 
-    // MARK: - Live partial preview (Apple Speech)
+    // MARK: - Live partial preview
     //
-    // Starts an `SFSpeechRecognizer` alongside the keyboard audio session so
-    // the user sees their words appear as they speak. The recognized text
-    // never replaces the Mac result — it's just a fast preview. The same
-    // text is also shipped to Mac as `alternate_transcript` (see Step 5/6).
+    // Starts the selected preview source alongside the keyboard audio session
+    // so the user sees their words appear as they speak. Preview text never
+    // replaces the Mac result; it is held only until the final result arrives.
     //
     // Gating: this only runs when the user enables live preview and the selected
-    // primary locale is usable in the selected Apple Speech preview mode.
-    // Unsupported locales / denied permission silently degrade to the previous
-    // no-preview behaviour.
+    // source is usable for the current recording. Unsupported sources fail
+    // closed for the current session; no other source is selected implicitly.
 
     @discardableResult
     private func startLivePartialPreviewIfAvailable() -> Bool {
@@ -2122,6 +2156,16 @@ final class AppState {
             appLog.notice("live preview skipped: disabled")
             return false
         }
+        switch keyboardLivePreviewSource {
+        case .appleSpeech:
+            return startAppleSpeechLivePreviewIfAvailable()
+        case .serverNemotron:
+            return startServerNemotronLivePreviewIfAvailable()
+        }
+    }
+
+    @discardableResult
+    private func startAppleSpeechLivePreviewIfAvailable() -> Bool {
         let primaryID = activeLanguageIDs.first ?? "en-US"
         let capability = AppleSpeechPreviewSupport.capability(languageID: primaryID)
         guard keyboardLivePreviewRecognitionMode.canUse(capability) else {
@@ -2204,16 +2248,78 @@ final class AppState {
         return true
     }
 
+    @discardableResult
+    private func startServerNemotronLivePreviewIfAvailable() -> Bool {
+        guard macSettings?.supportsServerNemotronPreview == true else {
+            appLog.notice("server live preview skipped: Mac Nemotron source is not enabled")
+            return false
+        }
+        guard let baseURL = routeStatus.activeURL else {
+            appLog.notice("server live preview skipped: no active bridge route")
+            return false
+        }
+
+        let trace = LivePreviewTrace()
+        livePreviewTrace = trace
+        let client = BridgeClient(baseURL: baseURL, token: config.token)
+        let streamer = BridgeLivePreviewStreamer(
+            client: client,
+            languageIDs: activeLanguageIDs,
+            onTranscript: { [weak self, trace] text in
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !cleaned.isEmpty else { return }
+                    let timing = trace.recordPartial()
+                    if timing.isFirst {
+                        appLog.notice(
+                            "server live preview first partial: startToPartialMs=\(timing.startToPartialMS, privacy: .public), firstPCMToPartialMs=\(timing.firstPCMToPartialMS ?? -1, privacy: .public), pcmBuffers=\(timing.pcmBufferCount, privacy: .public), chars=\(cleaned.count, privacy: .public)"
+                        )
+                    }
+                    self.livePartialTranscript = cleaned
+                    self.publishLivePartialTranscriptToKeyboard()
+                }
+            },
+            onFailure: { [weak self] message in
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    appLog.notice("server live preview failed: \(message, privacy: .public)")
+                    if self.serverLivePreviewStreamer != nil {
+                        self.serverLivePreviewStreamer = nil
+                    }
+                    if self.keyboardLivePreviewSource == .serverNemotron {
+                        self.keyboardAudioSession.onPCMBuffer = nil
+                    }
+                }
+            }
+        )
+        serverLivePreviewStreamer = streamer
+        appLog.notice("server live preview started")
+        keyboardAudioSession.onPCMBuffer = { [streamer, trace] buffer in
+            streamer.append(buffer)
+            let timing = trace.recordPCM()
+            if timing.isFirst {
+                appLog.notice(
+                    "server live preview first pcm: startToPCMms=\(timing.startToPCMMS, privacy: .public), buffers=\(timing.count, privacy: .public), sampleRate=\(buffer.format.sampleRate, privacy: .public), frames=\(buffer.frameLength, privacy: .public)"
+                )
+            }
+        }
+        streamer.start()
+        return true
+    }
+
     /// Called when the user stops recording. We close the audio side of the
-    /// request so the recognizer finalises its last partial, but keep the
-    /// resulting text on screen until the Mac final result replaces it.
+    /// request/stream so it finalises its last partial, but keep the resulting
+    /// text on screen until the Mac final result replaces it.
     private func endLivePartialPreviewAudio() {
         keyboardAudioSession.onPCMBuffer = nil
         liveSpeechRequestSink?.endAudio()
+        serverLivePreviewStreamer?.finish()
+        serverLivePreviewStreamer = nil
     }
 
-    /// Called after the Mac final result is applied. Tears down the recognizer
-    /// task and clears the on-screen partial — the keyboard / host now show
+    /// Called after the Mac final result is applied. Tears down the preview
+    /// source and clears the on-screen partial — the keyboard / host now show
     /// the Mac final text.
     private func teardownLivePartialPreview(clearText: Bool) {
         keyboardAudioSession.onPCMBuffer = nil
@@ -2223,6 +2329,8 @@ final class AppState {
         liveSpeechRequestSink = nil
         liveSpeechRequest = nil
         liveSpeechRecognizer = nil
+        serverLivePreviewStreamer?.cancel()
+        serverLivePreviewStreamer = nil
         livePreviewTrace = nil
         if clearText {
             livePartialTranscript = ""
@@ -2980,10 +3088,10 @@ final class AppState {
         KeyboardSharedDefaults.saveStatusSnapshot(status)
     }
 
-    /// Called from the SFSpeechRecognizer partial callback on every new
-    /// hypothesis. Updates only the live partial field on the keyboard bridge
-    /// status — keeps the existing state / message / commandID intact so the
-    /// keyboard's stage indicator doesn't churn.
+    /// Called from the selected preview source on every new hypothesis.
+    /// Updates only the live partial field on the keyboard bridge status —
+    /// keeps the existing state / message / commandID intact so the keyboard's
+    /// stage indicator doesn't churn.
     private func publishLivePartialTranscriptToKeyboard() {
         guard keyboardBridgeStatus.state == .recording || keyboardBridgeStatus.state == .sending else { return }
         let next = livePartialTranscript.isEmpty ? nil : livePartialTranscript

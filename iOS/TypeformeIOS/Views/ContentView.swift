@@ -888,8 +888,10 @@ private struct LanguagesRow: View {
             LanguageSelectionView(
                 selection: $state.selectedLanguageIDs,
                 options: state.config.supportedLanguageOptions,
-                livePreviewEnabled: state.keyboardLivePreviewEnabled,
-                livePreviewRecognitionMode: state.keyboardLivePreviewRecognitionMode
+                livePreviewEnabled: state.keyboardLivePreviewEnabled && state.keyboardLivePreviewSource == .appleSpeech,
+                livePreviewRecognitionMode: state.keyboardLivePreviewSource == .appleSpeech
+                    ? state.keyboardLivePreviewRecognitionMode
+                    : nil
             )
             .onChange(of: state.selectedLanguageIDs) { _, _ in
                 state.persistLanguageSelection()
@@ -1019,13 +1021,20 @@ private struct KeyboardSettingsView: View {
             }
             Section {
                 Toggle("Live Preview", isOn: livePreviewBinding)
+                Picker("Preview Source", selection: livePreviewSourceBinding) {
+                    ForEach(state.keyboardLivePreviewSourceOptions) { source in
+                        Text(source.title).tag(source)
+                    }
+                }
+                .pickerStyle(.menu)
+                .disabled(!state.keyboardLivePreviewEnabled || state.isBusy)
                 Picker("Preview Recognition", selection: livePreviewRecognitionModeBinding) {
                     ForEach(KeyboardLivePreviewRecognitionMode.allCases) { mode in
                         Text(mode.title).tag(mode)
                     }
                 }
                 .pickerStyle(.menu)
-                .disabled(!state.keyboardLivePreviewEnabled || state.isBusy)
+                .disabled(!state.keyboardLivePreviewEnabled || state.keyboardLivePreviewSource != .appleSpeech || state.isBusy)
                 Picker("Host audio session", selection: hostAudioSessionLengthBinding) {
                     ForEach(HostAudioSessionLength.allCases) { length in
                         Text(length.title).tag(length)
@@ -1035,7 +1044,7 @@ private struct KeyboardSettingsView: View {
             } header: {
                 Text("Audio")
             } footer: {
-                Text("On-device Only keeps preview audio local. Cloud Fallback uses on-device when available and Apple servers otherwise. Preview punctuation follows Mac Settings. Host audio session controls how long keyboard dictation stays ready.")
+                Text("Server Nemotron appears when the paired Mac has Nemotron enabled. Apple recognition controls only this iPhone's Apple Speech preview. Host audio session controls how long keyboard dictation stays ready.")
             }
         }
         .navigationTitle("Keyboard Settings")
@@ -1084,6 +1093,14 @@ private struct KeyboardSettingsView: View {
             state.keyboardLivePreviewEnabled
         } set: { enabled in
             state.setKeyboardLivePreviewEnabled(enabled)
+        }
+    }
+
+    private var livePreviewSourceBinding: Binding<KeyboardLivePreviewSource> {
+        Binding {
+            state.keyboardLivePreviewSource
+        } set: { source in
+            state.setKeyboardLivePreviewSource(source)
         }
     }
 
@@ -1551,34 +1568,33 @@ private struct MacSettingsView: View {
         List {
             if let draft {
                 Section("Speech") {
-                    Picker("ASR Engine", selection: asrProviderBinding) {
-                        ForEach(draft.asrProviderOptions) { option in
-                            Text(option.displayName).tag(option.id)
+                    ForEach(draft.recognitionSourceOptions) { option in
+                        if let source = RecognitionSource(rawValue: option.id) {
+                            Toggle(option.displayName, isOn: recognitionSourceBinding(source))
                         }
                     }
-                    .pickerStyle(.menu)
 
-                    // Every provider with a model catalog gets the picker —
-                    // gating on providerUsesQwen hid Nemotron's model choices.
-                    if !draft.asrModelOptions(for: draft.asrProvider).isEmpty {
-                        Picker("Model", selection: asrModelBinding) {
-                            ForEach(draft.asrModelOptions(for: draft.asrProvider)) { option in
-                                Text(option.displayName).tag(option.id)
+                    ForEach(draft.enabledSources.filter(\.hasModelConfiguration)) { source in
+                        if !draft.asrModelOptions(for: source.rawValue).isEmpty {
+                            Picker("\(source.displayName) Model", selection: asrModelBinding(source)) {
+                                ForEach(draft.asrModelOptions(for: source.rawValue)) { option in
+                                    Text(option.displayName).tag(option.id)
+                                }
                             }
+                            .pickerStyle(.menu)
                         }
-                        .pickerStyle(.menu)
-                    }
 
-                    TimeoutSecondsRow(
-                        title: "ASR Timeout",
-                        seconds: asrTimeoutSecondsBinding,
-                        range: BridgeMacSettingsPayload.asrTimeoutSecondsRange
-                    )
+                        TimeoutSecondsRow(
+                            title: "\(source.displayName) Timeout",
+                            seconds: asrTimeoutSecondsBinding(source),
+                            range: BridgeMacSettingsPayload.asrTimeoutSecondsRange
+                        )
+                    }
 
                     NavigationLink {
                         LanguageSelectionView(
                             selection: languageBinding,
-                            options: draft.supportedLanguageOptions(for: draft.asrProvider)
+                            options: draft.supportedLanguageOptionsForEnabledSources()
                         )
                     } label: {
                         HStack {
@@ -1586,7 +1602,7 @@ private struct MacSettingsView: View {
                             Spacer()
                             Text(LanguageDisplay.summary(
                                 for: Set(draft.languageIDs),
-                                options: draft.supportedLanguageOptions(for: draft.asrProvider)
+                                options: draft.supportedLanguageOptionsForEnabledSources()
                             ))
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
@@ -1805,21 +1821,21 @@ private struct MacSettingsView: View {
         }
     }
 
-    private var asrProviderBinding: Binding<String> {
+    private func recognitionSourceBinding(_ source: RecognitionSource) -> Binding<Bool> {
         Binding {
-            draft?.asrProvider ?? "qwen3-asr-llama"
+            draft?.isRecognitionSourceEnabled(source) ?? false
         } set: { value in
-            draft?.asrProvider = value
+            draft?.setRecognitionSource(source, enabled: value)
             normalizeDraft()
         }
     }
 
-    private var asrModelBinding: Binding<String> {
+    private func asrModelBinding(_ source: RecognitionSource) -> Binding<String> {
         Binding {
             guard let draft else { return "" }
-            return draft.asrModelID ?? draft.asrModelOptions(for: draft.asrProvider).first?.id ?? ""
+            return draft.asrModelID(for: source.rawValue)
         } set: { value in
-            draft?.asrModelID = value
+            draft?.asrModelIDsByRecognitionSource[source.rawValue] = value
             normalizeDraft()
         }
     }
@@ -1852,11 +1868,11 @@ private struct MacSettingsView: View {
         backend == "external_openai_compatible" || backend == "external_anthropic_compatible"
     }
 
-    private var asrTimeoutSecondsBinding: Binding<Double> {
+    private func asrTimeoutSecondsBinding(_ source: RecognitionSource) -> Binding<Double> {
         Binding {
-            draft?.asrTimeoutSec ?? 120
+            draft?.asrTimeoutSec(for: source.rawValue) ?? 120
         } set: { value in
-            draft?.asrTimeoutSec = BridgeMacSettingsPayload.clampedASRTimeoutSec(value)
+            draft?.asrTimeoutSecByRecognitionSource[source.rawValue] = BridgeMacSettingsPayload.clampedASRTimeoutSec(value)
         }
     }
 
@@ -1907,7 +1923,7 @@ private struct MacSettingsView: View {
             guard var current = draft else { return }
             current.languageIDs = ASRLanguageSelection.validatedIDs(
                 Array(value),
-                supportedOptions: current.supportedLanguageOptions(for: current.asrProvider)
+                supportedOptions: current.supportedLanguageOptionsForEnabledSources()
             )
             draft = current
         }

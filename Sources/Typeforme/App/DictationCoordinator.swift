@@ -19,10 +19,9 @@ final class DictationCoordinator: ObservableObject {
     @Published private(set) var frontmostSnapshot: FrontmostAppSnapshot?
     @Published private(set) var previewCorrectionMode: CorrectionMode?
     @Published private(set) var voicePreviewHUDExpanded = false
-    /// Live-preview transcript fed by Apple Speech in parallel with recording.
-    /// Held in place from the first partial until the Mac ASR + correction
-    /// final replaces it, then cleared. Empty string = no preview (unsupported
-    /// language, denied permission, toggle off, or not recording).
+    /// Live-preview transcript fed in parallel with recording. Held in place
+    /// from the first partial until the Mac ASR + correction final replaces
+    /// it, then cleared. Empty string = no preview.
     @Published private(set) var livePartialTranscript: String = ""
 
     private let recorder = AudioRecorder()
@@ -49,6 +48,7 @@ final class DictationCoordinator: ObservableObject {
     private var liveSpeechRecognizer: SFSpeechRecognizer?
     private var liveSpeechRequest: SFSpeechAudioBufferRecognitionRequest?
     private var liveSpeechTask: SFSpeechRecognitionTask?
+    private var nvidiaLivePreviewSession: NvidiaNemotronLivePreviewSession?
     /// Last partial text we surfaced. Snapshot at correction time so the Mac
     /// LLM gets the same string the user just saw.
     private var liveSnapshotAtCorrection: String = ""
@@ -629,6 +629,7 @@ final class DictationCoordinator: ObservableObject {
         clearPreviewState()
         recordingStartedAt = nil
         _ = recorder.stop()
+        teardownLivePartialPreview(clearText: true)
     }
 
     // MARK: - Mode switching
@@ -698,25 +699,60 @@ final class DictationCoordinator: ObservableObject {
         return trimmed
     }
 
-    // MARK: - Live partial preview (Apple Speech, on-device only)
+    // MARK: - Live partial preview
     //
-    // Pattern mirrors iOS: SFSpeechRecognizer subscribes to the AudioRecorder
-    // PCM tap and renders partial hypotheses into `livePartialTranscript` for
-    // the HUD except command/wand edits, which keep the hypothesis internal.
-    // The Mac ASR + correction pipeline is unchanged — Apple Speech never
-    // replaces the canonical result. The last partial is captured into
+    // The selected preview source subscribes to the AudioRecorder PCM tap and
+    // renders partial hypotheses into `livePartialTranscript` for the HUD
+    // except command/wand edits, which keep the hypothesis internal. The Mac
+    // recognition sources + correction pipeline are unchanged — preview never replaces the
+    // canonical result. The last partial is captured into
     // `liveSnapshotAtCorrection` at stopDictation() time and threaded into
-    // CorrectionRequest.alternateTranscripts so the corrector LLM can use it
-    // as a supplementary hypothesis (neutral framing — see baseSystem prompt).
+    // CorrectionRequest.alternateTranscripts as a supplementary hypothesis
+    // (neutral framing — see baseSystem prompt).
     //
-    // Gating: AppSettings.voiceLivePreview must be on, the primary language
-    // must support on-device recognition, and authorization must be granted.
-    // Any failure silently degrades to "no preview" — recording still works.
+    // Any preview failure silently degrades to "no preview" — recording still
+    // works and final ASR still runs.
 
     private func makeLivePartialPreviewPCMHandlerIfAvailable() -> ((AVAudioPCMBuffer) -> Void)? {
         teardownLivePartialPreview(clearText: true)
-        guard AppSettings.voiceLivePreview else { return nil }
+        switch AppSettings.voiceLivePreviewSource {
+        case .off:
+            return nil
+        case .appleSpeech:
+            return makeAppleSpeechLivePartialPreviewPCMHandlerIfAvailable()
+        case .nvidiaNemotron:
+            return makeNvidiaNemotronLivePartialPreviewPCMHandlerIfAvailable()
+        }
+    }
 
+    private func makeNvidiaNemotronLivePartialPreviewPCMHandlerIfAvailable() -> ((AVAudioPCMBuffer) -> Void)? {
+        guard AppSettings.enabledRecognitionSources.contains(.nvidiaNemotron) else {
+            return nil
+        }
+
+        let displaysLivePartial = activeTextEditIntent != .command
+        do {
+            let session = try NvidiaNemotronLivePreviewSession.start(
+                languageIDs: AppSettings.asrLanguageIDs
+            ) { [weak self] text in
+                Task { @MainActor [weak self] in
+                    self?.applyLivePartialPreview(text, displaysLivePartial: displaysLivePartial)
+                }
+            }
+            nvidiaLivePreviewSession = session
+            return { [weak session] buffer in
+                session?.append(buffer)
+            }
+        } catch {
+            Log.asr.notice("Nemotron live preview unavailable: \(error.localizedDescription, privacy: .public)")
+            return nil
+        }
+    }
+
+    private func makeAppleSpeechLivePartialPreviewPCMHandlerIfAvailable() -> ((AVAudioPCMBuffer) -> Void)? {
+        guard AppSettings.enabledRecognitionSources.contains(.appleSpeech) else {
+            return nil
+        }
         let primaryID = AppSettings.activeLanguageIDs.first ?? "en-US"
         let locale = Locale(identifier: primaryID)
         guard Self.supportedSpeechLocalesContain(locale) else {
@@ -759,14 +795,7 @@ final class DictationCoordinator: ObservableObject {
                 guard let self else { return }
                 if let result {
                     let text = result.bestTranscription.formattedString
-                        .trimmingCharacters(in: .whitespacesAndNewlines)
-                    if !text.isEmpty {
-                        if displaysLivePartial {
-                            self.livePartialTranscript = text
-                        } else {
-                            self.liveSnapshotAtCorrection = text
-                        }
-                    }
+                    self.applyLivePartialPreview(text, displaysLivePartial: displaysLivePartial)
                 }
                 if error != nil {
                     self.teardownLivePartialPreview(clearText: false)
@@ -776,6 +805,16 @@ final class DictationCoordinator: ObservableObject {
 
         return { [weak request] buffer in
             request?.append(buffer)
+        }
+    }
+
+    private func applyLivePartialPreview(_ rawText: String, displaysLivePartial: Bool) {
+        let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        if displaysLivePartial {
+            livePartialTranscript = text
+        } else {
+            liveSnapshotAtCorrection = text
         }
     }
 
@@ -798,6 +837,7 @@ final class DictationCoordinator: ObservableObject {
     /// `livePartialTranscript` on screen until the Mac final replaces it.
     func endLivePartialPreviewAudio() {
         liveSpeechRequest?.endAudio()
+        nvidiaLivePreviewSession?.finishInput()
         if !livePartialTranscript.isEmpty {
             liveSnapshotAtCorrection = livePartialTranscript
         }
@@ -809,6 +849,8 @@ final class DictationCoordinator: ObservableObject {
         liveSpeechTask = nil
         liveSpeechRequest = nil
         liveSpeechRecognizer = nil
+        nvidiaLivePreviewSession?.cancel()
+        nvidiaLivePreviewSession = nil
         if clearText {
             livePartialTranscript = ""
             liveSnapshotAtCorrection = ""

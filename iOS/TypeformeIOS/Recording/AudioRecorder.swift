@@ -635,8 +635,8 @@ private func installStandbyInputTap(
         guard fileWriter.isRecording else { return }
         let level = AudioTapLevelMeter.normalizedLevel(from: buffer)
         fileWriter.write(buffer)
-        // Fan the same buffer out to any live-preview consumer (e.g.
-        // SFSpeechRecognizer). Read the sink each call so late-attached
+        // Fan the same buffer out to any live-preview consumer. Read the sink
+        // each call so late-attached
         // handlers also receive frames.
         pcmBufferSink.emit(buffer)
         guard levelThrottler.shouldPublish() else { return }
@@ -648,9 +648,9 @@ private func installStandbyInputTap(
 
 @MainActor
 final class StandbyAudioSession: ObservableObject {
-    /// Optional second consumer of the input PCM tap. Used by the live-preview
-    /// SFSpeechRecognizer feed so we don't need a parallel AVAudioEngine
-    /// pulling from the same mic. Cleared on stop.
+    /// Optional second consumer of the input PCM tap. Used by live-preview
+    /// sources so we don't need a parallel AVAudioEngine pulling from the same
+    /// mic. Cleared on stop.
     /// Read on the audio thread after recording begins. The host attaches this
     /// after the standby tap is already installed, so it intentionally remains a
     /// late-bound hook.

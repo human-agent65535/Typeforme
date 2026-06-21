@@ -90,10 +90,10 @@ private struct RemoteBridgeTextEditRequest: Encodable {
 }
 
 private struct RemoteBridgeSettingsUpdateRequest: Encodable {
-    let asrProvider: String
-    let asrModelID: String?
+    let enabledRecognitionSources: [String]
+    let asrModelIDsByRecognitionSource: [String: String]
     let languageIDs: [String]
-    let asrTimeoutSec: Double
+    let asrTimeoutSecByRecognitionSource: [String: Double]
     let correctionBackend: String
     let correctionTimeoutMs: Int
     let correctionColdTimeoutMs: Int
@@ -107,10 +107,10 @@ private struct RemoteBridgeSettingsUpdateRequest: Encodable {
     let userDictionary: [DictionaryEntry]
 
     enum CodingKeys: String, CodingKey {
-        case asrProvider = "asr_provider"
-        case asrModelID = "asr_model_id"
+        case enabledRecognitionSources = "enabled_recognition_sources"
+        case asrModelIDsByRecognitionSource = "asr_model_ids_by_recognition_source"
         case languageIDs = "language_ids"
-        case asrTimeoutSec = "asr_timeout_sec"
+        case asrTimeoutSecByRecognitionSource = "asr_timeout_sec_by_recognition_source"
         case correctionBackend = "correction_backend"
         case correctionTimeoutMs = "correction_timeout_ms"
         case correctionColdTimeoutMs = "correction_cold_timeout_ms"
@@ -190,10 +190,10 @@ struct RemoteBridgeClient {
         timeout: TimeInterval = 15
     ) async throws -> BridgeSettingsPayload {
         let payload = RemoteBridgeSettingsUpdateRequest(
-            asrProvider: settings.asrProvider,
-            asrModelID: settings.asrModelID,
+            enabledRecognitionSources: settings.enabledRecognitionSources,
+            asrModelIDsByRecognitionSource: settings.asrModelIDsByRecognitionSource,
             languageIDs: settings.languageIDs,
-            asrTimeoutSec: settings.asrTimeoutSec,
+            asrTimeoutSecByRecognitionSource: settings.asrTimeoutSecByRecognitionSource,
             correctionBackend: settings.correctionBackend,
             correctionTimeoutMs: settings.correctionTimeoutMs,
             correctionColdTimeoutMs: settings.correctionColdTimeoutMs,

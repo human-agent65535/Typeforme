@@ -166,27 +166,19 @@ enum ASRLanguageSelection {
         return all.filter { supported.contains($0.id) }
     }
 
-    static var dualASRSupportedLanguages: [ASRLanguageOption] {
-        let qwen = Set(qwenASRSupportedLanguageIDs)
-        let nemotron = Set(nvidiaNemotronASRSupportedLanguageIDs)
-        return all.filter { qwen.contains($0.id) && nemotron.contains($0.id) }
+    static func supportedOptions(for sources: [RecognitionSource]) -> [ASRLanguageOption] {
+        let enabled = sources.isEmpty ? RecognitionSource.defaultEnabled : sources
+        let supportedIDs = Set(enabled.flatMap { $0.supportedLanguages().map(\.id) })
+        let result = all.filter { supportedIDs.contains($0.id) }
+        return result.isEmpty ? qwenASRSupportedLanguages : result
     }
 
-    static func supportedOptions(forProvider provider: String) -> [ASRLanguageOption] {
-        switch normalizedProvider(provider) {
-        case "qwen3-asr-llama":
-            return qwenASRSupportedLanguages
-        case "nvidia-nemotron-asr":
-            return nvidiaNemotronASRSupportedLanguages
-        case "qwen3-asr-llama+nvidia-nemotron-asr":
-            return dualASRSupportedLanguages
-        default:
-            return all
-        }
+    static func supportedOptions(for source: RecognitionSource) -> [ASRLanguageOption] {
+        source.supportedLanguages()
     }
 
-    static func commonOptions(forProvider provider: String) -> [ASRLanguageOption] {
-        supportedOptions(forProvider: provider)
+    static func commonOptions(for sources: [RecognitionSource]) -> [ASRLanguageOption] {
+        supportedOptions(for: sources)
             .filter(\.isCommon)
             .sorted { ($0.commonRank ?? .max) < ($1.commonRank ?? .max) }
     }
@@ -195,8 +187,8 @@ enum ASRLanguageSelection {
         parse(rawValue, supportedOptions: all)
     }
 
-    static func parse(_ rawValue: String, provider: String) -> [String] {
-        parse(rawValue, supportedOptions: supportedOptions(forProvider: provider))
+    static func parse(_ rawValue: String, sources: [RecognitionSource]) -> [String] {
+        parse(rawValue, supportedOptions: supportedOptions(for: sources))
     }
 
     static func parse(_ rawValue: String, supportedOptions: [ASRLanguageOption]) -> [String] {
@@ -219,8 +211,8 @@ enum ASRLanguageSelection {
         validatedIDs(ids, supportedOptions: all)
     }
 
-    static func validatedIDs(_ ids: [String], provider: String) -> [String] {
-        validatedIDs(ids, supportedOptions: supportedOptions(forProvider: provider))
+    static func validatedIDs(_ ids: [String], sources: [RecognitionSource]) -> [String] {
+        validatedIDs(ids, supportedOptions: supportedOptions(for: sources))
     }
 
     static func validatedIDs(_ ids: [String], supportedOptions: [ASRLanguageOption]) -> [String] {
@@ -243,6 +235,11 @@ enum ASRLanguageSelection {
     static func displayNames(for ids: [String], supportedOptions: [ASRLanguageOption]) -> [String] {
         let optionsByID = Dictionary(uniqueKeysWithValues: supportedOptions.map { ($0.id, $0) })
         return validatedIDs(ids, supportedOptions: supportedOptions).compactMap { optionsByID[$0]?.displayName }
+    }
+
+    static func effectiveIDs(_ ids: [String], for source: RecognitionSource) -> [String] {
+        let supportedIDs = Set(source.supportedLanguages().map(\.id))
+        return validatedIDs(ids).filter { supportedIDs.contains($0) }
     }
 
     static func languageCodes(for ids: [String]) -> [String] {
@@ -283,16 +280,6 @@ enum ASRLanguageSelection {
         let defaults = defaultIDs.filter { supported.contains($0) }
         if !defaults.isEmpty { return defaults }
         return supportedOptions.first.map { [$0.id] } ?? defaultIDs
-    }
-
-    private static func normalizedProvider(_ provider: String) -> String {
-        let value = provider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        switch value {
-        case "qwen3-asr-llama", "nvidia-nemotron-asr", "qwen3-asr-llama+nvidia-nemotron-asr":
-            return value
-        default:
-            return "qwen3-asr-llama"
-        }
     }
 
     private static func canonicalID(for rawID: String) -> String? {

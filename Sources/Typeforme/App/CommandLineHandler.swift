@@ -18,8 +18,10 @@ enum CommandLineHandler {
     private static func runDebugTranscribe(_ request: DebugTranscribeCommand) {
         AppSettings.registerDefaults()
         var overrides = UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)
-        if let provider = request.provider {
-            overrides[AppSettings.Keys.asrProvider] = provider
+        if let sources = request.sources {
+            overrides[AppSettings.Keys.asrQwenEnabled] = sources.contains(.qwen)
+            overrides[AppSettings.Keys.asrNvidiaNemotronEnabled] = sources.contains(.nvidiaNemotron)
+            overrides[AppSettings.Keys.asrAppleSpeechEnabled] = sources.contains(.appleSpeech)
         }
         if let languages = request.languagesRaw {
             overrides[AppSettings.Keys.asrLanguageIDs] = languages
@@ -35,7 +37,7 @@ enum CommandLineHandler {
                 )
                 let payload = DebugTranscribeResult(
                     ok: true,
-                    provider: AppSettings.asrProvider,
+                    provider: AppSettings.enabledRecognitionSources.map(\.rawValue).joined(separator: ","),
                     languageIDs: AppSettings.asrLanguageIDs,
                     audioPath: request.audioURL.path,
                     latencyMs: Int(Date().timeIntervalSince(startedAt) * 1000),
@@ -47,7 +49,7 @@ enum CommandLineHandler {
             } catch {
                 let payload = DebugTranscribeResult(
                     ok: false,
-                    provider: AppSettings.asrProvider,
+                    provider: AppSettings.enabledRecognitionSources.map(\.rawValue).joined(separator: ","),
                     languageIDs: AppSettings.asrLanguageIDs,
                     audioPath: request.audioURL.path,
                     latencyMs: Int(Date().timeIntervalSince(startedAt) * 1000),
@@ -63,14 +65,14 @@ enum CommandLineHandler {
 
 struct DebugTranscribeCommand: Equatable {
     let audioURL: URL
-    let provider: String?
+    let sources: [RecognitionSource]?
     let languagesRaw: String?
 
     init?(arguments: [String]) {
         guard let commandIndex = arguments.firstIndex(of: "--debug-transcribe") else { return nil }
         let audioIndex = arguments.index(after: commandIndex)
         guard audioIndex < arguments.endIndex else {
-            fputs("usage: Typeforme --debug-transcribe AUDIO [--provider PROVIDER] [--languages zh-CN,en-US]\n", stderr)
+            fputs("usage: Typeforme --debug-transcribe AUDIO [--sources qwen3-asr-llama,nvidia-nemotron-asr,apple-speech] [--languages zh-CN,en-US]\n", stderr)
             Foundation.exit(64)
         }
 
@@ -86,7 +88,19 @@ struct DebugTranscribeCommand: Equatable {
             return arguments[valueIndex]
         }
 
-        self.provider = option("--provider")
+        if let rawSources = option("--sources") {
+            let values = rawSources
+                .split(separator: ",")
+                .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+            let parsed = values.compactMap(RecognitionSource.init(rawValue:))
+            guard parsed.count == values.count, !parsed.isEmpty else {
+                fputs("invalid --sources value\n", stderr)
+                Foundation.exit(64)
+            }
+            self.sources = RecognitionSource.normalizedSources(parsed.map(\.rawValue))
+        } else {
+            self.sources = nil
+        }
         self.languagesRaw = option("--languages")
     }
 }

@@ -21,9 +21,9 @@
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.1.138</string>
+    <string>0.1.140</string>
     <key>CFBundleVersion</key>
-    <string>145</string>
+    <string>147</string>
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>
     <key>LSMultipleInstancesProhibited</key>
@@ -46,6 +46,6 @@
     <key>NSAppleEventsUsageDescription</key>
     <string>Typeforme 需要把整理后的文本插入当前 App。</string>
     <key>NSSpeechRecognitionUsageDescription</key>
-    <string>Typeforme 在录音时使用 Apple 语音识别提供实时预览。仅对支持设备端识别的语言开启，音频不会离开本机。</string>
+    <string>Typeforme 在启用 Apple Speech 识别源或预览源时使用 Apple 语音识别。仅对支持设备端识别的语言开启，音频不会离开本机。</string>
 </dict>
 </plist>

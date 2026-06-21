@@ -168,7 +168,8 @@
 
 // Dictation settings
 "Speech" = "Speech";
-"ASR Engine" = "ASR Engine";
+"Recognition Sources" = "Recognition Sources";
+"Preview Source" = "Preview Source";
 "ASR Timeout" = "ASR Timeout";
 "Refine" = "Refine";
 "Engine" = "Engine";

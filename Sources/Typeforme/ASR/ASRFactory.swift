@@ -9,36 +9,24 @@ final class ASRFactory {
     private var nvidiaNemotron: NvidiaNemotronASRService?
 
     func get() -> ASRService {
-        switch AppSettings.asrProvider.lowercased() {
-        case "qwen3-asr-llama+nvidia-nemotron-asr":
-            return AutoInstallingDualASRService()
-        case "nvidia-nemotron-asr":
-            return AutoInstallingNvidiaNemotronASRService()
-        case "qwen3-asr-llama":
-            fallthrough
-        default:
-            return AutoInstallingQwenLlamaASRService()
-        }
+        MultiSourceASRService(sources: AppSettings.enabledRecognitionSources)
     }
 
     func preloadCachedActiveModel() async {
-        let provider = AppSettings.asrProvider.lowercased()
-        if provider == "qwen3-asr-llama" {
-            await preloadQwenLlama()
-            return
-        }
+        let sources = AppSettings.enabledRecognitionSources
+        async let qwen: Void = preloadQwenLlamaIfEnabled(sources)
+        async let nvidia: Void = preloadNvidiaNemotronIfEnabled(sources)
+        _ = await (qwen, nvidia)
+    }
 
-        if provider == "qwen3-asr-llama+nvidia-nemotron-asr" {
-            async let qwen: Void = preloadQwenLlama()
-            async let nvidia: Void = preloadNvidiaNemotron()
-            _ = await (qwen, nvidia)
-            return
-        }
+    private func preloadQwenLlamaIfEnabled(_ sources: [RecognitionSource]) async {
+        guard sources.contains(.qwen) else { return }
+        await preloadQwenLlama()
+    }
 
-        if provider == "nvidia-nemotron-asr" {
-            await preloadNvidiaNemotron()
-            return
-        }
+    private func preloadNvidiaNemotronIfEnabled(_ sources: [RecognitionSource]) async {
+        guard sources.contains(.nvidiaNemotron) else { return }
+        await preloadNvidiaNemotron()
     }
 
     func warmQwenLlama() async throws {
@@ -168,7 +156,7 @@ private struct AutoInstallingQwenLlamaASRService: ASRService {
         return ASRTranscription(
             text: text,
             modelOutputs: [
-                ASRModelOutputFactory.qwen(role: "primary", text: text)
+                ASRModelOutputFactory.qwen(role: "source", text: text)
             ]
         )
     }
@@ -188,109 +176,187 @@ private struct AutoInstallingNvidiaNemotronASRService: ASRService {
         return ASRTranscription(
             text: text,
             modelOutputs: [
-                ASRModelOutputFactory.nemotron(role: "primary", text: text)
+                ASRModelOutputFactory.nemotron(role: "source", text: text)
             ]
         )
     }
 }
 
-private struct AutoInstallingDualASRService: ASRService {
+private struct MultiSourceASRService: ASRService {
+    let sources: [RecognitionSource]
+
     func transcribe(audioFileURL: URL, languageIDs: [String]) async throws -> String {
         try await transcribeResult(audioFileURL: audioFileURL, languageIDs: languageIDs).text
     }
 
     func transcribeResult(audioFileURL: URL, languageIDs: [String]) async throws -> ASRTranscription {
-        async let qwen = Self.attempt {
-            try await AutoInstallingQwenLlamaASRService()
-                .transcribe(audioFileURL: audioFileURL, languageIDs: languageIDs)
-        }
-        async let nemotron = Self.attempt {
-            try await AutoInstallingNvidiaNemotronASRService()
-                .transcribe(audioFileURL: audioFileURL, languageIDs: languageIDs)
+        let enabledSources = sources.isEmpty ? RecognitionSource.defaultEnabled : sources
+        let selectedLanguageIDs = ASRLanguageSelection.validatedIDs(
+            languageIDs,
+            sources: enabledSources
+        )
+        var attempts: [ASRSourceAttemptResult] = []
+        await withTaskGroup(of: ASRSourceAttemptResult.self) { group in
+            for (index, source) in enabledSources.enumerated() {
+                group.addTask {
+                    await Self.attempt(
+                        source: source,
+                        index: index,
+                        audioFileURL: audioFileURL,
+                        selectedLanguageIDs: selectedLanguageIDs
+                    )
+                }
+            }
+            for await attempt in group {
+                attempts.append(attempt)
+            }
         }
 
-        let (qwenResult, nemotronResult) = await (qwen, nemotron)
-        let primaryIsNemotron = Self.prefersNemotronPrimary(languageIDs: languageIDs)
-        let primaryResult = primaryIsNemotron ? nemotronResult : qwenResult
-        let auxiliaryResult = primaryIsNemotron ? qwenResult : nemotronResult
-
-        guard primaryResult.error == nil else {
+        let ordered = attempts.sorted { $0.index < $1.index }
+        let successfulTexts = ordered
+            .compactMap { $0.successText }
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard let transcript = successfulTexts.first else {
+            let detail = ordered
+                .map { "\($0.source.displayName): \($0.error ?? $0.status)" }
+                .joined(separator: "; ")
             throw ASRAudioSupportError.httpStatus(
                 503,
-                primaryResult.error ?? "Primary ASR failed"
+                detail.isEmpty ? "No recognition source produced a transcript" : detail
             )
         }
-
-        let primary = primaryResult.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !primary.isEmpty else {
-            throw ASRAudioSupportError.emptyTranscript
+        var seen = Set([transcript])
+        let alternates = successfulTexts.dropFirst().filter { seen.insert($0).inserted }
+        let warnings = ordered.compactMap { attempt -> String? in
+            guard attempt.status != "ok" else { return nil }
+            return "\(attempt.source.displayName): \(attempt.error ?? attempt.status)"
         }
-        let auxiliary = auxiliaryResult.text.trimmingCharacters(in: .whitespacesAndNewlines)
         return ASRTranscription(
-            text: primary,
-            alternateTranscripts: auxiliary.isEmpty || auxiliary == primary ? [] : [auxiliary],
-            modelOutputs: [
-                ASRModelOutputFactory.qwen(
-                    role: primaryIsNemotron ? "cross_check" : "primary",
-                    result: qwenResult
-                ),
-                ASRModelOutputFactory.nemotron(
-                    role: primaryIsNemotron ? "primary" : "cross_check",
-                    result: nemotronResult
-                )
-            ],
-            warnings: auxiliaryResult.error == nil ? [] : ["Cross-check transcript unavailable"]
+            text: transcript,
+            alternateTranscripts: alternates,
+            modelOutputs: ordered.map(\.modelOutput),
+            warnings: warnings
         )
     }
 
-    private static func attempt(_ operation: () async throws -> String) async -> ASRAttemptResult {
-        do {
-            return ASRAttemptResult(text: try await operation(), error: nil)
-        } catch {
-            return ASRAttemptResult(text: "", error: error.localizedDescription)
+    private static func attempt(
+        source: RecognitionSource,
+        index: Int,
+        audioFileURL: URL,
+        selectedLanguageIDs: [String]
+    ) async -> ASRSourceAttemptResult {
+        let effectiveLanguageIDs = ASRLanguageSelection.effectiveIDs(selectedLanguageIDs, for: source)
+        guard !effectiveLanguageIDs.isEmpty else {
+            return ASRSourceAttemptResult(
+                source: source,
+                index: index,
+                status: "skipped_unsupported_language",
+                text: nil,
+                error: "No selected language is supported by this source"
+            )
         }
-    }
-
-    private static func prefersNemotronPrimary(languageIDs: [String]) -> Bool {
-        let ids = ASRLanguageSelection.validatedIDs(
-            languageIDs,
-            supportedOptions: ASRLanguageSelection.dualASRSupportedLanguages
-        )
-        return ids.count == 1 && ids[0] == "en-US"
+        do {
+            let text: String
+            switch source {
+            case .qwen:
+                text = try await AutoInstallingQwenLlamaASRService()
+                    .transcribe(audioFileURL: audioFileURL, languageIDs: effectiveLanguageIDs)
+            case .nvidiaNemotron:
+                text = try await AutoInstallingNvidiaNemotronASRService()
+                    .transcribe(audioFileURL: audioFileURL, languageIDs: effectiveLanguageIDs)
+            case .appleSpeech:
+                text = try await AppleSpeechASRService()
+                    .transcribe(audioFileURL: audioFileURL, languageIDs: effectiveLanguageIDs)
+            }
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            return ASRSourceAttemptResult(
+                source: source,
+                index: index,
+                status: trimmed.isEmpty ? "error" : "ok",
+                text: trimmed,
+                error: trimmed.isEmpty ? ASRAudioSupportError.emptyTranscript.localizedDescription : nil
+            )
+        } catch {
+            return ASRSourceAttemptResult(
+                source: source,
+                index: index,
+                status: "error",
+                text: nil,
+                error: error.localizedDescription
+            )
+        }
     }
 }
 
-private struct ASRAttemptResult {
-    let text: String
+private struct ASRSourceAttemptResult {
+    let source: RecognitionSource
+    let index: Int
+    let status: String
+    let text: String?
     let error: String?
+
+    var successText: String? {
+        guard status == "ok" else { return nil }
+        return text
+    }
+
+    var modelOutput: ASRTranscriptModelOutput {
+        switch source {
+        case .qwen:
+            return ASRModelOutputFactory.qwen(role: "source", text: text ?? "", status: status, error: error)
+        case .nvidiaNemotron:
+            return ASRModelOutputFactory.nemotron(role: "source", text: text ?? "", status: status, error: error)
+        case .appleSpeech:
+            return ASRModelOutputFactory.appleSpeech(role: "source", text: text ?? "", status: status, error: error)
+        }
+    }
 }
 
 private enum ASRModelOutputFactory {
-    static func qwen(role: String, result: ASRAttemptResult) -> ASRTranscriptModelOutput {
-        qwen(role: role, text: result.text, error: result.error)
-    }
-
-    static func qwen(role: String, text: String, error: String? = nil) -> ASRTranscriptModelOutput {
+    static func qwen(
+        role: String,
+        text: String,
+        status: String? = nil,
+        error: String? = nil
+    ) -> ASRTranscriptModelOutput {
         ASRTranscriptModelOutput(
             role: role,
             provider: "qwen3-asr-llama",
             model: AppSettings.asrQwenLlamaModelID,
-            status: error == nil ? "ok" : "error",
+            status: status ?? (error == nil ? "ok" : "error"),
             text: text,
             error: error
         )
     }
 
-    static func nemotron(role: String, result: ASRAttemptResult) -> ASRTranscriptModelOutput {
-        nemotron(role: role, text: result.text, error: result.error)
-    }
-
-    static func nemotron(role: String, text: String, error: String? = nil) -> ASRTranscriptModelOutput {
+    static func nemotron(
+        role: String,
+        text: String,
+        status: String? = nil,
+        error: String? = nil
+    ) -> ASRTranscriptModelOutput {
         ASRTranscriptModelOutput(
             role: role,
             provider: "nvidia-nemotron-asr",
             model: AppSettings.asrNvidiaNemotronModelID,
-            status: error == nil ? "ok" : "error",
+            status: status ?? (error == nil ? "ok" : "error"),
+            text: text,
+            error: error
+        )
+    }
+
+    static func appleSpeech(
+        role: String,
+        text: String,
+        status: String? = nil,
+        error: String? = nil
+    ) -> ASRTranscriptModelOutput {
+        ASRTranscriptModelOutput(
+            role: role,
+            provider: "apple-speech",
+            model: "on-device",
+            status: status ?? (error == nil ? "ok" : "error"),
             text: text,
             error: error
         )

@@ -33,7 +33,7 @@ struct ASRLanguageSelectionTests {
         #expect(ids.contains("tl"))
         #expect(ids.contains("ro"))
         #expect(!ids.contains("af"))
-        #expect(ASRLanguageSelection.validatedIDs(["af", "vi"], provider: "qwen3-asr-llama") == ["vi"])
+        #expect(ASRLanguageSelection.validatedIDs(["af", "vi"], sources: [.qwen]) == ["vi"])
     }
 
     @Test func nvidiaNemotronLanguageCatalogUsesOutOfBoxLocales() {
@@ -45,22 +45,22 @@ struct ASRLanguageSelectionTests {
         #expect(ids.contains("pl"))
         #expect(!ids.contains("zh-TW"))
         #expect(!ids.contains("af"))
-        #expect(ASRLanguageSelection.validatedIDs(["zh-TW", "ja"], provider: "nvidia-nemotron-asr") == ["ja"])
+        #expect(ASRLanguageSelection.validatedIDs(["zh-TW", "ja"], sources: [.nvidiaNemotron]) == ["ja"])
     }
 
-    @Test func dualASRLanguageCatalogUsesProviderIntersection() {
-        let ids = Set(ASRLanguageSelection.dualASRSupportedLanguages.map(\.id))
+    @Test func multiSourceLanguageCatalogUsesSourceUnion() {
+        let ids = Set(ASRLanguageSelection.supportedOptions(for: [.qwen, .nvidiaNemotron]).map(\.id))
         #expect(ids.contains("zh-CN"))
+        #expect(ids.contains("zh-TW"))
         #expect(ids.contains("en-US"))
         #expect(ids.contains("ja"))
         #expect(ids.contains("vi"))
-        #expect(!ids.contains("zh-TW"))
         #expect(!ids.contains("af"))
         #expect(
             ASRLanguageSelection.validatedIDs(
                 ["zh-TW", "zh-CN"],
-                provider: "qwen3-asr-llama+nvidia-nemotron-asr"
-            ) == ["zh-CN"]
+                sources: [.qwen, .nvidiaNemotron]
+            ) == ["zh-CN", "zh-TW"]
         )
     }
 }

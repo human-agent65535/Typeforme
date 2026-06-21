@@ -12,12 +12,15 @@ enum AppSettings {
         // Recording
         static let maxRecordingDuration = "recording.maxDuration"   // seconds
         static let holdModifier         = "recording.holdModifier"  // HoldModifier raw
-        static let voiceLivePreview     = "recording.voiceLivePreview" // Bool — show Apple Speech preview while recording
+        static let voiceLivePreview     = "recording.voiceLivePreview" // Bool — show live transcript preview while recording
+        static let voiceLivePreviewSource = "recording.voiceLivePreviewSource"
         static let soundFeedback        = "recording.soundFeedback" // Bool — start/stop/error cues
         static let launchAtLogin        = "app.launchAtLogin"
 
         // ASR
-        static let asrProvider          = "asr.provider"            // "qwen3-asr-llama" | "nvidia-nemotron-asr" | "qwen3-asr-llama+nvidia-nemotron-asr"
+        static let asrQwenEnabled      = "asr.qwen3.enabled"
+        static let asrNvidiaNemotronEnabled = "asr.nvidia.nemotron.enabled"
+        static let asrAppleSpeechEnabled = "asr.appleSpeech.enabled"
         static let asrLanguageIDs       = "asr.languages"           // comma-separated ASRLanguageOption ids
         static let asrNvidiaNemotronTimeoutSec = "asr.nvidia.nemotron.timeoutSec"
         static let asrNvidiaNemotronModelID = "asr.nvidia.nemotron.modelID"
@@ -108,10 +111,13 @@ enum AppSettings {
             Keys.maxRecordingDuration: 30.0,
             Keys.holdModifier:         HoldModifier.rightOption.rawValue,
             Keys.voiceLivePreview:     true,
+            Keys.voiceLivePreviewSource: VoiceLivePreviewSource.appleSpeech.rawValue,
             Keys.soundFeedback:        true,
             Keys.launchAtLogin:        true,
 
-            Keys.asrProvider:       "qwen3-asr-llama",
+            Keys.asrQwenEnabled:    true,
+            Keys.asrNvidiaNemotronEnabled: false,
+            Keys.asrAppleSpeechEnabled: false,
             Keys.asrLanguageIDs:    ASRLanguageSelection.defaultRawValue,
             Keys.asrNvidiaNemotronTimeoutSec: 300,
             Keys.asrNvidiaNemotronModelID: NvidiaNemotronASRModelCatalog.defaultID,
@@ -178,15 +184,12 @@ enum AppSettings {
         }
         UserDefaults.standard.register(defaults: registeredDefaults)
 
-        if let raw = UserDefaults.standard.string(forKey: Keys.asrProvider),
-           !["qwen3-asr-llama", "nvidia-nemotron-asr", "qwen3-asr-llama+nvidia-nemotron-asr"].contains(raw.lowercased()) {
-            UserDefaults.standard.set("qwen3-asr-llama", forKey: Keys.asrProvider)
-        }
         repairInvalidRawSetting(forKey: Keys.correctionBackend, default: CorrectionBackendKind.qwen35_2B)
         repairInvalidRawSetting(forKey: Keys.correctionMode, default: CorrectionMode.polish)
         repairInvalidRawSetting(forKey: Keys.numberOutputPreference, default: NumberOutputPreference.automatic)
         repairInvalidRawSetting(forKey: Keys.punctuationPreference, default: PunctuationOutputPreference.normal)
         repairInvalidRawSetting(forKey: Keys.processingMode, default: ProcessingMode.client)
+        repairInvalidRawSetting(forKey: Keys.voiceLivePreviewSource, default: VoiceLivePreviewSource.appleSpeech)
         _ = ensureBridgeAuthToken()
     }
 
@@ -229,7 +232,9 @@ enum AppSettings {
     }
 
     static let serverScopedSettingKeys: [String] = [
-        Keys.asrProvider,
+        Keys.asrQwenEnabled,
+        Keys.asrNvidiaNemotronEnabled,
+        Keys.asrAppleSpeechEnabled,
         Keys.asrLanguageIDs,
         Keys.asrNvidiaNemotronTimeoutSec,
         Keys.asrNvidiaNemotronModelID,
@@ -286,32 +291,40 @@ enum AppSettings {
     static var maxRecordingDuration: TimeInterval     { ud.double(forKey: Keys.maxRecordingDuration) }
     static var launchAtLogin: Bool                    { ud.bool(forKey: Keys.launchAtLogin) }
     static var soundFeedback: Bool                    { ud.bool(forKey: Keys.soundFeedback) }
-    /// When `true`, the recorder feeds PCM into Apple Speech on-device so the
-    /// HUD can show a live transcript while the user is still speaking. The
-    /// final text always comes from the Mac ASR + correction pipeline; the
-    /// Apple Speech preview is also sent as `alternate_transcript` to the
-    /// corrector so it can act as a supplementary hypothesis (see prompt
-    /// design — neutral framing, never attributed by source name).
+    /// When `true`, the recorder feeds PCM into the selected live-preview
+    /// source so the HUD can show a transcript while the user is still
+    /// speaking. The final text always comes from the Mac ASR + correction
+    /// pipeline; the preview is also sent as a supplementary hypothesis using
+    /// neutral framing, never attributed by source name.
     static var voiceLivePreview: Bool {
         ud.bool(forKey: Keys.voiceLivePreview)
+    }
+    static var voiceLivePreviewSource: VoiceLivePreviewSource {
+        guard voiceLivePreview else { return .off }
+        return rawSetting(forKey: Keys.voiceLivePreviewSource, default: .appleSpeech)
     }
     static var holdModifier: HoldModifier {
         rawSetting(forKey: Keys.holdModifier, default: .rightOption)
     }
 
-    static var asrProvider: String {
-        let raw = ud.string(forKey: Keys.asrProvider)?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard raw == "qwen3-asr-llama"
-            || raw == "nvidia-nemotron-asr"
-            || raw == "qwen3-asr-llama+nvidia-nemotron-asr" else {
-            return "qwen3-asr-llama"
+    static var enabledRecognitionSources: [RecognitionSource] {
+        var sources: [RecognitionSource] = []
+        if ud.bool(forKey: Keys.asrQwenEnabled) {
+            sources.append(.qwen)
         }
-        return raw!
+        if ud.bool(forKey: Keys.asrNvidiaNemotronEnabled) {
+            sources.append(.nvidiaNemotron)
+        }
+        if ud.bool(forKey: Keys.asrAppleSpeechEnabled) {
+            sources.append(.appleSpeech)
+        }
+        return sources.isEmpty ? RecognitionSource.defaultEnabled : sources
     }
+
     static var asrLanguageIDs: [String] {
         ASRLanguageSelection.parse(
             ud.string(forKey: Keys.asrLanguageIDs) ?? ASRLanguageSelection.defaultRawValue,
-            provider: asrProvider
+            sources: enabledRecognitionSources
         )
     }
     static var asrLocale: String                      { ASRLanguageSelection.primaryLanguageID(for: asrLanguageIDs) }

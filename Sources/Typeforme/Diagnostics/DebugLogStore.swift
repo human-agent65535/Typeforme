@@ -114,7 +114,7 @@ private struct DebugLogTranscript: Codable, Sendable {
     var maxTokens: Int?
     var modelOutputs: [DebugLogTranscriptModelOutput]?
     /// Supplementary transcripts sent to the corrector alongside `text`.
-    /// This can include cross-check ASR output and Apple Speech preview text.
+    /// This can include additional recognition source output and live preview text.
     var alternateTranscripts: [String]?
 
     enum CodingKeys: String, CodingKey {
@@ -267,7 +267,7 @@ private struct DebugLogRecord: Codable, Sendable {
     var source: String
     var audioFile: String?
     var audioCopyError: String?
-    var asrProvider: String
+    var recognitionSources: [String]
     var asrModel: String
     var asrMaxTokens: Int?
     var correctionBackend: String
@@ -285,7 +285,7 @@ private struct DebugLogRecord: Codable, Sendable {
         case source
         case audioFile = "audio_file"
         case audioCopyError = "audio_copy_error"
-        case asrProvider = "asr_provider"
+        case recognitionSources = "recognition_sources"
         case asrModel = "asr_model"
         case asrMaxTokens = "asr_max_tokens"
         case correctionBackend = "correction_backend"
@@ -361,7 +361,7 @@ enum DebugLogStore {
                 source: source,
                 audioFile: nil,
                 audioCopyError: nil,
-                asrProvider: AppSettings.asrProvider,
+                recognitionSources: AppSettings.enabledRecognitionSources.map(\.rawValue),
                 asrModel: activeASRModelDescription(),
                 asrMaxTokens: activeASRMaxTokens(),
                 correctionBackend: AppSettings.correctionBackend.rawValue,
@@ -408,7 +408,7 @@ enum DebugLogStore {
             text: text,
             error: error,
             latencyMs: latencyMs,
-            provider: AppSettings.asrProvider,
+            provider: activeRecognitionSourceDescription(),
             model: activeASRModelDescription(),
             maxTokens: activeASRMaxTokens(),
             modelOutputs: cleanedModelOutputs.isEmpty ? nil : cleanedModelOutputs,
@@ -600,25 +600,25 @@ enum DebugLogStore {
     }
 
     private static func activeASRModelDescription() -> String {
-        switch AppSettings.asrProvider.lowercased() {
-        case "qwen3-asr-llama":
-            return AppSettings.asrQwenLlamaModelID
-        case "nvidia-nemotron-asr":
-            return AppSettings.asrNvidiaNemotronModelID
-        case "qwen3-asr-llama+nvidia-nemotron-asr":
-            return "qwen:\(AppSettings.asrQwenLlamaModelID), nemotron:\(AppSettings.asrNvidiaNemotronModelID)"
-        default:
-            return AppSettings.asrQwenLlamaModelID
+        AppSettings.enabledRecognitionSources.map { source in
+            switch source {
+            case .qwen:
+                return "qwen:\(AppSettings.asrQwenLlamaModelID)"
+            case .nvidiaNemotron:
+                return "nemotron:\(AppSettings.asrNvidiaNemotronModelID)"
+            case .appleSpeech:
+                return "apple-speech:on-device"
+            }
         }
+        .joined(separator: ", ")
     }
 
     private static func activeASRMaxTokens() -> Int? {
-        switch AppSettings.asrProvider.lowercased() {
-        case "qwen3-asr-llama", "qwen3-asr-llama+nvidia-nemotron-asr":
-            return AppSettings.asrQwenLlamaMaxTokens
-        default:
-            return nil
-        }
+        AppSettings.enabledRecognitionSources.contains(.qwen) ? AppSettings.asrQwenLlamaMaxTokens : nil
+    }
+
+    private static func activeRecognitionSourceDescription() -> String {
+        AppSettings.enabledRecognitionSources.map(\.rawValue).joined(separator: ",")
     }
 
     private static func activeCorrectionModelDescription() -> String {

@@ -34,6 +34,7 @@
 		A10000000000000000000042 /* BridgeService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000042 /* BridgeService.swift */; };
 		A10000000000000000000043 /* KeyboardCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000043 /* KeyboardCoordinator.swift */; };
 		A10000000000000000000044 /* ReturnTracker.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000044 /* ReturnTracker.swift */; };
+		A10000000000000000000051 /* BridgeLivePreviewStreamer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000051 /* BridgeLivePreviewStreamer.swift */; };
 		A10000000000000000000099 /* StandbyKeeper.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000099 /* StandbyKeeper.swift */; };
 		B10000000000000000000001 /* KeyboardViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000001 /* KeyboardViewController.swift */; };
 		B10000000000000000000002 /* TypeformeKeyboard.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = B20000000000000000000003 /* TypeformeKeyboard.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
@@ -104,6 +105,7 @@
 		A20000000000000000000043 /* KeyboardCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardCoordinator.swift; sourceTree = "<group>"; };
 		A20000000000000000000044 /* ReturnTracker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReturnTracker.swift; sourceTree = "<group>"; };
 		A20000000000000000000045 /* TypeformeIOS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = TypeformeIOS.entitlements; sourceTree = "<group>"; };
+		A20000000000000000000051 /* BridgeLivePreviewStreamer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BridgeLivePreviewStreamer.swift; sourceTree = "<group>"; };
 		A20000000000000000000099 /* StandbyKeeper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StandbyKeeper.swift; sourceTree = "<group>"; };
 		B20000000000000000000001 /* KeyboardViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardViewController.swift; sourceTree = "<group>"; };
 		B20000000000000000000002 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
@@ -170,6 +172,7 @@
 				A20000000000000000000004 /* PairingStore.swift */,
 				A20000000000000000000042 /* BridgeService.swift */,
 				A20000000000000000000005 /* BridgeClient.swift */,
+				A20000000000000000000051 /* BridgeLivePreviewStreamer.swift */,
 				A20000000000000000000007 /* BridgeClientIdentity.swift */,
 				A20000000000000000000006 /* BridgeRouteResolver.swift */,
 				A20000000000000000000012 /* ../Sources/Typeforme/Bridge/BridgeMultipart.swift */,
@@ -412,6 +415,7 @@
 				A10000000000000000000042 /* BridgeService.swift in Sources */,
 				A10000000000000000000043 /* KeyboardCoordinator.swift in Sources */,
 				A10000000000000000000044 /* ReturnTracker.swift in Sources */,
+				A10000000000000000000051 /* BridgeLivePreviewStreamer.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -588,7 +592,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = TypeformeIOS/TypeformeIOS.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 388;
+				CURRENT_PROJECT_VERSION = 390;
 				DEVELOPMENT_ASSET_PATHS = "";
 				DEVELOPMENT_TEAM = MXAR756PC4;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -598,7 +602,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.1.379;
+				MARKETING_VERSION = 0.1.381;
 				PRODUCT_BUNDLE_IDENTIFIER = "$(TYPEFORME_HOST_BUNDLE_IDENTIFIER)";
 				PRODUCT_NAME = Typeforme;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
@@ -618,7 +622,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = TypeformeIOS/TypeformeIOS.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 388;
+				CURRENT_PROJECT_VERSION = 390;
 				DEVELOPMENT_ASSET_PATHS = "";
 				DEVELOPMENT_TEAM = MXAR756PC4;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -628,7 +632,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.1.379;
+				MARKETING_VERSION = 0.1.381;
 				PRODUCT_BUNDLE_IDENTIFIER = "$(TYPEFORME_HOST_BUNDLE_IDENTIFIER)";
 				PRODUCT_NAME = Typeforme;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
@@ -647,7 +651,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = TypeformeKeyboard/TypeformeKeyboard.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 388;
+				CURRENT_PROJECT_VERSION = 390;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = TypeformeKeyboard/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
@@ -656,7 +660,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 0.1.379;
+				MARKETING_VERSION = 0.1.381;
 				PRODUCT_BUNDLE_IDENTIFIER = "$(TYPEFORME_KEYBOARD_BUNDLE_IDENTIFIER)";
 				PRODUCT_NAME = TypeformeKeyboard;
 				SKIP_INSTALL = YES;
@@ -676,7 +680,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = TypeformeKeyboard/TypeformeKeyboard.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 388;
+				CURRENT_PROJECT_VERSION = 390;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = TypeformeKeyboard/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
@@ -685,7 +689,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 0.1.379;
+				MARKETING_VERSION = 0.1.381;
 				PRODUCT_BUNDLE_IDENTIFIER = "$(TYPEFORME_KEYBOARD_BUNDLE_IDENTIFIER)";
 				PRODUCT_NAME = TypeformeKeyboard;
 				SKIP_INSTALL = YES;

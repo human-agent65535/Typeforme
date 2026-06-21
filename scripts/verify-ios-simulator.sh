@@ -46,12 +46,12 @@ display_path() {
 }
 
 sanitize_output() {
-    sed \
+    sed -E \
         -e "s|$ROOT|<repo>|g" \
         -e "s|$HOME|<home>|g" \
-        -E 's/group\.[A-Za-z0-9][A-Za-z0-9.-]*\.typeforme/<typeforme-app-group>/g' \
-        -E 's/[A-Za-z0-9][A-Za-z0-9.-]*\.typeforme(\.keyboard)?/<typeforme-bundle-id>/g' \
-        -E 's/[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}/<uuid>/g'
+        -e 's/group\.[A-Za-z0-9][A-Za-z0-9.-]*\.typeforme/<typeforme-app-group>/g' \
+        -e 's/[A-Za-z0-9][A-Za-z0-9.-]*\.typeforme(\.keyboard)?/<typeforme-bundle-id>/g' \
+        -e 's/[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}/<uuid>/g'
 }
 
 SIMCTL_LIST_JSON="$(mktemp -t typeforme-simulators)"

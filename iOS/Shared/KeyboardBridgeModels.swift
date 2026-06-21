@@ -806,10 +806,10 @@ struct KeyboardBridgeStatus: Codable, Equatable {
     /// `AudioRecorder` and surfaced on every `/status` poll. `nil` when the
     /// host can't sample (e.g. before recording starts).
     let audioLevel: Float?
-    /// Live partial transcript from Apple Speech recognition, fed continuously
-    /// while recording. The keyboard renders this as the user speaks; the Mac
-    /// final result later replaces it. `nil` / empty when no preview is
-    /// available (unsupported locale, denied permission, or not recording).
+    /// Live partial transcript from the host-selected preview source, fed
+    /// continuously while recording. The keyboard renders this as the user
+    /// speaks; the Mac final result later replaces it. `nil` / empty when no
+    /// preview is available.
     let livePartialTranscript: String?
     /// Host's last-known Mac bridge reachability — `true` if the last route
     /// probe found a usable bridge URL (local LAN or Cloudflare), `false` if

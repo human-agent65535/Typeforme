@@ -455,21 +455,24 @@ struct ClientServerSettingsView: View {
                     Text("Server sections edit a draft — nothing changes on the server until you press Save to Server below.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
-                    Picker("ASR Engine", selection: asrProviderBinding) {
-                        ForEach(asrProviderOptions(for: current)) { option in
-                            Text(option.displayName).tag(option.id)
+                    ForEach(current.recognitionSourceOptions) { option in
+                        if let source = RecognitionSource(rawValue: option.id) {
+                            Toggle(isOn: serverRecognitionSourceBinding(source)) {
+                                Text(option.displayName)
+                            }
+                            .toggleStyle(.switch)
                         }
                     }
-                    .pickerStyle(.menu)
 
-                    if BridgeSettingsPayload.providerUsesQwen(current.asrProvider),
-                       !current.asrModelOptions(for: current.asrProvider).isEmpty {
-                        Picker("Model", selection: asrModelBinding) {
-                            ForEach(current.asrModelOptions(for: current.asrProvider)) { option in
-                                Text(option.displayName).tag(option.id)
+                    ForEach(current.enabledSources.filter(\.hasModelConfiguration)) { source in
+                        if !current.asrModelOptions(for: source.rawValue).isEmpty {
+                            Picker("\(source.displayName) model", selection: serverASRModelBinding(source)) {
+                                ForEach(current.asrModelOptions(for: source.rawValue)) { option in
+                                    Text(option.displayName).tag(option.id)
+                                }
                             }
+                            .pickerStyle(.menu)
                         }
-                        .pickerStyle(.menu)
                     }
 
                     Text(selectedLanguageSummary)
@@ -573,25 +576,6 @@ struct ClientServerSettingsView: View {
         }
     }
 
-    private var asrProviderBinding: Binding<String> {
-        Binding {
-            draft?.asrProvider ?? "qwen3-asr-llama"
-        } set: { value in
-            draft?.asrProvider = value
-            normalizeDraft()
-        }
-    }
-
-    private var asrModelBinding: Binding<String> {
-        Binding {
-            guard let draft else { return "" }
-            return draft.asrModelID ?? draft.asrModelOptions(for: draft.asrProvider).first?.id ?? ""
-        } set: { value in
-            draft?.asrModelID = value
-            normalizeDraft()
-        }
-    }
-
     private var correctionBackendBinding: Binding<String> {
         Binding {
             draft?.correctionBackend ?? ""
@@ -642,7 +626,7 @@ struct ClientServerSettingsView: View {
 
     private var serverSupportedLanguageOptions: [ASRLanguageOption] {
         guard let draft else { return ASRLanguageSelection.all }
-        return draft.supportedLanguageOptions(for: draft.asrProvider)
+        return draft.supportedLanguageOptionsForEnabledSources()
     }
 
     private var clientSupportedLanguageOptions: [ASRLanguageOption] {
@@ -713,12 +697,6 @@ struct ClientServerSettingsView: View {
         clientConfig.cloudBridgeURL.isEmpty ? "Not configured" : clientConfig.cloudBridgeURL
     }
 
-    private func asrProviderOptions(for current: BridgeSettingsPayload) -> [BridgeSettingOption] {
-        current.asrProviderOptions.isEmpty
-            ? [BridgeSettingOption(id: current.asrProvider, displayName: current.asrProvider)]
-            : current.asrProviderOptions
-    }
-
     private func correctionBackendOptions(for current: BridgeSettingsPayload) -> [BridgeSettingOption] {
         current.correctionBackendOptions.isEmpty
             ? [BridgeSettingOption(id: current.correctionBackend, displayName: current.correctionBackend)]
@@ -739,9 +717,15 @@ struct ClientServerSettingsView: View {
             get: { selectedServerLanguageIDs.contains(option.id) },
             set: { setServerLanguage(option, enabled: $0) }
         )) {
-            Text(option.displayName)
-                .lineLimit(1)
-                .truncationMode(.tail)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(option.displayName)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Text(serverSourceCoverageText(for: option))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
         }
         .toggleStyle(.checkbox)
         .disabled(selectedServerLanguageIDs.contains(option.id) && selectedServerLanguageIDs.count == 1)
@@ -798,6 +782,33 @@ struct ClientServerSettingsView: View {
         guard var current = draft else { return }
         current.normalize()
         draft = current
+    }
+
+    private func serverRecognitionSourceBinding(_ source: RecognitionSource) -> Binding<Bool> {
+        Binding {
+            draft?.isRecognitionSourceEnabled(source) ?? false
+        } set: { enabled in
+            draft?.setRecognitionSource(source, enabled: enabled)
+            normalizeDraft()
+        }
+    }
+
+    private func serverASRModelBinding(_ source: RecognitionSource) -> Binding<String> {
+        Binding {
+            guard let draft else { return "" }
+            return draft.asrModelID(for: source.rawValue)
+        } set: { value in
+            draft?.asrModelIDsByRecognitionSource[source.rawValue] = value
+            normalizeDraft()
+        }
+    }
+
+    private func serverSourceCoverageText(for option: ASRLanguageOption) -> String {
+        guard let draft else { return "" }
+        let names = draft.enabledSources
+            .filter { draft.supportedLanguageOptions(for: $0.rawValue).contains(where: { $0.id == option.id }) }
+            .map(\.displayName)
+        return names.isEmpty ? "No enabled source" : names.joined(separator: ", ")
     }
 
     @MainActor
@@ -999,6 +1010,10 @@ struct DictationInputSettingsView: View {
     @AppStorage(AppSettings.Keys.maxRecordingDuration) private var maxDuration: Double = 30
     @AppStorage(AppSettings.Keys.holdModifier)         private var holdModifierRaw: String = HoldModifier.rightOption.rawValue
     @AppStorage(AppSettings.Keys.voiceLivePreview)     private var voiceLivePreview: Bool = true
+    @AppStorage(AppSettings.Keys.voiceLivePreviewSource) private var voiceLivePreviewSourceRaw: String = VoiceLivePreviewSource.appleSpeech.rawValue
+    @AppStorage(AppSettings.Keys.asrQwenEnabled)       private var qwenEnabled: Bool = true
+    @AppStorage(AppSettings.Keys.asrNvidiaNemotronEnabled) private var nvidiaEnabled: Bool = false
+    @AppStorage(AppSettings.Keys.asrAppleSpeechEnabled) private var appleSpeechEnabled: Bool = false
     @AppStorage(AppSettings.Keys.soundFeedback)        private var soundFeedback: Bool = true
 
     var body: some View {
@@ -1010,8 +1025,13 @@ struct DictationInputSettingsView: View {
                     .foregroundStyle(.secondary)
             }
             Section("Live Transcript") {
-                Toggle("Show live transcript while speaking", isOn: $voiceLivePreview)
-                Text("Uses Apple's on-device speech recognizer in parallel with recording to render a live transcript in the HUD. The final inserted text always comes from your selected ASR + correction pipeline; the preview also goes to the corrector as a supplementary hypothesis to help disambiguate. On-device only — audio does not leave your Mac. iOS can use Cloud Fallback for unsupported languages; macOS preview stays local-only.")
+                Picker("Preview", selection: previewSourceBinding) {
+                    ForEach(previewSourceOptions) { source in
+                        Text(source.displayName).tag(source.rawValue)
+                    }
+                }
+                .pickerStyle(.menu)
+                Text(selectedPreviewSource.detail)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
@@ -1065,10 +1085,61 @@ struct DictationInputSettingsView: View {
             }
         }
         .formStyle(.grouped)
+        .onAppear(perform: constrainPreviewSourceToCurrentSources)
+        .onChange(of: qwenEnabled) { _, _ in
+            constrainPreviewSourceToCurrentSources()
+        }
+        .onChange(of: nvidiaEnabled) { _, _ in
+            constrainPreviewSourceToCurrentSources()
+        }
+        .onChange(of: appleSpeechEnabled) { _, _ in
+            constrainPreviewSourceToCurrentSources()
+        }
     }
 
     private var selectedHoldModifier: HoldModifier {
         HoldModifier(rawValue: holdModifierRaw) ?? .rightOption
+    }
+
+    private var previewSourceOptions: [VoiceLivePreviewSource] {
+        VoiceLivePreviewSource.options(forRecognitionSources: enabledRecognitionSources)
+    }
+
+    private var selectedPreviewSource: VoiceLivePreviewSource {
+        guard voiceLivePreview else { return .off }
+        let source = VoiceLivePreviewSource(rawValue: voiceLivePreviewSourceRaw) ?? .appleSpeech
+        return previewSourceOptions.contains(source) ? source : .off
+    }
+
+    private var previewSourceBinding: Binding<String> {
+        Binding(
+            get: { selectedPreviewSource.rawValue },
+            set: { rawValue in
+                let source = VoiceLivePreviewSource(rawValue: rawValue) ?? .off
+                if source == .off {
+                    voiceLivePreview = false
+                    voiceLivePreviewSourceRaw = VoiceLivePreviewSource.off.rawValue
+                } else {
+                    voiceLivePreview = true
+                    voiceLivePreviewSourceRaw = source.rawValue
+                }
+            }
+        )
+    }
+
+    private func constrainPreviewSourceToCurrentSources() {
+        let source = VoiceLivePreviewSource(rawValue: voiceLivePreviewSourceRaw) ?? .appleSpeech
+        guard voiceLivePreview, !previewSourceOptions.contains(source) else { return }
+        voiceLivePreview = false
+        voiceLivePreviewSourceRaw = VoiceLivePreviewSource.off.rawValue
+    }
+
+    private var enabledRecognitionSources: [RecognitionSource] {
+        var sources: [RecognitionSource] = []
+        if qwenEnabled { sources.append(.qwen) }
+        if nvidiaEnabled { sources.append(.nvidiaNemotron) }
+        if appleSpeechEnabled { sources.append(.appleSpeech) }
+        return sources
     }
 }
 
@@ -1164,7 +1235,9 @@ private struct HoldModifierRecorder: View {
 // MARK: - ASR
 
 struct ASRSettingsView: View {
-    @AppStorage(AppSettings.Keys.asrProvider)        private var provider: String = "qwen3-asr-llama"
+    @AppStorage(AppSettings.Keys.asrQwenEnabled)     private var qwenEnabled: Bool = true
+    @AppStorage(AppSettings.Keys.asrNvidiaNemotronEnabled) private var nvidiaEnabled: Bool = false
+    @AppStorage(AppSettings.Keys.asrAppleSpeechEnabled) private var appleSpeechEnabled: Bool = false
     @AppStorage(AppSettings.Keys.asrLanguageIDs)     private var languageIDsRaw: String = ASRLanguageSelection.defaultRawValue
     @AppStorage(AppSettings.Keys.asrNvidiaNemotronTimeoutSec) private var nvidiaTimeoutSec: Double = 300
     @AppStorage(AppSettings.Keys.asrNvidiaNemotronModelID) private var nvidiaModelID: String = NvidiaNemotronASRModelCatalog.defaultID
@@ -1176,15 +1249,48 @@ struct ASRSettingsView: View {
 
     var body: some View {
         Form {
-            Section("Engine") {
-                Picker("Provider", selection: $provider) {
-                    Text("Qwen3-ASR (default)").tag("qwen3-asr-llama")
-                    Text("NVIDIA Nemotron ASR").tag("nvidia-nemotron-asr")
-                    Text("Qwen + Nemotron Cross-check").tag("qwen3-asr-llama+nvidia-nemotron-asr")
+            Section("Recognition Sources") {
+                ForEach(RecognitionSource.allCases) { source in
+                    Toggle(isOn: sourceEnabledBinding(source)) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(source.displayName)
+                            Text(source.detail)
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .toggleStyle(.switch)
                 }
-                .pickerStyle(.menu)
 
-                if isNvidiaProvider {
+                Text("Enabled sources run independently. Each source contributes a transcript when it supports at least one selected language.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+
+                TimelineView(.periodic(from: .now, by: 2)) { _ in
+                    if !selectedEnginesInstalled {
+                        Label("One or more enabled local ASR models are not installed — download them below before dictating.", systemImage: "exclamationmark.triangle.fill")
+                            .font(.footnote)
+                            .foregroundStyle(.orange)
+                    }
+                }
+            }
+
+            if qwenEnabled {
+                Section("Qwen3-ASR") {
+                    Picker("Model", selection: $qwenModelID) {
+                        ForEach(QwenASRModelCatalog.all) { spec in
+                            Text(spec.label).tag(spec.id)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    Text(selectedQwenModel.note)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            if nvidiaEnabled {
+                Section("NVIDIA Nemotron") {
                     Picker("Model", selection: $nvidiaModelID) {
                         ForEach(NvidiaNemotronASRModelCatalog.all) { spec in
                             Text(spec.label).tag(spec.id)
@@ -1195,36 +1301,8 @@ struct ASRSettingsView: View {
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
-
-                if usesQwenProvider {
-                    Picker(isDualProvider ? "Qwen model" : "Model", selection: $qwenModelID) {
-                        ForEach(QwenASRModelCatalog.all) { spec in
-                            Text(spec.label).tag(spec.id)
-                        }
-                    }
-                    .pickerStyle(.menu)
-                    Text(selectedQwenModel.note)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-
-                if isDualProvider {
-                    Text("Runs Qwen and Nemotron in parallel. If the cross-check transcript is unavailable, Typeforme continues with the primary transcript and shows a warning.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-
-                // Re-check every couple of seconds while the page is open so
-                // the warning clears as soon as the download below finishes —
-                // the download rows are separate views and can't poke us.
-                TimelineView(.periodic(from: .now, by: 2)) { _ in
-                    if !selectedEngineInstalled {
-                        Label("Selected model is not installed — download it below before dictating.", systemImage: "exclamationmark.triangle.fill")
-                            .font(.footnote)
-                            .foregroundStyle(.orange)
-                    }
-                }
             }
+
             Section("Languages") {
                 Text(selectedLanguageSummary)
                     .font(.footnote)
@@ -1262,13 +1340,13 @@ struct ASRSettingsView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
-            if usesQwenProvider {
+            if qwenEnabled {
                 Section("Qwen3-ASR model") {
                     QwenASRModelRow(spec: selectedQwenModel)
                         .id(selectedQwenModel.id)
                 }
             }
-            if usesNvidiaProvider {
+            if nvidiaEnabled {
                 Section("NVIDIA Nemotron model") {
                     NvidiaNemotronASRModelRow(spec: selectedNvidiaModel)
                         .id(selectedNvidiaModel.id)
@@ -1294,36 +1372,16 @@ struct ASRSettingsView: View {
                 .buttonStyle(.plain)
 
                 if showAdvanced {
-                    if isNvidiaProvider {
+                    if qwenEnabled {
                         IntegerSettingField(
-                            title: "Timeout",
+                            title: "Qwen timeout",
                             value: Binding(
-                                get: { Int(nvidiaTimeoutSec) },
-                                set: { nvidiaTimeoutSec = Double($0) }
+                                get: { Int(qwenTimeoutSec) },
+                                set: { qwenTimeoutSec = Double($0) }
                             ),
                             range: 10...300,
                             suffix: "s"
                         )
-                    }
-                    if usesQwenProvider {
-                        if isDualProvider {
-                            IntegerSettingField(
-                                title: "Timeout",
-                                value: crossCheckTimeoutBinding,
-                                range: 10...300,
-                                suffix: "s"
-                            )
-                        } else {
-                            IntegerSettingField(
-                                title: "Timeout",
-                                value: Binding(
-                                    get: { Int(qwenTimeoutSec) },
-                                    set: { qwenTimeoutSec = Double($0) }
-                                ),
-                                range: 10...300,
-                                suffix: "s"
-                            )
-                        }
                         IntegerSettingField(
                             title: "Max transcript tokens",
                             value: $qwenMaxTokens,
@@ -1334,16 +1392,35 @@ struct ASRSettingsView: View {
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
+                    if nvidiaEnabled {
+                        IntegerSettingField(
+                            title: "Nemotron timeout",
+                            value: Binding(
+                                get: { Int(nvidiaTimeoutSec) },
+                                set: { nvidiaTimeoutSec = Double($0) }
+                            ),
+                            range: 10...300,
+                            suffix: "s"
+                        )
+                    }
                 }
             }
         }
         .formStyle(.grouped)
         .onAppear {
-            normalizeProvider()
+            normalizeSources()
             clampLanguageSelection()
         }
-        .onChange(of: provider) { _, _ in
-            normalizeProvider()
+        .onChange(of: qwenEnabled) { _, _ in
+            normalizeSources()
+            clampLanguageSelection()
+        }
+        .onChange(of: nvidiaEnabled) { _, _ in
+            normalizeSources()
+            clampLanguageSelection()
+        }
+        .onChange(of: appleSpeechEnabled) { _, _ in
+            normalizeSources()
             clampLanguageSelection()
         }
         .onChange(of: qwenModelID) { _, _ in
@@ -1351,31 +1428,12 @@ struct ASRSettingsView: View {
         }
     }
 
-    private var isNvidiaProvider: Bool {
-        provider.lowercased() == "nvidia-nemotron-asr"
-    }
-
-    private var isDualProvider: Bool {
-        provider.lowercased() == "qwen3-asr-llama+nvidia-nemotron-asr"
-    }
-
-    private var usesQwenProvider: Bool {
-        provider.lowercased() == "qwen3-asr-llama"
-            || provider.lowercased() == "qwen3-asr-llama+nvidia-nemotron-asr"
-    }
-
-    private var usesNvidiaProvider: Bool {
-        isNvidiaProvider || isDualProvider
-    }
-
-    private var crossCheckTimeoutBinding: Binding<Int> {
-        Binding(
-            get: { Int(max(qwenTimeoutSec, nvidiaTimeoutSec)) },
-            set: {
-                qwenTimeoutSec = Double($0)
-                nvidiaTimeoutSec = Double($0)
-            }
-        )
+    private var selectedSources: [RecognitionSource] {
+        var sources: [RecognitionSource] = []
+        if qwenEnabled { sources.append(.qwen) }
+        if nvidiaEnabled { sources.append(.nvidiaNemotron) }
+        if appleSpeechEnabled { sources.append(.appleSpeech) }
+        return sources.isEmpty ? RecognitionSource.defaultEnabled : sources
     }
 
     private var selectedLanguageIDs: [String] {
@@ -1392,9 +1450,9 @@ struct ASRSettingsView: View {
 
     /// Mirrors the install checks the download rows below use, so the Engine
     /// picker can warn about a missing model without scrolling.
-    private var selectedEngineInstalled: Bool {
-        if usesQwenProvider, !qwenModelInstalled { return false }
-        if usesNvidiaProvider, !nvidiaModelReady { return false }
+    private var selectedEnginesInstalled: Bool {
+        if qwenEnabled, !qwenModelInstalled { return false }
+        if nvidiaEnabled, !nvidiaModelReady { return false }
         return true
     }
 
@@ -1431,13 +1489,7 @@ struct ASRSettingsView: View {
     }
 
     private var languageHelpText: String {
-        if isDualProvider {
-            return "Cross-check supports only languages shared by Qwen and Nemotron. The checked languages constrain ASR selection, script normalization, and correction."
-        }
-        if isNvidiaProvider {
-            return "Nemotron uses a target language for one selected language and automatic language detection for multiple selected languages. The checked languages constrain script normalization and correction after ASR."
-        }
-        return "Qwen3-ASR through llama.cpp detects the language automatically across its supported languages. The checked languages constrain script normalization and correction after ASR."
+        "Each selected language must be covered by at least one enabled source. Unsupported languages are skipped only for sources that cannot handle them."
     }
 
     private var allOtherLanguages: [ASRLanguageOption] {
@@ -1445,11 +1497,11 @@ struct ASRSettingsView: View {
     }
 
     private var supportedLanguageOptions: [ASRLanguageOption] {
-        ASRLanguageSelection.supportedOptions(forProvider: provider)
+        ASRLanguageSelection.supportedOptions(for: selectedSources)
     }
 
     private var commonLanguageOptions: [ASRLanguageOption] {
-        ASRLanguageSelection.commonOptions(forProvider: provider)
+        ASRLanguageSelection.commonOptions(for: selectedSources)
     }
 
     private var languageColumns: [GridItem] {
@@ -1472,9 +1524,15 @@ struct ASRSettingsView: View {
             get: { selectedLanguageIDs.contains(option.id) },
             set: { setLanguage(option, enabled: $0) }
         )) {
-            Text(option.displayName)
-                .lineLimit(1)
-                .truncationMode(.tail)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(option.displayName)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Text(sourceCoverageText(for: option))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
         }
         .toggleStyle(.checkbox)
         .disabled(selected && selectedLanguageIDs.count == 1)
@@ -1491,8 +1549,10 @@ struct ASRSettingsView: View {
         languageIDsRaw = ASRLanguageSelection.rawValue(for: ordered, supportedOptions: supportedLanguageOptions)
     }
 
-    private func normalizeProvider() {
-        let value = provider.lowercased()
+    private func normalizeSources() {
+        if !qwenEnabled && !nvidiaEnabled && !appleSpeechEnabled {
+            qwenEnabled = true
+        }
         let normalizedQwenModelID = QwenASRModelCatalog.spec(for: qwenModelID).id
         if qwenModelID != normalizedQwenModelID {
             qwenModelID = normalizedQwenModelID
@@ -1500,11 +1560,6 @@ struct ASRSettingsView: View {
         let normalizedNvidiaModelID = NvidiaNemotronASRModelCatalog.spec(for: nvidiaModelID).id
         if nvidiaModelID != normalizedNvidiaModelID {
             nvidiaModelID = normalizedNvidiaModelID
-        }
-        if value != "qwen3-asr-llama"
-            && value != "nvidia-nemotron-asr"
-            && value != "qwen3-asr-llama+nvidia-nemotron-asr" {
-            provider = "qwen3-asr-llama"
         }
     }
 
@@ -1516,6 +1571,39 @@ struct ASRSettingsView: View {
         if languageIDsRaw != normalized {
             languageIDsRaw = normalized
         }
+    }
+
+    private func sourceEnabledBinding(_ source: RecognitionSource) -> Binding<Bool> {
+        Binding(
+            get: {
+                switch source {
+                case .qwen:
+                    return qwenEnabled
+                case .nvidiaNemotron:
+                    return nvidiaEnabled
+                case .appleSpeech:
+                    return appleSpeechEnabled
+                }
+            },
+            set: { enabled in
+                switch source {
+                case .qwen:
+                    qwenEnabled = enabled
+                case .nvidiaNemotron:
+                    nvidiaEnabled = enabled
+                case .appleSpeech:
+                    appleSpeechEnabled = enabled
+                }
+                normalizeSources()
+            }
+        )
+    }
+
+    private func sourceCoverageText(for option: ASRLanguageOption) -> String {
+        let names = selectedSources
+            .filter { ASRLanguageSelection.effectiveIDs([option.id], for: $0).contains(option.id) }
+            .map(\.displayName)
+        return names.isEmpty ? "No enabled source" : names.joined(separator: ", ")
     }
 }
 

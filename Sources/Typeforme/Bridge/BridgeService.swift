@@ -34,6 +34,34 @@ private struct BridgeSession {
     let createdAt: Date
 }
 
+private final class BridgeLivePreviewSession {
+    let id: String
+    let clientJobID: String?
+    let provider: String
+    let languageIDs: [String]
+    let process: NvidiaNemotronLivePreviewSession
+    let createdAt: Date
+    var updatedAt: Date
+    var lastTranscript: String?
+
+    init(
+        id: String,
+        clientJobID: String?,
+        provider: String,
+        languageIDs: [String],
+        process: NvidiaNemotronLivePreviewSession,
+        createdAt: Date = Date()
+    ) {
+        self.id = id
+        self.clientJobID = clientJobID
+        self.provider = provider
+        self.languageIDs = languageIDs
+        self.process = process
+        self.createdAt = createdAt
+        self.updatedAt = createdAt
+    }
+}
+
 private struct BridgeCorrectionOutput {
     let result: CorrectionResult
     let status: String
@@ -45,9 +73,12 @@ final class BridgeService {
     private let dictionary: UserDictionaryStore
     private let textEditService: TextEditService
     private var sessions: [String: BridgeSession] = [:]
+    private var livePreviewSessions: [String: BridgeLivePreviewSession] = [:]
 
     private static let sessionTTL: TimeInterval = 15 * 60
     private static let maxSessions = 128
+    private static let livePreviewSessionTTL: TimeInterval = 3 * 60
+    private static let maxLivePreviewSessions = 8
 
     init(dictionary: UserDictionaryStore) {
         self.dictionary = dictionary
@@ -71,43 +102,58 @@ final class BridgeService {
     }
 
     func updateSettings(_ request: BridgeSettingsUpdateRequest) async throws -> BridgeSettingsPayload {
-        let oldASRProvider = BridgeSettingsPayload.normalizedASRProvider(AppSettings.asrProvider)
+        let oldSources = AppSettings.enabledRecognitionSources
         let oldQwenASRModelID = AppSettings.asrQwenLlamaModelID
-        let provider = try resolveASRProvider(request.asrProvider) ?? oldASRProvider
-        let supportedLanguages = ASRLanguageSelection.supportedOptions(forProvider: provider)
+        let sources = try resolveRecognitionSources(request.enabledRecognitionSources) ?? oldSources
+        let supportedLanguages = ASRLanguageSelection.supportedOptions(for: sources)
         let languageIDs = ASRLanguageSelection.validatedIDs(
             request.languageIDs ?? AppSettings.asrLanguageIDs,
             supportedOptions: supportedLanguages
         )
 
-        if request.asrProvider != nil {
-            UserDefaults.standard.set(provider, forKey: AppSettings.Keys.asrProvider)
+        if request.enabledRecognitionSources != nil {
+            UserDefaults.standard.set(sources.contains(.qwen), forKey: AppSettings.Keys.asrQwenEnabled)
+            UserDefaults.standard.set(sources.contains(.nvidiaNemotron), forKey: AppSettings.Keys.asrNvidiaNemotronEnabled)
+            UserDefaults.standard.set(sources.contains(.appleSpeech), forKey: AppSettings.Keys.asrAppleSpeechEnabled)
         }
-        if let rawModelID = request.asrModelID {
-            let modelID = try resolveASRModelID(rawModelID, provider: provider)
-            switch provider {
-            case "nvidia-nemotron-asr":
-                UserDefaults.standard.set(modelID, forKey: AppSettings.Keys.asrNvidiaNemotronModelID)
-            default:
-                UserDefaults.standard.set(modelID, forKey: AppSettings.Keys.asrQwenLlamaModelID)
+
+        if let modelIDs = request.asrModelIDsByRecognitionSource {
+            for (sourceID, rawModelID) in modelIDs {
+                guard let source = RecognitionSource(rawValue: sourceID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) else {
+                    throw BridgeServiceError.invalidRequest("Unknown recognition source: \(sourceID)")
+                }
+                let modelID = try resolveASRModelID(rawModelID, source: source)
+                switch source {
+                case .qwen:
+                    UserDefaults.standard.set(modelID, forKey: AppSettings.Keys.asrQwenLlamaModelID)
+                case .nvidiaNemotron:
+                    UserDefaults.standard.set(modelID, forKey: AppSettings.Keys.asrNvidiaNemotronModelID)
+                case .appleSpeech:
+                    break
+                }
             }
         }
-        if request.languageIDs != nil || request.asrProvider != nil {
+        if request.languageIDs != nil || request.enabledRecognitionSources != nil {
             UserDefaults.standard.set(
                 ASRLanguageSelection.rawValue(for: languageIDs, supportedOptions: supportedLanguages),
                 forKey: AppSettings.Keys.asrLanguageIDs
             )
         }
-        if let timeoutSec = request.asrTimeoutSec {
-            let clamped = BridgeSettingsPayload.clampedASRTimeoutSec(timeoutSec)
-            switch provider {
-            case "nvidia-nemotron-asr":
-                UserDefaults.standard.set(Double(clamped), forKey: AppSettings.Keys.asrNvidiaNemotronTimeoutSec)
-            case "qwen3-asr-llama+nvidia-nemotron-asr":
-                UserDefaults.standard.set(Double(clamped), forKey: AppSettings.Keys.asrQwenLlamaTimeoutSec)
-                UserDefaults.standard.set(Double(clamped), forKey: AppSettings.Keys.asrNvidiaNemotronTimeoutSec)
-            default:
-                UserDefaults.standard.set(Double(clamped), forKey: AppSettings.Keys.asrQwenLlamaTimeoutSec)
+
+        if let timeouts = request.asrTimeoutSecByRecognitionSource {
+            for (sourceID, timeoutSec) in timeouts {
+                guard let source = RecognitionSource(rawValue: sourceID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) else {
+                    throw BridgeServiceError.invalidRequest("Unknown recognition source: \(sourceID)")
+                }
+                let clamped = BridgeSettingsPayload.clampedASRTimeoutSec(timeoutSec)
+                switch source {
+                case .qwen:
+                    UserDefaults.standard.set(Double(clamped), forKey: AppSettings.Keys.asrQwenLlamaTimeoutSec)
+                case .nvidiaNemotron:
+                    UserDefaults.standard.set(Double(clamped), forKey: AppSettings.Keys.asrNvidiaNemotronTimeoutSec)
+                case .appleSpeech:
+                    break
+                }
             }
         }
 
@@ -164,10 +210,10 @@ final class BridgeService {
         }
 
         UserDefaults.standard.synchronize()
-        let newASRProvider = BridgeSettingsPayload.normalizedASRProvider(AppSettings.asrProvider)
+        let newSources = AppSettings.enabledRecognitionSources
         let newQwenASRModelID = AppSettings.asrQwenLlamaModelID
         Task { @MainActor in
-            if (oldASRProvider != newASRProvider && Self.providerUsesQwen(oldASRProvider))
+            if (oldSources.contains(.qwen) && !newSources.contains(.qwen))
                 || oldQwenASRModelID != newQwenASRModelID {
                 await ASRFactory.shared.stopQwenLlama()
             }
@@ -176,6 +222,73 @@ final class BridgeService {
             _ = await (asrPreload, correctionPreload)
         }
         return BridgeSettingsPayload.current(userDictionary: dictionary.sortedSnapshot())
+    }
+
+    func startLivePreview(_ request: BridgeLivePreviewStartRequest) async throws -> BridgeLivePreviewStartResponse {
+        pruneExpiredLivePreviewSessions()
+        guard AppSettings.enabledRecognitionSources.contains(.nvidiaNemotron) else {
+            throw BridgeServiceError.invalidRequest("NVIDIA Nemotron ASR is not enabled")
+        }
+        guard livePreviewSessions.count < Self.maxLivePreviewSessions else {
+            throw BridgeServiceError.invalidRequest("Too many active live preview sessions")
+        }
+
+        let id = UUID().uuidString
+        let languageIDs = resolveLanguageIDs(ids: request.languageIDs, mode: request.languageMode)
+        let process = try NvidiaNemotronLivePreviewSession.start(languageIDs: languageIDs) { [weak self] text in
+            Task { @MainActor [weak self] in
+                self?.recordLivePreviewTranscript(sessionID: id, text: text)
+            }
+        }
+        let createdAt = Date()
+        livePreviewSessions[id] = BridgeLivePreviewSession(
+            id: id,
+            clientJobID: BridgeClientJobID.normalized(request.clientJobID),
+            provider: "nvidia-nemotron-asr",
+            languageIDs: languageIDs,
+            process: process,
+            createdAt: createdAt
+        )
+        return BridgeLivePreviewStartResponse(
+            sessionID: id,
+            provider: "nvidia-nemotron-asr",
+            languageIDs: languageIDs,
+            startedAt: createdAt.timeIntervalSince1970
+        )
+    }
+
+    func appendLivePreviewAudio(
+        sessionID: String,
+        audioData: Data
+    ) async throws -> BridgeLivePreviewAudioAppendResponse {
+        pruneExpiredLivePreviewSessions()
+        guard !audioData.isEmpty, audioData.count % MemoryLayout<Float>.size == 0 else {
+            throw BridgeServiceError.invalidAudio
+        }
+        guard let session = livePreviewSessions[sessionID] else {
+            throw BridgeServiceError.missingSession
+        }
+        session.process.appendPCM16kMonoFloat32Data(audioData)
+        session.updatedAt = Date()
+        return BridgeLivePreviewAudioAppendResponse(
+            sessionID: session.id,
+            text: session.lastTranscript,
+            updatedAt: session.updatedAt.timeIntervalSince1970
+        )
+    }
+
+    func finishLivePreview(sessionID: String) async throws -> BridgeLivePreviewFinishResponse {
+        pruneExpiredLivePreviewSessions()
+        guard let session = livePreviewSessions.removeValue(forKey: sessionID) else {
+            throw BridgeServiceError.missingSession
+        }
+        session.process.finishInput()
+        let finishedAt = Date()
+        return BridgeLivePreviewFinishResponse(
+            sessionID: session.id,
+            text: session.lastTranscript,
+            finishedAt: finishedAt.timeIntervalSince1970
+        )
     }
 
     func dictate(_ request: BridgeDictateRequest) async throws -> BridgeDictateResponse {
@@ -799,7 +912,7 @@ final class BridgeService {
     }
 
     private func resolveLanguageIDs(ids: [String]?, mode: String?) -> [String] {
-        let supportedOptions = ASRLanguageSelection.supportedOptions(forProvider: AppSettings.asrProvider)
+        let supportedOptions = ASRLanguageSelection.supportedOptions(for: AppSettings.enabledRecognitionSources)
         if let ids, !ids.isEmpty {
             return ASRLanguageSelection.validatedIDs(ids, supportedOptions: supportedOptions)
         }
@@ -815,31 +928,37 @@ final class BridgeService {
         }
     }
 
-    private func resolveASRProvider(_ raw: String?) throws -> String? {
+    private func resolveRecognitionSources(_ raw: [String]?) throws -> [RecognitionSource]? {
         guard let raw else { return nil }
-        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !value.isEmpty else { return nil }
-        guard BridgeSettingsPayload.controllableASRProviders.contains(where: { $0.id == value }) else {
-            throw BridgeServiceError.invalidRequest("Unknown ASR provider: \(raw)")
+        var sources: [RecognitionSource] = []
+        var seen = Set<RecognitionSource>()
+        for item in raw {
+            let value = item.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard !value.isEmpty else { continue }
+            guard let source = RecognitionSource(rawValue: value) else {
+                throw BridgeServiceError.invalidRequest("Unknown recognition source: \(item)")
+            }
+            if seen.insert(source).inserted {
+                sources.append(source)
+            }
         }
-        return value
+        guard !sources.isEmpty else {
+            throw BridgeServiceError.invalidRequest("At least one recognition source must be enabled")
+        }
+        return sources
     }
 
-    private func resolveASRModelID(_ raw: String, provider: String) throws -> String {
+    private func resolveASRModelID(_ raw: String, source: RecognitionSource) throws -> String {
+        guard source.hasModelConfiguration else { return "" }
         let value = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !value.isEmpty else {
             throw BridgeServiceError.invalidRequest("ASR model cannot be empty")
         }
-        let options = BridgeSettingsPayload.controllableASRModelOptionsByProvider[provider] ?? []
+        let options = BridgeSettingsPayload.controllableASRModelOptionsByRecognitionSource[source.rawValue] ?? []
         guard options.contains(where: { $0.id == value }) else {
-            throw BridgeServiceError.invalidRequest("Unknown ASR model for \(provider): \(raw)")
+            throw BridgeServiceError.invalidRequest("Unknown ASR model for \(source.displayName): \(raw)")
         }
         return value
-    }
-
-    private static func providerUsesQwen(_ provider: String) -> Bool {
-        let value = provider.lowercased()
-        return value == "qwen3-asr-llama" || value == "qwen3-asr-llama+nvidia-nemotron-asr"
     }
 
     private func resolveCorrectionBackend(_ raw: String) throws -> CorrectionBackendKind {
@@ -910,6 +1029,31 @@ final class BridgeService {
     private func pruneExpiredSessions() {
         let cutoff = Date().addingTimeInterval(-Self.sessionTTL)
         sessions = sessions.filter { $0.value.createdAt >= cutoff }
+    }
+
+    private func pruneExpiredLivePreviewSessions() {
+        let cutoff = Date().addingTimeInterval(-Self.livePreviewSessionTTL)
+        let expiredIDs = livePreviewSessions.values
+            .filter { $0.updatedAt < cutoff }
+            .map(\.id)
+        for id in expiredIDs {
+            livePreviewSessions.removeValue(forKey: id)?.process.cancel()
+        }
+        guard livePreviewSessions.count > Self.maxLivePreviewSessions else { return }
+        let overflow = livePreviewSessions.count - Self.maxLivePreviewSessions
+        let overflowIDs = livePreviewSessions.values
+            .sorted { $0.updatedAt < $1.updatedAt }
+            .prefix(overflow)
+            .map(\.id)
+        for id in overflowIDs {
+            livePreviewSessions.removeValue(forKey: id)?.process.cancel()
+        }
+    }
+
+    private func recordLivePreviewTranscript(sessionID: String, text: String) {
+        guard let session = livePreviewSessions[sessionID] else { return }
+        session.lastTranscript = text
+        session.updatedAt = Date()
     }
 
     private func storeSession(_ session: BridgeSession) {

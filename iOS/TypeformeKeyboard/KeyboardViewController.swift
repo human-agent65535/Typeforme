@@ -9600,9 +9600,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         if status.state == .result, currentBridgeStatus?.state != .result, keyboardFocus == .text {
             beginInsertedFlash()
         }
-        // Live partial preview (Apple Speech on the host) owns only the marked
-        // text it created. Rime composition also uses marked text; bridge idle
-        // polls must not clear the user's in-progress Pinyin preedit.
+        // Live partial preview owns only the marked text it created. Rime
+        // composition also uses marked text; bridge idle polls must not clear
+        // the user's in-progress Pinyin preedit.
         let partial = status.livePartialTranscript?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let suppressesPartialPreview = suppressesLivePartialPreview(for: status)
         let showsPartial = !suppressesPartialPreview

@@ -98,7 +98,7 @@ final class NvidiaNemotronASRService: ASRService {
         )
     }
 
-    private static func stageModelDirectory(_ status: NvidiaNemotronASRRuntimeStatus) throws -> URL {
+    static func stageModelDirectory(_ status: NvidiaNemotronASRRuntimeStatus) throws -> URL {
         try AppPaths.ensureDirectories()
         let dir = AppPaths.asrWorkDir.appendingPathComponent("typeforme-nemotron-model-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)

@@ -168,7 +168,8 @@
 
 // 听写设置
 "Speech" = "语音";
-"ASR Engine" = "ASR 引擎";
+"Recognition Sources" = "识别源";
+"Preview Source" = "预览源";
 "ASR Timeout" = "ASR 超时";
 "Refine" = "优化";
 "Engine" = "引擎";

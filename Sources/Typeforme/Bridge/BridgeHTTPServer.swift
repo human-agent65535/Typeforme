@@ -43,6 +43,7 @@ final class BridgeHTTPServer: @unchecked Sendable {
     private static let maxBodyBytes = 25 * 1024 * 1024
     private static let maxMultipartHeaderBytes = 16 * 1024
     private static let maxMultipartFieldBytes = 1 * 1024 * 1024
+    private static let maxLivePreviewAudioChunkBytes = 512 * 1024
     private static let restartSettleDelay: UInt64 = 150_000_000
 
     @MainActor
@@ -277,6 +278,44 @@ final class BridgeHTTPServer: @unchecked Sendable {
             ) {
                 let jobID = try context.parameters.require("jobID")
                 return Self.jobEventsResponse(jobID: jobID)
+            }
+        }
+
+        router.post("v1/live-preview/start") { request, context async -> Response in
+            await Self.authorizedDecodedRecordedRequest(
+                .livePreviewStart,
+                request: request,
+                context: context,
+                decode: { try await Self.decodeJSON(BridgeLivePreviewStartRequest.self, from: request) },
+                metadata: { BridgeRequestMetadata(appName: $0.appName, bundleID: $0.bundleID) }
+            ) { payload in
+                let response = try await service.startLivePreview(payload)
+                return Self.jsonResponse(response)
+            }
+        }
+
+        router.post("v1/live-preview/:sessionID/audio") { request, context async -> Response in
+            await Self.authorizedRecordedRequest(
+                .livePreviewAudio,
+                request: request,
+                context: context
+            ) {
+                let sessionID = try context.parameters.require("sessionID")
+                let audioData = try await Self.decodeLivePreviewAudioChunk(from: request)
+                let response = try await service.appendLivePreviewAudio(sessionID: sessionID, audioData: audioData)
+                return Self.jsonResponse(response)
+            }
+        }
+
+        router.post("v1/live-preview/:sessionID/finish") { request, context async -> Response in
+            await Self.authorizedRecordedRequest(
+                .livePreviewFinish,
+                request: request,
+                context: context
+            ) {
+                let sessionID = try context.parameters.require("sessionID")
+                let response = try await service.finishLivePreview(sessionID: sessionID)
+                return Self.jsonResponse(response)
             }
         }
 
@@ -516,6 +555,18 @@ final class BridgeHTTPServer: @unchecked Sendable {
         }
         let body = try await request.body.collect(upTo: Self.maxBodyBytes)
         return try BridgeJSON.decode(T.self, from: Data(body.readableBytesView))
+    }
+
+    private static func decodeLivePreviewAudioChunk(from request: Request) async throws -> Data {
+        guard request.headers[.contentType]?.lowercased().contains("application/octet-stream") == true else {
+            throw BridgeServiceError.invalidRequest("Content-Type must be application/octet-stream")
+        }
+        let body = try await request.body.collect(upTo: Self.maxLivePreviewAudioChunkBytes)
+        let data = Data(body.readableBytesView)
+        guard !data.isEmpty, data.count % MemoryLayout<Float>.size == 0 else {
+            throw BridgeServiceError.invalidAudio
+        }
+        return data
     }
 
     private static func jsonResponse<T: Encodable>(_ value: T, status: Int = 200, reason: String = "OK") -> Response {

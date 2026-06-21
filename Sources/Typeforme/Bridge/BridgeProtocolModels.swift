@@ -156,3 +156,75 @@ struct BridgeJobStatusEvent: Codable, Sendable {
         self.updatedAt = updatedAt
     }
 }
+
+struct BridgeLivePreviewStartRequest: Codable, Sendable {
+    let clientJobID: String?
+    let languageIDs: [String]?
+    let languageMode: String?
+    let appName: String?
+    let bundleID: String?
+    let appCategory: String?
+
+    enum CodingKeys: String, CodingKey {
+        case clientJobID = "client_job_id"
+        case languageIDs = "language_ids"
+        case languageMode = "language_mode"
+        case appName = "app_name"
+        case bundleID = "bundle_id"
+        case appCategory = "app_category"
+    }
+
+    init(
+        clientJobID: String? = nil,
+        languageIDs: [String]? = nil,
+        languageMode: String? = nil,
+        appName: String? = nil,
+        bundleID: String? = nil,
+        appCategory: String? = nil
+    ) {
+        self.clientJobID = clientJobID
+        self.languageIDs = languageIDs
+        self.languageMode = languageMode
+        self.appName = appName
+        self.bundleID = bundleID
+        self.appCategory = appCategory
+    }
+}
+
+struct BridgeLivePreviewStartResponse: Codable, Sendable {
+    let sessionID: String
+    let provider: String
+    let languageIDs: [String]
+    let startedAt: TimeInterval
+
+    enum CodingKeys: String, CodingKey {
+        case sessionID = "session_id"
+        case provider
+        case languageIDs = "language_ids"
+        case startedAt = "started_at"
+    }
+}
+
+struct BridgeLivePreviewAudioAppendResponse: Codable, Sendable {
+    let sessionID: String
+    let text: String?
+    let updatedAt: TimeInterval
+
+    enum CodingKeys: String, CodingKey {
+        case sessionID = "session_id"
+        case text
+        case updatedAt = "updated_at"
+    }
+}
+
+struct BridgeLivePreviewFinishResponse: Codable, Sendable {
+    let sessionID: String
+    let text: String?
+    let finishedAt: TimeInterval
+
+    enum CodingKeys: String, CodingKey {
+        case sessionID = "session_id"
+        case text
+        case finishedAt = "finished_at"
+    }
+}

@@ -36,8 +36,7 @@ struct BridgeSettingsRevisionTests {
         var payload = BridgeSettingsPayload.current()
         let revision = BridgeSettingsPayload.settingsRevision(for: payload)
 
-        payload.asrProvider = "qwen3-asr-llama"
-        payload.asrModelID = "qwen3-asr-1.7b-q8_0"
+        payload.asrModelIDsByRecognitionSource[RecognitionSource.qwen.rawValue] = "qwen3-asr-1.7b-q8_0"
 
         #expect(BridgeSettingsPayload.settingsRevision(for: payload) != revision)
     }

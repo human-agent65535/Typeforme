@@ -27,7 +27,7 @@ private struct BridgeErrorResponse: Decodable {
     let error: String
 }
 
-struct BridgeClient {
+struct BridgeClient: Sendable {
     let baseURL: URL
     let token: String
 
@@ -86,10 +86,10 @@ struct BridgeClient {
         timeout: TimeInterval = 15
     ) async throws -> BridgeMacSettingsPayload {
         let payload = BridgeSettingsUpdateRequest(
-            asrProvider: settings.asrProvider,
-            asrModelID: settings.asrModelID,
+            enabledRecognitionSources: settings.enabledRecognitionSources,
+            asrModelIDsByRecognitionSource: settings.asrModelIDsByRecognitionSource,
             languageIDs: settings.languageIDs,
-            asrTimeoutSec: settings.asrTimeoutSec,
+            asrTimeoutSecByRecognitionSource: settings.asrTimeoutSecByRecognitionSource,
             correctionBackend: settings.correctionBackend,
             correctionTimeoutMs: settings.correctionTimeoutMs,
             correctionColdTimeoutMs: settings.correctionColdTimeoutMs,
@@ -140,6 +140,52 @@ struct BridgeClient {
                 timeout: 45
             )
         }
+    }
+
+    func startLivePreview(
+        languageIDs: [String],
+        clientJobID: String? = nil,
+        timeout: TimeInterval = 5
+    ) async throws -> BridgeLivePreviewStartResponse {
+        let payload = BridgeLivePreviewStartRequest(
+            clientJobID: clientJobID,
+            languageIDs: languageIDs,
+            appName: "iOS",
+            appCategory: "chat"
+        )
+        return try await request(path: "/v1/live-preview/start", method: "POST", json: payload, timeout: timeout)
+    }
+
+    func appendLivePreviewAudio(
+        sessionID: String,
+        audioData: Data,
+        timeout: TimeInterval = 5
+    ) async throws -> BridgeLivePreviewAudioAppendResponse {
+        guard let encodedSessionID = sessionID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) else {
+            throw BridgeClientError.invalidURL
+        }
+        return try await request(
+            path: "/v1/live-preview/\(encodedSessionID)/audio",
+            method: "POST",
+            body: audioData,
+            contentType: "application/octet-stream",
+            timeout: timeout
+        )
+    }
+
+    func finishLivePreview(
+        sessionID: String,
+        timeout: TimeInterval = 5
+    ) async throws -> BridgeLivePreviewFinishResponse {
+        guard let encodedSessionID = sessionID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) else {
+            throw BridgeClientError.invalidURL
+        }
+        return try await request(
+            path: "/v1/live-preview/\(encodedSessionID)/finish",
+            method: "POST",
+            body: Optional<Data>.none,
+            timeout: timeout
+        )
     }
 
     func restyle(

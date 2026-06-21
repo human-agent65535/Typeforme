@@ -33,7 +33,7 @@ final class ClientBridgeSettingsSync {
         }
         AppSettings.setClientSettingsRevision(settings.settingsRevision)
 
-        let supported = settings.supportedLanguageOptions(for: settings.asrProvider)
+        let supported = settings.supportedLanguageOptionsForEnabledSources()
         let validated = ASRLanguageSelection.validatedIDs(AppSettings.clientLanguageIDs, supportedOptions: supported)
         UserDefaults.standard.set(
             ASRLanguageSelection.rawValue(for: validated, supportedOptions: supported),
