@@ -51,3 +51,4 @@ iOS/LocalSigning.xcconfig
 # Agent-local instructions
 AGENTS.md
 iOS/AGENTS.md
+CLAUDE.md
