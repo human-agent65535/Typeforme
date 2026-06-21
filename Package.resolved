@@ -1,5 +1,5 @@
 {
-  "originHash" : "1bb19d92ad22b01c5fb2757a8d8dc04654f3378d9ea73d0a12e9dcbec4ce6776",
+  "originHash" : "9ecc16e27061d94f9fd9dbfb74989ea52e6fac3f112190ab51f7fa7f48fc385b",
   "pins" : [
     {
       "identity" : "async-http-client",
@@ -8,6 +8,15 @@
       "state" : {
         "revision" : "3a5b74a58782c3b4c1f0bc75e9b67b10c2494e8f",
         "version" : "1.33.1"
+      }
+    },
+    {
+      "identity" : "fuzzymatch",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/ordo-one/FuzzyMatch.git",
+      "state" : {
+        "revision" : "ea09aa7faa3c1832716d1ccdb81dcb83bea89774",
+        "version" : "1.4.0"
       }
     },
     {

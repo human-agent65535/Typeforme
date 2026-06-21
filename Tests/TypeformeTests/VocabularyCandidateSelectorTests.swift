@@ -108,11 +108,56 @@ struct VocabularyCandidateSelectorTests {
         #expect(payload[0].type == "person")
         #expect(payload[0].surface == "样例甲")
         #expect(payload[0].speechHint == "yanglijia")
+        #expect(payload[0].pronunciations == ["yang li jia"])
+        #expect(payload[0].matchedSpan == "样例佳")
+        #expect(payload[0].matchKind == "same_pinyin")
+        #expect(payload[0].confidence >= 0.9)
+        #expect(payload[0].evidenceSource == "transcript")
         let json = PromptPayloadEncoder.jsonString(payload) ?? ""
         #expect(json.contains("\"speech_hint\":\"yanglijia\""))
+        #expect(json.contains("\"matched_span\":\"样例佳\""))
+        #expect(json.contains("\"match_kind\":\"same_pinyin\""))
+        #expect(json.contains("\"evidence_source\":\"transcript\""))
+        #expect(json.contains("\"pronunciations\":[\"yang li jia\"]"))
         #expect(!json.contains("spoken_forms"))
         #expect(!json.contains("common_confusions"))
         #expect(!json.contains("priority"))
+    }
+
+    @Test func promptPayloadUsesAlternateTranscriptsForVocabularyRecall() {
+        let entries = [
+            DictionaryEntry(type: "person", surface: "样例甲"),
+        ]
+
+        let payload = VocabularyCandidateSelector.promptPayload(
+            from: entries,
+            rawText: "这个问题要问一下项目负责人",
+            alternateTranscripts: ["这个问题要问一下样例佳"],
+            extraContext: ["Notes"]
+        )
+
+        #expect(payload.count == 1)
+        #expect(payload[0].surface == "样例甲")
+        #expect(payload[0].matchedSpan == "样例佳")
+        #expect(payload[0].evidenceSource == "transcript")
+    }
+
+    @Test func promptPayloadCarriesAutomaticEnglishEvidence() {
+        let entries = [
+            DictionaryEntry(type: "product", surface: "Grafana"),
+        ]
+
+        let payload = VocabularyCandidateSelector.promptPayload(
+            from: entries,
+            rawText: "check the graphana dashboard"
+        )
+
+        #expect(payload.count == 1)
+        #expect(payload[0].surface == "Grafana")
+        #expect(payload[0].pronunciations.contains("grafana"))
+        #expect(payload[0].matchedSpan == "graphana")
+        #expect(["english_soundex", "english_fuzzy"].contains(payload[0].matchKind))
+        #expect(payload[0].confidence >= 0.68)
     }
 
     @Test func promptPayloadIncludesSyntheticChineseTermForSamePronunciationCommonWord() {

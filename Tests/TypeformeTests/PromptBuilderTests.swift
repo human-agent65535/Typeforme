@@ -123,6 +123,30 @@ struct PromptBuilderTests {
         #expect(!multiPrompt.contains("\"Nemotron\""))
     }
 
+    @Test func userPromptUsesAlternateTranscriptsForVocabularyCandidates() {
+        let request = CorrectionRequest(
+            correctionMode: .polish,
+            frontmostAppName: "Notes",
+            frontmostBundleID: "com.apple.Notes",
+            appCategory: .document,
+            languageIDs: ["zh-CN"],
+            rawTranscript: "这个问题要问一下项目负责人",
+            userDictionary: [
+                DictionaryEntry(type: "person", surface: "样例甲"),
+            ],
+            alternateTranscripts: [
+                "这个问题要问一下样例佳",
+            ]
+        )
+
+        let prompt = PromptBuilder.userPrompt(for: request)
+
+        #expect(prompt.contains("\"surface\":\"样例甲\""))
+        #expect(prompt.contains("\"matched_span\":\"样例佳\""))
+        #expect(prompt.contains("\"match_kind\":\"same_pinyin\""))
+        #expect(prompt.contains("\"evidence_source\":\"transcript\""))
+    }
+
     @Test func userPromptEscapesEmbeddedClosingInputJSONTag() {
         let request = CorrectionRequest(
             correctionMode: .polish,
@@ -166,6 +190,8 @@ struct PromptBuilderTests {
         #expect(base.contains("Do not translate between selected languages"))
         #expect(base.contains("Use vocabulary_candidates only as ASR hints"))
         #expect(base.contains("never globally replace ordinary homophones"))
+        #expect(base.contains("Vocabulary candidate match evidence is automatic and local"))
+        #expect(base.contains("matched_span, match_kind, pronunciations, and confidence"))
         #expect(base.contains("A 不对/不是/改成/应该是 B"))
         #expect(base.contains("A should be B"))
         #expect(base.contains("A 一个改两个"))

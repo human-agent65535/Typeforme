@@ -49,6 +49,7 @@ enum PromptBuilder {
         let vocabularyCandidates = VocabularyCandidateSelector.promptPayload(
             from: request.userDictionary,
             rawText: request.rawTranscript,
+            alternateTranscripts: request.alternateTranscripts,
             extraContext: [
                 request.frontmostAppName ?? "",
                 request.frontmostBundleID ?? "",

@@ -1,15 +1,26 @@
 import Foundation
+import FuzzyMatch
 import os.lock
 
 struct VocabularyCandidatePayload: Codable, Sendable, Equatable {
     let type: String
     let surface: String
     let speechHint: String
+    let pronunciations: [String]
+    let matchedSpan: String?
+    let matchKind: String
+    let confidence: Double
+    let evidenceSource: String
 
     enum CodingKeys: String, CodingKey {
         case type
         case surface
         case speechHint = "speech_hint"
+        case pronunciations
+        case matchedSpan = "matched_span"
+        case matchKind = "match_kind"
+        case confidence
+        case evidenceSource = "evidence_source"
     }
 }
 
@@ -19,6 +30,7 @@ enum VocabularyCandidateSelector {
     private struct CacheKey: Hashable {
         let entriesHash: Int
         let rawText: String
+        let alternateTranscripts: String
         let extraContext: String
         let limit: Int
     }
@@ -32,16 +44,136 @@ enum VocabularyCandidateSelector {
         var place = 0
     }
 
+    private enum EvidenceSourceKind: String {
+        case rawTranscript
+        case alternateTranscript
+        case context
+
+        var promptLabel: String {
+            switch self {
+            case .rawTranscript, .alternateTranscript:
+                return "transcript"
+            case .context:
+                return "context"
+            }
+        }
+
+        var sourceScore: Int {
+            switch self {
+            case .rawTranscript:
+                return 25
+            case .alternateTranscript:
+                return 15
+            case .context:
+                return -20
+            }
+        }
+
+        var isTranscript: Bool {
+            self == .rawTranscript || self == .alternateTranscript
+        }
+    }
+
+    private struct EvidenceText {
+        let source: EvidenceSourceKind
+        let text: String
+        let normalized: String
+        let compact: String
+        let phonetic: String
+        let loosePhonetic: String
+        let latinTokens: [TokenSpan]
+        let soundexTokens: [String: [String]]
+    }
+
+    private struct TokenSpan {
+        let token: String
+        let span: String
+    }
+
+    private struct CandidateEvidence {
+        let score: Int
+        let matchedSpan: String?
+        let matchKind: String
+        let confidence: Double
+        let evidenceSource: String
+    }
+
+    private struct ScoredCandidate {
+        let entry: DictionaryEntry
+        let score: Int
+        let evidence: CandidateEvidence
+    }
+
+    private struct ChineseWindow {
+        let text: String
+        let phonetic: String
+        let loosePhonetic: String
+    }
+
+    private struct SpokenVariant {
+        let spoken: String
+        let compact: String
+    }
+
     static func select(
         from entries: [DictionaryEntry],
         rawText: String,
+        alternateTranscripts: [String] = [],
         extraContext: [String] = [],
         limit: Int = defaultLimit
     ) -> [DictionaryEntry] {
+        rankedCandidates(
+            from: entries,
+            rawText: rawText,
+            alternateTranscripts: alternateTranscripts,
+            extraContext: extraContext,
+            limit: limit
+        ).map(\.entry)
+    }
+
+    static func promptPayload(
+        from entries: [DictionaryEntry],
+        rawText: String,
+        alternateTranscripts: [String] = [],
+        extraContext: [String] = [],
+        limit: Int = defaultLimit
+    ) -> [VocabularyCandidatePayload] {
+        rankedCandidates(
+            from: entries,
+            rawText: rawText,
+            alternateTranscripts: alternateTranscripts,
+            extraContext: extraContext,
+            limit: limit
+        ).map { candidate in
+            VocabularyCandidatePayload(
+                type: candidate.entry.type,
+                surface: candidate.entry.surface,
+                speechHint: phoneticKey(candidate.entry.surface),
+                pronunciations: pronunciationHints(for: candidate.entry.surface),
+                matchedSpan: candidate.evidence.matchedSpan,
+                matchKind: candidate.evidence.matchKind,
+                confidence: candidate.evidence.confidence,
+                evidenceSource: candidate.evidence.evidenceSource
+            )
+        }
+    }
+
+    private static func rankedCandidates(
+        from entries: [DictionaryEntry],
+        rawText: String,
+        alternateTranscripts: [String],
+        extraContext: [String],
+        limit: Int
+    ) -> [ScoredCandidate] {
+        let cleanedAlternates = CorrectionRequest.normalizedAlternateTranscripts(
+            primaryTranscript: rawText,
+            candidates: alternateTranscripts.map(Optional.some)
+        )
         let extraContextText = extraContext.joined(separator: " ")
         let cacheKey = CacheKey(
             entriesHash: hash(entries),
             rawText: rawText,
+            alternateTranscripts: cleanedAlternates.joined(separator: "\u{1f}"),
             extraContext: extraContextText,
             limit: limit
         )
@@ -49,37 +181,31 @@ enum VocabularyCandidateSelector {
             return cached
         }
 
-        let text = normalize(rawText)
-        let context = normalize(extraContextText)
-        let phoneticText = phoneticKey(rawText)
-        let loosePhoneticText = loosePinyinKey(rawText)
-        let compactText = compactNormalized(rawText)
-        let rawSoundexTokens = soundexTokens(in: rawText)
-        let signals = contextSignals(for: [text, context].joined(separator: " "))
+        let evidenceTexts = evidenceTexts(
+            rawText: rawText,
+            alternateTranscripts: cleanedAlternates,
+            extraContext: extraContextText
+        )
+        let signals = contextSignals(
+            for: evidenceTexts
+                .map(\.normalized)
+                .joined(separator: " ")
+        )
 
-        let scored = entries.compactMap { entry -> (DictionaryEntry, Int)? in
-            let score = score(
-                entry,
-                text: text,
-                context: context,
-                phoneticText: phoneticText,
-                loosePhoneticText: loosePhoneticText,
-                compactText: compactText,
-                rawSoundexTokens: rawSoundexTokens,
-                signals: signals
-            )
-            guard score > 0 else { return nil }
-            return (entry, score)
+        let selected = entries.compactMap { entry in
+            score(entry, evidenceTexts: evidenceTexts, signals: signals)
         }
-
-        let selected = scored
-            .sorted {
-                if $0.1 != $1.1 { return $0.1 > $1.1 }
-                if $0.0.type != $1.0.type { return $0.0.type < $1.0.type }
-                return $0.0.surface < $1.0.surface
+        .sorted {
+            if $0.score != $1.score { return $0.score > $1.score }
+            if $0.evidence.confidence != $1.evidence.confidence {
+                return $0.evidence.confidence > $1.evidence.confidence
             }
-            .prefix(limit)
-            .map(\.0)
+            if $0.entry.type != $1.entry.type { return $0.entry.type < $1.entry.type }
+            return $0.entry.surface < $1.entry.surface
+        }
+        .prefix(limit)
+        .map { $0 }
+
         selectionCache.withLock { cache in
             cache[cacheKey] = selected
             if cache.count > maxCachedSelections {
@@ -89,81 +215,281 @@ enum VocabularyCandidateSelector {
         return selected
     }
 
-    static func promptPayload(
-        from entries: [DictionaryEntry],
-        rawText: String,
-        extraContext: [String] = [],
-        limit: Int = defaultLimit
-    ) -> [VocabularyCandidatePayload] {
-        select(from: entries, rawText: rawText, extraContext: extraContext, limit: limit).map { entry in
-            VocabularyCandidatePayload(
-                type: entry.type,
-                surface: entry.surface,
-                speechHint: phoneticKey(entry.surface)
-            )
-        }
-    }
-
     private static func score(
         _ entry: DictionaryEntry,
-        text: String,
-        context: String,
-        phoneticText: String,
-        loosePhoneticText: String,
-        compactText: String,
-        rawSoundexTokens: Set<String>,
+        evidenceTexts: [EvidenceText],
         signals: ContextSignals
-    ) -> Int {
-        var score = basePriority(for: entry.type)
-        var matched = false
+    ) -> ScoredCandidate? {
+        var best: CandidateEvidence?
 
         for term in entry.searchTerms {
-            let normalizedTerm = normalize(term)
-            if !normalizedTerm.isEmpty, text.contains(normalizedTerm) {
-                score += 120
-                matched = true
-            } else if !normalizedTerm.isEmpty, context.contains(normalizedTerm) {
-                score += 40
-                matched = true
-            }
-            if scorePartialTokens(in: normalizedTerm, against: text) {
-                score += 60
-                matched = true
-            }
-
-            let termPhonetic = phoneticKey(term)
-            if termPhonetic.count >= 3, phoneticText.contains(termPhonetic) {
-                score += 90
-                matched = true
-            } else if approximateChinesePhoneticMatch(
-                term: term,
-                termPhonetic: termPhonetic,
-                rawPhonetic: phoneticText,
-                looseRawPhonetic: loosePhoneticText
-            ) {
-                score += 70
-                matched = true
-            }
-
-            if englishPhoneticMatch(
-                term: term,
-                compactText: compactText,
-                rawSoundexTokens: rawSoundexTokens
-            ) {
-                score += 65
-                matched = true
+            for evidenceText in evidenceTexts {
+                guard let evidence = bestEvidence(for: term, in: evidenceText) else { continue }
+                if best == nil || evidence.score > best!.score ||
+                    (evidence.score == best!.score && evidence.confidence > best!.confidence) {
+                    best = evidence
+                }
             }
         }
 
-        if entry.type == "person", matched {
+        guard let evidence = best else { return nil }
+
+        var score = basePriority(for: entry.type) + evidence.score
+        if entry.type == "person" {
             score += 20
         }
+        score += contextBonus(for: entry.type, signals: signals)
 
-        if matched {
-            score += contextBonus(for: entry.type, signals: signals)
+        return ScoredCandidate(entry: entry, score: score, evidence: evidence)
+    }
+
+    private static func bestEvidence(for term: String, in evidenceText: EvidenceText) -> CandidateEvidence? {
+        var best: CandidateEvidence?
+
+        func consider(_ evidence: CandidateEvidence?) {
+            guard let evidence else { return }
+            if best == nil || evidence.score > best!.score ||
+                (evidence.score == best!.score && evidence.confidence > best!.confidence) {
+                best = evidence
+            }
         }
 
-        return matched ? score : 0
+        consider(exactSurfaceEvidence(for: term, in: evidenceText))
+        consider(compactSurfaceEvidence(for: term, in: evidenceText))
+        consider(partialTokenEvidence(for: term, in: evidenceText))
+
+        if evidenceText.source.isTranscript {
+            consider(chinesePhoneticEvidence(for: term, in: evidenceText))
+            consider(englishPhoneticEvidence(for: term, in: evidenceText))
+        }
+
+        return best
+    }
+
+    private static func exactSurfaceEvidence(for term: String, in evidenceText: EvidenceText) -> CandidateEvidence? {
+        let normalizedTerm = normalize(term)
+        guard !normalizedTerm.isEmpty else { return nil }
+        guard evidenceText.normalized.contains(normalizedTerm) else { return nil }
+        let span = firstRangeMatch(of: term, in: evidenceText.text).map { String(evidenceText.text[$0]) } ?? term
+        let isContext = evidenceText.source == .context
+        return CandidateEvidence(
+            score: (isContext ? 55 : 120) + evidenceText.source.sourceScore,
+            matchedSpan: span,
+            matchKind: isContext ? "context_surface" : "exact_surface",
+            confidence: isContext ? 0.78 : 0.98,
+            evidenceSource: evidenceText.source.promptLabel
+        )
+    }
+
+    private static func compactSurfaceEvidence(for term: String, in evidenceText: EvidenceText) -> CandidateEvidence? {
+        let compactTerm = compactNormalized(term)
+        guard compactTerm.count >= 4, evidenceText.compact.contains(compactTerm) else { return nil }
+        return CandidateEvidence(
+            score: 105 + evidenceText.source.sourceScore,
+            matchedSpan: term,
+            matchKind: evidenceText.source == .context ? "context_compact_surface" : "compact_surface",
+            confidence: evidenceText.source == .context ? 0.74 : 0.9,
+            evidenceSource: evidenceText.source.promptLabel
+        )
+    }
+
+    private static func partialTokenEvidence(for term: String, in evidenceText: EvidenceText) -> CandidateEvidence? {
+        let tokens = latinTokens(in: term)
+            .filter { $0.count >= 3 }
+        guard tokens.count > 1 else { return nil }
+        guard let span = tokens.first(where: { evidenceText.normalized.contains($0) }) else { return nil }
+        let isContext = evidenceText.source == .context
+        return CandidateEvidence(
+            score: (isContext ? 35 : 60) + evidenceText.source.sourceScore,
+            matchedSpan: span,
+            matchKind: isContext ? "context_partial_token" : "partial_token",
+            confidence: isContext ? 0.58 : 0.68,
+            evidenceSource: evidenceText.source.promptLabel
+        )
+    }
+
+    private static func chinesePhoneticEvidence(for term: String, in evidenceText: EvidenceText) -> CandidateEvidence? {
+        guard cjkCount(in: term) >= 2 else { return nil }
+        let termPhonetic = phoneticKey(term)
+        guard termPhonetic.count >= 4 else { return nil }
+
+        let looseTerm = loosenPinyin(termPhonetic)
+        if let windowEvidence = bestChineseWindowEvidence(
+            termPhonetic: termPhonetic,
+            looseTermPhonetic: looseTerm,
+            termCJKCount: cjkCount(in: term),
+            evidenceText: evidenceText
+        ) {
+            return windowEvidence
+        }
+
+        if termPhonetic.count >= 3, evidenceText.phonetic.contains(termPhonetic) {
+            return CandidateEvidence(
+                score: 90 + evidenceText.source.sourceScore,
+                matchedSpan: nil,
+                matchKind: "same_pinyin",
+                confidence: 0.9,
+                evidenceSource: evidenceText.source.promptLabel
+            )
+        }
+
+        if looseTerm.count >= 4, evidenceText.loosePhonetic.contains(looseTerm) {
+            return CandidateEvidence(
+                score: 78 + evidenceText.source.sourceScore,
+                matchedSpan: nil,
+                matchKind: "loose_pinyin",
+                confidence: 0.82,
+                evidenceSource: evidenceText.source.promptLabel
+            )
+        }
+        return nil
+    }
+
+    private static func bestChineseWindowEvidence(
+        termPhonetic: String,
+        looseTermPhonetic: String,
+        termCJKCount: Int,
+        evidenceText: EvidenceText
+    ) -> CandidateEvidence? {
+        let minLength = max(2, termCJKCount - 1)
+        let maxLength = termCJKCount + 1
+        var best: CandidateEvidence?
+
+        for window in cjkWindows(in: evidenceText.text, minLength: minLength, maxLength: maxLength) {
+            if window.phonetic == termPhonetic {
+                let candidate = CandidateEvidence(
+                    score: 95 + evidenceText.source.sourceScore,
+                    matchedSpan: window.text,
+                    matchKind: "same_pinyin",
+                    confidence: 0.92,
+                    evidenceSource: evidenceText.source.promptLabel
+                )
+                best = bestEvidence(best, candidate)
+                continue
+            }
+            if window.loosePhonetic == looseTermPhonetic {
+                let candidate = CandidateEvidence(
+                    score: 82 + evidenceText.source.sourceScore,
+                    matchedSpan: window.text,
+                    matchKind: "loose_pinyin",
+                    confidence: 0.84,
+                    evidenceSource: evidenceText.source.promptLabel
+                )
+                best = bestEvidence(best, candidate)
+                continue
+            }
+            guard let match = phoneticMatcher.score(window.phonetic, against: termPhonetic),
+                  match.score >= 0.74
+            else { continue }
+            let candidate = CandidateEvidence(
+                score: Int((70.0 + match.score * 15.0).rounded()) + evidenceText.source.sourceScore,
+                matchedSpan: window.text,
+                matchKind: "near_pinyin",
+                confidence: roundedConfidence(min(0.82, match.score)),
+                evidenceSource: evidenceText.source.promptLabel
+            )
+            best = bestEvidence(best, candidate)
+        }
+
+        return best
+    }
+
+    private static func englishPhoneticEvidence(for term: String, in evidenceText: EvidenceText) -> CandidateEvidence? {
+        guard containsLatinLetter(term) else { return nil }
+        var best: CandidateEvidence?
+
+        for variant in acronymSpokenVariants(for: term) where variant.compact.count >= 3 {
+            guard evidenceText.compact.contains(variant.compact) else { continue }
+            let candidate = CandidateEvidence(
+                score: 82 + evidenceText.source.sourceScore,
+                matchedSpan: variant.spoken,
+                matchKind: "acronym_spoken",
+                confidence: 0.86,
+                evidenceSource: evidenceText.source.promptLabel
+            )
+            best = bestEvidence(best, candidate)
+        }
+
+        for token in latinTokens(in: term) where token.count >= 4 {
+            if let code = soundex(token),
+               let spans = evidenceText.soundexTokens[code],
+               let span = spans.first {
+                let candidate = CandidateEvidence(
+                    score: 65 + evidenceText.source.sourceScore,
+                    matchedSpan: span,
+                    matchKind: "english_soundex",
+                    confidence: 0.68,
+                    evidenceSource: evidenceText.source.promptLabel
+                )
+                best = bestEvidence(best, candidate)
+            }
+
+            for rawToken in evidenceText.latinTokens where rawToken.token.count >= 4 {
+                guard rawToken.token != token,
+                      let match = phoneticMatcher.score(rawToken.token, against: token),
+                      match.score >= 0.78
+                else { continue }
+                let candidate = CandidateEvidence(
+                    score: Int((62.0 + match.score * 18.0).rounded()) + evidenceText.source.sourceScore,
+                    matchedSpan: rawToken.span,
+                    matchKind: "english_fuzzy",
+                    confidence: roundedConfidence(min(0.84, match.score)),
+                    evidenceSource: evidenceText.source.promptLabel
+                )
+                best = bestEvidence(best, candidate)
+            }
+        }
+
+        return best
+    }
+
+    private static func bestEvidence(_ left: CandidateEvidence?, _ right: CandidateEvidence) -> CandidateEvidence {
+        guard let left else { return right }
+        if right.score != left.score {
+            return right.score > left.score ? right : left
+        }
+        return right.confidence > left.confidence ? right : left
+    }
+
+    private static func evidenceTexts(
+        rawText: String,
+        alternateTranscripts: [String],
+        extraContext: String
+    ) -> [EvidenceText] {
+        var output: [EvidenceText] = []
+        if let text = makeEvidenceText(rawText, source: .rawTranscript) {
+            output.append(text)
+        }
+        for transcript in alternateTranscripts {
+            if let text = makeEvidenceText(transcript, source: .alternateTranscript) {
+                output.append(text)
+            }
+        }
+        if let text = makeEvidenceText(extraContext, source: .context) {
+            output.append(text)
+        }
+        return output
+    }
+
+    private static func makeEvidenceText(_ text: String, source: EvidenceSourceKind) -> EvidenceText? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let tokenSpans = latinTokenSpans(in: trimmed)
+        var soundexTokens: [String: [String]] = [:]
+        for token in tokenSpans {
+            guard let code = soundex(token.token) else { continue }
+            soundexTokens[code, default: []].append(token.span)
+        }
+        return EvidenceText(
+            source: source,
+            text: trimmed,
+            normalized: normalize(trimmed),
+            compact: compactNormalized(trimmed),
+            phonetic: phoneticKey(trimmed),
+            loosePhonetic: loosePinyinKey(trimmed),
+            latinTokens: tokenSpans,
+            soundexTokens: soundexTokens
+        )
     }
 
     private static func hash(_ entries: [DictionaryEntry]) -> Int {
@@ -181,15 +507,6 @@ enum VocabularyCandidateSelector {
         case "place": return 60
         default: return 50
         }
-    }
-
-    private static func scorePartialTokens(in term: String, against text: String) -> Bool {
-        let tokens = term
-            .split(separator: " ")
-            .map(String.init)
-            .filter { $0.count >= 3 }
-        guard tokens.count > 1 else { return false }
-        return tokens.contains { text.contains($0) }
     }
 
     private static func contextBonus(for type: String, signals: ContextSignals) -> Int {
@@ -276,13 +593,21 @@ enum VocabularyCandidateSelector {
     }
 
     private static func phoneticKey(_ text: String) -> String {
-        guard text.unicodeScalars.contains(where: { (0x4E00...0x9FFF).contains(Int($0.value)) }) else {
+        guard text.unicodeScalars.contains(where: { isCJKScalar($0) }) else {
             return compactNormalized(text)
         }
         let mutable = NSMutableString(string: text) as CFMutableString
         CFStringTransform(mutable, nil, kCFStringTransformMandarinLatin, false)
         CFStringTransform(mutable, nil, kCFStringTransformStripCombiningMarks, false)
         return compactNormalized(mutable as String)
+    }
+
+    private static func spacedPinyinKey(_ text: String) -> String {
+        guard containsCJK(text) else { return normalize(text) }
+        let mutable = NSMutableString(string: text) as CFMutableString
+        CFStringTransform(mutable, nil, kCFStringTransformMandarinLatin, false)
+        CFStringTransform(mutable, nil, kCFStringTransformStripCombiningMarks, false)
+        return normalize(mutable as String)
     }
 
     private static func loosePinyinKey(_ text: String) -> String {
@@ -308,78 +633,75 @@ enum VocabularyCandidateSelector {
         return output
     }
 
-    private static func approximateChinesePhoneticMatch(
-        term: String,
-        termPhonetic: String,
-        rawPhonetic: String,
-        looseRawPhonetic: String
-    ) -> Bool {
-        guard cjkCount(in: term) >= 2, termPhonetic.count >= 4 else { return false }
-        let looseTerm = loosenPinyin(termPhonetic)
-        if looseTerm.count >= 4, looseRawPhonetic.contains(looseTerm) {
-            return true
-        }
-        return containsApproximate(termPhonetic, in: rawPhonetic)
-    }
-
-    private static func containsApproximate(_ needle: String, in haystack: String) -> Bool {
-        let needleChars = Array(needle)
-        let haystackChars = Array(haystack)
-        guard needleChars.count >= 4, haystackChars.count >= needleChars.count - 1 else { return false }
-        let threshold = needleChars.count <= 5 ? 1 : (needleChars.count <= 9 ? 2 : 3)
-        let minLength = max(3, needleChars.count - 1)
-        let maxLength = min(haystackChars.count, needleChars.count + 1)
-        guard minLength <= maxLength else { return false }
-        for length in minLength...maxLength {
-            guard haystackChars.count >= length else { continue }
-            for start in 0...(haystackChars.count - length) {
-                let window = Array(haystackChars[start..<(start + length)])
-                if levenshtein(needleChars, window, maxDistance: threshold) <= threshold {
-                    return true
+    private static func cjkWindows(in text: String, minLength: Int, maxLength: Int) -> [ChineseWindow] {
+        guard minLength <= maxLength else { return [] }
+        var windows: [ChineseWindow] = []
+        for run in cjkRuns(in: text) {
+            let chars = Array(run)
+            guard chars.count >= minLength else { continue }
+            for length in minLength...min(maxLength, chars.count) {
+                guard chars.count >= length else { continue }
+                for start in 0...(chars.count - length) {
+                    let text = String(chars[start..<(start + length)])
+                    let phonetic = phoneticKey(text)
+                    windows.append(ChineseWindow(
+                        text: text,
+                        phonetic: phonetic,
+                        loosePhonetic: loosenPinyin(phonetic)
+                    ))
                 }
             }
         }
-        return false
+        return windows
     }
 
-    private static func levenshtein(_ left: [Character], _ right: [Character], maxDistance: Int) -> Int {
-        if abs(left.count - right.count) > maxDistance { return maxDistance + 1 }
-        var previous = Array(0...right.count)
-        for (i, leftChar) in left.enumerated() {
-            var current = [i + 1]
-            var rowMin = current[0]
-            for (j, rightChar) in right.enumerated() {
-                let substitution = previous[j] + (leftChar == rightChar ? 0 : 1)
-                let insertion = current[j] + 1
-                let deletion = previous[j + 1] + 1
-                let value = min(substitution, insertion, deletion)
-                current.append(value)
-                rowMin = min(rowMin, value)
-            }
-            if rowMin > maxDistance { return maxDistance + 1 }
-            previous = current
-        }
-        return previous[right.count]
-    }
-
-    private static func englishPhoneticMatch(
-        term: String,
-        compactText: String,
-        rawSoundexTokens: Set<String>
-    ) -> Bool {
-        guard containsLatinLetter(term) else { return false }
-        for variant in acronymSpokenVariants(for: term) where variant.count >= 3 {
-            if compactText.contains(variant) { return true }
-        }
-        for token in latinTokens(in: term) where token.count >= 4 {
-            if let code = soundex(token), rawSoundexTokens.contains(code) {
-                return true
+    private static func cjkRuns(in text: String) -> [String] {
+        var runs: [String] = []
+        var current = ""
+        for character in text {
+            if character.unicodeScalars.contains(where: isCJKScalar) {
+                current.append(character)
+            } else if !current.isEmpty {
+                runs.append(current)
+                current = ""
             }
         }
-        return false
+        if !current.isEmpty {
+            runs.append(current)
+        }
+        return runs
     }
 
-    private static func acronymSpokenVariants(for term: String) -> [String] {
+    private static func pronunciationHints(for surface: String) -> [String] {
+        var hints: [String] = []
+        if containsCJK(surface) {
+            hints.append(spacedPinyinKey(surface))
+        }
+        if containsLatinLetter(surface) {
+            hints.append(normalize(splitCamelCase(surface)))
+            hints.append(compactNormalized(surface))
+            hints.append(contentsOf: acronymSpokenVariants(for: surface).map(\.spoken))
+        }
+        return DictionaryEntry.cleanedList(hints)
+    }
+
+    private static func splitCamelCase(_ text: String) -> String {
+        var output = ""
+        var previous: Character?
+        for character in text {
+            if let previous,
+               isASCIILetterOrNumber(previous),
+               isASCIIUppercase(character),
+               !isASCIIUppercase(previous) {
+                output.append(" ")
+            }
+            output.append(character)
+            previous = character
+        }
+        return output
+    }
+
+    private static func acronymSpokenVariants(for term: String) -> [SpokenVariant] {
         let runs = uppercaseRuns(in: term)
         guard !runs.isEmpty else { return [] }
         var variants = Set<String>()
@@ -387,10 +709,16 @@ enum VocabularyCandidateSelector {
             let before = String(term[..<run.range.lowerBound])
             let after = String(term[run.range.upperBound...])
             for spoken in spokenLetterCombinations(for: run.text) {
-                variants.insert(compactNormalized(before + spoken + after))
+                let combined = [before, spoken, after]
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+                    .joined(separator: " ")
+                variants.insert(combined)
             }
         }
-        return Array(variants)
+        return variants
+            .sorted()
+            .map { SpokenVariant(spoken: $0, compact: compactNormalized($0)) }
     }
 
     private static func uppercaseRuns(in term: String) -> [(range: Range<String.Index>, text: String)] {
@@ -421,7 +749,12 @@ enum VocabularyCandidateSelector {
         for character in acronym.lowercased() {
             let options = letterNameOptions(for: character)
             variants = variants.flatMap { prefix in
-                options.map { prefix + " " + $0 }
+                options.map { option in
+                    [prefix, option]
+                        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                        .filter { !$0.isEmpty }
+                        .joined(separator: " ")
+                }
             }
             if variants.count > 24 {
                 variants = Array(variants.prefix(24))
@@ -472,10 +805,6 @@ enum VocabularyCandidateSelector {
         }
     }
 
-    private static func soundexTokens(in text: String) -> Set<String> {
-        Set(latinTokens(in: text).compactMap(soundex))
-    }
-
     private static func soundex(_ token: String) -> String? {
         let letters = token.lowercased().filter(\.isLetter)
         guard let first = letters.first, letters.count >= 4 else { return nil }
@@ -505,22 +834,38 @@ enum VocabularyCandidateSelector {
         }
     }
 
-    private static func latinTokens(in text: String) -> [String] {
-        let normalized = normalize(text)
-        var tokens: [String] = []
+    private static func latinTokenSpans(in text: String) -> [TokenSpan] {
+        var tokens: [TokenSpan] = []
         var current = ""
-        for character in normalized {
+        for character in text {
             if isASCIILetterOrNumber(character) {
                 current.append(character)
             } else if !current.isEmpty {
-                tokens.append(current)
+                appendLatinToken(current, to: &tokens)
                 current = ""
             }
         }
         if !current.isEmpty {
-            tokens.append(current)
+            appendLatinToken(current, to: &tokens)
         }
-        return tokens.filter { $0.contains(where: \.isLetter) }
+        return tokens
+    }
+
+    private static func appendLatinToken(_ token: String, to tokens: inout [TokenSpan]) {
+        let normalized = normalize(token)
+        guard normalized.contains(where: \.isLetter) else { return }
+        tokens.append(TokenSpan(token: normalized, span: token))
+    }
+
+    private static func latinTokens(in text: String) -> [String] {
+        latinTokenSpans(in: text).map(\.token)
+    }
+
+    private static func firstRangeMatch(of needle: String, in haystack: String) -> Range<String.Index>? {
+        haystack.range(
+            of: needle,
+            options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive]
+        )
     }
 
     private static func containsCJK(_ text: String) -> Bool {
@@ -529,8 +874,12 @@ enum VocabularyCandidateSelector {
 
     private static func cjkCount(in text: String) -> Int {
         text.unicodeScalars.reduce(0) { count, scalar in
-            (0x4E00...0x9FFF).contains(Int(scalar.value)) ? count + 1 : count
+            isCJKScalar(scalar) ? count + 1 : count
         }
+    }
+
+    private static func isCJKScalar(_ scalar: Unicode.Scalar) -> Bool {
+        (0x4E00...0x9FFF).contains(Int(scalar.value))
     }
 
     private static func containsLatinLetter(_ text: String) -> Bool {
@@ -557,6 +906,31 @@ enum VocabularyCandidateSelector {
             (97...122).contains(Int(value))
     }
 
-    private static let selectionCache = OSAllocatedUnfairLock(initialState: [CacheKey: [DictionaryEntry]]())
+    private static func roundedConfidence(_ value: Double) -> Double {
+        (value * 100).rounded() / 100
+    }
+
+    private static let phoneticMatcher = FuzzyMatcher(
+        config: MatchConfig(
+            minScore: 0.72,
+            algorithm: .editDistance(
+                EditDistanceConfig(
+                    maxEditDistance: 2,
+                    longQueryMaxEditDistance: 3,
+                    prefixWeight: 1.0,
+                    substringWeight: 1.0,
+                    wordBoundaryBonus: 0.0,
+                    consecutiveBonus: 0.0,
+                    gapPenalty: .none,
+                    firstMatchBonus: 0.0,
+                    lengthPenalty: 0.0,
+                    acronymWeight: 0.0,
+                    isSubsequenceMatchingEnabled: false
+                )
+            )
+        )
+    )
+
+    private static let selectionCache = OSAllocatedUnfairLock(initialState: [CacheKey: [ScoredCandidate]]())
     private static let maxCachedSelections = 64
 }
