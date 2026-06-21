@@ -484,6 +484,36 @@ enum RecognitionSource: String, CaseIterable, Codable, Identifiable, Equatable {
     }
 }
 
+enum MacLivePreviewSource: String, CaseIterable, Identifiable, Equatable {
+    case off
+    case nvidiaNemotron = "nvidia-nemotron"
+    case appleSpeech = "apple-speech"
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .off:
+            return "Off"
+        case .nvidiaNemotron:
+            return "NVIDIA Nemotron 3.5"
+        case .appleSpeech:
+            return "Apple Speech"
+        }
+    }
+
+    static func options(forRecognitionSources sources: [RecognitionSource]) -> [MacLivePreviewSource] {
+        var options: [MacLivePreviewSource] = [.off]
+        if sources.contains(.nvidiaNemotron) {
+            options.append(.nvidiaNemotron)
+        }
+        if sources.contains(.appleSpeech) {
+            options.append(.appleSpeech)
+        }
+        return options
+    }
+}
+
 struct BridgeMacSettingsPayload: Codable, Equatable {
     var enabledRecognitionSources: [String]
     var recognitionSourceOptions: [BridgeSettingOption]
@@ -499,6 +529,7 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
     var correctionColdTimeoutMs: Int
     var externalLLMBaseURL: String
     var externalLLMModel: String
+    var livePreviewSource: String
     var correctionMode: CorrectionModeID
     var numberOutputPreference: NumberOutputPreferenceID
     var punctuationPreference: PunctuationPreferenceID
@@ -527,6 +558,10 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
         isRecognitionSourceEnabled(.nvidiaNemotron)
     }
 
+    var livePreviewSourceOptions: [MacLivePreviewSource] {
+        MacLivePreviewSource.options(forRecognitionSources: enabledSources)
+    }
+
     enum CodingKeys: String, CodingKey {
         case enabledRecognitionSources = "enabled_recognition_sources"
         case recognitionSourceOptions = "recognition_source_options"
@@ -542,6 +577,7 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
         case correctionColdTimeoutMs = "correction_cold_timeout_ms"
         case externalLLMBaseURL = "external_llm_base_url"
         case externalLLMModel = "external_llm_model"
+        case livePreviewSource = "live_preview_source"
         case correctionMode = "correction_mode"
         case numberOutputPreference = "number_output_preference"
         case punctuationPreference = "punctuation_preference"
@@ -598,6 +634,7 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
         correctionColdTimeoutMs: Int = 8000,
         externalLLMBaseURL: String = "",
         externalLLMModel: String = "",
+        livePreviewSource: String = MacLivePreviewSource.off.rawValue,
         correctionMode: CorrectionModeID,
         numberOutputPreference: NumberOutputPreferenceID = .automatic,
         punctuationPreference: PunctuationPreferenceID = .normal,
@@ -620,6 +657,7 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
         self.correctionColdTimeoutMs = Self.clampedCorrectionColdTimeoutMs(correctionColdTimeoutMs)
         self.externalLLMBaseURL = externalLLMBaseURL
         self.externalLLMModel = externalLLMModel
+        self.livePreviewSource = livePreviewSource
         self.correctionMode = correctionMode
         self.numberOutputPreference = numberOutputPreference
         self.punctuationPreference = punctuationPreference
@@ -652,6 +690,7 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
         self.correctionColdTimeoutMs = try container.decode(Int.self, forKey: .correctionColdTimeoutMs)
         self.externalLLMBaseURL = try container.decodeIfPresent(String.self, forKey: .externalLLMBaseURL) ?? ""
         self.externalLLMModel = try container.decodeIfPresent(String.self, forKey: .externalLLMModel) ?? ""
+        self.livePreviewSource = try container.decode(String.self, forKey: .livePreviewSource)
         self.correctionMode = try container.decode(CorrectionModeID.self, forKey: .correctionMode)
         self.numberOutputPreference = try container.decode(NumberOutputPreferenceID.self, forKey: .numberOutputPreference)
         self.punctuationPreference = try container.decode(PunctuationPreferenceID.self, forKey: .punctuationPreference)
@@ -680,7 +719,35 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
         correctionColdTimeoutMs = Self.clampedCorrectionColdTimeoutMs(correctionColdTimeoutMs)
         externalLLMBaseURL = externalLLMBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         externalLLMModel = externalLLMModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        livePreviewSource = normalizedLivePreviewSource(rawValue: livePreviewSource).rawValue
         userDictionary = BridgeUserDictionaryEntry.normalizedEntries(userDictionary)
+    }
+
+    func hasSameEditableSettings(as other: BridgeMacSettingsPayload) -> Bool {
+        var left = self
+        var right = other
+        left.normalize()
+        right.normalize()
+        return left.enabledRecognitionSources == right.enabledRecognitionSources
+            && left.asrModelIDsByRecognitionSource == right.asrModelIDsByRecognitionSource
+            && left.languageIDs == right.languageIDs
+            && left.asrTimeoutSecByRecognitionSource == right.asrTimeoutSecByRecognitionSource
+            && left.correctionBackend == right.correctionBackend
+            && left.correctionTimeoutMs == right.correctionTimeoutMs
+            && left.correctionColdTimeoutMs == right.correctionColdTimeoutMs
+            && left.externalLLMBaseURL == right.externalLLMBaseURL
+            && left.externalLLMModel == right.externalLLMModel
+            && left.livePreviewSource == right.livePreviewSource
+            && left.correctionMode == right.correctionMode
+            && left.numberOutputPreference == right.numberOutputPreference
+            && left.punctuationPreference == right.punctuationPreference
+            && left.autoCommit == right.autoCommit
+            && left.userDictionary == right.userDictionary
+    }
+
+    private func normalizedLivePreviewSource(rawValue: String) -> MacLivePreviewSource {
+        let source = MacLivePreviewSource(rawValue: rawValue.trimmingCharacters(in: .whitespacesAndNewlines)) ?? .off
+        return livePreviewSourceOptions.contains(source) ? source : .off
     }
 
     func supportedLanguageOptions(for sourceID: String) -> [ASRLanguageOption] {
@@ -740,6 +807,7 @@ struct BridgeSettingsUpdateRequest: Encodable {
     let correctionColdTimeoutMs: Int
     let externalLLMBaseURL: String?
     let externalLLMModel: String?
+    let livePreviewSource: String
     let correctionMode: String
     let numberOutputPreference: String
     let punctuationPreference: String
@@ -756,6 +824,7 @@ struct BridgeSettingsUpdateRequest: Encodable {
         case correctionColdTimeoutMs = "correction_cold_timeout_ms"
         case externalLLMBaseURL = "external_llm_base_url"
         case externalLLMModel = "external_llm_model"
+        case livePreviewSource = "live_preview_source"
         case correctionMode = "correction_mode"
         case numberOutputPreference = "number_output_preference"
         case punctuationPreference = "punctuation_preference"

@@ -99,6 +99,7 @@ private struct RemoteBridgeSettingsUpdateRequest: Encodable {
     let correctionColdTimeoutMs: Int
     let externalLLMBaseURL: String?
     let externalLLMModel: String?
+    let livePreviewSource: String
     let correctionMode: String
     let numberOutputPreference: String
     let punctuationPreference: String
@@ -116,6 +117,7 @@ private struct RemoteBridgeSettingsUpdateRequest: Encodable {
         case correctionColdTimeoutMs = "correction_cold_timeout_ms"
         case externalLLMBaseURL = "external_llm_base_url"
         case externalLLMModel = "external_llm_model"
+        case livePreviewSource = "live_preview_source"
         case correctionMode = "correction_mode"
         case numberOutputPreference = "number_output_preference"
         case punctuationPreference = "punctuation_preference"
@@ -194,6 +196,7 @@ struct RemoteBridgeClient {
             correctionColdTimeoutMs: settings.correctionColdTimeoutMs,
             externalLLMBaseURL: settings.externalLLMBaseURL,
             externalLLMModel: settings.externalLLMModel,
+            livePreviewSource: settings.livePreviewSource,
             correctionMode: settings.correctionMode,
             numberOutputPreference: settings.numberOutputPreference,
             punctuationPreference: settings.punctuationPreference,

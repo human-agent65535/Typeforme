@@ -118,6 +118,12 @@ final class BridgeService {
         let oldSources = AppSettings.enabledRecognitionSources
         let oldQwenASRModelID = AppSettings.asrQwenLlamaModelID
         let sources = try resolveRecognitionSources(request.enabledRecognitionSources) ?? oldSources
+        let requestedLivePreviewSource: VoiceLivePreviewSource?
+        if let rawLivePreviewSource = request.livePreviewSource {
+            requestedLivePreviewSource = try resolveLivePreviewSource(rawLivePreviewSource, sources: sources)
+        } else {
+            requestedLivePreviewSource = nil
+        }
         let supportedLanguages = ASRLanguageSelection.supportedOptions(for: sources)
         let languageIDs = ASRLanguageSelection.validatedIDs(
             request.languageIDs ?? AppSettings.asrLanguageIDs,
@@ -191,6 +197,15 @@ final class BridgeService {
         }
         if let rawModel = request.externalLLMModel {
             UserDefaults.standard.set(rawModel.trimmingCharacters(in: .whitespacesAndNewlines), forKey: AppSettings.Keys.externalLLMModel)
+        }
+        if let requestedLivePreviewSource {
+            applyLivePreviewSource(requestedLivePreviewSource)
+        } else if request.enabledRecognitionSources != nil {
+            let livePreviewSource = BridgeSettingsPayload.normalizedLivePreviewSource(
+                AppSettings.voiceLivePreviewSource,
+                sources: sources
+            )
+            applyLivePreviewSource(livePreviewSource)
         }
 
         if let rawMode = request.correctionMode {
@@ -1012,6 +1027,30 @@ final class BridgeService {
             throw BridgeServiceError.invalidRequest("Unknown correction backend: \(raw)")
         }
         return backend
+    }
+
+    private func resolveLivePreviewSource(
+        _ raw: String,
+        sources: [RecognitionSource]
+    ) throws -> VoiceLivePreviewSource {
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let source = VoiceLivePreviewSource(rawValue: value) else {
+            throw BridgeServiceError.invalidRequest("Unknown live preview source: \(raw)")
+        }
+        guard VoiceLivePreviewSource.options(forRecognitionSources: sources).contains(source) else {
+            throw BridgeServiceError.invalidRequest("Live preview source is not enabled: \(raw)")
+        }
+        return source
+    }
+
+    private func applyLivePreviewSource(_ source: VoiceLivePreviewSource) {
+        if source == .off {
+            UserDefaults.standard.set(false, forKey: AppSettings.Keys.voiceLivePreview)
+            UserDefaults.standard.set(VoiceLivePreviewSource.off.rawValue, forKey: AppSettings.Keys.voiceLivePreviewSource)
+        } else {
+            UserDefaults.standard.set(true, forKey: AppSettings.Keys.voiceLivePreview)
+            UserDefaults.standard.set(source.rawValue, forKey: AppSettings.Keys.voiceLivePreviewSource)
+        }
     }
 
     private func normalizedExternalLLMBaseURL(_ raw: String) throws -> String {

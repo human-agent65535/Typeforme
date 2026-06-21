@@ -216,6 +216,7 @@ struct BridgeSettingsPayload: Codable, Sendable {
     var correctionColdTimeoutMs: Int
     var externalLLMBaseURL: String?
     var externalLLMModel: String?
+    var livePreviewSource: String
     var correctionMode: String
     var numberOutputPreference: String
     var punctuationPreference: String
@@ -241,6 +242,7 @@ struct BridgeSettingsPayload: Codable, Sendable {
         case correctionColdTimeoutMs = "correction_cold_timeout_ms"
         case externalLLMBaseURL = "external_llm_base_url"
         case externalLLMModel = "external_llm_model"
+        case livePreviewSource = "live_preview_source"
         case correctionMode = "correction_mode"
         case numberOutputPreference = "number_output_preference"
         case punctuationPreference = "punctuation_preference"
@@ -356,6 +358,7 @@ struct BridgeSettingsPayload: Codable, Sendable {
             correctionColdTimeoutMs: AppSettings.correctionColdTimeoutMs,
             externalLLMBaseURL: AppSettings.externalLLMBaseURL,
             externalLLMModel: AppSettings.externalLLMModel,
+            livePreviewSource: resolved.livePreviewSource.rawValue,
             correctionMode: resolved.correctionMode.rawValue,
             numberOutputPreference: AppSettings.numberOutputPreference.rawValue,
             punctuationPreference: AppSettings.punctuationPreference.rawValue,
@@ -393,13 +396,15 @@ struct BridgeSettingsPayload: Codable, Sendable {
         )
         let correctionMode = AppSettings.correctionMode
         let correctionBackend = normalizedCorrectionBackend(AppSettings.correctionBackend)
+        let livePreviewSource = normalizedLivePreviewSource(AppSettings.voiceLivePreviewSource, sources: sources)
         return BridgeResolvedSettings(
             sources: sources,
             supportedBySource: supportedBySource,
             languageIDs: languageIDs,
             supportedLanguages: supportedLanguages,
             correctionMode: correctionMode,
-            correctionBackend: correctionBackend
+            correctionBackend: correctionBackend,
+            livePreviewSource: livePreviewSource
         )
     }
 
@@ -566,6 +571,10 @@ struct BridgeSettingsPayload: Codable, Sendable {
         controllableCorrectionBackends.contains(backend) ? backend : .qwen35_2B
     }
 
+    static func normalizedLivePreviewSource(_ source: VoiceLivePreviewSource, sources: [RecognitionSource]) -> VoiceLivePreviewSource {
+        VoiceLivePreviewSource.options(forRecognitionSources: sources).contains(source) ? source : .off
+    }
+
     mutating func normalize() {
         recognitionSourceOptions = Self.controllableRecognitionSources
         enabledRecognitionSources = RecognitionSource.normalizedSources(enabledRecognitionSources).map(\.rawValue)
@@ -595,6 +604,10 @@ struct BridgeSettingsPayload: Codable, Sendable {
         punctuationPreference = PunctuationOutputPreference.normalized(punctuationPreference).rawValue
         externalLLMBaseURL = externalLLMBaseURL?.trimmingCharacters(in: .whitespacesAndNewlines)
         externalLLMModel = externalLLMModel?.trimmingCharacters(in: .whitespacesAndNewlines)
+        livePreviewSource = Self.normalizedLivePreviewSource(
+            VoiceLivePreviewSource(rawValue: livePreviewSource.trimmingCharacters(in: .whitespacesAndNewlines)) ?? .off,
+            sources: enabledSources
+        ).rawValue
         correctionTimeoutMs = Self.clampedCorrectionTimeoutMs(correctionTimeoutMs)
         correctionColdTimeoutMs = Self.clampedCorrectionColdTimeoutMs(correctionColdTimeoutMs)
         languageIDs = ASRLanguageSelection.validatedIDs(
@@ -653,6 +666,7 @@ private struct BridgeResolvedSettings {
     let supportedLanguages: [BridgeLanguageOption]
     let correctionMode: CorrectionMode
     let correctionBackend: CorrectionBackendKind
+    let livePreviewSource: VoiceLivePreviewSource
 
     init(
         sources: [RecognitionSource],
@@ -660,7 +674,8 @@ private struct BridgeResolvedSettings {
         languageIDs: [String],
         supportedLanguages: [BridgeLanguageOption],
         correctionMode: CorrectionMode,
-        correctionBackend: CorrectionBackendKind
+        correctionBackend: CorrectionBackendKind,
+        livePreviewSource: VoiceLivePreviewSource
     ) {
         self.sources = sources
         self.supportedBySource = supportedBySource
@@ -668,6 +683,7 @@ private struct BridgeResolvedSettings {
         self.supportedLanguages = supportedLanguages
         self.correctionMode = correctionMode
         self.correctionBackend = correctionBackend
+        self.livePreviewSource = livePreviewSource
     }
 
     func revisionPayload(userDictionary: [DictionaryEntry]) -> BridgeSettingsRevisionPayload {
@@ -688,6 +704,7 @@ private struct BridgeResolvedSettings {
             correctionColdTimeoutMs: AppSettings.correctionColdTimeoutMs,
             externalLLMBaseURL: AppSettings.externalLLMBaseURL,
             externalLLMModel: AppSettings.externalLLMModel,
+            livePreviewSource: livePreviewSource.rawValue,
             correctionMode: correctionMode.rawValue,
             numberOutputPreference: AppSettings.numberOutputPreference.rawValue,
             punctuationPreference: AppSettings.punctuationPreference.rawValue,
@@ -713,6 +730,7 @@ private struct BridgeSettingsRevisionPayload: Encodable {
     let correctionColdTimeoutMs: Int
     let externalLLMBaseURL: String?
     let externalLLMModel: String?
+    let livePreviewSource: String
     let correctionMode: String
     let numberOutputPreference: String
     let punctuationPreference: String
@@ -735,6 +753,7 @@ private struct BridgeSettingsRevisionPayload: Encodable {
         case correctionColdTimeoutMs = "correction_cold_timeout_ms"
         case externalLLMBaseURL = "external_llm_base_url"
         case externalLLMModel = "external_llm_model"
+        case livePreviewSource = "live_preview_source"
         case correctionMode = "correction_mode"
         case numberOutputPreference = "number_output_preference"
         case punctuationPreference = "punctuation_preference"
@@ -758,6 +777,7 @@ private struct BridgeSettingsRevisionPayload: Encodable {
         correctionColdTimeoutMs: Int,
         externalLLMBaseURL: String?,
         externalLLMModel: String?,
+        livePreviewSource: String,
         correctionMode: String,
         numberOutputPreference: String,
         punctuationPreference: String,
@@ -779,6 +799,7 @@ private struct BridgeSettingsRevisionPayload: Encodable {
         self.correctionColdTimeoutMs = correctionColdTimeoutMs
         self.externalLLMBaseURL = externalLLMBaseURL
         self.externalLLMModel = externalLLMModel
+        self.livePreviewSource = livePreviewSource
         self.correctionMode = correctionMode
         self.numberOutputPreference = numberOutputPreference
         self.punctuationPreference = punctuationPreference
@@ -803,6 +824,7 @@ private struct BridgeSettingsRevisionPayload: Encodable {
             correctionColdTimeoutMs: payload.correctionColdTimeoutMs,
             externalLLMBaseURL: payload.externalLLMBaseURL,
             externalLLMModel: payload.externalLLMModel,
+            livePreviewSource: payload.livePreviewSource,
             correctionMode: payload.correctionMode,
             numberOutputPreference: payload.numberOutputPreference,
             punctuationPreference: payload.punctuationPreference,
@@ -823,6 +845,7 @@ struct BridgeSettingsUpdateRequest: Decodable {
     var correctionColdTimeoutMs: Int?
     var externalLLMBaseURL: String?
     var externalLLMModel: String?
+    var livePreviewSource: String?
     var correctionMode: String?
     var numberOutputPreference: String?
     var punctuationPreference: String?
@@ -840,6 +863,7 @@ struct BridgeSettingsUpdateRequest: Decodable {
         case correctionColdTimeoutMs = "correction_cold_timeout_ms"
         case externalLLMBaseURL = "external_llm_base_url"
         case externalLLMModel = "external_llm_model"
+        case livePreviewSource = "live_preview_source"
         case correctionMode = "correction_mode"
         case numberOutputPreference = "number_output_preference"
         case punctuationPreference = "punctuation_preference"

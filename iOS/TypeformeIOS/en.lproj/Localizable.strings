@@ -2,9 +2,11 @@
 
 // Toolbar / sheets
 "Pairing" = "Pairing";
+"Mac Settings" = "Mac Settings";
 "Dictation Settings" = "Dictation Settings";
 "Keyboard Guide" = "Keyboard Guide";
 "Done" = "Done";
+"Discard" = "Discard";
 
 // Setup status card
 "Paired with Mac" = "Paired with Mac";
@@ -171,6 +173,7 @@
 // Dictation settings
 "Speech" = "Speech";
 "Recognition Sources" = "Recognition Sources";
+"Mac Live Preview" = "Mac Live Preview";
 "Preview Source" = "Preview Source";
 "ASR Timeout" = "ASR Timeout";
 "Refine" = "Refine";
@@ -182,9 +185,11 @@
 "Punctuation" = "Punctuation";
 "Auto Commit" = "Auto Commit";
 "Loading dictation settings" = "Loading dictation settings";
+"Discard Mac settings changes?" = "Discard Mac settings changes?";
 "Discard dictation settings changes?" = "Discard dictation settings changes?";
 "Discard Changes" = "Discard Changes";
 "Keep Editing" = "Keep Editing";
+"You have unsaved Mac settings changes that won't be pushed to the Mac." = "You have unsaved Mac settings changes that won't be pushed to the Mac.";
 "You have unsaved dictation changes that won't be pushed to the Mac." = "You have unsaved dictation changes that won't be pushed to the Mac.";
 
 // Language selection
@@ -200,6 +205,7 @@
 "Changes apply immediately after Full Access is enabled." = "Changes apply immediately after Full Access is enabled.";
 "Changes apply immediately. Controls how long Typeforme keeps keyboard dictation ready after the host app is opened." = "Changes apply immediately. Controls how long Typeforme keeps keyboard dictation ready after the host app is opened.";
 "This preview setting is local to the iPhone keyboard and applies immediately. It does not change the Mac live transcript setting." = "This preview setting is local to the iPhone keyboard and applies immediately. It does not change the Mac live transcript setting.";
+"This preview setting is saved to the paired Mac when you tap Done. It does not change the iPhone keyboard preview." = "This preview setting is saved to the paired Mac when you tap Done. It does not change the iPhone keyboard preview.";
 "On-device Only keeps preview audio local. Cloud Fallback uses on-device when available and Apple servers otherwise. Preview punctuation follows Dictation Settings. Host audio session controls how long keyboard dictation stays ready." = "On-device Only keeps preview audio local. Cloud Fallback uses on-device when available and Apple servers otherwise. Preview punctuation follows Dictation Settings. Host audio session controls how long keyboard dictation stays ready.";
 "Dictation Vocabulary" = "Dictation Vocabulary";
 "Start Typeforme on Mac, then refresh before recording." = "Start Typeforme on Mac, then refresh before recording.";

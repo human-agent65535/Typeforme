@@ -91,6 +91,7 @@ struct BridgeClient: Sendable {
             correctionColdTimeoutMs: settings.correctionColdTimeoutMs,
             externalLLMBaseURL: settings.externalLLMBaseURL,
             externalLLMModel: settings.externalLLMModel,
+            livePreviewSource: settings.livePreviewSource,
             correctionMode: settings.correctionMode.rawValue,
             numberOutputPreference: settings.numberOutputPreference.rawValue,
             punctuationPreference: settings.punctuationPreference.rawValue,

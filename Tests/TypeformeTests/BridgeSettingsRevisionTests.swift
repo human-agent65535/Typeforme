@@ -41,6 +41,18 @@ struct BridgeSettingsRevisionTests {
         #expect(BridgeSettingsPayload.settingsRevision(for: payload) != revision)
     }
 
+    @Test func revisionChangesWhenLivePreviewSourceChanges() {
+        var payload = BridgeSettingsPayload.current()
+        let revision = BridgeSettingsPayload.settingsRevision(for: payload)
+
+        payload.livePreviewSource = VoiceLivePreviewSource.off.rawValue
+        if BridgeSettingsPayload.settingsRevision(for: payload) == revision {
+            payload.livePreviewSource = VoiceLivePreviewSource.appleSpeech.rawValue
+        }
+
+        #expect(BridgeSettingsPayload.settingsRevision(for: payload) != revision)
+    }
+
     @Test func revisionChangesWhenUserDictionaryChanges() {
         var payload = BridgeSettingsPayload.current()
         let revision = BridgeSettingsPayload.settingsRevision(for: payload)

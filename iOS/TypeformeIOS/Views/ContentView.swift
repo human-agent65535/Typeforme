@@ -1596,7 +1596,7 @@ private struct MacSettingsView: View {
 
     private var hasUnsavedChanges: Bool {
         guard let draft, let initialDraft else { return false }
-        return draft != initialDraft
+        return !draft.hasSameEditableSettings(as: initialDraft)
     }
 
     var body: some View {
@@ -1645,7 +1645,18 @@ private struct MacSettingsView: View {
                     }
                 }
 
-                LivePreviewSettingsSection(serverNemotronAvailable: draft.supportsServerNemotronPreview)
+                Section {
+                    Picker("Preview Source", selection: macLivePreviewSourceBinding) {
+                        ForEach(draft.livePreviewSourceOptions) { source in
+                            Text(source.title).tag(source.rawValue)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                } header: {
+                    Text("Mac Live Preview")
+                } footer: {
+                    Text("This preview setting is saved to the paired Mac when you tap Done. It does not change the iPhone keyboard preview.")
+                }
 
                 Section("Refine") {
                     Picker("Engine", selection: correctionBackendBinding) {
@@ -1791,12 +1802,14 @@ private struct MacSettingsView: View {
                 }
             }
             ToolbarItem(placement: .cancellationAction) {
-                Button("Cancel") { attemptDismiss() }
-                    .disabled(isSaving)
+                if hasUnsavedChanges {
+                    Button("Discard") { showingDiscardConfirmation = true }
+                        .disabled(isSaving)
+                }
             }
             ToolbarItem(placement: .confirmationAction) {
                 Button {
-                    Task { await saveAndDismiss() }
+                    Task { await finishEditing() }
                 } label: {
                     HStack(spacing: 6) {
                         if isSaving {
@@ -1805,10 +1818,10 @@ private struct MacSettingsView: View {
                         }
                         Text(isSaving
                             ? NSLocalizedString("Saving…", comment: "Dictation settings save in progress")
-                            : NSLocalizedString("Save", comment: "Save dictation settings button"))
+                            : NSLocalizedString("Done", comment: "Close or save Mac settings button"))
                     }
                 }
-                .disabled(draft == nil || isSaving || !hasUnsavedChanges)
+                .disabled(draft == nil || isSaving)
             }
         }
         .interactiveDismissDisabled(hasUnsavedChanges)
@@ -1833,14 +1846,6 @@ private struct MacSettingsView: View {
         }
     }
 
-    private func attemptDismiss() {
-        if hasUnsavedChanges {
-            showingDiscardConfirmation = true
-        } else {
-            dismiss()
-        }
-    }
-
     private func repairPairing(clearExisting: Bool) {
         if clearExisting {
             state.unpair()
@@ -1851,9 +1856,13 @@ private struct MacSettingsView: View {
         }
     }
 
-    private func saveAndDismiss() async {
-        await save()
-        if errorMessage == nil {
+    private func finishEditing() async {
+        if hasUnsavedChanges {
+            await save()
+            if errorMessage == nil {
+                dismiss()
+            }
+        } else {
             dismiss()
         }
     }
@@ -1862,8 +1871,9 @@ private struct MacSettingsView: View {
         Binding {
             draft?.isRecognitionSourceEnabled(source) ?? false
         } set: { value in
-            draft?.setRecognitionSource(source, enabled: value)
-            normalizeDraft()
+            updateDraft(normalize: true) { draft in
+                draft.setRecognitionSource(source, enabled: value)
+            }
         }
     }
 
@@ -1872,8 +1882,19 @@ private struct MacSettingsView: View {
             guard let draft else { return "" }
             return draft.asrModelID(for: source.rawValue)
         } set: { value in
-            draft?.asrModelIDsByRecognitionSource[source.rawValue] = value
-            normalizeDraft()
+            updateDraft(normalize: true) { draft in
+                draft.asrModelIDsByRecognitionSource[source.rawValue] = value
+            }
+        }
+    }
+
+    private var macLivePreviewSourceBinding: Binding<String> {
+        Binding {
+            draft?.livePreviewSource ?? MacLivePreviewSource.off.rawValue
+        } set: { value in
+            updateDraft(normalize: true) { draft in
+                draft.livePreviewSource = value
+            }
         }
     }
 
@@ -1881,7 +1902,9 @@ private struct MacSettingsView: View {
         Binding {
             draft?.correctionBackend ?? ""
         } set: { value in
-            draft?.correctionBackend = value
+            updateDraft { draft in
+                draft.correctionBackend = value
+            }
         }
     }
 
@@ -1889,7 +1912,9 @@ private struct MacSettingsView: View {
         Binding {
             draft?.externalLLMBaseURL ?? ""
         } set: { value in
-            draft?.externalLLMBaseURL = value
+            updateDraft { draft in
+                draft.externalLLMBaseURL = value
+            }
         }
     }
 
@@ -1897,7 +1922,9 @@ private struct MacSettingsView: View {
         Binding {
             draft?.externalLLMModel ?? ""
         } set: { value in
-            draft?.externalLLMModel = value
+            updateDraft { draft in
+                draft.externalLLMModel = value
+            }
         }
     }
 
@@ -1909,7 +1936,9 @@ private struct MacSettingsView: View {
         Binding {
             draft?.asrTimeoutSec(for: source.rawValue) ?? 120
         } set: { value in
-            draft?.asrTimeoutSecByRecognitionSource[source.rawValue] = BridgeMacSettingsPayload.clampedASRTimeoutSec(value)
+            updateDraft { draft in
+                draft.asrTimeoutSecByRecognitionSource[source.rawValue] = BridgeMacSettingsPayload.clampedASRTimeoutSec(value)
+            }
         }
     }
 
@@ -1917,7 +1946,9 @@ private struct MacSettingsView: View {
         Binding {
             Double(draft?.correctionTimeoutMs ?? 1500) / 1000
         } set: { value in
-            draft?.correctionTimeoutMs = BridgeMacSettingsPayload.correctionTimeoutMs(fromSeconds: value)
+            updateDraft { draft in
+                draft.correctionTimeoutMs = BridgeMacSettingsPayload.correctionTimeoutMs(fromSeconds: value)
+            }
         }
     }
 
@@ -1925,7 +1956,9 @@ private struct MacSettingsView: View {
         Binding {
             Double(draft?.correctionColdTimeoutMs ?? 8000) / 1000
         } set: { value in
-            draft?.correctionColdTimeoutMs = BridgeMacSettingsPayload.correctionColdTimeoutMs(fromSeconds: value)
+            updateDraft { draft in
+                draft.correctionColdTimeoutMs = BridgeMacSettingsPayload.correctionColdTimeoutMs(fromSeconds: value)
+            }
         }
     }
 
@@ -1933,7 +1966,9 @@ private struct MacSettingsView: View {
         Binding {
             draft?.correctionMode ?? .polish
         } set: { value in
-            draft?.correctionMode = value
+            updateDraft { draft in
+                draft.correctionMode = value
+            }
         }
     }
 
@@ -1941,7 +1976,9 @@ private struct MacSettingsView: View {
         Binding {
             draft?.numberOutputPreference ?? .automatic
         } set: { value in
-            draft?.numberOutputPreference = value
+            updateDraft { draft in
+                draft.numberOutputPreference = value
+            }
         }
     }
 
@@ -1949,7 +1986,9 @@ private struct MacSettingsView: View {
         Binding {
             draft?.punctuationPreference ?? .normal
         } set: { value in
-            draft?.punctuationPreference = value
+            updateDraft { draft in
+                draft.punctuationPreference = value
+            }
         }
     }
 
@@ -1970,14 +2009,21 @@ private struct MacSettingsView: View {
         Binding {
             draft?.userDictionary ?? []
         } set: { value in
-            draft?.userDictionary = value
-            normalizeDraft()
+            updateDraft(normalize: true) { draft in
+                draft.userDictionary = value
+            }
         }
     }
 
-    private func normalizeDraft() {
+    private func updateDraft(
+        normalize: Bool = false,
+        _ mutate: (inout BridgeMacSettingsPayload) -> Void
+    ) {
         guard var current = draft else { return }
-        current.normalize()
+        mutate(&current)
+        if normalize {
+            current.normalize()
+        }
         draft = current
     }
 
