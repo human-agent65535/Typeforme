@@ -1019,22 +1019,8 @@ private struct KeyboardSettingsView: View {
             } footer: {
                 Text("Chinese self-learning is Rime's user dictionary. Touch learning automatically adapts per-key tap offsets after corrections and stores no text. Reset Touch Learning only clears the tap-position model.")
             }
+            LivePreviewSettingsSection()
             Section {
-                Toggle("Live Preview", isOn: livePreviewBinding)
-                Picker("Preview Source", selection: livePreviewSourceBinding) {
-                    ForEach(state.keyboardLivePreviewSourceOptions) { source in
-                        Text(source.title).tag(source)
-                    }
-                }
-                .pickerStyle(.menu)
-                .disabled(!state.keyboardLivePreviewEnabled || state.isBusy)
-                Picker("Preview Recognition", selection: livePreviewRecognitionModeBinding) {
-                    ForEach(KeyboardLivePreviewRecognitionMode.allCases) { mode in
-                        Text(mode.title).tag(mode)
-                    }
-                }
-                .pickerStyle(.menu)
-                .disabled(!state.keyboardLivePreviewEnabled || state.keyboardLivePreviewSource != .appleSpeech || state.isBusy)
                 Picker("Host audio session", selection: hostAudioSessionLengthBinding) {
                     ForEach(HostAudioSessionLength.allCases) { length in
                         Text(length.title).tag(length)
@@ -1044,7 +1030,7 @@ private struct KeyboardSettingsView: View {
             } header: {
                 Text("Audio")
             } footer: {
-                Text("Server Nemotron appears when the paired Mac has Nemotron enabled. Apple recognition controls only this iPhone's Apple Speech preview. Host audio session controls how long keyboard dictation stays ready.")
+                Text("Controls how long Typeforme keeps keyboard dictation ready after the host app is opened.")
             }
         }
         .navigationTitle("Keyboard Settings")
@@ -1085,30 +1071,6 @@ private struct KeyboardSettingsView: View {
             state.keyboardKeyHapticsEnabled
         } set: { enabled in
             state.setKeyboardKeyHapticsEnabled(enabled)
-        }
-    }
-
-    private var livePreviewBinding: Binding<Bool> {
-        Binding {
-            state.keyboardLivePreviewEnabled
-        } set: { enabled in
-            state.setKeyboardLivePreviewEnabled(enabled)
-        }
-    }
-
-    private var livePreviewSourceBinding: Binding<KeyboardLivePreviewSource> {
-        Binding {
-            state.keyboardLivePreviewSource
-        } set: { source in
-            state.setKeyboardLivePreviewSource(source)
-        }
-    }
-
-    private var livePreviewRecognitionModeBinding: Binding<KeyboardLivePreviewRecognitionMode> {
-        Binding {
-            state.keyboardLivePreviewRecognitionMode
-        } set: { mode in
-            state.setKeyboardLivePreviewRecognitionMode(mode)
         }
     }
 
@@ -1157,6 +1119,74 @@ private struct KeyboardSettingsView: View {
             state.hostAudioSessionLength
         } set: { length in
             state.setHostAudioSessionLength(length)
+        }
+    }
+}
+
+private struct LivePreviewSettingsSection: View {
+    @Environment(AppState.self) private var state
+    let serverNemotronAvailable: Bool?
+
+    init(serverNemotronAvailable: Bool? = nil) {
+        self.serverNemotronAvailable = serverNemotronAvailable
+    }
+
+    var body: some View {
+        Section {
+            Toggle("Live Preview", isOn: livePreviewBinding)
+            Picker("Preview Source", selection: livePreviewSourceBinding) {
+                ForEach(sourceOptions) { source in
+                    Text(source.title).tag(source)
+                }
+            }
+            .pickerStyle(.menu)
+            .disabled(!state.keyboardLivePreviewEnabled || state.isBusy)
+            Picker("Preview Recognition", selection: livePreviewRecognitionModeBinding) {
+                ForEach(KeyboardLivePreviewRecognitionMode.allCases) { mode in
+                    Text(mode.title).tag(mode)
+                }
+            }
+            .pickerStyle(.menu)
+            .disabled(!state.keyboardLivePreviewEnabled || state.keyboardLivePreviewSource != .appleSpeech || state.isBusy)
+        } header: {
+            Text("Preview")
+        } footer: {
+            Text("Server Nemotron appears when the paired Mac has Nemotron enabled. Apple Speech preview runs on this iPhone.")
+        }
+    }
+
+    private var sourceOptions: [KeyboardLivePreviewSource] {
+        if let serverNemotronAvailable {
+            var options: [KeyboardLivePreviewSource] = [.appleSpeech]
+            if serverNemotronAvailable || state.keyboardLivePreviewSource == .serverNemotron {
+                options.append(.serverNemotron)
+            }
+            return options
+        }
+        return state.keyboardLivePreviewSourceOptions
+    }
+
+    private var livePreviewBinding: Binding<Bool> {
+        Binding {
+            state.keyboardLivePreviewEnabled
+        } set: { enabled in
+            state.setKeyboardLivePreviewEnabled(enabled)
+        }
+    }
+
+    private var livePreviewSourceBinding: Binding<KeyboardLivePreviewSource> {
+        Binding {
+            state.keyboardLivePreviewSource
+        } set: { source in
+            state.setKeyboardLivePreviewSource(source)
+        }
+    }
+
+    private var livePreviewRecognitionModeBinding: Binding<KeyboardLivePreviewRecognitionMode> {
+        Binding {
+            state.keyboardLivePreviewRecognitionMode
+        } set: { mode in
+            state.setKeyboardLivePreviewRecognitionMode(mode)
         }
     }
 }
@@ -1609,6 +1639,8 @@ private struct MacSettingsView: View {
                         }
                     }
                 }
+
+                LivePreviewSettingsSection(serverNemotronAvailable: draft.supportsServerNemotronPreview)
 
                 Section("Refine") {
                     Picker("Engine", selection: correctionBackendBinding) {

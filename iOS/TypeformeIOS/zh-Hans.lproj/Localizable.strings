@@ -32,6 +32,7 @@
 "Typing" = "输入";
 "Learning" = "学习";
 "Audio" = "音频";
+"Preview" = "预览";
 "Host audio session" = "宿主音频会话";
 "Live Preview" = "实时预览";
 "Preview Recognition" = "预览识别";
@@ -197,6 +198,7 @@
 "On-device preview availability is reported by iOS. Manage Dictation languages and system updates in iOS Settings." = "端上预览能力以 iOS 当前报告为准。听写语言和系统更新请在 iOS 设置中管理。";
 "Changes apply immediately after Full Access is enabled." = "开启完全访问后,更改会立即生效。";
 "Changes apply immediately. Controls how long Typeforme keeps keyboard dictation ready after the host app is opened." = "更改会立即生效。用于控制从键盘打开宿主 app 后,Typeforme 保持听写就绪的时长。";
+"Server Nemotron appears when the paired Mac has Nemotron enabled. Apple Speech preview runs on this iPhone." = "配对的 Mac 启用 Nemotron 后会出现 Server Nemotron。Apple Speech 预览在这台 iPhone 上运行。";
 "On-device Only keeps preview audio local. Cloud Fallback uses on-device when available and Apple servers otherwise. Preview punctuation follows Dictation Settings. Host audio session controls how long keyboard dictation stays ready." = "仅端上会把预览音频留在本机。云端回退会优先使用端上识别,不支持端上时使用 Apple 服务器。预览标点跟随听写设置。宿主音频会话用于控制键盘听写保持就绪的时长。";
 "Dictation Vocabulary" = "听写词汇";
 "Start Typeforme on Mac, then refresh before recording." = "先启动 Mac 上的 Typeforme,再刷新后录音。";

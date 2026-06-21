@@ -32,6 +32,7 @@
 "Typing" = "Typing";
 "Learning" = "Learning";
 "Audio" = "Audio";
+"Preview" = "Preview";
 "Host audio session" = "Host audio session";
 "Live Preview" = "Live Preview";
 "Preview Recognition" = "Preview Recognition";
@@ -197,6 +198,7 @@
 "On-device preview availability is reported by iOS. Manage Dictation languages and system updates in iOS Settings." = "On-device preview availability is reported by iOS. Manage Dictation languages and system updates in iOS Settings.";
 "Changes apply immediately after Full Access is enabled." = "Changes apply immediately after Full Access is enabled.";
 "Changes apply immediately. Controls how long Typeforme keeps keyboard dictation ready after the host app is opened." = "Changes apply immediately. Controls how long Typeforme keeps keyboard dictation ready after the host app is opened.";
+"Server Nemotron appears when the paired Mac has Nemotron enabled. Apple Speech preview runs on this iPhone." = "Server Nemotron appears when the paired Mac has Nemotron enabled. Apple Speech preview runs on this iPhone.";
 "On-device Only keeps preview audio local. Cloud Fallback uses on-device when available and Apple servers otherwise. Preview punctuation follows Dictation Settings. Host audio session controls how long keyboard dictation stays ready." = "On-device Only keeps preview audio local. Cloud Fallback uses on-device when available and Apple servers otherwise. Preview punctuation follows Dictation Settings. Host audio session controls how long keyboard dictation stays ready.";
 "Dictation Vocabulary" = "Dictation Vocabulary";
 "Start Typeforme on Mac, then refresh before recording." = "Start Typeforme on Mac, then refresh before recording.";
