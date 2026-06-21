@@ -28,6 +28,8 @@ final class BridgeLivePreviewStreamer: @unchecked Sendable {
     private var uploadInFlight = false
     private var startInFlight = false
     private var finished = false
+    private var finishPendingAfterUpload = false
+    private var cancelPendingAfterUpload = false
     private var converter: AVAudioConverter?
     private var converterInputSampleRate = 0.0
     private var lastTranscript = ""
@@ -59,14 +61,14 @@ final class BridgeLivePreviewStreamer: @unchecked Sendable {
     }
 
     func finish() {
-        audioQueue.async { [weak self] in
-            self?.finishOnAudioQueue()
+        audioQueue.async {
+            self.finishOnAudioQueue()
         }
     }
 
     func cancel() {
-        audioQueue.async { [weak self] in
-            self?.cancelOnAudioQueue()
+        audioQueue.async {
+            self.cancelOnAudioQueue()
         }
     }
 
@@ -75,16 +77,16 @@ final class BridgeLivePreviewStreamer: @unchecked Sendable {
         startInFlight = true
         let client = self.client
         let languageIDs = self.languageIDs
-        Task { [weak self] in
+        Task {
             do {
                 let response = try await client.startLivePreview(languageIDs: languageIDs)
-                self?.audioQueue.async { [weak self] in
-                    self?.handleStartResponseOnAudioQueue(response)
+                self.audioQueue.async {
+                    self.handleStartResponseOnAudioQueue(response)
                 }
             } catch {
                 let message = error.localizedDescription
-                self?.audioQueue.async { [weak self] in
-                    self?.handleFailureOnAudioQueue(message: message)
+                self.audioQueue.async {
+                    self.handleFailureOnAudioQueue(message: message)
                 }
             }
         }
@@ -93,7 +95,11 @@ final class BridgeLivePreviewStreamer: @unchecked Sendable {
     private func handleStartResponseOnAudioQueue(_ response: BridgeLivePreviewStartResponse) {
         startInFlight = false
         guard !finished else {
-            Task { try? await client.finishLivePreview(sessionID: response.sessionID) }
+            sendFinishRequest(
+                sessionID: response.sessionID,
+                trailingData: pendingData
+            )
+            pendingData.removeAll(keepingCapacity: false)
             return
         }
         sessionID = response.sessionID
@@ -144,16 +150,68 @@ final class BridgeLivePreviewStreamer: @unchecked Sendable {
             lastTranscript = text
             onTranscript(text)
         }
+        if finishPendingAfterUpload {
+            finishPendingAfterUpload = false
+            sendFinishOnAudioQueue()
+            return
+        }
+        if cancelPendingAfterUpload {
+            cancelPendingAfterUpload = false
+            sendCancelOnAudioQueue()
+            return
+        }
         flushOnAudioQueue(force: pendingData.count >= Self.flushByteCount)
     }
 
     private func finishOnAudioQueue() {
         guard !finished else { return }
         finished = true
+        if uploadInFlight {
+            finishPendingAfterUpload = true
+            return
+        }
+        sendFinishOnAudioQueue()
+    }
+
+    private func cancelOnAudioQueue() {
+        guard !finished else { return }
+        finished = true
+        pendingData.removeAll(keepingCapacity: false)
+        if uploadInFlight {
+            cancelPendingAfterUpload = true
+            return
+        }
+        sendCancelOnAudioQueue()
+    }
+
+    private func handleFailureOnAudioQueue(message: String) {
+        if finished {
+            if finishPendingAfterUpload || cancelPendingAfterUpload {
+                finishPendingAfterUpload = false
+                cancelPendingAfterUpload = false
+                sendCancelOnAudioQueue()
+            }
+            return
+        }
+        guard !finished else { return }
+        finished = true
+        pendingData.removeAll(keepingCapacity: false)
+        uploadInFlight = false
+        startInFlight = false
+        sendCancelOnAudioQueue()
+        bridgeLivePreviewLog.notice("server live preview stopped: \(message, privacy: .public)")
+        onFailure(message)
+    }
+
+    private func sendFinishOnAudioQueue() {
         let sessionID = self.sessionID
         let trailingData = pendingData
         pendingData.removeAll(keepingCapacity: false)
         guard let sessionID else { return }
+        sendFinishRequest(sessionID: sessionID, trailingData: trailingData)
+    }
+
+    private func sendFinishRequest(sessionID: String, trailingData: Data) {
         let client = self.client
         Task {
             if !trailingData.isEmpty {
@@ -167,27 +225,10 @@ final class BridgeLivePreviewStreamer: @unchecked Sendable {
         }
     }
 
-    private func cancelOnAudioQueue() {
-        guard !finished else { return }
-        finished = true
-        pendingData.removeAll(keepingCapacity: false)
+    private func sendCancelOnAudioQueue() {
         guard let sessionID else { return }
         let client = self.client
         Task { try? await client.finishLivePreview(sessionID: sessionID) }
-    }
-
-    private func handleFailureOnAudioQueue(message: String) {
-        guard !finished else { return }
-        finished = true
-        pendingData.removeAll(keepingCapacity: false)
-        uploadInFlight = false
-        startInFlight = false
-        if let sessionID {
-            let client = self.client
-            Task { try? await client.finishLivePreview(sessionID: sessionID) }
-        }
-        bridgeLivePreviewLog.notice("server live preview stopped: \(message, privacy: .public)")
-        onFailure(message)
     }
 
     private func resample(_ mono: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {

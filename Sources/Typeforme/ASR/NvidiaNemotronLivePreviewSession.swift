@@ -22,6 +22,9 @@ final class NvidiaNemotronLivePreviewSession: @unchecked Sendable {
     private var stderrBuffer = Data()
     private var inputClosed = false
     private var cleanedUp = false
+    private var processTerminated = false
+    private var terminationContinuations: [UUID: CheckedContinuation<Bool, Never>] = [:]
+    private var lastTranscript: String?
     private var converter: AVAudioConverter?
     private var converterInputSampleRate = 0.0
 
@@ -100,7 +103,7 @@ final class NvidiaNemotronLivePreviewSession: @unchecked Sendable {
             self?.handleStderr(data)
         }
         process.terminationHandler = { [weak self] _ in
-            self?.cleanup()
+            self?.handleProcessTermination()
         }
     }
 
@@ -109,6 +112,7 @@ final class NvidiaNemotronLivePreviewSession: @unchecked Sendable {
         if process.isRunning {
             process.terminate()
         }
+        resumeTerminationWaiters()
         cleanup()
     }
 
@@ -129,14 +133,24 @@ final class NvidiaNemotronLivePreviewSession: @unchecked Sendable {
     }
 
     func finishInput() {
-        audioQueue.async { [weak self] in
-            self?.closeInputOnAudioQueue()
+        audioQueue.async {
+            self.closeInputOnAudioQueue()
         }
     }
 
+    func finishInputAndWaitForTermination(timeout: TimeInterval) async -> Bool {
+        finishInput()
+        return await waitForTermination(timeout: timeout)
+    }
+
+    func currentTranscript() -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return lastTranscript
+    }
+
     func cancel() {
-        audioQueue.async { [weak self] in
-            guard let self else { return }
+        audioQueue.async {
             self.closeInputOnAudioQueue()
             if self.process.isRunning {
                 self.process.terminate()
@@ -226,6 +240,7 @@ final class NvidiaNemotronLivePreviewSession: @unchecked Sendable {
         let lines = appendAndExtractLines(data, into: &stdoutBuffer)
         for line in lines {
             guard let text = Self.parseTranscriptLine(line) else { continue }
+            recordTranscript(text)
             onTranscript(text)
         }
     }
@@ -254,6 +269,62 @@ final class NvidiaNemotronLivePreviewSession: @unchecked Sendable {
             lines.append(line)
         }
         return lines
+    }
+
+    private func waitForTermination(timeout: TimeInterval) async -> Bool {
+        await withCheckedContinuation { continuation in
+            let waiterID = UUID()
+            var shouldResumeImmediately = false
+            lock.lock()
+            if processTerminated || !process.isRunning {
+                shouldResumeImmediately = true
+            } else {
+                terminationContinuations[waiterID] = continuation
+            }
+            lock.unlock()
+
+            if shouldResumeImmediately {
+                continuation.resume(returning: true)
+                return
+            }
+
+            let timeoutMilliseconds = Int((max(0, timeout) * 1_000).rounded(.up))
+            DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(timeoutMilliseconds)) { [weak self] in
+                guard let self else { return }
+                let timedOutContinuation: CheckedContinuation<Bool, Never>?
+                self.lock.lock()
+                timedOutContinuation = self.terminationContinuations.removeValue(forKey: waiterID)
+                self.lock.unlock()
+                timedOutContinuation?.resume(returning: false)
+            }
+        }
+    }
+
+    private func recordTranscript(_ text: String) {
+        lock.lock()
+        lastTranscript = text
+        lock.unlock()
+    }
+
+    private func handleProcessTermination() {
+        resumeTerminationWaiters()
+        cleanup()
+    }
+
+    private func resumeTerminationWaiters() {
+        let continuations: [CheckedContinuation<Bool, Never>]
+        lock.lock()
+        if processTerminated {
+            continuations = []
+        } else {
+            processTerminated = true
+            continuations = Array(terminationContinuations.values)
+            terminationContinuations.removeAll()
+        }
+        lock.unlock()
+        for continuation in continuations {
+            continuation.resume(returning: true)
+        }
     }
 
     private func cleanup() {

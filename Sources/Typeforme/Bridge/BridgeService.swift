@@ -74,15 +74,28 @@ final class BridgeService {
     private let textEditService: TextEditService
     private var sessions: [String: BridgeSession] = [:]
     private var livePreviewSessions: [String: BridgeLivePreviewSession] = [:]
+    private var livePreviewPruneTask: Task<Void, Never>?
 
     private static let sessionTTL: TimeInterval = 15 * 60
     private static let maxSessions = 128
     private static let livePreviewSessionTTL: TimeInterval = 3 * 60
+    private static let livePreviewFinishTimeout: TimeInterval = 4
+    private static let livePreviewPruneIntervalNanoseconds: UInt64 = 30 * 1_000_000_000
     private static let maxLivePreviewSessions = 8
 
     init(dictionary: UserDictionaryStore) {
         self.dictionary = dictionary
         self.textEditService = TextEditService(dictionary: dictionary)
+        self.livePreviewPruneTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: Self.livePreviewPruneIntervalNanoseconds)
+                self?.pruneExpiredLivePreviewSessions()
+            }
+        }
+    }
+
+    deinit {
+        livePreviewPruneTask?.cancel()
     }
 
     func health() -> BridgeHealthResponse {
@@ -279,14 +292,22 @@ final class BridgeService {
 
     func finishLivePreview(sessionID: String) async throws -> BridgeLivePreviewFinishResponse {
         pruneExpiredLivePreviewSessions()
-        guard let session = livePreviewSessions.removeValue(forKey: sessionID) else {
+        guard let session = livePreviewSessions[sessionID] else {
             throw BridgeServiceError.missingSession
         }
-        session.process.finishInput()
+        session.updatedAt = Date()
+        let completed = await session.process.finishInputAndWaitForTermination(
+            timeout: Self.livePreviewFinishTimeout
+        )
+        if !completed {
+            session.process.cancel()
+        }
+        let transcript = session.process.currentTranscript() ?? session.lastTranscript
+        livePreviewSessions.removeValue(forKey: sessionID)
         let finishedAt = Date()
         return BridgeLivePreviewFinishResponse(
             sessionID: session.id,
-            text: session.lastTranscript,
+            text: transcript,
             finishedAt: finishedAt.timeIntervalSince1970
         )
     }
