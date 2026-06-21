@@ -20,7 +20,7 @@ enum QwenASRModelCatalog {
     static let all: [QwenASRModelSpec] = [
         QwenASRModelSpec(
             id: "qwen3-asr-0.6b-q8_0",
-            label: "Qwen3-ASR 0.6B Q8_0 (compatibility)",
+            label: "Qwen3-ASR 0.6B Q8_0",
             note: "Smallest local Qwen-ASR; use only when memory or disk space is tight",
             modelPathKey: AppSettings.Keys.asrQwen06Q8ModelPath,
             mmprojPathKey: AppSettings.Keys.asrQwen06Q8MMProjPath,
@@ -33,7 +33,7 @@ enum QwenASRModelCatalog {
         ),
         QwenASRModelSpec(
             id: "qwen3-asr-0.6b-bf16",
-            label: "Qwen3-ASR 0.6B BF16 (compatibility)",
+            label: "Qwen3-ASR 0.6B BF16",
             note: "Smaller BF16 model; kept for comparison and lower-memory machines",
             modelPathKey: AppSettings.Keys.asrQwen06BF16ModelPath,
             mmprojPathKey: AppSettings.Keys.asrQwen06BF16MMProjPath,
@@ -46,7 +46,7 @@ enum QwenASRModelCatalog {
         ),
         QwenASRModelSpec(
             id: "qwen3-asr-1.7b-q8_0",
-            label: "Qwen3-ASR 1.7B Q8_0 (compatibility)",
+            label: "Qwen3-ASR 1.7B Q8_0",
             note: "Space-saving 1.7B build; use when BF16 is too large",
             modelPathKey: AppSettings.Keys.asrQwen17Q8ModelPath,
             mmprojPathKey: AppSettings.Keys.asrQwen17Q8MMProjPath,
