@@ -21,13 +21,19 @@ enum VoiceLivePreviewSource: String, CaseIterable, Identifiable {
     var detail: String {
         switch self {
         case .off:
-            return "No live transcript is shown while recording."
+            return "No live transcript while recording."
         case .nvidiaNemotron:
-            return "Streams recorder audio through the selected local Nemotron 3.5 model. Final inserted text still comes from the selected ASR and correction pipeline."
+            return "Shows interim text from Nemotron."
         case .appleSpeech:
-            return "Uses Apple's on-device recognizer when the current language is supported and speech recognition permission is granted. Final inserted text still comes from the selected ASR and correction pipeline."
+            return "Shows interim text from Apple Speech."
         }
     }
+
+    static let pickerOptions: [VoiceLivePreviewSource] = [
+        .off,
+        .nvidiaNemotron,
+        .appleSpeech,
+    ]
 
     static func options(forRecognitionSources sources: [RecognitionSource]) -> [VoiceLivePreviewSource] {
         var options: [VoiceLivePreviewSource] = [.off]
@@ -38,5 +44,9 @@ enum VoiceLivePreviewSource: String, CaseIterable, Identifiable {
             options.append(.appleSpeech)
         }
         return options
+    }
+
+    func isEnabled(forRecognitionSources sources: [RecognitionSource]) -> Bool {
+        Self.options(forRecognitionSources: sources).contains(self)
     }
 }

@@ -49,9 +49,6 @@ final class DictationCoordinator: ObservableObject {
     private var liveSpeechRequest: SFSpeechAudioBufferRecognitionRequest?
     private var liveSpeechTask: SFSpeechRecognitionTask?
     private var nvidiaLivePreviewSession: NvidiaNemotronLivePreviewSession?
-    /// Last partial text we surfaced. Snapshot at correction time so the Mac
-    /// LLM gets the same string the user just saw.
-    private var liveSnapshotAtCorrection: String = ""
 
     private static let errorResetDelay: TimeInterval = 8.0
     private static let degradedSuccessResetDelay: TimeInterval = 1.8
@@ -299,7 +296,7 @@ final class DictationCoordinator: ObservableObject {
             let asrResult = try await asr.transcribeResult(audioFileURL: url, languageIDs: AppSettings.asrLanguageIDs)
             let raw = asrResult.text
             let asrHypotheses = Self.combinedASRHypotheses(
-                candidates: asrResult.hypotheses.map(Optional.some) + [liveSnapshotAtCorrection]
+                candidates: asrResult.hypotheses.map(Optional.some)
             )
             let alternateTranscripts = Self.combinedAlternateTranscripts(
                 primaryTranscript: raw,
@@ -457,8 +454,8 @@ final class DictationCoordinator: ObservableObject {
                     status: "error",
                     error: error.localizedDescription,
                     latencyMs: elapsedMs(since: asrStarted),
-                    asrHypotheses: liveSnapshotAtCorrection.isEmpty ? [] : [liveSnapshotAtCorrection],
-                    alternateTranscripts: liveSnapshotAtCorrection.isEmpty ? [] : [liveSnapshotAtCorrection]
+                    asrHypotheses: [],
+                    alternateTranscripts: []
                 )
             }
             try? FileManager.default.removeItem(at: url)
@@ -661,12 +658,9 @@ final class DictationCoordinator: ObservableObject {
         let snapshot = frontmostSnapshot
         let category = AppCategory.from(bundleID: snapshot?.bundleID)
         let correctionMode = correctionModeOverride ?? AppSettings.correctionMode
-        // Snapshot the live partial so the corrector sees the same text the
-        // user just saw on screen. Neutral framing (see baseSystem prompt) —
-        // never attributed by source name in the prompt itself.
         let alternateForRequest = Self.combinedAlternateTranscripts(
             primaryTranscript: rawTranscript,
-            candidates: alternateTranscripts.map(Optional.some) + [liveSnapshotAtCorrection]
+            candidates: alternateTranscripts.map(Optional.some)
         )
         return CorrectionRequest(
             correctionMode: correctionMode,
@@ -717,12 +711,9 @@ final class DictationCoordinator: ObservableObject {
     //
     // The selected preview source subscribes to the AudioRecorder PCM tap and
     // renders partial hypotheses into `livePartialTranscript` for the HUD
-    // except command/wand edits, which keep the hypothesis internal. The Mac
-    // recognition sources + correction pipeline are unchanged — preview never replaces the
-    // canonical result. The last partial is captured into
-    // `liveSnapshotAtCorrection` at stopDictation() time and threaded into
-    // CorrectionRequest.alternateTranscripts as a supplementary hypothesis
-    // (neutral framing — see baseSystem prompt).
+    // except command/wand edits, which suppress visible preview. The Mac
+    // recognition sources + correction pipeline are unchanged — preview never
+    // replaces or augments the canonical result.
     //
     // Any preview failure silently degrades to "no preview" — recording still
     // works and final ASR still runs.
@@ -829,8 +820,6 @@ final class DictationCoordinator: ObservableObject {
         guard !text.isEmpty else { return }
         if displaysLivePartial {
             livePartialTranscript = text
-        } else {
-            liveSnapshotAtCorrection = text
         }
     }
 
@@ -857,9 +846,6 @@ final class DictationCoordinator: ObservableObject {
                     NvidiaNemotronWarmPool.shared.preload(languageIDs: languageIDs)
                 }
             }
-        }
-        if !livePartialTranscript.isEmpty {
-            liveSnapshotAtCorrection = livePartialTranscript
         }
     }
 
@@ -890,7 +876,6 @@ final class DictationCoordinator: ObservableObject {
         }
         if clearText {
             livePartialTranscript = ""
-            liveSnapshotAtCorrection = ""
         }
     }
 
@@ -921,8 +906,6 @@ final class DictationCoordinator: ObservableObject {
             let appCategory = AppCategory.from(bundleID: snapshot?.bundleID)
             let resolved = try await RemoteBridgeClient.resolvedFromSettings(probeAllEndpoints: false)
             let client = resolved.client
-            let alternateForRemote = liveSnapshotAtCorrection
-                .trimmingCharacters(in: .whitespacesAndNewlines)
             let response = try await client.dictate(
                 audioURL: audioURL,
                 languageIDs: AppSettings.clientLanguageIDs,
@@ -931,8 +914,7 @@ final class DictationCoordinator: ObservableObject {
                 appCategory: appCategory,
                 contextBefore: activeDictationContextBefore,
                 contextAfter: activeDictationContextAfter,
-                includeRawTranscript: true,
-                alternateTranscript: alternateForRemote.isEmpty ? nil : alternateForRemote
+                includeRawTranscript: true
             )
             try await ensureActive(sessionID: sessionID, token: cancelToken)
 
@@ -943,8 +925,8 @@ final class DictationCoordinator: ObservableObject {
                 text: raw.isEmpty ? nil : raw,
                 status: raw.isEmpty ? "remote_no_raw" : "remote_ok",
                 latencyMs: response.transcriptionLatencyMs ?? elapsedMs(since: started),
-                asrHypotheses: Self.combinedASRHypotheses(candidates: [raw, liveSnapshotAtCorrection]),
-                alternateTranscripts: liveSnapshotAtCorrection.isEmpty ? [] : [liveSnapshotAtCorrection]
+                asrHypotheses: Self.combinedASRHypotheses(candidates: [raw]),
+                alternateTranscripts: []
             )
             lastTranscript = raw.isEmpty ? response.text : raw
 
@@ -1025,8 +1007,8 @@ final class DictationCoordinator: ObservableObject {
                 status: "remote_error",
                 error: error.localizedDescription,
                 latencyMs: elapsedMs(since: started),
-                asrHypotheses: liveSnapshotAtCorrection.isEmpty ? [] : [liveSnapshotAtCorrection],
-                alternateTranscripts: liveSnapshotAtCorrection.isEmpty ? [] : [liveSnapshotAtCorrection]
+                asrHypotheses: [],
+                alternateTranscripts: []
             )
             guard await isActive(sessionID: sessionID, token: cancelToken) else { return }
             reportError(error.localizedDescription)

@@ -1141,7 +1141,9 @@ private struct LivePreviewSettingsSection: View {
             Toggle("Live Preview", isOn: livePreviewBinding)
             Picker("Preview Source", selection: livePreviewSourceBinding) {
                 ForEach(sourceOptions) { source in
-                    Text(source.title).tag(source)
+                    Text(sourceTitle(source))
+                        .tag(source)
+                        .disabled(!isSourceEnabled(source))
                 }
             }
             .pickerStyle(.menu)
@@ -1152,23 +1154,34 @@ private struct LivePreviewSettingsSection: View {
                 }
             }
             .pickerStyle(.menu)
-            .disabled(!state.keyboardLivePreviewEnabled || state.keyboardLivePreviewSource != .appleSpeech || state.isBusy)
+            .disabled(
+                !state.keyboardLivePreviewEnabled
+                    || state.keyboardLivePreviewSource != .appleSpeech
+                    || !state.isKeyboardLivePreviewSourceEnabled(.appleSpeech)
+                    || state.isBusy
+            )
         } header: {
             Text(title)
         } footer: {
-            Text("This preview setting is local to the iPhone keyboard and applies immediately. It does not change the Mac live transcript setting.")
+            Text("Preview follows enabled ASR sources.")
         }
     }
 
     private var sourceOptions: [KeyboardLivePreviewSource] {
-        if let serverNemotronAvailable {
-            var options: [KeyboardLivePreviewSource] = [.appleSpeech]
-            if serverNemotronAvailable || state.keyboardLivePreviewSource == .serverNemotron {
-                options.append(.serverNemotron)
-            }
-            return options
+        KeyboardLivePreviewSource.allCases
+    }
+
+    private func isSourceEnabled(_ source: KeyboardLivePreviewSource) -> Bool {
+        if let serverNemotronAvailable, source == .serverNemotron {
+            return serverNemotronAvailable
         }
-        return state.keyboardLivePreviewSourceOptions
+        return state.isKeyboardLivePreviewSourceEnabled(source)
+    }
+
+    private func sourceTitle(_ source: KeyboardLivePreviewSource) -> String {
+        isSourceEnabled(source)
+            ? source.title
+            : "\(source.title) - \(NSLocalizedString("Source off", comment: "Disabled live preview source suffix"))"
     }
 
     private var livePreviewBinding: Binding<Bool> {
@@ -1183,6 +1196,7 @@ private struct LivePreviewSettingsSection: View {
         Binding {
             state.keyboardLivePreviewSource
         } set: { source in
+            guard isSourceEnabled(source) else { return }
             state.setKeyboardLivePreviewSource(source)
         }
     }
@@ -1647,15 +1661,17 @@ private struct MacSettingsView: View {
 
                 Section {
                     Picker("Preview Source", selection: macLivePreviewSourceBinding) {
-                        ForEach(draft.livePreviewSourceOptions) { source in
-                            Text(source.title).tag(source.rawValue)
+                        ForEach(draft.livePreviewPickerOptions) { source in
+                            Text(macLivePreviewSourceTitle(source, draft: draft))
+                                .tag(source.rawValue)
+                                .disabled(!draft.isLivePreviewSourceEnabled(source))
                         }
                     }
                     .pickerStyle(.menu)
                 } header: {
                     Text("Mac Live Preview")
                 } footer: {
-                    Text("This preview setting is saved to the paired Mac when you tap Done. It does not change the iPhone keyboard preview.")
+                    Text("Preview follows enabled ASR sources.")
                 }
 
                 Section("Refine") {
@@ -1898,9 +1914,21 @@ private struct MacSettingsView: View {
             draft?.livePreviewSource ?? MacLivePreviewSource.off.rawValue
         } set: { value in
             updateDraft(normalize: true) { draft in
+                guard let source = MacLivePreviewSource(rawValue: value),
+                      draft.isLivePreviewSourceEnabled(source)
+                else { return }
                 draft.livePreviewSource = value
             }
         }
+    }
+
+    private func macLivePreviewSourceTitle(
+        _ source: MacLivePreviewSource,
+        draft: BridgeMacSettingsPayload
+    ) -> String {
+        draft.isLivePreviewSourceEnabled(source)
+            ? source.title
+            : "\(source.title) - \(NSLocalizedString("Source off", comment: "Disabled live preview source suffix"))"
     }
 
     private var correctionBackendBinding: Binding<String> {

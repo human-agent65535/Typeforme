@@ -294,8 +294,7 @@ enum AppSettings {
     /// When `true`, the recorder feeds PCM into the selected live-preview
     /// source so the HUD can show a transcript while the user is still
     /// speaking. The final text always comes from the Mac ASR + correction
-    /// pipeline; the preview is also sent as a supplementary hypothesis using
-    /// neutral framing, never attributed by source name.
+    /// pipeline; preview text is display-only.
     static var voiceLivePreview: Bool {
         ud.bool(forKey: Keys.voiceLivePreview)
     }

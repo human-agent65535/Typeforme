@@ -502,6 +502,12 @@ enum MacLivePreviewSource: String, CaseIterable, Identifiable, Equatable {
         }
     }
 
+    static let pickerOptions: [MacLivePreviewSource] = [
+        .off,
+        .nvidiaNemotron,
+        .appleSpeech,
+    ]
+
     static func options(forRecognitionSources sources: [RecognitionSource]) -> [MacLivePreviewSource] {
         var options: [MacLivePreviewSource] = [.off]
         if sources.contains(.nvidiaNemotron) {
@@ -511,6 +517,10 @@ enum MacLivePreviewSource: String, CaseIterable, Identifiable, Equatable {
             options.append(.appleSpeech)
         }
         return options
+    }
+
+    func isEnabled(forRecognitionSources sources: [RecognitionSource]) -> Bool {
+        Self.options(forRecognitionSources: sources).contains(self)
     }
 }
 
@@ -560,6 +570,14 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
 
     var livePreviewSourceOptions: [MacLivePreviewSource] {
         MacLivePreviewSource.options(forRecognitionSources: enabledSources)
+    }
+
+    var livePreviewPickerOptions: [MacLivePreviewSource] {
+        MacLivePreviewSource.pickerOptions
+    }
+
+    func isLivePreviewSourceEnabled(_ source: MacLivePreviewSource) -> Bool {
+        source.isEnabled(forRecognitionSources: enabledSources)
     }
 
     enum CodingKeys: String, CodingKey {

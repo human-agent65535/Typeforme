@@ -405,7 +405,6 @@ final class BridgeService {
 
         let asrStarted = Date()
         let raw: String
-        let asrAlternateTranscripts: [String]
         let asrHypotheses: [String]
         let asrWarning: String?
         let transcriptionLatencyMs: Int
@@ -417,9 +416,8 @@ final class BridgeService {
             )
             let asrResult = try await ASRFactory.shared.get().transcribeResult(audioFileURL: audioURL, languageIDs: languageIDs)
             raw = asrResult.text
-            asrAlternateTranscripts = asrResult.alternateTranscripts
             asrHypotheses = Self.combinedASRHypotheses(
-                candidates: asrResult.hypotheses.map(Optional.some) + [request.alternateTranscript]
+                candidates: asrResult.hypotheses.map(Optional.some)
             )
             asrWarning = asrResult.warningText
             transcriptionLatencyMs = elapsedMs(since: asrStarted)
@@ -443,8 +441,8 @@ final class BridgeService {
                 status: "error",
                 error: error.localizedDescription,
                 latencyMs: elapsedMs(since: asrStarted),
-                asrHypotheses: request.alternateTranscript.map { [$0] } ?? [],
-                alternateTranscripts: request.alternateTranscript.map { [$0] } ?? []
+                asrHypotheses: [],
+                alternateTranscripts: []
             )
             await publishJobStatus(
                 jobID: jobID,

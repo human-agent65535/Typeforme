@@ -206,6 +206,8 @@
 "Changes apply immediately. Controls how long Typeforme keeps keyboard dictation ready after the host app is opened." = "更改会立即生效。用于控制从键盘打开宿主 app 后,Typeforme 保持听写就绪的时长。";
 "This preview setting is local to the iPhone keyboard and applies immediately. It does not change the Mac live transcript setting." = "这个预览设置只作用于 iPhone 键盘,并且立即生效。它不会改变 Mac 端自己的实时转写设置。";
 "This preview setting is saved to the paired Mac when you tap Done. It does not change the iPhone keyboard preview." = "点击完成后,这个预览设置会保存到配对的 Mac。它不会改变 iPhone 键盘预览设置。";
+"Preview follows enabled ASR sources." = "预览跟随已启用 ASR 源。";
+"Source off" = "源未开启";
 "Update Typeforme on the paired Mac, then try again." = "请先更新配对 Mac 上的 Typeforme,然后重试。";
 "On-device Only keeps preview audio local. Cloud Fallback uses on-device when available and Apple servers otherwise. Preview punctuation follows Dictation Settings. Host audio session controls how long keyboard dictation stays ready." = "仅端上会把预览音频留在本机。云端回退会优先使用端上识别,不支持端上时使用 Apple 服务器。预览标点跟随听写设置。宿主音频会话用于控制键盘听写保持就绪的时长。";
 "Dictation Vocabulary" = "听写词汇";

@@ -546,11 +546,16 @@ final class AppState {
     }
 
     var keyboardLivePreviewSourceOptions: [KeyboardLivePreviewSource] {
-        var options: [KeyboardLivePreviewSource] = [.appleSpeech]
-        if macSettings?.supportsServerNemotronPreview == true || keyboardLivePreviewSource == .serverNemotron {
-            options.append(.serverNemotron)
+        KeyboardLivePreviewSource.allCases.filter(isKeyboardLivePreviewSourceEnabled)
+    }
+
+    func isKeyboardLivePreviewSourceEnabled(_ source: KeyboardLivePreviewSource) -> Bool {
+        switch source {
+        case .appleSpeech:
+            return macSettings?.isRecognitionSourceEnabled(.appleSpeech) == true
+        case .serverNemotron:
+            return macSettings?.supportsServerNemotronPreview == true
         }
-        return options
     }
 
     init() {
@@ -733,11 +738,29 @@ final class AppState {
     }
 
     func setKeyboardLivePreviewSource(_ source: KeyboardLivePreviewSource) {
+        guard isKeyboardLivePreviewSourceEnabled(source) else { return }
         updateStoredRawPreference(
             \.keyboardLivePreviewSource,
             to: source,
             key: Self.keyboardLivePreviewSourceKey
         )
+    }
+
+    private func constrainKeyboardLivePreviewSourceToMacSettings() {
+        guard keyboardLivePreviewEnabled,
+              !isKeyboardLivePreviewSourceEnabled(keyboardLivePreviewSource)
+        else { return }
+        _ = updateStoredBoolPreference(
+            \.keyboardLivePreviewEnabled,
+            to: false,
+            key: Self.keyboardLivePreviewKey
+        )
+        updateStoredRawPreference(
+            \.keyboardLivePreviewSource,
+            to: KeyboardLivePreviewSource.appleSpeech,
+            key: Self.keyboardLivePreviewSourceKey
+        )
+        teardownLivePartialPreview(clearText: true)
     }
 
     func setKeyboardLivePreviewRecognitionMode(_ mode: KeyboardLivePreviewRecognitionMode) {
@@ -976,6 +999,7 @@ final class AppState {
         macSettingsRevision = settings.settingsRevision?.trimmingCharacters(in: .whitespacesAndNewlines)
         cachedServerRimeUserPhrases = settings.rimeUserPhrases
         UserDefaults.standard.set(settings.rimeUserPhrases, forKey: Self.serverRimeUserPhrasesKey)
+        constrainKeyboardLivePreviewSourceToMacSettings()
         config.supportedLanguages = settings.supportedLanguages
         // `config.correctionMode` tracks the server's current default so a
         // new scene (clearResult / cold start / unpair) can fall back to it.
@@ -1104,10 +1128,6 @@ final class AppState {
         stageLabels: BridgeStageLabels,
         recordingInfo: RecordingFileInfo
     ) async throws -> BridgeDictateResponse {
-        // Snapshot the live preview text before tearing down. Mac uses it as a
-        // supplementary hypothesis with neutral framing, regardless of source.
-        let alternate = livePartialTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
-        let alternateForBridge: String? = alternate.isEmpty ? nil : alternate
         func dictate(to baseURL: URL) async throws -> BridgeDictateResponse {
             let client = BridgeClient(baseURL: baseURL, token: config.token)
             let jobID = "ios_\(UUID().uuidString.replacingOccurrences(of: "-", with: "_"))"
@@ -1120,7 +1140,6 @@ final class AppState {
                 contextAfter: contextAfter,
                 includeRawTranscript: includeRawTranscript,
                 clientJobID: jobID,
-                alternateTranscript: alternateForBridge,
                 onJobEvent: { event in
                     await MainActor.run {
                         self.applyBridgeJobStatus(
@@ -2172,6 +2191,14 @@ final class AppState {
 
     @discardableResult
     private func startAppleSpeechLivePreviewIfAvailable(generation: UInt64) -> Bool {
+        guard isKeyboardLivePreviewSourceEnabled(.appleSpeech) else {
+            appLog.notice("live preview skipped: Apple Speech ASR source disabled")
+            BridgeLivePreviewFileTrace.record(
+                "ios_apple_preview_skipped",
+                fields: ["reason": "apple_speech_source_disabled"]
+            )
+            return false
+        }
         let primaryID = activeLanguageIDs.first ?? "en-US"
         let capability = AppleSpeechPreviewSupport.capability(languageID: primaryID)
         guard keyboardLivePreviewRecognitionMode.canUse(capability) else {
@@ -2314,6 +2341,14 @@ final class AppState {
 
     @discardableResult
     private func startServerNemotronLivePreviewIfAvailable(generation: UInt64) -> Bool {
+        guard isKeyboardLivePreviewSourceEnabled(.serverNemotron) else {
+            appLog.notice("server live preview skipped: Nemotron ASR source disabled")
+            BridgeLivePreviewFileTrace.record(
+                "ios_server_preview_skipped",
+                fields: ["reason": "nemotron_source_disabled"]
+            )
+            return false
+        }
         guard macSettings?.supportsServerNemotronPreview == true else {
             appLog.notice("server live preview skipped: Mac Nemotron source is not enabled")
             BridgeLivePreviewFileTrace.record(

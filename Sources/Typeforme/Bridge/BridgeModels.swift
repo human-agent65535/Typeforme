@@ -32,10 +32,8 @@ struct BridgeDictateRequest {
     var contextBefore: String?
     var contextAfter: String?
     var includeRawTranscript: Bool?
-    /// Optional additional transcription of the same audio from another ASR
-    /// (e.g. live preview text). Neutral framing — not
-    /// labelled as "source X" or "preview" in any prompt — Mac treats it as a
-    /// supplementary hypothesis to resolve ambiguity in raw_transcript.
+    /// Optional client-provided transcription of the same audio. Current clients
+    /// do not send live-preview text here; preview is display-only.
     var alternateTranscript: String?
 
     init(

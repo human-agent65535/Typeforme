@@ -3,6 +3,16 @@ import Testing
 
 @Suite("VoiceLivePreviewSource")
 struct VoiceLivePreviewSourceTests {
+    @Test func pickerShowsAllPreviewCapabilities() {
+        #expect(VoiceLivePreviewSource.pickerOptions == [
+            .off,
+            .nvidiaNemotron,
+            .appleSpeech,
+        ])
+        #expect(!VoiceLivePreviewSource.appleSpeech.isEnabled(forRecognitionSources: [.qwen]))
+        #expect(VoiceLivePreviewSource.appleSpeech.isEnabled(forRecognitionSources: [.appleSpeech]))
+    }
+
     @Test func qwenOnlyOffersOffAndAppleSpeech() {
         #expect(
             VoiceLivePreviewSource.options(forRecognitionSources: [.qwen, .appleSpeech]) == [

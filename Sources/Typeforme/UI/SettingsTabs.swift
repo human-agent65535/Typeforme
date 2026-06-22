@@ -1026,12 +1026,17 @@ struct DictationInputSettingsView: View {
             }
             Section("Live Transcript") {
                 Picker("Preview", selection: previewSourceBinding) {
-                    ForEach(previewSourceOptions) { source in
-                        Text(source.displayName).tag(source.rawValue)
+                    ForEach(VoiceLivePreviewSource.pickerOptions) { source in
+                        Text(previewPickerTitle(for: source))
+                            .tag(source.rawValue)
+                            .disabled(!isPreviewSourceEnabled(source))
                     }
                 }
                 .pickerStyle(.menu)
                 Text(selectedPreviewSource.detail)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                Text("Preview follows enabled ASR sources.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
@@ -1120,6 +1125,7 @@ struct DictationInputSettingsView: View {
                     voiceLivePreview = false
                     voiceLivePreviewSourceRaw = VoiceLivePreviewSource.off.rawValue
                 } else {
+                    guard isPreviewSourceEnabled(source) else { return }
                     voiceLivePreview = true
                     voiceLivePreviewSourceRaw = source.rawValue
                 }
@@ -1132,6 +1138,14 @@ struct DictationInputSettingsView: View {
         guard voiceLivePreview, !previewSourceOptions.contains(source) else { return }
         voiceLivePreview = false
         voiceLivePreviewSourceRaw = VoiceLivePreviewSource.off.rawValue
+    }
+
+    private func isPreviewSourceEnabled(_ source: VoiceLivePreviewSource) -> Bool {
+        source.isEnabled(forRecognitionSources: enabledRecognitionSources)
+    }
+
+    private func previewPickerTitle(for source: VoiceLivePreviewSource) -> String {
+        isPreviewSourceEnabled(source) ? source.displayName : "\(source.displayName) - Source off"
     }
 
     private var enabledRecognitionSources: [RecognitionSource] {
