@@ -12,6 +12,9 @@ struct CorrectionRequest: Codable, Sendable {
     var numberOutputPreference: NumberOutputPreference
     var punctuationPreference: PunctuationOutputPreference
     var userDictionary: [DictionaryEntry]
+    /// Peer transcript hypotheses for the same audio. These are source-neutral
+    /// and intentionally do not expose model/vendor names to the corrector.
+    var asrHypotheses: [String]
     /// Optional supplementary transcriptions of the same audio. The prompt
     /// presents these as neutral hypotheses, never attributed by source name.
     var alternateTranscripts: [String]
@@ -29,7 +32,8 @@ struct CorrectionRequest: Codable, Sendable {
         punctuationPreference: PunctuationOutputPreference = .normal,
         userDictionary: [DictionaryEntry],
         alternateTranscript: String? = nil,
-        alternateTranscripts: [String] = []
+        alternateTranscripts: [String] = [],
+        asrHypotheses: [String] = []
     ) {
         self.correctionMode = correctionMode
         self.frontmostAppName = frontmostAppName
@@ -42,9 +46,14 @@ struct CorrectionRequest: Codable, Sendable {
         self.numberOutputPreference = numberOutputPreference
         self.punctuationPreference = punctuationPreference
         self.userDictionary = userDictionary
-        self.alternateTranscripts = Self.normalizedAlternateTranscripts(
+        let normalizedAlternates = Self.normalizedAlternateTranscripts(
             primaryTranscript: rawTranscript,
             candidates: alternateTranscripts.map(Optional.some) + [alternateTranscript]
+        )
+        self.alternateTranscripts = normalizedAlternates
+        let explicitHypotheses = asrHypotheses.map(Optional.some)
+        self.asrHypotheses = Self.normalizedASRHypotheses(
+            candidates: explicitHypotheses + [rawTranscript] + normalizedAlternates.map(Optional.some)
         )
     }
 
@@ -61,8 +70,14 @@ struct CorrectionRequest: Codable, Sendable {
             numberOutputPreference: numberOutputPreference,
             punctuationPreference: punctuationPreference,
             userDictionary: userDictionary,
-            alternateTranscripts: alternateTranscripts
+            alternateTranscripts: alternateTranscripts,
+            asrHypotheses: asrHypotheses
         )
+    }
+
+    var transcriptEvidenceText: String {
+        Self.normalizedASRHypotheses(candidates: asrHypotheses.map(Optional.some) + [rawTranscript])
+            .joined(separator: "\n")
     }
 
     static func normalizedAlternateTranscripts(
@@ -79,5 +94,17 @@ struct CorrectionRequest: Codable, Sendable {
             alternates.append(value)
         }
         return alternates
+    }
+
+    static func normalizedASRHypotheses(candidates: [String?]) -> [String] {
+        var seen = Set<String>()
+        var hypotheses: [String] = []
+        for candidate in candidates {
+            let value = candidate?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            guard !value.isEmpty else { continue }
+            guard seen.insert(value).inserted else { continue }
+            hypotheses.append(value)
+        }
+        return hypotheses
     }
 }

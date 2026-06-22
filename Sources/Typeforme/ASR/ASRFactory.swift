@@ -164,6 +164,7 @@ private struct AutoInstallingQwenLlamaASRService: ASRService {
         let text = try await transcribe(audioFileURL: audioFileURL, languageIDs: languageIDs)
         return ASRTranscription(
             text: text,
+            hypotheses: [text],
             modelOutputs: [
                 ASRModelOutputFactory.qwen(role: "source", text: text)
             ]
@@ -184,6 +185,7 @@ private struct AutoInstallingNvidiaNemotronASRService: ASRService {
         let text = try await transcribe(audioFileURL: audioFileURL, languageIDs: languageIDs)
         return ASRTranscription(
             text: text,
+            hypotheses: [text],
             modelOutputs: [
                 ASRModelOutputFactory.nemotron(role: "source", text: text)
             ]
@@ -226,7 +228,10 @@ private struct MultiSourceASRService: ASRService {
             .compactMap { $0.successText }
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
-        guard let transcript = successfulTexts.first else {
+        let hypotheses = CorrectionRequest.normalizedASRHypotheses(
+            candidates: successfulTexts.map(Optional.some)
+        )
+        guard let transcript = hypotheses.first else {
             let detail = ordered
                 .map { "\($0.source.displayName): \($0.error ?? $0.status)" }
                 .joined(separator: "; ")
@@ -235,14 +240,14 @@ private struct MultiSourceASRService: ASRService {
                 detail.isEmpty ? "No recognition source produced a transcript" : detail
             )
         }
-        var seen = Set([transcript])
-        let alternates = successfulTexts.dropFirst().filter { seen.insert($0).inserted }
+        let alternates = Array(hypotheses.dropFirst())
         let warnings = ordered.compactMap { attempt -> String? in
             guard attempt.status != "ok" else { return nil }
             return "\(attempt.source.displayName): \(attempt.error ?? attempt.status)"
         }
         return ASRTranscription(
             text: transcript,
+            hypotheses: hypotheses,
             alternateTranscripts: alternates,
             modelOutputs: ordered.map(\.modelOutput),
             warnings: warnings

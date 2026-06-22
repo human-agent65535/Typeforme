@@ -49,7 +49,7 @@ enum PromptBuilder {
         let vocabularyCandidates = VocabularyCandidateSelector.promptPayload(
             from: request.userDictionary,
             rawText: request.rawTranscript,
-            alternateTranscripts: request.alternateTranscripts,
+            alternateTranscripts: request.asrHypotheses,
             extraContext: [
                 request.frontmostAppName ?? "",
                 request.frontmostBundleID ?? "",
@@ -59,11 +59,8 @@ enum PromptBuilder {
             ]
         )
 
-        // Alternate hypotheses are source-neutral. The prompt never reveals
-        // whether an item came from a second ASR or live preview.
-        let alternateTranscripts = CorrectionRequest.normalizedAlternateTranscripts(
-            primaryTranscript: request.rawTranscript,
-            candidates: request.alternateTranscripts.map(Optional.some)
+        let asrHypotheses = CorrectionRequest.normalizedASRHypotheses(
+            candidates: request.asrHypotheses.map(Optional.some) + [Optional.some(request.rawTranscript)]
         )
         let input = DictationPromptInputPayload(
             task: "clean_dictation_transcript_for_direct_insertion",
@@ -73,7 +70,7 @@ enum PromptBuilder {
             contextAfter: request.contextAfter,
             vocabularyCandidates: vocabularyCandidates,
             rawTranscript: request.rawTranscript,
-            alternateTranscripts: alternateTranscripts
+            asrHypotheses: asrHypotheses
         )
 
         parts.append("""

@@ -46,9 +46,8 @@ struct DictationPromptInputPayload: Codable, Sendable, Equatable {
     let contextAfter: String
     let vocabularyCandidates: [VocabularyCandidatePayload]
     let rawTranscript: String
-    /// Optional supplementary transcripts. Encoded without source attribution
-    /// to avoid biasing the model toward model/vendor labels.
-    let alternateTranscripts: [String]
+    /// Source-neutral peer ASR hypotheses. Array order is not confidence.
+    let asrHypotheses: [String]
 
     enum CodingKeys: String, CodingKey {
         case task
@@ -58,7 +57,7 @@ struct DictationPromptInputPayload: Codable, Sendable, Equatable {
         case contextAfter = "context_after"
         case vocabularyCandidates = "vocabulary_candidates"
         case rawTranscript = "raw_transcript"
-        case alternateTranscripts = "alternate_transcripts"
+        case asrHypotheses = "asr_hypotheses"
     }
 
     func encode(to encoder: Encoder) throws {
@@ -70,11 +69,7 @@ struct DictationPromptInputPayload: Codable, Sendable, Equatable {
         try container.encode(contextAfter, forKey: .contextAfter)
         try container.encode(vocabularyCandidates, forKey: .vocabularyCandidates)
         try container.encode(rawTranscript, forKey: .rawTranscript)
-        // Only emit alternate_transcripts when present so prompts without
-        // extra hypotheses stay byte-identical to before.
-        if !alternateTranscripts.isEmpty {
-            try container.encode(alternateTranscripts, forKey: .alternateTranscripts)
-        }
+        try container.encode(asrHypotheses, forKey: .asrHypotheses)
     }
 }
 

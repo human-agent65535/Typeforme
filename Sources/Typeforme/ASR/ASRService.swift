@@ -1,18 +1,27 @@
 import Foundation
 
 struct ASRTranscription: Sendable {
+    /// Representative transcript for UI display and raw-commit recovery.
+    /// Correction uses `hypotheses` so no ASR source is treated as primary.
     let text: String
+    let hypotheses: [String]
     let alternateTranscripts: [String]
     let modelOutputs: [ASRTranscriptModelOutput]
     let warnings: [String]
 
     init(
         text: String,
+        hypotheses: [String] = [],
         alternateTranscripts: [String] = [],
         modelOutputs: [ASRTranscriptModelOutput] = [],
         warnings: [String] = []
     ) {
         self.text = text
+        self.hypotheses = CorrectionRequest.normalizedASRHypotheses(
+            candidates: hypotheses.map(Optional.some)
+                + [Optional.some(text)]
+                + alternateTranscripts.map(Optional.some)
+        )
         self.alternateTranscripts = alternateTranscripts
         self.modelOutputs = modelOutputs
         self.warnings = warnings

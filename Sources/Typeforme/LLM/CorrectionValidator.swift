@@ -49,7 +49,9 @@ enum CorrectionValidator {
     }
 
     private static func maxOutputCharacters(for request: CorrectionRequest) -> Int {
-        let baseline = request.rawTranscript.count
+        let baseline = ([request.rawTranscript] + request.asrHypotheses)
+            .map(\.count)
+            .max() ?? request.rawTranscript.count
         switch request.correctionMode {
         case .clean:
             return max(80, baseline * 3)

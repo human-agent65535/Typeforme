@@ -113,6 +113,7 @@ private struct DebugLogTranscript: Codable, Sendable {
     var model: String?
     var maxTokens: Int?
     var modelOutputs: [DebugLogTranscriptModelOutput]?
+    var asrHypotheses: [String]?
     /// Supplementary transcripts sent to the corrector alongside `text`.
     /// This can include additional recognition source output and live preview text.
     var alternateTranscripts: [String]?
@@ -126,6 +127,7 @@ private struct DebugLogTranscript: Codable, Sendable {
         case model
         case maxTokens = "max_tokens"
         case modelOutputs = "model_outputs"
+        case asrHypotheses = "asr_hypotheses"
         case alternateTranscripts = "alternate_transcripts"
     }
 }
@@ -176,7 +178,9 @@ private struct DebugLogCorrectionInput: Codable, Sendable {
     var numberOutputPreference: String
     var punctuationPreference: String
     var userDictionaryCount: Int
+    var asrHypotheses: [String]
     var rawTranscriptChars: Int
+    var asrHypothesisCount: Int
     var contextBeforeChars: Int
     var contextAfterChars: Int
 
@@ -191,7 +195,9 @@ private struct DebugLogCorrectionInput: Codable, Sendable {
         case numberOutputPreference = "number_output_preference"
         case punctuationPreference = "punctuation_preference"
         case userDictionaryCount = "user_dictionary_count"
+        case asrHypotheses = "asr_hypotheses"
         case rawTranscriptChars = "raw_transcript_chars"
+        case asrHypothesisCount = "asr_hypothesis_count"
         case contextBeforeChars = "context_before_chars"
         case contextAfterChars = "context_after_chars"
     }
@@ -397,10 +403,12 @@ enum DebugLogStore {
         status: String,
         error: String? = nil,
         latencyMs: Int? = nil,
+        asrHypotheses: [String] = [],
         alternateTranscripts: [String] = [],
         modelOutputs: [ASRTranscriptModelOutput] = []
     ) {
         guard let handle else { return }
+        let cleanedHypotheses = normalizedTranscripts(asrHypotheses)
         let cleanedAlternates = normalizedTranscripts(alternateTranscripts)
         let cleanedModelOutputs = normalizedModelOutputs(modelOutputs)
         let transcript = DebugLogTranscript(
@@ -412,6 +420,7 @@ enum DebugLogStore {
             model: activeASRModelDescription(),
             maxTokens: activeASRMaxTokens(),
             modelOutputs: cleanedModelOutputs.isEmpty ? nil : cleanedModelOutputs,
+            asrHypotheses: cleanedHypotheses.isEmpty ? nil : cleanedHypotheses,
             alternateTranscripts: cleanedAlternates.isEmpty ? nil : cleanedAlternates
         )
         Task {
@@ -509,7 +518,9 @@ enum DebugLogStore {
             numberOutputPreference: request.numberOutputPreference.rawValue,
             punctuationPreference: request.punctuationPreference.rawValue,
             userDictionaryCount: request.userDictionary.count,
+            asrHypotheses: request.asrHypotheses,
             rawTranscriptChars: request.rawTranscript.count,
+            asrHypothesisCount: request.asrHypotheses.count,
             contextBeforeChars: request.contextBefore.count,
             contextAfterChars: request.contextAfter.count
         )

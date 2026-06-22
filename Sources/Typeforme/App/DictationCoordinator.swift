@@ -298,9 +298,12 @@ final class DictationCoordinator: ObservableObject {
         do {
             let asrResult = try await asr.transcribeResult(audioFileURL: url, languageIDs: AppSettings.asrLanguageIDs)
             let raw = asrResult.text
+            let asrHypotheses = Self.combinedASRHypotheses(
+                candidates: asrResult.hypotheses.map(Optional.some) + [liveSnapshotAtCorrection]
+            )
             let alternateTranscripts = Self.combinedAlternateTranscripts(
                 primaryTranscript: raw,
-                candidates: asrResult.alternateTranscripts.map(Optional.some) + [liveSnapshotAtCorrection]
+                candidates: asrHypotheses.map(Optional.some)
             )
             let asrWarning = asrResult.warningText
             DebugLogStore.recordASR(
@@ -308,6 +311,7 @@ final class DictationCoordinator: ObservableObject {
                 text: raw,
                 status: "ok",
                 latencyMs: elapsedMs(since: asrStarted),
+                asrHypotheses: asrHypotheses,
                 alternateTranscripts: alternateTranscripts,
                 modelOutputs: asrResult.modelOutputs
             )
@@ -373,7 +377,8 @@ final class DictationCoordinator: ObservableObject {
             transition(to: .correcting)
             let request = buildCorrectionRequest(
                 rawTranscript: trimmed,
-                alternateTranscripts: alternateTranscripts
+                alternateTranscripts: alternateTranscripts,
+                asrHypotheses: asrHypotheses
             )
             let correctionStarted = Date()
             do {
@@ -452,6 +457,7 @@ final class DictationCoordinator: ObservableObject {
                     status: "error",
                     error: error.localizedDescription,
                     latencyMs: elapsedMs(since: asrStarted),
+                    asrHypotheses: liveSnapshotAtCorrection.isEmpty ? [] : [liveSnapshotAtCorrection],
                     alternateTranscripts: liveSnapshotAtCorrection.isEmpty ? [] : [liveSnapshotAtCorrection]
                 )
             }
@@ -649,7 +655,8 @@ final class DictationCoordinator: ObservableObject {
     private func buildCorrectionRequest(
         rawTranscript: String,
         correctionModeOverride: CorrectionMode? = nil,
-        alternateTranscripts: [String] = []
+        alternateTranscripts: [String] = [],
+        asrHypotheses: [String] = []
     ) -> CorrectionRequest {
         let snapshot = frontmostSnapshot
         let category = AppCategory.from(bundleID: snapshot?.bundleID)
@@ -673,8 +680,13 @@ final class DictationCoordinator: ObservableObject {
             numberOutputPreference: AppSettings.numberOutputPreference,
             punctuationPreference: AppSettings.punctuationPreference,
             userDictionary: dictionary.sortedSnapshot(),
-            alternateTranscripts: alternateForRequest
+            alternateTranscripts: alternateForRequest,
+            asrHypotheses: asrHypotheses
         )
+    }
+
+    private static func combinedASRHypotheses(candidates: [String?]) -> [String] {
+        CorrectionRequest.normalizedASRHypotheses(candidates: candidates)
     }
 
     private static func combinedAlternateTranscripts(
@@ -931,6 +943,7 @@ final class DictationCoordinator: ObservableObject {
                 text: raw.isEmpty ? nil : raw,
                 status: raw.isEmpty ? "remote_no_raw" : "remote_ok",
                 latencyMs: response.transcriptionLatencyMs ?? elapsedMs(since: started),
+                asrHypotheses: Self.combinedASRHypotheses(candidates: [raw, liveSnapshotAtCorrection]),
                 alternateTranscripts: liveSnapshotAtCorrection.isEmpty ? [] : [liveSnapshotAtCorrection]
             )
             lastTranscript = raw.isEmpty ? response.text : raw
@@ -1012,6 +1025,7 @@ final class DictationCoordinator: ObservableObject {
                 status: "remote_error",
                 error: error.localizedDescription,
                 latencyMs: elapsedMs(since: started),
+                asrHypotheses: liveSnapshotAtCorrection.isEmpty ? [] : [liveSnapshotAtCorrection],
                 alternateTranscripts: liveSnapshotAtCorrection.isEmpty ? [] : [liveSnapshotAtCorrection]
             )
             guard await isActive(sessionID: sessionID, token: cancelToken) else { return }

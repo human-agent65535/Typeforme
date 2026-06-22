@@ -17,7 +17,7 @@ final class EmbeddedLlamaCorrectorService: CorrectorService {
         let content = try await complete(system: system, user: user, timeoutMs: timeoutMs)
         do {
             var result = try CorrectionValidator.parseAndValidate(rawOutput: content, for: request)
-            result.text = ProtectedSpanPostProcessor.apply(result.text, rawTranscript: request.rawTranscript)
+            result.text = ProtectedSpanPostProcessor.apply(result.text, rawTranscript: request.transcriptEvidenceText)
             result.text = TranscriptPostProcessor.clean(
                 result.text,
                 languageIDs: request.languageIDs,
