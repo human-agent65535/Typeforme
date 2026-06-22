@@ -20,6 +20,8 @@ let package = Package(
         .package(url: "https://github.com/sindresorhus/KeyboardShortcuts", .upToNextMajor(from: "2.4.0")),
         // Local HTTP server for Bridge. Do not hand-roll HTTP parsing/keep-alive.
         .package(url: "https://github.com/hummingbird-project/hummingbird.git", .upToNextMajor(from: "2.0.0")),
+        // Bidirectional live preview transport for Bridge.
+        .package(url: "https://github.com/hummingbird-project/hummingbird-websocket.git", .upToNextMajor(from: "2.2.0")),
         // Fuzzy scoring for automatically derived speech vocabulary hints.
         .package(url: "https://github.com/ordo-one/FuzzyMatch.git", .upToNextMajor(from: "1.4.0")),
     ],
@@ -29,6 +31,7 @@ let package = Package(
             dependencies: [
                 .product(name: "KeyboardShortcuts", package: "KeyboardShortcuts"),
                 .product(name: "Hummingbird",       package: "hummingbird"),
+                .product(name: "HummingbirdWebSocket", package: "hummingbird-websocket"),
                 .product(name: "FuzzyMatch",        package: "FuzzyMatch"),
             ],
             path: "Sources/Typeforme",

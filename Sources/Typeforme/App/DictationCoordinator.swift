@@ -57,6 +57,8 @@ final class DictationCoordinator: ObservableObject {
     private static let degradedSuccessResetDelay: TimeInterval = 1.8
     private static let minimumToggleStopInterval: TimeInterval = 0.6
     private static let recordingTailBufferNanoseconds: UInt64 = 200_000_000
+    private static let nvidiaLivePreviewFinishTimeout: TimeInterval = 4
+    private static let nvidiaLivePreviewResetTimeout: TimeInterval = 2
     private static let previewWithoutRefineMessage = "Preview without refine"
     private static let insertedWithoutRefineMessage = "Inserted without refine"
 
@@ -732,8 +734,10 @@ final class DictationCoordinator: ObservableObject {
 
         let displaysLivePartial = activeTextEditIntent != .command
         do {
-            let session = try NvidiaNemotronLivePreviewSession.start(
-                languageIDs: AppSettings.asrLanguageIDs
+            let languageIDs = ASRLanguageSelection.effectiveIDs(AppSettings.asrLanguageIDs, for: .nvidiaNemotron)
+            let session = try NvidiaNemotronWarmPool.shared.takeOrStart(
+                languageIDs: languageIDs,
+                diagnosticID: UUID().uuidString
             ) { [weak self] text in
                 Task { @MainActor [weak self] in
                     self?.applyLivePartialPreview(text, displaysLivePartial: displaysLivePartial)
@@ -823,7 +827,25 @@ final class DictationCoordinator: ObservableObject {
     /// `livePartialTranscript` on screen until the Mac final replaces it.
     func endLivePartialPreviewAudio() {
         liveSpeechRequest?.endAudio()
-        nvidiaLivePreviewSession?.finishInput()
+        if let session = nvidiaLivePreviewSession {
+            nvidiaLivePreviewSession = nil
+            let languageIDs = AppSettings.asrLanguageIDs
+            Task { @MainActor in
+                let completed = await session.finishInputAndWaitForFinal(
+                    timeout: Self.nvidiaLivePreviewFinishTimeout
+                )
+                if completed {
+                    NvidiaNemotronWarmPool.shared.returnIdle(
+                        session,
+                        languageIDs: languageIDs,
+                        reason: "mac_preview_finished"
+                    )
+                } else {
+                    session.terminate(reason: "mac_preview_finish_timeout")
+                    NvidiaNemotronWarmPool.shared.preload(languageIDs: languageIDs)
+                }
+            }
+        }
         if !livePartialTranscript.isEmpty {
             liveSnapshotAtCorrection = livePartialTranscript
         }
@@ -835,8 +857,25 @@ final class DictationCoordinator: ObservableObject {
         liveSpeechTask = nil
         liveSpeechRequest = nil
         liveSpeechRecognizer = nil
-        nvidiaLivePreviewSession?.cancel()
-        nvidiaLivePreviewSession = nil
+        if let session = nvidiaLivePreviewSession {
+            nvidiaLivePreviewSession = nil
+            let languageIDs = AppSettings.asrLanguageIDs
+            Task { @MainActor in
+                let reset = await session.cancelInputAndWaitForReset(
+                    timeout: Self.nvidiaLivePreviewResetTimeout
+                )
+                if reset {
+                    NvidiaNemotronWarmPool.shared.returnIdle(
+                        session,
+                        languageIDs: languageIDs,
+                        reason: "mac_preview_cancelled"
+                    )
+                } else {
+                    session.terminate(reason: "mac_preview_cancel_timeout")
+                    NvidiaNemotronWarmPool.shared.preload(languageIDs: languageIDs)
+                }
+            }
+        }
         if clearText {
             livePartialTranscript = ""
             liveSnapshotAtCorrection = ""

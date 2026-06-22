@@ -4,9 +4,13 @@ use std::env;
 use std::error::Error;
 use std::io::{Read, Write};
 use std::path::PathBuf;
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::thread;
 use std::time::Instant;
 
 const CHUNK_SIZE: usize = 8_960;
+const CONTROL_FINISH_BITS: u32 = 0x7FC0_1001;
+const CONTROL_CANCEL_BITS: u32 = 0x7FC0_1002;
 
 #[derive(Debug)]
 struct Args {
@@ -14,6 +18,18 @@ struct Args {
     audio: Option<PathBuf>,
     target_lang: String,
     stream_stdin_f32: bool,
+}
+
+struct StreamChunk {
+    samples: Vec<f32>,
+    real_samples: usize,
+    flushing: bool,
+}
+
+enum StreamItem {
+    Audio(StreamChunk),
+    Finish,
+    Cancel,
 }
 
 fn main() {
@@ -30,15 +46,34 @@ fn run() -> Result<(), Box<dyn Error>> {
     let args = Args::parse()?;
     let started = Instant::now();
 
+    if args.stream_stdin_f32 {
+        let stream_chunks = spawn_stdin_chunk_reader(started);
+        let mut model = Nemotron::from_pretrained(&args.model_dir, None)?;
+        if model.mode() == NemotronMode::Multilingual {
+            model.set_target_lang(&args.target_lang)?;
+        }
+        eprintln!(
+            "typeforme-nemotron-asr ready mode={:?} target_lang={} load_ms={}",
+            model.mode(),
+            args.target_lang,
+            started.elapsed().as_millis()
+        );
+        std::io::stderr().flush()?;
+        run_streaming_stdin(&mut model, stream_chunks, started)?;
+        return Ok(());
+    }
+
     let mut model = Nemotron::from_pretrained(&args.model_dir, None)?;
     if model.mode() == NemotronMode::Multilingual {
         model.set_target_lang(&args.target_lang)?;
     }
-
-    if args.stream_stdin_f32 {
-        run_streaming_stdin(&mut model, started)?;
-        return Ok(());
-    }
+    eprintln!(
+        "typeforme-nemotron-asr ready mode={:?} target_lang={} load_ms={}",
+        model.mode(),
+        args.target_lang,
+        started.elapsed().as_millis()
+    );
+    std::io::stderr().flush()?;
 
     let audio_path = args.audio.as_ref().ok_or("--audio is required")?;
     let audio = read_wav_mono_16khz(audio_path)?;
@@ -127,31 +162,76 @@ fn print_usage() {
     );
 }
 
-fn run_streaming_stdin(model: &mut Nemotron, started: Instant) -> Result<(), Box<dyn Error>> {
+fn spawn_stdin_chunk_reader(started: Instant) -> Receiver<Result<StreamItem, String>> {
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || {
+        if let Err(error) = read_stdin_chunks(sender.clone(), started) {
+            let _ = sender.send(Err(error));
+        }
+    });
+    receiver
+}
+
+fn read_stdin_chunks(
+    sender: Sender<Result<StreamItem, String>>,
+    started: Instant,
+) -> Result<(), String> {
     let mut stdin = std::io::stdin().lock();
     let mut read_buffer = [0u8; 32 * 1024];
     let mut byte_buffer: Vec<u8> = Vec::new();
     let mut sample_buffer: Vec<f32> = Vec::with_capacity(CHUNK_SIZE * 2);
-    let mut last_text = String::new();
-    let mut total_samples: usize = 0;
+    let mut first_read_logged = false;
 
     loop {
-        let count = stdin.read(&mut read_buffer)?;
+        let count = stdin.read(&mut read_buffer).map_err(|error| error.to_string())?;
         if count == 0 {
             break;
+        }
+        if !first_read_logged {
+            first_read_logged = true;
+            eprintln!(
+                "typeforme-nemotron-asr stream first_stdin_bytes={} elapsed_ms={}",
+                count,
+                started.elapsed().as_millis()
+            );
+            std::io::stderr()
+                .flush()
+                .map_err(|error| error.to_string())?;
         }
         byte_buffer.extend_from_slice(&read_buffer[..count]);
         let aligned_byte_count = byte_buffer.len() / 4 * 4;
         for bytes in byte_buffer[..aligned_byte_count].chunks_exact(4) {
-            sample_buffer.push(f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]));
+            let bits = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+            match bits {
+                CONTROL_FINISH_BITS => {
+                    flush_stream_samples(&sender, &mut sample_buffer, true)?;
+                    if sender.send(Ok(StreamItem::Finish)).is_err() {
+                        return Ok(());
+                    }
+                }
+                CONTROL_CANCEL_BITS => {
+                    sample_buffer.clear();
+                    if sender.send(Ok(StreamItem::Cancel)).is_err() {
+                        return Ok(());
+                    }
+                }
+                _ => sample_buffer.push(f32::from_bits(bits)),
+            }
         }
         byte_buffer.drain(..aligned_byte_count);
 
         while sample_buffer.len() >= CHUNK_SIZE {
             let chunk: Vec<f32> = sample_buffer.drain(..CHUNK_SIZE).collect();
-            total_samples += chunk.len();
-            let _ = model.transcribe_chunk(&chunk)?;
-            emit_partial_if_changed(model, &mut last_text)?;
+            if sender
+                .send(Ok(StreamItem::Audio(StreamChunk {
+                    samples: chunk,
+                    real_samples: CHUNK_SIZE,
+                    flushing: false,
+                })))
+                .is_err()
+            {
+                return Ok(());
+            }
         }
     }
 
@@ -159,21 +239,107 @@ fn run_streaming_stdin(model: &mut Nemotron, started: Instant) -> Result<(), Box
         return Err("stdin Float32 stream ended with a partial sample".into());
     }
 
-    if !sample_buffer.is_empty() {
-        total_samples += sample_buffer.len();
-        sample_buffer.resize(CHUNK_SIZE, 0.0);
-        let _ = model.transcribe_chunk(&sample_buffer)?;
-        emit_partial_if_changed(model, &mut last_text)?;
+    flush_stream_samples(&sender, &mut sample_buffer, true)?;
+
+    Ok(())
+}
+
+fn flush_stream_samples(
+    sender: &Sender<Result<StreamItem, String>>,
+    sample_buffer: &mut Vec<f32>,
+    flushing: bool,
+) -> Result<(), String> {
+    if sample_buffer.is_empty() {
+        return Ok(());
+    }
+    let real_samples = sample_buffer.len();
+    sample_buffer.resize(CHUNK_SIZE, 0.0);
+    let chunk = std::mem::take(sample_buffer);
+    if sender
+        .send(Ok(StreamItem::Audio(StreamChunk {
+            samples: chunk,
+            real_samples,
+            flushing,
+        })))
+        .is_err()
+    {
+        return Ok(());
+    }
+    Ok(())
+}
+
+fn run_streaming_stdin(
+    model: &mut Nemotron,
+    chunks: Receiver<Result<StreamItem, String>>,
+    started: Instant,
+) -> Result<(), Box<dyn Error>> {
+    let mut last_text = String::new();
+    let mut total_samples: usize = 0;
+    let mut chunk_index: usize = 0;
+
+    for item in chunks {
+        match item.map_err(|error| -> Box<dyn Error> { error.into() })? {
+            StreamItem::Audio(chunk) => {
+                total_samples += chunk.real_samples;
+                chunk_index += 1;
+                let decode_started = Instant::now();
+                let _ = model.transcribe_chunk(&chunk.samples)?;
+                let changed = emit_partial_if_changed(model, &mut last_text)?;
+                log_stream_chunk(
+                    started,
+                    chunk_index,
+                    total_samples,
+                    decode_started.elapsed().as_millis(),
+                    changed,
+                    last_text.chars().count(),
+                    chunk.flushing,
+                )?;
+            }
+            StreamItem::Finish => {
+                let final_text = flush_final_audio(
+                    model,
+                    &mut last_text,
+                    &mut chunk_index,
+                    total_samples,
+                    started,
+                )?;
+                model.reset();
+                emit_final(&final_text)?;
+                last_text.clear();
+                total_samples = 0;
+                chunk_index = 0;
+                eprintln!(
+                    "typeforme-nemotron-asr stream reset elapsed_ms={}",
+                    started.elapsed().as_millis()
+                );
+                std::io::stderr().flush()?;
+            }
+            StreamItem::Cancel => {
+                model.reset();
+                last_text.clear();
+                total_samples = 0;
+                chunk_index = 0;
+                emit_cancelled()?;
+                eprintln!(
+                    "typeforme-nemotron-asr stream cancelled elapsed_ms={}",
+                    started.elapsed().as_millis()
+                );
+                std::io::stderr().flush()?;
+            }
+        }
     }
 
-    for _ in 0..3 {
-        let _ = model.transcribe_chunk(&vec![0.0; CHUNK_SIZE])?;
-        emit_partial_if_changed(model, &mut last_text)?;
+    if total_samples == 0 && last_text.is_empty() {
+        return Ok(());
     }
-
-    let final_text = model.get_transcript().trim().to_string();
-    println!("{}", json!({ "event": "final", "text": final_text }));
-    std::io::stdout().flush()?;
+    let final_text = flush_final_audio(
+        model,
+        &mut last_text,
+        &mut chunk_index,
+        total_samples,
+        started,
+    )?;
+    emit_final(&final_text)?;
 
     eprintln!(
         "typeforme-nemotron-asr stream completed in {:.2}s (audio: {:.2}s)",
@@ -184,14 +350,78 @@ fn run_streaming_stdin(model: &mut Nemotron, started: Instant) -> Result<(), Box
     Ok(())
 }
 
-fn emit_partial_if_changed(model: &Nemotron, last_text: &mut String) -> Result<(), Box<dyn Error>> {
+fn flush_final_audio(
+    model: &mut Nemotron,
+    last_text: &mut String,
+    chunk_index: &mut usize,
+    total_samples: usize,
+    started: Instant,
+) -> Result<String, Box<dyn Error>> {
+    for _ in 0..3 {
+        *chunk_index += 1;
+        let decode_started = Instant::now();
+        let _ = model.transcribe_chunk(&vec![0.0; CHUNK_SIZE])?;
+        let changed = emit_partial_if_changed(model, last_text)?;
+        log_stream_chunk(
+            started,
+            *chunk_index,
+            total_samples,
+            decode_started.elapsed().as_millis(),
+            changed,
+            last_text.chars().count(),
+            true,
+        )?;
+    }
+
+    Ok(model.get_transcript().trim().to_string())
+}
+
+fn emit_final(text: &str) -> Result<(), Box<dyn Error>> {
+    println!("{}", json!({ "event": "final", "text": text }));
+    std::io::stdout().flush()?;
+    Ok(())
+}
+
+fn emit_cancelled() -> Result<(), Box<dyn Error>> {
+    println!("{}", json!({ "event": "cancelled", "text": "" }));
+    std::io::stdout().flush()?;
+    Ok(())
+}
+
+fn emit_partial_if_changed(
+    model: &Nemotron,
+    last_text: &mut String,
+) -> Result<bool, Box<dyn Error>> {
     let text = model.get_transcript().trim().to_string();
     if text.is_empty() || text == *last_text {
-        return Ok(());
+        return Ok(false);
     }
     *last_text = text.clone();
     println!("{}", json!({ "event": "partial", "text": text }));
     std::io::stdout().flush()?;
+    Ok(true)
+}
+
+fn log_stream_chunk(
+    started: Instant,
+    chunk_index: usize,
+    total_samples: usize,
+    decode_ms: u128,
+    changed: bool,
+    text_chars: usize,
+    flushing: bool,
+) -> Result<(), Box<dyn Error>> {
+    eprintln!(
+        "typeforme-nemotron-asr stream chunk={} audio_ms={} decode_ms={} changed={} text_chars={} flushing={} elapsed_ms={}",
+        chunk_index,
+        total_samples * 1_000 / 16_000,
+        decode_ms,
+        changed,
+        text_chars,
+        flushing,
+        started.elapsed().as_millis()
+    );
+    std::io::stderr().flush()?;
     Ok(())
 }
 

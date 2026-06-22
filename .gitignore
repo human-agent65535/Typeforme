@@ -29,6 +29,7 @@ xcuserdata/
 # Build outputs
 build/
 dist/
+target/
 *.app/
 *.dSYM/
 

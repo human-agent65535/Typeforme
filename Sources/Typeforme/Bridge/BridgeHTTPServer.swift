@@ -1,14 +1,17 @@
 import Foundation
 import Hummingbird
+import HummingbirdWebSocket
 import HTTPTypes
 import NIOCore
 
-private struct BridgeRequestContext: RequestContext, RemoteAddressRequestContext {
+private struct BridgeRequestContext: RequestContext, RemoteAddressRequestContext, WebSocketRequestContext {
     var coreContext: CoreRequestContextStorage
+    let webSocket: WebSocketHandlerReference<Self>
     let remoteAddress: SocketAddress?
 
     init(source: ApplicationRequestContextSource) {
         coreContext = CoreRequestContextStorage(source: source)
+        webSocket = WebSocketHandlerReference()
         remoteAddress = source.channel.remoteAddress
     }
 }
@@ -18,6 +21,55 @@ private struct BridgeRequestMetadata: Sendable {
     var bundleID: String?
 
     static let empty = BridgeRequestMetadata()
+}
+
+private actor BridgeLivePreviewWebSocketWriter {
+    private var lastText: String?
+    private var sentFinal = false
+
+    func send(
+        _ event: BridgeLivePreviewEvent,
+        outbound: WebSocketOutboundWriter
+    ) async throws {
+        guard !sentFinal else { return }
+        if let text = event.text, !event.isFinal {
+            guard text != lastText else { return }
+            lastText = text
+        }
+        if event.isFinal {
+            sentFinal = true
+        }
+        let data = try BridgeJSON.encodeSorted(event)
+        guard let json = String(data: data, encoding: .utf8) else {
+            throw BridgeServiceError.invalidRequest("Could not encode live preview WebSocket event")
+        }
+        try await outbound.write(.text(json))
+        Log.bridge.notice(
+            "Bridge live preview socket send session=\(String(event.sessionID.prefix(8)), privacy: .public) final=\(event.isFinal, privacy: .public) text_chars=\(event.text?.count ?? 0, privacy: .public)"
+        )
+        LivePreviewFileTrace.record(
+            "mac_socket_send_event",
+            sessionID: event.sessionID,
+            fields: [
+                "final": event.isFinal,
+                "text_chars": event.text?.count ?? 0,
+            ]
+        )
+    }
+
+    func sendFinal(
+        _ response: BridgeLivePreviewFinishResponse,
+        outbound: WebSocketOutboundWriter
+    ) async throws {
+        let event = BridgeLivePreviewEvent(
+            sessionID: response.sessionID,
+            provider: "nvidia-nemotron-asr",
+            text: response.text,
+            isFinal: true,
+            updatedAt: response.finishedAt
+        )
+        try await send(event, outbound: outbound)
+    }
 }
 
 private extension HTTPField.Name {
@@ -43,7 +95,7 @@ final class BridgeHTTPServer: @unchecked Sendable {
     private static let maxBodyBytes = 25 * 1024 * 1024
     private static let maxMultipartHeaderBytes = 16 * 1024
     private static let maxMultipartFieldBytes = 1 * 1024 * 1024
-    private static let maxLivePreviewAudioChunkBytes = 512 * 1024
+    private static let maxLivePreviewSocketMessageBytes = 512 * 1024
     private static let restartSettleDelay: UInt64 = 150_000_000
 
     @MainActor
@@ -294,28 +346,25 @@ final class BridgeHTTPServer: @unchecked Sendable {
             }
         }
 
-        router.post("v1/live-preview/:sessionID/audio") { request, context async -> Response in
-            await Self.authorizedRecordedRequest(
-                .livePreviewAudio,
-                request: request,
-                context: context
-            ) {
-                let sessionID = try context.parameters.require("sessionID")
-                let audioData = try await Self.decodeLivePreviewAudioChunk(from: request)
-                let response = try await service.appendLivePreviewAudio(sessionID: sessionID, audioData: audioData)
-                return Self.jsonResponse(response)
+        router.ws("v1/live-preview/:sessionID/socket") { request, context async throws -> RouterShouldUpgrade in
+            guard Self.isAuthorized(request) else {
+                Self.recordRequest(.livePreviewSocket, request: request, context: context, statusCode: 404, startedAt: Date())
+                return .dontUpgrade
             }
-        }
-
-        router.get("v1/live-preview/:sessionID/events") { request, context async -> Response in
-            await Self.authorizedRecordedRequest(
-                .livePreviewEvents,
-                request: request,
-                context: context
-            ) {
-                let sessionID = try context.parameters.require("sessionID")
-                return Self.livePreviewEventsResponse(sessionID: sessionID)
+            guard Self.hasClientIdentity(request) else {
+                Self.recordRequest(.livePreviewSocket, request: request, context: context, statusCode: 400, startedAt: Date())
+                return .dontUpgrade
             }
+            Self.recordRequest(.livePreviewSocket, request: request, context: context, statusCode: 200, startedAt: Date())
+            return .upgrade()
+        } onUpgrade: { inbound, outbound, context in
+            let sessionID = try context.requestContext.parameters.require("sessionID")
+            try await Self.handleLivePreviewSocket(
+                sessionID: sessionID,
+                service: service,
+                inbound: inbound,
+                outbound: outbound
+            )
         }
 
         router.post("v1/live-preview/:sessionID/finish") { request, context async -> Response in
@@ -358,6 +407,7 @@ final class BridgeHTTPServer: @unchecked Sendable {
 
         return Application(
             router: router,
+            server: .http1WebSocketUpgrade(webSocketRouter: router),
             configuration: .init(
                 address: .hostname(host, port: port),
                 serverName: nil,
@@ -568,16 +618,129 @@ final class BridgeHTTPServer: @unchecked Sendable {
         return try BridgeJSON.decode(T.self, from: Data(body.readableBytesView))
     }
 
-    private static func decodeLivePreviewAudioChunk(from request: Request) async throws -> Data {
-        guard request.headers[.contentType]?.lowercased().contains("application/octet-stream") == true else {
-            throw BridgeServiceError.invalidRequest("Content-Type must be application/octet-stream")
+    private static func handleLivePreviewSocket(
+        sessionID: String,
+        service: BridgeService,
+        inbound: WebSocketInboundStream,
+        outbound: WebSocketOutboundWriter
+    ) async throws {
+        let process = try await service.livePreviewAudioProcess(sessionID: sessionID)
+        let writer = BridgeLivePreviewWebSocketWriter()
+        let socketOpenedAt = Date()
+        let socketLogID = String(sessionID.prefix(8))
+        Log.bridge.notice("Bridge live preview socket opened session=\(socketLogID, privacy: .public)")
+        LivePreviewFileTrace.record("mac_socket_opened", sessionID: sessionID)
+
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            group.addTask {
+                let stream = await BridgeLivePreviewEventCenter.shared.subscribe(sessionID: sessionID)
+                for await event in stream where !event.isFinal {
+                    try await writer.send(event, outbound: outbound)
+                }
+            }
+
+            group.addTask {
+                var receivedSamples = 0
+                var nextAudioLogSampleCount = 16_000
+                var firstAudioLogged = false
+                do {
+                    for try await message in inbound.messages(maxSize: Self.maxLivePreviewSocketMessageBytes) {
+                        switch message {
+                        case .binary(let buffer):
+                            let data = Data(buffer.readableBytesView)
+                            guard !data.isEmpty, data.count % MemoryLayout<Float>.size == 0 else {
+                                throw BridgeServiceError.invalidAudio
+                            }
+                            let sampleCount = data.count / MemoryLayout<Float>.size
+                            receivedSamples += sampleCount
+                            if !firstAudioLogged || receivedSamples >= nextAudioLogSampleCount {
+                                let isFirst = !firstAudioLogged
+                                firstAudioLogged = true
+                                while receivedSamples >= nextAudioLogSampleCount {
+                                    nextAudioLogSampleCount += 16_000
+                                }
+                                Log.bridge.notice(
+                                    "Bridge live preview socket audio session=\(socketLogID, privacy: .public) first=\(isFirst, privacy: .public) bytes=\(data.count, privacy: .public) received_audio_ms=\(receivedSamples * 1_000 / 16_000, privacy: .public) elapsed_ms=\(Self.elapsedMS(since: socketOpenedAt), privacy: .public)"
+                                )
+                                LivePreviewFileTrace.record(
+                                    "mac_socket_audio",
+                                    sessionID: sessionID,
+                                    fields: [
+                                        "bytes": data.count,
+                                        "elapsed_ms": Self.elapsedMS(since: socketOpenedAt),
+                                        "first": isFirst,
+                                        "received_audio_ms": receivedSamples * 1_000 / 16_000,
+                                    ]
+                                )
+                            }
+                            process.appendPCM16kMonoFloat32Data(data)
+                            await service.touchLivePreviewSession(sessionID: sessionID)
+
+                        case .text(let text):
+                            let control = try BridgeJSON.decode(
+                                BridgeLivePreviewSocketControl.self,
+                                from: Data(text.utf8)
+                            )
+                            Log.bridge.notice(
+                                "Bridge live preview socket control session=\(socketLogID, privacy: .public) type=\(control.type.rawValue, privacy: .public) received_audio_ms=\(receivedSamples * 1_000 / 16_000, privacy: .public) elapsed_ms=\(Self.elapsedMS(since: socketOpenedAt), privacy: .public)"
+                            )
+                            LivePreviewFileTrace.record(
+                                "mac_socket_control",
+                                sessionID: sessionID,
+                                fields: [
+                                    "elapsed_ms": Self.elapsedMS(since: socketOpenedAt),
+                                    "received_audio_ms": receivedSamples * 1_000 / 16_000,
+                                    "type": control.type.rawValue,
+                                ]
+                            )
+                            switch control.type {
+                            case .finish:
+                                let response = try await service.finishLivePreview(sessionID: sessionID)
+                                try await writer.sendFinal(response, outbound: outbound)
+                                return
+                            case .cancel:
+                                await service.cancelLivePreview(sessionID: sessionID)
+                                return
+                            }
+                        }
+                    }
+                    Log.bridge.notice(
+                        "Bridge live preview socket closed by peer session=\(socketLogID, privacy: .public) received_audio_ms=\(receivedSamples * 1_000 / 16_000, privacy: .public) elapsed_ms=\(Self.elapsedMS(since: socketOpenedAt), privacy: .public)"
+                    )
+                    LivePreviewFileTrace.record(
+                        "mac_socket_closed_by_peer",
+                        sessionID: sessionID,
+                        fields: [
+                            "elapsed_ms": Self.elapsedMS(since: socketOpenedAt),
+                            "received_audio_ms": receivedSamples * 1_000 / 16_000,
+                        ]
+                    )
+                    await service.cancelLivePreview(sessionID: sessionID)
+                } catch {
+                    Log.bridge.notice(
+                        "Bridge live preview socket error session=\(socketLogID, privacy: .public) received_audio_ms=\(receivedSamples * 1_000 / 16_000, privacy: .public) elapsed_ms=\(Self.elapsedMS(since: socketOpenedAt), privacy: .public) error=\(error.localizedDescription, privacy: .public)"
+                    )
+                    LivePreviewFileTrace.record(
+                        "mac_socket_error",
+                        sessionID: sessionID,
+                        fields: [
+                            "elapsed_ms": Self.elapsedMS(since: socketOpenedAt),
+                            "message_chars": error.localizedDescription.count,
+                            "received_audio_ms": receivedSamples * 1_000 / 16_000,
+                        ]
+                    )
+                    await service.cancelLivePreview(sessionID: sessionID)
+                    throw error
+                }
+            }
+
+            guard try await group.next() != nil else { return }
+            group.cancelAll()
         }
-        let body = try await request.body.collect(upTo: Self.maxLivePreviewAudioChunkBytes)
-        let data = Data(body.readableBytesView)
-        guard !data.isEmpty, data.count % MemoryLayout<Float>.size == 0 else {
-            throw BridgeServiceError.invalidAudio
-        }
-        return data
+    }
+
+    private static func elapsedMS(since date: Date) -> Int {
+        max(0, Int(Date().timeIntervalSince(date) * 1_000))
     }
 
     private static func jsonResponse<T: Encodable>(_ value: T, status: Int = 200, reason: String = "OK") -> Response {
@@ -615,36 +778,6 @@ final class BridgeHTTPServer: @unchecked Sendable {
                 payload += "data: \(json)\n\n"
                 try await writer.write(ByteBuffer(string: payload))
                 if event.stage.isTerminal {
-                    break
-                }
-            }
-            try await writer.finish(nil)
-        }
-        return Response(status: .ok, headers: headers, body: body)
-    }
-
-    private static func livePreviewEventsResponse(sessionID: String) -> Response {
-        var headers = HTTPFields()
-        headers[.contentType] = "text/event-stream; charset=utf-8"
-        headers[.cacheControl] = "no-store"
-        if let bufferingHeader = HTTPField.Name("X-Accel-Buffering") {
-            headers[bufferingHeader] = "no"
-        }
-
-        let body = ResponseBody { writer in
-            let stream = await BridgeLivePreviewEventCenter.shared.subscribe(sessionID: sessionID)
-            try await writer.write(ByteBuffer(string: ": typeforme live preview\n\n"))
-            for await event in stream {
-                guard let data = try? BridgeJSON.encodeSorted(event),
-                      let json = String(data: data, encoding: .utf8)
-                else {
-                    continue
-                }
-                let eventName = event.isFinal ? "final" : "partial"
-                var payload = "event: \(eventName)\n"
-                payload += "data: \(json)\n\n"
-                try await writer.write(ByteBuffer(string: payload))
-                if event.isFinal {
                     break
                 }
             }

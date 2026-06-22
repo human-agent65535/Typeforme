@@ -205,18 +205,6 @@ struct BridgeLivePreviewStartResponse: Codable, Sendable {
     }
 }
 
-struct BridgeLivePreviewAudioAppendResponse: Codable, Sendable {
-    let sessionID: String
-    let text: String?
-    let updatedAt: TimeInterval
-
-    enum CodingKeys: String, CodingKey {
-        case sessionID = "session_id"
-        case text
-        case updatedAt = "updated_at"
-    }
-}
-
 struct BridgeLivePreviewFinishResponse: Codable, Sendable {
     let sessionID: String
     let text: String?
@@ -227,6 +215,15 @@ struct BridgeLivePreviewFinishResponse: Codable, Sendable {
         case text
         case finishedAt = "finished_at"
     }
+}
+
+struct BridgeLivePreviewSocketControl: Codable, Sendable {
+    enum ControlType: String, Codable, Sendable {
+        case finish
+        case cancel
+    }
+
+    let type: ControlType
 }
 
 struct BridgeLivePreviewEvent: Codable, Sendable {

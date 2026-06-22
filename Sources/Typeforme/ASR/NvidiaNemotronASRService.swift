@@ -2,18 +2,13 @@ import Foundation
 
 final class NvidiaNemotronASRService: ASRService {
     func transcribe(audioFileURL: URL, languageIDs: [String]) async throws -> String {
-        let supportedLanguageIDs = ASRLanguageSelection.validatedIDs(
-            languageIDs,
-            supportedOptions: ASRLanguageSelection.nvidiaNemotronASRSupportedLanguages
-        )
-        let runtimeStatus = Self.bundledRuntimeStatus()
-        guard runtimeStatus.isReady,
-              let runnerURL = runtimeStatus.runnerURL
-        else {
-            throw ASRAudioSupportError.httpStatus(503, runtimeStatus.errorDetail)
+        let supportedLanguageIDs = ASRLanguageSelection.effectiveIDs(languageIDs, for: .nvidiaNemotron)
+        guard !supportedLanguageIDs.isEmpty else {
+            throw ASRAudioSupportError.httpStatus(
+                422,
+                "NVIDIA Nemotron ASR does not support the selected languages"
+            )
         }
-        let modelDirURL = try Self.stageModelDirectory(runtimeStatus)
-        defer { try? FileManager.default.removeItem(at: modelDirURL) }
 
         let uploadURL = try await ASRAudioSupport.wavUploadableAudioURL(for: audioFileURL)
         defer {
@@ -22,34 +17,63 @@ final class NvidiaNemotronASRService: ASRService {
             }
         }
 
-        let targetLanguage = Self.targetLanguage(for: supportedLanguageIDs)
-        let result = try await Self.run(
-            command: NvidiaASRCommand(
-                executablePath: runnerURL.path,
-                arguments: [
-                    "--model-dir",
-                    modelDirURL.path,
-                    "--audio",
-                    uploadURL.path,
-                    "--target-lang",
-                    targetLanguage,
-                ]
-            ),
-            timeout: AppSettings.asrNvidiaNemotronTimeoutSeconds
-        )
-
-        guard result.exitCode == 0 else {
-            let detail = result.errorDetail.isEmpty
-                ? "runner exited with \(result.exitCode)"
-                : result.errorDetail
-            throw ASRAudioSupportError.httpStatus(503, detail)
+        let diagnosticID = "asr-\(UUID().uuidString)"
+        let session = try await MainActor.run {
+            try NvidiaNemotronWarmPool.shared.takeOrStart(
+                languageIDs: supportedLanguageIDs,
+                diagnosticID: diagnosticID,
+                onTranscript: { _ in }
+            )
         }
-
-        let text = Self.parseTranscript(stdout: result.stdout)
-        guard !text.isEmpty else {
-            throw ASRAudioSupportError.emptyTranscript
+        var returnedToPool = false
+        var failureHandled = false
+        do {
+            try session.appendAudioFile(uploadURL)
+            let completed = await session.finishInputAndWaitForFinal(
+                timeout: AppSettings.asrNvidiaNemotronTimeoutSeconds
+            )
+            guard completed else {
+                session.terminate(reason: "asr_timeout")
+                await MainActor.run {
+                    NvidiaNemotronWarmPool.shared.preload(languageIDs: supportedLanguageIDs)
+                }
+                failureHandled = true
+                throw ASRAudioSupportError.timeout(seconds: AppSettings.asrNvidiaNemotronTimeoutSeconds)
+            }
+            let text = session.currentTranscript()?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            await MainActor.run {
+                NvidiaNemotronWarmPool.shared.returnIdle(
+                    session,
+                    languageIDs: supportedLanguageIDs,
+                    reason: "asr_finished"
+                )
+            }
+            returnedToPool = true
+            guard !text.isEmpty else {
+                throw ASRAudioSupportError.emptyTranscript
+            }
+            return LocaleTextNormalizer.normalize(text, languageIDs: supportedLanguageIDs)
+        } catch {
+            if returnedToPool || failureHandled {
+                throw error
+            }
+            let reset = await session.cancelInputAndWaitForReset(timeout: 2)
+            if reset {
+                await MainActor.run {
+                    NvidiaNemotronWarmPool.shared.returnIdle(
+                        session,
+                        languageIDs: supportedLanguageIDs,
+                        reason: "asr_error_reset"
+                    )
+                }
+            } else {
+                session.terminate(reason: "asr_error")
+                await MainActor.run {
+                    NvidiaNemotronWarmPool.shared.preload(languageIDs: supportedLanguageIDs)
+                }
+            }
+            throw error
         }
-        return LocaleTextNormalizer.normalize(text, languageIDs: supportedLanguageIDs)
     }
 
     static func targetLanguage(for languageIDs: [String]) -> String {

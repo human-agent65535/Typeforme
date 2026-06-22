@@ -2156,6 +2156,10 @@ final class AppState {
 
         guard keyboardLivePreviewEnabled else {
             appLog.notice("live preview skipped: disabled")
+            BridgeLivePreviewFileTrace.record(
+                "ios_preview_skipped",
+                fields: ["reason": "disabled"]
+            )
             return false
         }
         switch keyboardLivePreviewSource {
@@ -2172,11 +2176,26 @@ final class AppState {
         let capability = AppleSpeechPreviewSupport.capability(languageID: primaryID)
         guard keyboardLivePreviewRecognitionMode.canUse(capability) else {
             appLog.notice("live preview skipped: unsupported locale=\(primaryID, privacy: .public) mode=\(self.keyboardLivePreviewRecognitionMode.rawValue, privacy: .public)")
+            BridgeLivePreviewFileTrace.record(
+                "ios_apple_preview_skipped",
+                fields: [
+                    "locale": primaryID,
+                    "mode": keyboardLivePreviewRecognitionMode.rawValue,
+                    "reason": "unsupported_locale",
+                ]
+            )
             return false
         }
         let locale = Locale(identifier: primaryID)
         guard let recognizer = SFSpeechRecognizer(locale: locale), recognizer.isAvailable else {
             appLog.notice("live preview skipped: recognizer unavailable locale=\(primaryID, privacy: .public)")
+            BridgeLivePreviewFileTrace.record(
+                "ios_apple_preview_skipped",
+                fields: [
+                    "locale": primaryID,
+                    "reason": "recognizer_unavailable",
+                ]
+            )
             return false
         }
 
@@ -2190,12 +2209,24 @@ final class AppState {
             // recordings benefit if the user grants.
             SFSpeechRecognizer.requestAuthorization { _ in }
             appLog.notice("live preview skipped: speech permission not determined")
+            BridgeLivePreviewFileTrace.record(
+                "ios_apple_preview_skipped",
+                fields: ["reason": "speech_permission_not_determined"]
+            )
             return false
         case .denied, .restricted:
             appLog.notice("live preview skipped: speech permission denied or restricted")
+            BridgeLivePreviewFileTrace.record(
+                "ios_apple_preview_skipped",
+                fields: ["reason": "speech_permission_denied"]
+            )
             return false
         @unknown default:
             appLog.notice("live preview skipped: unknown speech permission")
+            BridgeLivePreviewFileTrace.record(
+                "ios_apple_preview_skipped",
+                fields: ["reason": "speech_permission_unknown"]
+            )
             return false
         }
 
@@ -2212,6 +2243,14 @@ final class AppState {
         let trace = LivePreviewTrace()
         livePreviewTrace = trace
         appLog.notice("live preview started: locale=\(primaryID, privacy: .public), mode=\(self.keyboardLivePreviewRecognitionMode.rawValue, privacy: .public), onDevice=\(request.requiresOnDeviceRecognition, privacy: .public)")
+        BridgeLivePreviewFileTrace.record(
+            "ios_apple_preview_started",
+            fields: [
+                "locale": primaryID,
+                "mode": keyboardLivePreviewRecognitionMode.rawValue,
+                "on_device": request.requiresOnDeviceRecognition,
+            ]
+        )
         liveSpeechTask = recognizer.recognitionTask(with: request) { [weak self, trace] result, error in
             // The task callback runs off the main actor — hop back before
             // touching state.
@@ -2227,6 +2266,15 @@ final class AppState {
                             appLog.notice(
                                 "live preview first partial: startToPartialMs=\(timing.startToPartialMS, privacy: .public), firstPCMToPartialMs=\(timing.firstPCMToPartialMS ?? -1, privacy: .public), pcmBuffers=\(timing.pcmBufferCount, privacy: .public), chars=\(text.count, privacy: .public)"
                             )
+                            BridgeLivePreviewFileTrace.record(
+                                "ios_apple_first_partial",
+                                fields: [
+                                    "chars": text.count,
+                                    "first_pcm_to_partial_ms": timing.firstPCMToPartialMS ?? -1,
+                                    "pcm_buffers": timing.pcmBufferCount,
+                                    "start_to_partial_ms": timing.startToPartialMS,
+                                ]
+                            )
                         }
                         self.livePartialTranscript = text
                         self.publishLivePartialTranscriptToKeyboard()
@@ -2234,6 +2282,10 @@ final class AppState {
                 }
                 if error != nil {
                     appLog.notice("live preview stopped: error=\(error?.localizedDescription ?? "unknown", privacy: .public)")
+                    BridgeLivePreviewFileTrace.record(
+                        "ios_apple_preview_stopped",
+                        fields: ["error_chars": error?.localizedDescription.count ?? 0]
+                    )
                     self.teardownLivePartialPreview(clearText: false)
                 }
             }
@@ -2246,6 +2298,15 @@ final class AppState {
                 appLog.notice(
                     "live preview first pcm: startToPCMms=\(timing.startToPCMMS, privacy: .public), buffers=\(timing.count, privacy: .public), sampleRate=\(buffer.format.sampleRate, privacy: .public), frames=\(buffer.frameLength, privacy: .public)"
                 )
+                BridgeLivePreviewFileTrace.record(
+                    "ios_apple_first_pcm",
+                    fields: [
+                        "buffers": timing.count,
+                        "frames": Int(buffer.frameLength),
+                        "sample_rate": Int(buffer.format.sampleRate.rounded()),
+                        "start_to_pcm_ms": timing.startToPCMMS,
+                    ]
+                )
             }
         }
         return true
@@ -2255,10 +2316,18 @@ final class AppState {
     private func startServerNemotronLivePreviewIfAvailable(generation: UInt64) -> Bool {
         guard macSettings?.supportsServerNemotronPreview == true else {
             appLog.notice("server live preview skipped: Mac Nemotron source is not enabled")
+            BridgeLivePreviewFileTrace.record(
+                "ios_server_preview_skipped",
+                fields: ["reason": "mac_nemotron_not_enabled"]
+            )
             return false
         }
         guard let baseURL = routeStatus.activeURL else {
             appLog.notice("server live preview skipped: no active bridge route")
+            BridgeLivePreviewFileTrace.record(
+                "ios_server_preview_skipped",
+                fields: ["reason": "no_active_bridge_route"]
+            )
             return false
         }
 
@@ -2275,11 +2344,20 @@ final class AppState {
                     let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
                     guard !cleaned.isEmpty else { return }
                     let timing = trace.recordPartial()
-                    if timing.isFirst {
-                        appLog.notice(
-                            "server live preview first partial: startToPartialMs=\(timing.startToPartialMS, privacy: .public), firstPCMToPartialMs=\(timing.firstPCMToPartialMS ?? -1, privacy: .public), pcmBuffers=\(timing.pcmBufferCount, privacy: .public), chars=\(cleaned.count, privacy: .public)"
-                        )
-                    }
+                        if timing.isFirst {
+                            appLog.notice(
+                                "server live preview first partial: startToPartialMs=\(timing.startToPartialMS, privacy: .public), firstPCMToPartialMs=\(timing.firstPCMToPartialMS ?? -1, privacy: .public), pcmBuffers=\(timing.pcmBufferCount, privacy: .public), chars=\(cleaned.count, privacy: .public)"
+                            )
+                            BridgeLivePreviewFileTrace.record(
+                                "ios_server_first_partial",
+                                fields: [
+                                    "chars": cleaned.count,
+                                    "first_pcm_to_partial_ms": timing.firstPCMToPartialMS ?? -1,
+                                    "pcm_buffers": timing.pcmBufferCount,
+                                    "start_to_partial_ms": timing.startToPartialMS,
+                                ]
+                            )
+                        }
                     self.livePartialTranscript = cleaned
                     self.publishLivePartialTranscriptToKeyboard()
                 }
@@ -2289,6 +2367,10 @@ final class AppState {
                     guard let self else { return }
                     guard self.livePreviewGeneration == generation else { return }
                     appLog.notice("server live preview failed: \(message, privacy: .public)")
+                    BridgeLivePreviewFileTrace.record(
+                        "ios_server_preview_failed",
+                        fields: ["message_chars": message.count]
+                    )
                     if self.serverLivePreviewStreamer != nil {
                         self.serverLivePreviewStreamer = nil
                     }
@@ -2300,12 +2382,28 @@ final class AppState {
         )
         serverLivePreviewStreamer = streamer
         appLog.notice("server live preview started")
+        BridgeLivePreviewFileTrace.record(
+            "ios_server_preview_started",
+            fields: [
+                "languages": activeLanguageIDs.joined(separator: ","),
+                "route_host_chars": baseURL.host?.count ?? 0,
+            ]
+        )
         keyboardAudioSession.onPCMBuffer = { [streamer, trace] buffer in
             streamer.append(buffer)
             let timing = trace.recordPCM()
             if timing.isFirst {
                 appLog.notice(
                     "server live preview first pcm: startToPCMms=\(timing.startToPCMMS, privacy: .public), buffers=\(timing.count, privacy: .public), sampleRate=\(buffer.format.sampleRate, privacy: .public), frames=\(buffer.frameLength, privacy: .public)"
+                )
+                BridgeLivePreviewFileTrace.record(
+                    "ios_server_first_pcm",
+                    fields: [
+                        "buffers": timing.count,
+                        "frames": Int(buffer.frameLength),
+                        "sample_rate": Int(buffer.format.sampleRate.rounded()),
+                        "start_to_pcm_ms": timing.startToPCMMS,
+                    ]
                 )
             }
         }

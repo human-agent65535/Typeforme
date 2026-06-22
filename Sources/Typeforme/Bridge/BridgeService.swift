@@ -111,7 +111,8 @@ final class BridgeService {
     }
 
     func settings() -> BridgeSettingsPayload {
-        BridgeSettingsPayload.current(userDictionary: dictionary.sortedSnapshot())
+        NvidiaNemotronWarmPool.shared.preloadForCurrentSettings()
+        return BridgeSettingsPayload.current(userDictionary: dictionary.sortedSnapshot())
     }
 
     func updateSettings(_ request: BridgeSettingsUpdateRequest) async throws -> BridgeSettingsPayload {
@@ -269,7 +270,15 @@ final class BridgeService {
                 "NVIDIA Nemotron ASR does not support the selected live preview languages"
             )
         }
-        let process = try NvidiaNemotronLivePreviewSession.start(languageIDs: languageIDs) { [weak self] text in
+        Log.bridge.notice(
+            "Bridge live preview start session=\(Self.logID(id), privacy: .public) languages=\(languageIDs.joined(separator: ","), privacy: .public)"
+        )
+        LivePreviewFileTrace.record(
+            "mac_bridge_start",
+            sessionID: id,
+            fields: ["languages": languageIDs.joined(separator: ",")]
+        )
+        let process = try NvidiaNemotronWarmPool.shared.takeOrStart(languageIDs: languageIDs, diagnosticID: id) { [weak self] text in
             Task { @MainActor [weak self] in
                 self?.recordLivePreviewTranscript(sessionID: id, text: text)
             }
@@ -283,6 +292,14 @@ final class BridgeService {
             process: process,
             createdAt: createdAt
         )
+        Log.bridge.notice(
+            "Bridge live preview started session=\(Self.logID(id), privacy: .public) elapsed_ms=\(self.elapsedMs(since: createdAt), privacy: .public)"
+        )
+        LivePreviewFileTrace.record(
+            "mac_bridge_started",
+            sessionID: id,
+            fields: ["elapsed_ms": self.elapsedMs(since: createdAt)]
+        )
         return BridgeLivePreviewStartResponse(
             sessionID: id,
             provider: "nvidia-nemotron-asr",
@@ -291,24 +308,17 @@ final class BridgeService {
         )
     }
 
-    func appendLivePreviewAudio(
-        sessionID: String,
-        audioData: Data
-    ) async throws -> BridgeLivePreviewAudioAppendResponse {
+    func livePreviewAudioProcess(sessionID: String) throws -> NvidiaNemotronLivePreviewSession {
         pruneExpiredLivePreviewSessions()
-        guard !audioData.isEmpty, audioData.count % MemoryLayout<Float>.size == 0 else {
-            throw BridgeServiceError.invalidAudio
-        }
         guard let session = livePreviewSessions[sessionID] else {
             throw BridgeServiceError.missingSession
         }
-        session.process.appendPCM16kMonoFloat32Data(audioData)
         session.updatedAt = Date()
-        return BridgeLivePreviewAudioAppendResponse(
-            sessionID: session.id,
-            text: session.lastTranscript,
-            updatedAt: session.updatedAt.timeIntervalSince1970
-        )
+        return session.process
+    }
+
+    func touchLivePreviewSession(sessionID: String) {
+        livePreviewSessions[sessionID]?.updatedAt = Date()
     }
 
     func finishLivePreview(sessionID: String) async throws -> BridgeLivePreviewFinishResponse {
@@ -317,21 +327,55 @@ final class BridgeService {
             throw BridgeServiceError.missingSession
         }
         session.updatedAt = Date()
-        let completed = await session.process.finishInputAndWaitForTermination(
+        Log.bridge.notice(
+            "Bridge live preview finish session=\(Self.logID(sessionID), privacy: .public) elapsed_ms=\(self.elapsedMs(since: session.createdAt), privacy: .public)"
+        )
+        LivePreviewFileTrace.record(
+            "mac_bridge_finish",
+            sessionID: sessionID,
+            fields: ["elapsed_ms": self.elapsedMs(since: session.createdAt)]
+        )
+        let completed = await session.process.finishInputAndWaitForFinal(
             timeout: Self.livePreviewFinishTimeout
         )
         if !completed {
-            session.process.cancel()
+            session.process.terminate(reason: "bridge_finish_timeout")
         }
         let transcript = session.process.currentTranscript() ?? session.lastTranscript
         publishLivePreviewEvent(session: session, text: transcript, isFinal: true)
         livePreviewSessions.removeValue(forKey: sessionID)
+        if completed {
+            NvidiaNemotronWarmPool.shared.returnIdle(
+                session.process,
+                languageIDs: session.languageIDs,
+                reason: "bridge_finished"
+            )
+        } else {
+            NvidiaNemotronWarmPool.shared.preload(languageIDs: session.languageIDs)
+        }
         let finishedAt = Date()
+        Log.bridge.notice(
+            "Bridge live preview finished session=\(Self.logID(sessionID), privacy: .public) completed=\(completed, privacy: .public) text_chars=\(transcript?.count ?? 0, privacy: .public) elapsed_ms=\(self.elapsedMs(since: session.createdAt), privacy: .public)"
+        )
+        LivePreviewFileTrace.record(
+            "mac_bridge_finished",
+            sessionID: sessionID,
+            fields: [
+                "completed": completed,
+                "elapsed_ms": self.elapsedMs(since: session.createdAt),
+                "text_chars": transcript?.count ?? 0,
+            ]
+        )
         return BridgeLivePreviewFinishResponse(
             sessionID: session.id,
             text: transcript,
             finishedAt: finishedAt.timeIntervalSince1970
         )
+    }
+
+    func cancelLivePreview(sessionID: String) {
+        pruneExpiredLivePreviewSessions()
+        removeLivePreviewSession(id: sessionID)
     }
 
     func dictate(_ request: BridgeDictateRequest) async throws -> BridgeDictateResponse {
@@ -1137,12 +1181,46 @@ final class BridgeService {
         guard let session = livePreviewSessions[sessionID] else { return }
         session.lastTranscript = text
         session.updatedAt = Date()
+        Log.bridge.notice(
+            "Bridge live preview transcript session=\(Self.logID(sessionID), privacy: .public) text_chars=\(text.count, privacy: .public) elapsed_ms=\(self.elapsedMs(since: session.createdAt), privacy: .public)"
+        )
+        LivePreviewFileTrace.record(
+            "mac_bridge_transcript",
+            sessionID: sessionID,
+            fields: [
+                "elapsed_ms": self.elapsedMs(since: session.createdAt),
+                "text_chars": text.count,
+            ]
+        )
         publishLivePreviewEvent(session: session, text: text, isFinal: false)
     }
 
     private func removeLivePreviewSession(id: String) {
         guard let session = livePreviewSessions.removeValue(forKey: id) else { return }
-        session.process.cancel()
+        Task { @MainActor in
+            let reset = await session.process.cancelInputAndWaitForReset(timeout: 2)
+            if reset {
+                NvidiaNemotronWarmPool.shared.returnIdle(
+                    session.process,
+                    languageIDs: session.languageIDs,
+                    reason: "bridge_cancelled"
+                )
+            } else {
+                session.process.terminate(reason: "bridge_cancel_timeout")
+                NvidiaNemotronWarmPool.shared.preload(languageIDs: session.languageIDs)
+            }
+        }
+        Log.bridge.notice(
+            "Bridge live preview removed session=\(Self.logID(id), privacy: .public) text_chars=\(session.lastTranscript?.count ?? 0, privacy: .public) elapsed_ms=\(self.elapsedMs(since: session.createdAt), privacy: .public)"
+        )
+        LivePreviewFileTrace.record(
+            "mac_bridge_removed",
+            sessionID: id,
+            fields: [
+                "elapsed_ms": self.elapsedMs(since: session.createdAt),
+                "text_chars": session.lastTranscript?.count ?? 0,
+            ]
+        )
         publishLivePreviewEvent(session: session, text: session.lastTranscript, isFinal: true)
     }
 
@@ -1176,6 +1254,10 @@ final class BridgeService {
         for id in expiredIDs {
             sessions.removeValue(forKey: id)
         }
+    }
+
+    private static func logID(_ id: String) -> String {
+        String(id.prefix(8))
     }
 
     private func elapsedMs(since date: Date) -> Int {

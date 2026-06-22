@@ -25,7 +25,10 @@ final class ASRFactory {
     }
 
     private func preloadNvidiaNemotronIfEnabled(_ sources: [RecognitionSource]) async {
-        guard sources.contains(.nvidiaNemotron) else { return }
+        guard sources.contains(.nvidiaNemotron) else {
+            NvidiaNemotronWarmPool.shared.terminateIdle(reason: "source_disabled")
+            return
+        }
         await preloadNvidiaNemotron()
     }
 
@@ -82,8 +85,10 @@ final class ASRFactory {
     func preloadNvidiaNemotron() async {
         let status = NvidiaNemotronASRService.bundledRuntimeStatus()
         if status.isReady {
-            Log.asr.info("NVIDIA Nemotron ASR ready; bundled helper starts on demand")
+            NvidiaNemotronWarmPool.shared.preloadForCurrentSettings()
+            Log.asr.info("NVIDIA Nemotron ASR warm helper requested")
         } else {
+            NvidiaNemotronWarmPool.shared.terminateIdle(reason: "runtime_not_ready")
             Log.asr.notice("NVIDIA Nemotron ASR preload skipped: \(status.detail, privacy: .public)")
         }
     }
@@ -92,6 +97,10 @@ final class ASRFactory {
         await qwenLlama?.stop()
         qwenLlama = nil
         qwenLlamaKey = nil
+    }
+
+    func stopNvidiaNemotron() {
+        NvidiaNemotronWarmPool.shared.terminateIdle(reason: "stop_requested")
     }
 
     func nvidiaNemotronService() -> NvidiaNemotronASRService {

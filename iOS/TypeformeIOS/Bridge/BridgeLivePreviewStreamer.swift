@@ -15,7 +15,6 @@ final class BridgeLivePreviewStreamer: @unchecked Sendable {
         channels: 1,
         interleaved: false
     )!
-    private static let flushByteCount = 8_192
     private static let maxPendingByteCount = 512 * 1024
 
     private let client: BridgeClient
@@ -25,15 +24,26 @@ final class BridgeLivePreviewStreamer: @unchecked Sendable {
     private let audioQueue = DispatchQueue(label: "typeforme.ios.bridge-live-preview.audio")
     private var sessionID: String?
     private var pendingData = Data()
-    private var uploadInFlight = false
     private var startInFlight = false
     private var finished = false
-    private var finishPendingAfterUpload = false
-    private var cancelPendingAfterUpload = false
+    private var suppressSocketResult = false
+    private var webSocketTask: URLSessionWebSocketTask?
+    private var receiveTask: Task<Void, Never>?
+    private var sendInFlight = false
+    private var pendingControl: BridgeLivePreviewSocketControl.ControlType?
     private var converter: AVAudioConverter?
     private var converterInputSampleRate = 0.0
     private var lastTranscript = ""
-    private var eventTask: Task<Void, Never>?
+    private var startedAt: Date?
+    private var startRequestStartedAt: Date?
+    private var webSocketStartedAt: Date?
+    private var queuedSampleCount = 0
+    private var sentSampleCount = 0
+    private var nextQueueLogSampleCount = 16_000
+    private var nextSendLogSampleCount = 16_000
+    private var firstQueueLogged = false
+    private var firstSendLogged = false
+    private var eventCount = 0
 
     init(
         client: BridgeClient,
@@ -48,7 +58,8 @@ final class BridgeLivePreviewStreamer: @unchecked Sendable {
     }
 
     deinit {
-        eventTask?.cancel()
+        webSocketTask?.cancel(with: .normalClosure, reason: nil)
+        receiveTask?.cancel()
     }
 
     func start() {
@@ -80,6 +91,13 @@ final class BridgeLivePreviewStreamer: @unchecked Sendable {
     private func startOnAudioQueue() {
         guard !startInFlight, sessionID == nil, !finished else { return }
         startInFlight = true
+        startedAt = Date()
+        startRequestStartedAt = startedAt
+        bridgeLivePreviewLog.notice("server live preview start request")
+        BridgeLivePreviewFileTrace.record(
+            "ios_start_request",
+            fields: ["languages": languageIDs.joined(separator: ",")]
+        )
         let client = self.client
         let languageIDs = self.languageIDs
         Task {
@@ -99,17 +117,31 @@ final class BridgeLivePreviewStreamer: @unchecked Sendable {
 
     private func handleStartResponseOnAudioQueue(_ response: BridgeLivePreviewStartResponse) {
         startInFlight = false
+        sessionID = response.sessionID
+        bridgeLivePreviewLog.notice(
+            "server live preview start response session=\(self.logSessionID, privacy: .public) start_ms=\(Self.elapsedMS(since: self.startRequestStartedAt), privacy: .public) queued_audio_ms=\(self.queuedAudioMS, privacy: .public)"
+        )
+        BridgeLivePreviewFileTrace.record(
+            "ios_start_response",
+            sessionID: response.sessionID,
+            fields: [
+                "queued_audio_ms": queuedAudioMS,
+                "start_ms": Self.elapsedMS(since: startRequestStartedAt),
+            ]
+        )
         guard !finished else {
-            sendFinishRequest(
-                sessionID: response.sessionID,
-                trailingData: pendingData
-            )
-            pendingData.removeAll(keepingCapacity: false)
+            if suppressSocketResult {
+                pendingData.removeAll(keepingCapacity: false)
+                let client = self.client
+                Task { try? await client.finishLivePreview(sessionID: response.sessionID) }
+                return
+            }
+            startWebSocketOnAudioQueue(sessionID: response.sessionID, allowAfterFinish: true)
+            queueControlOnAudioQueue(.finish)
             return
         }
-        sessionID = response.sessionID
-        startEventStreamOnAudioQueue(sessionID: response.sessionID)
-        flushOnAudioQueue(force: true)
+        startWebSocketOnAudioQueue(sessionID: response.sessionID)
+        flushWebSocketOnAudioQueue()
     }
 
     private func appendOnAudioQueue(_ buffer: AVAudioPCMBuffer) {
@@ -121,118 +153,252 @@ final class BridgeLivePreviewStreamer: @unchecked Sendable {
         let frameCount = Int(output.frameLength)
         guard frameCount > 0 else { return }
         pendingData.append(Self.littleEndianFloatData(samples: samples, count: frameCount))
+        queuedSampleCount += frameCount
+        logQueuedAudioIfNeeded(frameCount: frameCount, sourceSampleRate: mono.format.sampleRate)
         if pendingData.count > Self.maxPendingByteCount {
             pendingData.removeFirst(pendingData.count - Self.maxPendingByteCount)
         }
-        flushOnAudioQueue(force: pendingData.count >= Self.flushByteCount)
-    }
-
-    private func flushOnAudioQueue(force: Bool) {
-        guard force, !uploadInFlight, !finished, let sessionID, !pendingData.isEmpty else { return }
-        let chunk = pendingData
-        pendingData.removeAll(keepingCapacity: true)
-        uploadInFlight = true
-        let client = self.client
-        Task {
-            do {
-                let response = try await client.appendLivePreviewAudio(sessionID: sessionID, audioData: chunk)
-                self.audioQueue.async {
-                    self.handleAppendResponseOnAudioQueue(response)
-                }
-            } catch {
-                let message = error.localizedDescription
-                self.audioQueue.async {
-                    self.handleFailureOnAudioQueue(message: message)
-                }
-            }
-        }
-    }
-
-    private func handleAppendResponseOnAudioQueue(_ response: BridgeLivePreviewAudioAppendResponse) {
-        uploadInFlight = false
-        if let text = response.text?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !text.isEmpty,
-           text != lastTranscript {
-            lastTranscript = text
-            onTranscript(text)
-        }
-        if finishPendingAfterUpload {
-            finishPendingAfterUpload = false
-            sendFinishOnAudioQueue()
-            return
-        }
-        if cancelPendingAfterUpload {
-            cancelPendingAfterUpload = false
-            stopEventStreamOnAudioQueue()
-            sendCancelOnAudioQueue()
-            return
-        }
-        flushOnAudioQueue(force: pendingData.count >= Self.flushByteCount)
+        flushWebSocketOnAudioQueue()
     }
 
     private func finishOnAudioQueue() {
         guard !finished else { return }
         finished = true
-        if uploadInFlight {
-            finishPendingAfterUpload = true
-            return
+        bridgeLivePreviewLog.notice(
+            "server live preview finish requested session=\(self.logSessionID, privacy: .public) queued_audio_ms=\(self.queuedAudioMS, privacy: .public) sent_audio_ms=\(self.sentAudioMS, privacy: .public) pending_bytes=\(self.pendingData.count, privacy: .public) elapsed_ms=\(self.elapsedMS, privacy: .public)"
+        )
+        BridgeLivePreviewFileTrace.record(
+            "ios_finish_requested",
+            sessionID: sessionID,
+            fields: [
+                "elapsed_ms": elapsedMS,
+                "pending_bytes": pendingData.count,
+                "queued_audio_ms": queuedAudioMS,
+                "sent_audio_ms": sentAudioMS,
+            ]
+        )
+        if webSocketTask != nil {
+            queueControlOnAudioQueue(.finish)
+        } else if !startInFlight {
+            sendFinishRequestOnAudioQueue()
         }
-        sendFinishOnAudioQueue()
     }
 
     private func cancelOnAudioQueue() {
         guard !finished else { return }
         finished = true
+        suppressSocketResult = true
+        bridgeLivePreviewLog.notice(
+            "server live preview cancel requested session=\(self.logSessionID, privacy: .public) queued_audio_ms=\(self.queuedAudioMS, privacy: .public) sent_audio_ms=\(self.sentAudioMS, privacy: .public) pending_bytes=\(self.pendingData.count, privacy: .public) elapsed_ms=\(self.elapsedMS, privacy: .public)"
+        )
+        BridgeLivePreviewFileTrace.record(
+            "ios_cancel_requested",
+            sessionID: sessionID,
+            fields: [
+                "elapsed_ms": elapsedMS,
+                "pending_bytes": pendingData.count,
+                "queued_audio_ms": queuedAudioMS,
+                "sent_audio_ms": sentAudioMS,
+            ]
+        )
         pendingData.removeAll(keepingCapacity: false)
-        if uploadInFlight {
-            cancelPendingAfterUpload = true
-            return
+        if webSocketTask != nil {
+            queueControlOnAudioQueue(.cancel)
+        } else {
+            sendCancelOnAudioQueue()
         }
-        stopEventStreamOnAudioQueue()
-        sendCancelOnAudioQueue()
     }
 
     private func handleFailureOnAudioQueue(message: String) {
         if finished {
-            if finishPendingAfterUpload || cancelPendingAfterUpload {
-                finishPendingAfterUpload = false
-                cancelPendingAfterUpload = false
-                sendCancelOnAudioQueue()
-            }
             return
         }
         guard !finished else { return }
         finished = true
+        suppressSocketResult = true
         pendingData.removeAll(keepingCapacity: false)
-        uploadInFlight = false
         startInFlight = false
-        stopEventStreamOnAudioQueue()
+        closeWebSocketOnAudioQueue()
         sendCancelOnAudioQueue()
         bridgeLivePreviewLog.notice("server live preview stopped: \(message, privacy: .public)")
+        BridgeLivePreviewFileTrace.record(
+            "ios_failure",
+            sessionID: sessionID,
+            fields: [
+                "elapsed_ms": elapsedMS,
+                "message_chars": message.count,
+            ]
+        )
         onFailure(message)
     }
 
-    private func sendFinishOnAudioQueue() {
-        let sessionID = self.sessionID
-        let trailingData = pendingData
-        pendingData.removeAll(keepingCapacity: false)
-        guard let sessionID else { return }
-        sendFinishRequest(sessionID: sessionID, trailingData: trailingData)
+    private func startWebSocketOnAudioQueue(sessionID: String, allowAfterFinish: Bool = false) {
+        guard webSocketTask == nil,
+              !finished || allowAfterFinish
+        else { return }
+        do {
+            let task = try client.livePreviewWebSocketTask(sessionID: sessionID)
+            webSocketTask = task
+            webSocketStartedAt = Date()
+            bridgeLivePreviewLog.notice(
+                "server live preview websocket resume session=\(self.logSessionID, privacy: .public) elapsed_ms=\(self.elapsedMS, privacy: .public)"
+            )
+            BridgeLivePreviewFileTrace.record(
+                "ios_websocket_resume",
+                sessionID: sessionID,
+                fields: ["elapsed_ms": elapsedMS]
+            )
+            task.resume()
+            startReceiveLoopOnAudioQueue(task: task)
+        } catch {
+            handleFailureOnAudioQueue(message: error.localizedDescription)
+        }
     }
 
-    private func sendFinishRequest(sessionID: String, trailingData: Data) {
+    private func startReceiveLoopOnAudioQueue(task: URLSessionWebSocketTask) {
+        receiveTask = Task { [task] in
+            do {
+                while !Task.isCancelled {
+                    let event = try Self.decodeLivePreviewEvent(try await task.receive())
+                    self.handleLivePreviewEvent(event)
+                    if event.isFinal { return }
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                let message = error.localizedDescription
+                self.audioQueue.async {
+                    self.handleWebSocketReceiveFailureOnAudioQueue(message: message)
+                }
+            }
+        }
+    }
+
+    private func queueControlOnAudioQueue(_ type: BridgeLivePreviewSocketControl.ControlType) {
+        pendingControl = type
+        flushWebSocketOnAudioQueue()
+    }
+
+    private func flushWebSocketOnAudioQueue() {
+        guard !sendInFlight, let task = webSocketTask else { return }
+        if !pendingData.isEmpty {
+            let data = pendingData
+            let byteCount = data.count
+            let sampleCount = byteCount / MemoryLayout<Float>.size
+            let sendStartedAt = Date()
+            pendingData.removeAll(keepingCapacity: true)
+            sendInFlight = true
+            Task {
+                do {
+                    try await task.send(.data(data))
+                    self.audioQueue.async {
+                        self.handleWebSocketSendCompletionOnAudioQueue(
+                            sentControl: nil,
+                            sentAudioSamples: sampleCount,
+                            sentBytes: byteCount,
+                            sendMS: Self.elapsedMS(since: sendStartedAt)
+                        )
+                    }
+                } catch {
+                    let message = error.localizedDescription
+                    self.audioQueue.async {
+                        self.handleWebSocketSendFailureOnAudioQueue(message: message)
+                    }
+                }
+            }
+            return
+        }
+        guard let control = pendingControl else { return }
+        pendingControl = nil
+        sendInFlight = true
+        let payload = BridgeLivePreviewSocketControl(type: control)
+        let sendStartedAt = Date()
+        Task {
+            do {
+                let data = try JSONEncoder().encode(payload)
+                guard let text = String(data: data, encoding: .utf8) else {
+                    throw BridgeClientError.invalidResponse
+                }
+                try await task.send(.string(text))
+                self.audioQueue.async {
+                    self.handleWebSocketSendCompletionOnAudioQueue(
+                        sentControl: control,
+                        sentAudioSamples: 0,
+                        sentBytes: data.count,
+                        sendMS: Self.elapsedMS(since: sendStartedAt)
+                    )
+                }
+            } catch {
+                let message = error.localizedDescription
+                self.audioQueue.async {
+                    self.handleWebSocketSendFailureOnAudioQueue(message: message)
+                }
+            }
+        }
+    }
+
+    private func handleWebSocketSendCompletionOnAudioQueue(
+        sentControl: BridgeLivePreviewSocketControl.ControlType?,
+        sentAudioSamples: Int,
+        sentBytes: Int,
+        sendMS: Int
+    ) {
+        sendInFlight = false
+        if sentAudioSamples > 0 {
+            sentSampleCount += sentAudioSamples
+            logSentAudioIfNeeded(byteCount: sentBytes, sendMS: sendMS)
+        } else if let sentControl {
+            bridgeLivePreviewLog.notice(
+                "server live preview websocket control sent session=\(self.logSessionID, privacy: .public) type=\(sentControl.rawValue, privacy: .public) bytes=\(sentBytes, privacy: .public) send_ms=\(sendMS, privacy: .public) sent_audio_ms=\(self.sentAudioMS, privacy: .public) elapsed_ms=\(self.elapsedMS, privacy: .public)"
+            )
+            BridgeLivePreviewFileTrace.record(
+                "ios_websocket_control_sent",
+                sessionID: sessionID,
+                fields: [
+                    "bytes": sentBytes,
+                    "elapsed_ms": elapsedMS,
+                    "send_ms": sendMS,
+                    "sent_audio_ms": sentAudioMS,
+                    "type": sentControl.rawValue,
+                ]
+            )
+        }
+        if sentControl == .cancel {
+            closeWebSocketOnAudioQueue()
+            return
+        }
+        flushWebSocketOnAudioQueue()
+    }
+
+    private func handleWebSocketSendFailureOnAudioQueue(message: String) {
+        sendInFlight = false
+        if finished {
+            closeWebSocketOnAudioQueue()
+            return
+        }
+        handleFailureOnAudioQueue(message: message)
+    }
+
+    private func handleWebSocketReceiveFailureOnAudioQueue(message: String) {
+        if finished {
+            closeWebSocketOnAudioQueue()
+            return
+        }
+        handleFailureOnAudioQueue(message: message)
+    }
+
+    private func sendFinishRequestOnAudioQueue() {
+        pendingData.removeAll(keepingCapacity: false)
+        guard let sessionID else { return }
         let client = self.client
         Task {
-            if !trailingData.isEmpty {
-                _ = try? await client.appendLivePreviewAudio(sessionID: sessionID, audioData: trailingData)
-            }
             if let response = try? await client.finishLivePreview(sessionID: sessionID),
                let text = response.text?.trimmingCharacters(in: .whitespacesAndNewlines),
                !text.isEmpty {
                 self.onTranscript(text)
             }
             self.audioQueue.async {
-                self.stopEventStreamOnAudioQueue()
+                self.closeWebSocketOnAudioQueue()
             }
         }
     }
@@ -243,31 +409,6 @@ final class BridgeLivePreviewStreamer: @unchecked Sendable {
         Task { try? await client.finishLivePreview(sessionID: sessionID) }
     }
 
-    private func startEventStreamOnAudioQueue(sessionID: String) {
-        guard eventTask == nil else { return }
-        let client = self.client
-        eventTask = Task { [weak self] in
-            var attempt = 0
-            while !Task.isCancelled {
-                do {
-                    let completed = try await client.streamLivePreviewEvents(sessionID: sessionID) { [weak self] event in
-                        self?.handleLivePreviewEvent(event)
-                    }
-                    if completed {
-                        return
-                    }
-                } catch is CancellationError {
-                    return
-                } catch {
-                    bridgeLivePreviewLog.notice("server live preview event stream failed: \(error.localizedDescription, privacy: .public)")
-                }
-                attempt += 1
-                let delayMs = min(1_000, 120 * attempt)
-                try? await Task.sleep(nanoseconds: UInt64(delayMs) * 1_000_000)
-            }
-        }
-    }
-
     private func handleLivePreviewEvent(_ event: BridgeLivePreviewEvent) {
         audioQueue.async {
             self.handleLivePreviewEventOnAudioQueue(event)
@@ -276,6 +417,22 @@ final class BridgeLivePreviewStreamer: @unchecked Sendable {
 
     private func handleLivePreviewEventOnAudioQueue(_ event: BridgeLivePreviewEvent) {
         guard event.sessionID == sessionID else { return }
+        eventCount += 1
+        bridgeLivePreviewLog.notice(
+            "server live preview event session=\(self.logSessionID, privacy: .public) final=\(event.isFinal, privacy: .public) event_count=\(self.eventCount, privacy: .public) text_chars=\(event.text?.count ?? 0, privacy: .public) sent_audio_ms=\(self.sentAudioMS, privacy: .public) server_age_ms=\(Self.serverAgeMS(event.updatedAt), privacy: .public) elapsed_ms=\(self.elapsedMS, privacy: .public)"
+        )
+        BridgeLivePreviewFileTrace.record(
+            "ios_event",
+            sessionID: event.sessionID,
+            fields: [
+                "elapsed_ms": elapsedMS,
+                "event_count": eventCount,
+                "final": event.isFinal,
+                "sent_audio_ms": sentAudioMS,
+                "server_age_ms": Self.serverAgeMS(event.updatedAt),
+                "text_chars": event.text?.count ?? 0,
+            ]
+        )
         if let text = event.text?.trimmingCharacters(in: .whitespacesAndNewlines),
            !text.isEmpty,
            text != lastTranscript {
@@ -283,13 +440,46 @@ final class BridgeLivePreviewStreamer: @unchecked Sendable {
             onTranscript(text)
         }
         if event.isFinal {
-            eventTask = nil
+            closeWebSocketOnAudioQueue()
         }
     }
 
-    private func stopEventStreamOnAudioQueue() {
-        eventTask?.cancel()
-        eventTask = nil
+    private func closeWebSocketOnAudioQueue() {
+        if webSocketTask != nil {
+            bridgeLivePreviewLog.notice(
+                "server live preview websocket closed session=\(self.logSessionID, privacy: .public) sent_audio_ms=\(self.sentAudioMS, privacy: .public) events=\(self.eventCount, privacy: .public) elapsed_ms=\(self.elapsedMS, privacy: .public)"
+            )
+            BridgeLivePreviewFileTrace.record(
+                "ios_websocket_closed",
+                sessionID: sessionID,
+                fields: [
+                    "elapsed_ms": elapsedMS,
+                    "events": eventCount,
+                    "sent_audio_ms": sentAudioMS,
+                ]
+            )
+        }
+        receiveTask?.cancel()
+        receiveTask = nil
+        webSocketTask?.cancel(with: .normalClosure, reason: nil)
+        webSocketTask = nil
+        sendInFlight = false
+        pendingControl = nil
+    }
+
+    private static func decodeLivePreviewEvent(
+        _ message: URLSessionWebSocketTask.Message
+    ) throws -> BridgeLivePreviewEvent {
+        let data: Data
+        switch message {
+        case .data(let payload):
+            data = payload
+        case .string(let text):
+            data = Data(text.utf8)
+        @unknown default:
+            throw BridgeClientError.invalidResponse
+        }
+        return try JSONDecoder().decode(BridgeLivePreviewEvent.self, from: data)
     }
 
     private func resample(_ mono: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
@@ -323,6 +513,11 @@ final class BridgeLivePreviewStreamer: @unchecked Sendable {
 
         if let conversionError {
             bridgeLivePreviewLog.notice("server live preview resample failed: \(conversionError.localizedDescription, privacy: .public)")
+            BridgeLivePreviewFileTrace.record(
+                "ios_resample_failed",
+                sessionID: sessionID,
+                fields: ["message_chars": conversionError.localizedDescription.count]
+            )
             return nil
         }
 
@@ -334,6 +529,85 @@ final class BridgeLivePreviewStreamer: @unchecked Sendable {
         @unknown default:
             return output
         }
+    }
+
+    private func logQueuedAudioIfNeeded(frameCount: Int, sourceSampleRate: Double) {
+        let shouldLog = !firstQueueLogged || queuedSampleCount >= nextQueueLogSampleCount
+        guard shouldLog else { return }
+        let isFirst = !firstQueueLogged
+        firstQueueLogged = true
+        while queuedSampleCount >= nextQueueLogSampleCount {
+            nextQueueLogSampleCount += 16_000
+        }
+        bridgeLivePreviewLog.notice(
+            "server live preview audio queued session=\(self.logSessionID, privacy: .public) first=\(isFirst, privacy: .public) frames=\(frameCount, privacy: .public) source_hz=\(Int(sourceSampleRate.rounded()), privacy: .public) queued_audio_ms=\(self.queuedAudioMS, privacy: .public) pending_bytes=\(self.pendingData.count, privacy: .public) elapsed_ms=\(self.elapsedMS, privacy: .public)"
+        )
+        BridgeLivePreviewFileTrace.record(
+            "ios_audio_queued",
+            sessionID: sessionID,
+            fields: [
+                "elapsed_ms": elapsedMS,
+                "first": isFirst,
+                "frames": frameCount,
+                "pending_bytes": pendingData.count,
+                "queued_audio_ms": queuedAudioMS,
+                "source_hz": Int(sourceSampleRate.rounded()),
+            ]
+        )
+    }
+
+    private func logSentAudioIfNeeded(byteCount: Int, sendMS: Int) {
+        let shouldLog = !firstSendLogged || sentSampleCount >= nextSendLogSampleCount || sendMS >= 100
+        guard shouldLog else { return }
+        let isFirst = !firstSendLogged
+        firstSendLogged = true
+        while sentSampleCount >= nextSendLogSampleCount {
+            nextSendLogSampleCount += 16_000
+        }
+        bridgeLivePreviewLog.notice(
+            "server live preview audio sent session=\(self.logSessionID, privacy: .public) first=\(isFirst, privacy: .public) bytes=\(byteCount, privacy: .public) sent_audio_ms=\(self.sentAudioMS, privacy: .public) send_ms=\(sendMS, privacy: .public) elapsed_ms=\(self.elapsedMS, privacy: .public)"
+        )
+        BridgeLivePreviewFileTrace.record(
+            "ios_audio_sent",
+            sessionID: sessionID,
+            fields: [
+                "bytes": byteCount,
+                "elapsed_ms": elapsedMS,
+                "first": isFirst,
+                "send_ms": sendMS,
+                "sent_audio_ms": sentAudioMS,
+            ]
+        )
+    }
+
+    private var logSessionID: String {
+        guard let sessionID else { return "pending" }
+        return String(sessionID.prefix(8))
+    }
+
+    private var queuedAudioMS: Int {
+        queuedSampleCount * 1_000 / 16_000
+    }
+
+    private var sentAudioMS: Int {
+        sentSampleCount * 1_000 / 16_000
+    }
+
+    private var elapsedMS: Int {
+        Self.elapsedMS(since: startedAt)
+    }
+
+    private static func elapsedMS(since date: Date?) -> Int {
+        guard let date else { return 0 }
+        return elapsedMS(since: date)
+    }
+
+    private static func elapsedMS(since date: Date) -> Int {
+        max(0, Int(Date().timeIntervalSince(date) * 1_000))
+    }
+
+    private static func serverAgeMS(_ timestamp: TimeInterval) -> Int {
+        Int((Date().timeIntervalSince1970 - timestamp) * 1_000)
     }
 
     private static func copyBuffer(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
@@ -433,5 +707,73 @@ private final class SendableLivePreviewPCMBuffer: @unchecked Sendable {
 
     init(_ buffer: AVAudioPCMBuffer) {
         self.buffer = buffer
+    }
+}
+
+enum BridgeLivePreviewFileTrace {
+    private static let queue = DispatchQueue(label: "typeforme.ios.live-preview.trace")
+    private static let maxFileBytes = 1_048_576
+
+    static func record(
+        _ event: String,
+        sessionID: String? = nil,
+        fields: [String: any CustomStringConvertible] = [:]
+    ) {
+        let timestampMS = Int(Date().timeIntervalSince1970 * 1_000)
+        let session = sessionID.map { String($0.prefix(8)) } ?? "none"
+        var parts = [
+            "ts_ms=\(timestampMS)",
+            "event=\(sanitize(event))",
+            "session=\(sanitize(session))",
+        ]
+        for key in fields.keys.sorted() {
+            if let value = fields[key] {
+                parts.append("\(sanitize(key))=\(sanitize(String(describing: value)))")
+            }
+        }
+        let line = parts.joined(separator: " ") + "\n"
+        queue.async {
+            append(line)
+        }
+    }
+
+    private static func append(_ line: String) {
+        guard let container = FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: TypeformeBundleConfiguration.appGroupIdentifier
+        ) else { return }
+        do {
+            let directory = container
+                .appendingPathComponent("Library", isDirectory: true)
+                .appendingPathComponent("Application Support", isDirectory: true)
+                .appendingPathComponent("Diagnostics", isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let url = directory.appendingPathComponent("live-preview-trace.log")
+            rotateIfNeeded(url)
+            if !FileManager.default.fileExists(atPath: url.path) {
+                _ = FileManager.default.createFile(atPath: url.path, contents: nil)
+            }
+            let handle = try FileHandle(forWritingTo: url)
+            try handle.seekToEnd()
+            handle.write(Data(line.utf8))
+            try handle.close()
+        } catch {
+            bridgeLivePreviewLog.notice("server live preview trace write failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    private static func rotateIfNeeded(_ url: URL) {
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let size = attributes[.size] as? NSNumber,
+              size.intValue > maxFileBytes
+        else { return }
+        try? FileManager.default.removeItem(at: url)
+    }
+
+    private static func sanitize(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "\n", with: "_")
+            .replacingOccurrences(of: "\r", with: "_")
+            .replacingOccurrences(of: "\t", with: "_")
+            .replacingOccurrences(of: " ", with: "_")
     }
 }

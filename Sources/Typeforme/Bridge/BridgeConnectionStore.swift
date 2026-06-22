@@ -9,8 +9,7 @@ enum BridgeRequestEndpoint: String, CaseIterable, Hashable, Sendable {
     case dictate
     case jobEvents
     case livePreviewStart
-    case livePreviewAudio
-    case livePreviewEvents
+    case livePreviewSocket
     case livePreviewFinish
     case restyle
     case editText
@@ -24,8 +23,7 @@ enum BridgeRequestEndpoint: String, CaseIterable, Hashable, Sendable {
         case .dictate: return "Dictate"
         case .jobEvents: return "Job events"
         case .livePreviewStart: return "Live preview start"
-        case .livePreviewAudio: return "Live preview audio"
-        case .livePreviewEvents: return "Live preview events"
+        case .livePreviewSocket: return "Live preview socket"
         case .livePreviewFinish: return "Live preview finish"
         case .restyle: return "Restyle"
         case .editText: return "Edit text"
@@ -41,8 +39,7 @@ enum BridgeRequestEndpoint: String, CaseIterable, Hashable, Sendable {
         case .dictate: return "POST /v1/dictate"
         case .jobEvents: return "GET /v1/jobs/:jobID/events"
         case .livePreviewStart: return "POST /v1/live-preview/start"
-        case .livePreviewAudio: return "POST /v1/live-preview/:sessionID/audio"
-        case .livePreviewEvents: return "GET /v1/live-preview/:sessionID/events"
+        case .livePreviewSocket: return "WS /v1/live-preview/:sessionID/socket"
         case .livePreviewFinish: return "POST /v1/live-preview/:sessionID/finish"
         case .restyle: return "POST /v1/restyle"
         case .editText: return "POST /v1/edit-text"

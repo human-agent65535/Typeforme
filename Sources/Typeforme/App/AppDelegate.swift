@@ -145,6 +145,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let deadline = Self.terminationShutdownDeadline
             let shutdownTask = Task {
                 await ASRFactory.shared.stopQwenLlama()
+                await MainActor.run {
+                    ASRFactory.shared.stopNvidiaNemotron()
+                }
                 await CorrectorFactory.shared.shutdownAll()
             }
             let completed = await withTaskGroup(of: Bool.self, returning: Bool.self) { group in
@@ -364,6 +367,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             clientSettingsSync.syncIfNeeded(force: true)
             Task { @MainActor in
                 await ASRFactory.shared.stopQwenLlama()
+                ASRFactory.shared.stopNvidiaNemotron()
                 await CorrectorFactory.shared.shutdownAll()
             }
         }
