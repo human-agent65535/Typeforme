@@ -552,7 +552,7 @@ final class AppState {
     func isKeyboardLivePreviewSourceEnabled(_ source: KeyboardLivePreviewSource) -> Bool {
         switch source {
         case .appleSpeech:
-            return macSettings?.isRecognitionSourceEnabled(.appleSpeech) == true
+            return true
         case .serverNemotron:
             return macSettings?.supportsServerNemotronPreview == true
         }
@@ -2191,14 +2191,6 @@ final class AppState {
 
     @discardableResult
     private func startAppleSpeechLivePreviewIfAvailable(generation: UInt64) -> Bool {
-        guard isKeyboardLivePreviewSourceEnabled(.appleSpeech) else {
-            appLog.notice("live preview skipped: Apple Speech ASR source disabled")
-            BridgeLivePreviewFileTrace.record(
-                "ios_apple_preview_skipped",
-                fields: ["reason": "apple_speech_source_disabled"]
-            )
-            return false
-        }
         let primaryID = activeLanguageIDs.first ?? "en-US"
         let capability = AppleSpeechPreviewSupport.capability(languageID: primaryID)
         guard keyboardLivePreviewRecognitionMode.canUse(capability) else {

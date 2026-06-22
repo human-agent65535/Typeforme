@@ -1157,13 +1157,12 @@ private struct LivePreviewSettingsSection: View {
             .disabled(
                 !state.keyboardLivePreviewEnabled
                     || state.keyboardLivePreviewSource != .appleSpeech
-                    || !state.isKeyboardLivePreviewSourceEnabled(.appleSpeech)
                     || state.isBusy
             )
         } header: {
             Text(title)
         } footer: {
-            Text("Preview follows enabled ASR sources.")
+            Text("Apple Speech is local. Server uses Mac.")
         }
     }
 

@@ -206,6 +206,7 @@
 "Changes apply immediately. Controls how long Typeforme keeps keyboard dictation ready after the host app is opened." = "Changes apply immediately. Controls how long Typeforme keeps keyboard dictation ready after the host app is opened.";
 "This preview setting is local to the iPhone keyboard and applies immediately. It does not change the Mac live transcript setting." = "This preview setting is local to the iPhone keyboard and applies immediately. It does not change the Mac live transcript setting.";
 "This preview setting is saved to the paired Mac when you tap Done. It does not change the iPhone keyboard preview." = "This preview setting is saved to the paired Mac when you tap Done. It does not change the iPhone keyboard preview.";
+"Apple Speech is local. Server uses Mac." = "Apple Speech is local. Server uses Mac.";
 "Preview follows enabled ASR sources." = "Preview follows enabled ASR sources.";
 "Source off" = "Source off";
 "Update Typeforme on the paired Mac, then try again." = "Update Typeforme on the paired Mac, then try again.";
