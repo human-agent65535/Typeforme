@@ -328,6 +328,14 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private var insertedFlashUntil: TimeInterval = 0
     private var insertedFlashClearTask: DispatchWorkItem?
     private static let insertedFlashDuration: TimeInterval = 1.2
+    private var transientKeyboardErrorClearWorkItem: DispatchWorkItem?
+    private var transientKeyboardErrorGeneration: UInt64 = 0
+    private var transientKeyboardErrorPriorStatus: KeyboardBridgeStatus?
+    private var transientKeyboardErrorPriorLastBridgeContactAt: TimeInterval = 0
+    private var transientKeyboardErrorWasBridgeAwake = false
+    private var transientKeyboardErrorPriorBackendReachable: Bool?
+    private var transientKeyboardErrorMessage: String?
+    private static let transientKeyboardErrorDuration: TimeInterval = 2.0
     /// Set whenever the host posts a Darwin signal that proves the bridge is
     /// alive (sessionStarted, dictationStarted, dictationStopped). Cleared by
     /// `sessionEnded`, by a confirmed `.start` failure, or when a fresh
@@ -2277,46 +2285,21 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
 
         if isCandidateGridExpanded {
-            for row in candidateGridStack.arrangedSubviews {
-                for view in row.subviews where view !== candidateTrailingSpacer {
-                    didAddRect = appendSurfaceView(view, to: path, horizontalExpansion: 2, verticalExpansion: 4) || didAddRect
-                }
-            }
-            didAddRect = appendSurfaceView(candidateGridCollapseButton, to: path, horizontalExpansion: 2, verticalExpansion: 4, cornerRadius: 4) || didAddRect
+            didAddRect = appendTopAnchoredSurfaceView(
+                candidateGridScrollView,
+                to: path,
+                bottomExpansion: 4,
+                extendTrailingToViewEdge: true
+            ) || didAddRect
             return didAddRect
         }
 
-        let toolbarHitViews: [UIView] = [
-            textWandButton,
-            textStylePickerButton,
-            textUndoButton,
-            textToolsButton,
-            textCandidateGridButton,
-            textKeyboardSwitchButton,
-            textHostSettingsButton,
-            textToolbarVoicePrint,
-            textToolbarStatusLabel,
-            textToolbarElapsedLabel,
-        ]
-        for view in toolbarHitViews {
-            didAddRect = appendSurfaceView(view, to: path, horizontalExpansion: 2, verticalExpansion: 3, cornerRadius: 4) || didAddRect
-        }
-
-        for view in candidateStack.arrangedSubviews where view !== candidateTrailingSpacer {
-            didAddRect = appendSurfaceView(
-                view,
-                to: path,
-                horizontalExpansion: 2,
-                verticalExpansion: Self.candidateStripTouchOverflowY,
-                cornerRadius: 4
-            ) || didAddRect
-        }
-
-        let actionColumn = candidateActionColumnFrame()
-        if !actionColumn.isNull, !actionColumn.isEmpty {
-            didAddRect = appendControllerSurfaceRect(actionColumn, to: path, cornerRadius: 4) || didAddRect
-        }
-
+        didAddRect = appendTopAnchoredSurfaceView(
+            textToolbar,
+            to: path,
+            bottomExpansion: textCandidateGridButton.isHidden ? 0 : Self.candidateStripTouchOverflowY,
+            extendTrailingToViewEdge: !textCandidateGridButton.isHidden
+        ) || didAddRect
         return didAddRect
     }
 
@@ -2356,6 +2339,37 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let rect = view.convert(view.bounds, to: keyboardSurfaceView)
             .insetBy(dx: -horizontalExpansion, dy: -verticalExpansion)
         return appendSurfaceRect(rect, to: path, cornerRadius: cornerRadius)
+    }
+
+    @discardableResult
+    private func appendTopAnchoredSurfaceView(
+        _ surfaceSourceView: UIView,
+        to path: UIBezierPath,
+        horizontalExpansion: CGFloat = 0,
+        bottomExpansion: CGFloat = 0,
+        extendTrailingToViewEdge: Bool = false
+    ) -> Bool {
+        guard surfaceSourceView.superview != nil,
+              !surfaceSourceView.isHidden,
+              surfaceSourceView.alpha > 0.01,
+              surfaceSourceView.bounds.width > 0,
+              surfaceSourceView.bounds.height > 0
+        else { return false }
+
+        var rect = surfaceSourceView.convert(surfaceSourceView.bounds, to: keyboardSurfaceView)
+        rect.origin.x -= horizontalExpansion
+        rect.size.width += horizontalExpansion * 2
+        if extendTrailingToViewEdge {
+            let viewTrailingX = keyboardSurfaceView.convert(
+                CGPoint(x: view.bounds.maxX, y: view.bounds.minY),
+                from: self.view
+            ).x
+            rect.size.width = max(rect.width, viewTrailingX - rect.minX)
+        }
+        let bottom = rect.maxY + bottomExpansion
+        rect.origin.y = keyboardSurfaceView.bounds.minY
+        rect.size.height = bottom - rect.minY
+        return appendSurfaceRect(rect, to: path)
     }
 
     @discardableResult
@@ -3483,8 +3497,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         textToolbarElapsedLabel.alpha = 0
         textToolbar.addSubview(textToolbarElapsedLabel)
         NSLayoutConstraint.activate([
-            textToolbarStatusLabel.leadingAnchor.constraint(equalTo: textToolbar.leadingAnchor, constant: 12),
-            textToolbarStatusLabel.trailingAnchor.constraint(equalTo: textToolbar.trailingAnchor, constant: -12),
+            textToolbarStatusLabel.leadingAnchor.constraint(equalTo: candidateScrollView.leadingAnchor, constant: 6),
+            textToolbarStatusLabel.trailingAnchor.constraint(equalTo: candidateScrollView.trailingAnchor, constant: -6),
             textToolbarStatusLabel.centerYAnchor.constraint(equalTo: textToolbar.centerYAnchor),
             textToolbarElapsedLabel.leadingAnchor.constraint(equalTo: textToolbarVoicePrint.trailingAnchor, constant: 10),
             textToolbarElapsedLabel.centerYAnchor.constraint(equalTo: textToolbar.centerYAnchor),
@@ -4295,6 +4309,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
         let showsTextToolbarVoicePrint = isRecordingState && keyboardFocus == .text
         let isErrorState = state == .error
+        let isTransientKeyboardErrorState = isShowingTransientKeyboardError
         let isInsertedFlash = keyboardFocus == .text
             && Date().timeIntervalSince1970 < insertedFlashUntil
         let showsTextToolbarStatus = keyboardFocus == .text
@@ -4319,7 +4334,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         updateRestyleUndoButtons()
         applyTextToolbarRecordingOverlay(
             recording: showsTextToolbarVoicePrint,
-            sending: isSendingState || isErrorState
+            sending: isSendingState || (isErrorState && !isTransientKeyboardErrorState)
         )
         if isRecordingState {
             let audioLevel = currentBridgeStatus?.audioLevel
@@ -4840,10 +4855,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         guard let target = currentTextRewriteTarget(),
               !target.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else {
-            bridgeStatus = KeyboardBridgeStatus(state: .error, message: "Select text first.")
-            lastBridgeContactAt = Date().timeIntervalSince1970
-            showTextKeyboardNotice(NSLocalizedString("Select text first.", comment: "Inline status when command edit has no target"), color: .systemRed)
-            updateUI()
+            showMissingCommandTargetError()
             return
         }
         isCommandPressActive = true
@@ -4997,9 +5009,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
               !target.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else {
             isCommandPressActive = false
-            bridgeStatus = KeyboardBridgeStatus(state: .error, message: "Select text first.")
-            lastBridgeContactAt = Date().timeIntervalSince1970
-            updateUI()
+            showMissingCommandTargetError()
             return
         }
         cancelScheduledStop()
@@ -5053,9 +5063,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         guard let target = currentTextRewriteTarget(),
               !target.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else {
-            bridgeStatus = KeyboardBridgeStatus(state: .error, message: "Select text first.")
-            lastBridgeContactAt = Date().timeIntervalSince1970
-            updateUI()
+            showMissingCommandTargetError()
             return
         }
         cancelScheduledStop()
@@ -6855,6 +6863,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     @objc private func toggleSymbolKeyboard() {
+        clearTransientKeyboardErrorIfShowing()
         if isSymbolKeyboard {
             isSymbolKeyboard = false
             isAlternateSymbolKeyboard = false
@@ -6868,6 +6877,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     @objc private func toggleAlternateSymbolKeyboard() {
         guard isSymbolKeyboard else { return }
+        clearTransientKeyboardErrorIfShowing()
         isAlternateSymbolKeyboard.toggle()
         rebuildTextKeyboardRows()
         lightHaptic()
@@ -6875,6 +6885,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     @objc private func toggleTextShift() {
         guard !isSymbolKeyboard else { return }
+        clearTransientKeyboardErrorIfShowing()
         // Stray second contact from a fat press on the a↔shift seam: the routed
         // character already committed on touch-down, so this shift touch-up is
         // the same press's other contact. Ignore it so "a + shift" can't both
@@ -6913,6 +6924,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     @objc private func toggleTextInputLanguage() {
         guard isChineseInputEnabled else { return }
+        clearTransientKeyboardErrorIfShowing()
         if textInputLanguage == .chinese {
             commitDisplayedRimeCompositionIfNeeded()
             textInputLanguage = .english
@@ -7071,6 +7083,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             return false
         }
 
+        clearTransientKeyboardErrorIfShowing()
+
         if textInputLanguage == .english {
             commitDisplayedRimeCompositionIfNeeded()
             let isAlphabetic = isAlphabeticTextKey(character)
@@ -7208,6 +7222,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         // Recording locks regular keys; only space (stop-and-send) is live.
         if currentBridgeStatus?.state == .recording { return }
 
+        clearTransientKeyboardErrorIfShowing()
+
         if !pendingRimeCharacters.isEmpty || !pendingRimeDirectTextKeys.isEmpty {
             beginTextTouchCorrectionFromBackspace(compositionActive: true)
             if !pendingRimeDirectTextKeys.isEmpty {
@@ -7253,6 +7269,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             return
         }
 
+        clearTransientKeyboardErrorIfShowing()
+
         pendingTextTouchCorrection = nil
         acceptPendingTextTouchIfSurvived()
 
@@ -7296,6 +7314,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             return
         }
         if currentBridgeStatus?.state == .recording { return }
+
+        clearTransientKeyboardErrorIfShowing()
 
         let currentState = rimeInput.state()
         pendingTextTouchCorrection = nil
@@ -8225,6 +8245,122 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             commitText: "",
             errorMessage: nil
         ))
+    }
+
+    private func showMissingCommandTargetError() {
+        let message = NSLocalizedString("Select text first.", comment: "Inline status when command edit has no target")
+        showTransientKeyboardError(message)
+    }
+
+    private func showTransientKeyboardError(_ message: String) {
+        let isReplacingTransientError = isShowingTransientKeyboardError
+        let priorStatus = isReplacingTransientError ? transientKeyboardErrorPriorStatus : currentBridgeStatus
+        let priorLastBridgeContactAt = isReplacingTransientError
+            ? transientKeyboardErrorPriorLastBridgeContactAt
+            : lastBridgeContactAt
+        let wasBridgeAwake = isReplacingTransientError ? transientKeyboardErrorWasBridgeAwake : isBridgeAwake
+        let priorBackendReachable = isReplacingTransientError
+            ? transientKeyboardErrorPriorBackendReachable
+            : priorStatus?.backendReachable
+
+        transientKeyboardErrorClearWorkItem?.cancel()
+        transientKeyboardErrorGeneration &+= 1
+        let generation = transientKeyboardErrorGeneration
+        transientKeyboardErrorPriorStatus = priorStatus
+        transientKeyboardErrorPriorLastBridgeContactAt = priorLastBridgeContactAt
+        transientKeyboardErrorWasBridgeAwake = wasBridgeAwake
+        transientKeyboardErrorPriorBackendReachable = priorBackendReachable
+        transientKeyboardErrorMessage = message
+
+        bridgeStatus = KeyboardBridgeStatus(state: .error, message: message)
+        lastBridgeContactAt = Date().timeIntervalSince1970
+        updateUI()
+
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self,
+                  self.transientKeyboardErrorGeneration == generation
+            else { return }
+            self.transientKeyboardErrorClearWorkItem = nil
+            self.clearTransientKeyboardErrorRestoreState()
+
+            let stillShowingTransientError = self.currentBridgeStatus?.state == .error
+                && self.currentBridgeStatus?.commandID == nil
+                && self.currentBridgeStatus?.message == message
+            if stillShowingTransientError {
+                self.restoreBridgeStatusAfterTransientError(
+                    priorStatus: priorStatus,
+                    priorLastBridgeContactAt: priorLastBridgeContactAt,
+                    wasBridgeAwake: wasBridgeAwake,
+                    priorBackendReachable: priorBackendReachable
+                )
+            }
+
+            self.updateUI(animated: false)
+        }
+        transientKeyboardErrorClearWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.transientKeyboardErrorDuration, execute: workItem)
+    }
+
+    private var isShowingTransientKeyboardError: Bool {
+        currentBridgeStatus?.state == .error
+            && currentBridgeStatus?.commandID == nil
+            && currentBridgeStatus?.message == transientKeyboardErrorMessage
+    }
+
+    @discardableResult
+    private func clearTransientKeyboardErrorIfShowing() -> Bool {
+        guard isShowingTransientKeyboardError else { return false }
+        transientKeyboardErrorClearWorkItem?.cancel()
+        transientKeyboardErrorClearWorkItem = nil
+        transientKeyboardErrorGeneration &+= 1
+
+        let priorStatus = transientKeyboardErrorPriorStatus
+        let priorLastBridgeContactAt = transientKeyboardErrorPriorLastBridgeContactAt
+        let wasBridgeAwake = transientKeyboardErrorWasBridgeAwake
+        let priorBackendReachable = transientKeyboardErrorPriorBackendReachable
+        clearTransientKeyboardErrorRestoreState()
+
+        restoreBridgeStatusAfterTransientError(
+            priorStatus: priorStatus,
+            priorLastBridgeContactAt: priorLastBridgeContactAt,
+            wasBridgeAwake: wasBridgeAwake,
+            priorBackendReachable: priorBackendReachable
+        )
+        updateUI(animated: false)
+        return true
+    }
+
+    private func clearTransientKeyboardErrorRestoreState() {
+        transientKeyboardErrorPriorStatus = nil
+        transientKeyboardErrorPriorLastBridgeContactAt = 0
+        transientKeyboardErrorWasBridgeAwake = false
+        transientKeyboardErrorPriorBackendReachable = nil
+        transientKeyboardErrorMessage = nil
+    }
+
+    private func restoreBridgeStatusAfterTransientError(
+        priorStatus: KeyboardBridgeStatus?,
+        priorLastBridgeContactAt: TimeInterval,
+        wasBridgeAwake: Bool,
+        priorBackendReachable: Bool?
+    ) {
+        if let priorStatus,
+           priorStatus.state == .idle || priorStatus.state == .standby || priorStatus.state == .error {
+            bridgeStatus = priorStatus
+            lastBridgeContactAt = priorLastBridgeContactAt
+            return
+        }
+
+        if applySharedBridgeStatusSnapshot() {
+            return
+        }
+
+        bridgeStatus = KeyboardBridgeStatus(
+            state: wasBridgeAwake ? .standby : .idle,
+            message: wasBridgeAwake ? "Ready" : inputMode.idleTitle,
+            backendReachable: priorBackendReachable
+        )
+        lastBridgeContactAt = wasBridgeAwake ? priorLastBridgeContactAt : 0
     }
 
     private func showTextKeyboardNotice(_ text: String, color: UIColor = .secondaryLabel) {
