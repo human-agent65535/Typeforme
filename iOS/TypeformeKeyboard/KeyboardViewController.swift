@@ -1827,6 +1827,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         stopDeleteRepeat()
         clearTextShiftState()
         cancelHostWakeResetTask()
+        commitLivePartialBeforeHostReturnIfNeeded()
         rimeInput.onStateChange = nil
         deferredStartupWorkItem?.cancel()
         deferredStartupWorkItem = nil
@@ -8599,21 +8600,72 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         return true
     }
 
-    private func commitLivePartialBeforeHostReturnIfNeeded() {
+    private func commitLivePartialMarkedTextAsPreview(_ preview: String) {
+        if deleteVisibleMarkedText(preview) {
+            textDocumentProxy.insertText(preview)
+            return
+        }
+        if let before = textDocumentProxy.documentContextBeforeInput,
+           !before.isEmpty {
+            kbLog.notice(
+                "live partial marked range not rewritten while anchoring preview beforeLen=\(before.count, privacy: .public)"
+            )
+            return
+        }
+        let cursor = (preview as NSString).length
+        textDocumentProxy.setMarkedText(preview, selectedRange: NSRange(location: cursor, length: 0))
+        textDocumentProxy.unmarkText()
+    }
+
+    private func commitLivePartialBeforeHostReturnIfNeeded(commandID explicitCommandID: String? = nil) {
         guard activeMarkedTextOwner == .livePartial,
               !activeMarkedText.isEmpty
-        else { return }
+        else {
+            if let explicitCommandID,
+               let preview = committedLivePartialPreview,
+               preview.commandID != explicitCommandID {
+                committedLivePartialPreview = CommittedLivePartialPreview(
+                    commandID: explicitCommandID,
+                    text: preview.text
+                )
+            }
+            return
+        }
         let preview = activeMarkedText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !preview.isEmpty else {
             replaceMarkedText("")
             return
         }
-        commitTextReplacingMarkedText(preview)
+        commitLivePartialMarkedTextAsPreview(preview)
         activeMarkedText = ""
         activeMarkedTextOwner = nil
-        if let commandID = currentBridgeStatus?.commandID ?? pendingStopCommandID ?? activeRecordingCommandID {
+        if let commandID = explicitCommandID ?? currentBridgeStatus?.commandID ?? pendingStopCommandID ?? activeRecordingCommandID {
             committedLivePartialPreview = CommittedLivePartialPreview(commandID: commandID, text: preview)
         }
+    }
+
+    private func commitActiveLivePartialPreviewForSending(_ status: KeyboardBridgeStatus) -> Bool {
+        guard status.state == .sending else { return false }
+        if let commandID = status.commandID,
+           let preview = committedLivePartialPreview,
+           preview.commandID != commandID {
+            committedLivePartialPreview = CommittedLivePartialPreview(
+                commandID: commandID,
+                text: preview.text
+            )
+        }
+        guard activeMarkedTextOwner == .livePartial,
+              !activeMarkedText.isEmpty,
+              activeRecordingTextTarget == nil,
+              let commandID = status.commandID
+        else { return false }
+        let preview = activeMarkedText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !preview.isEmpty else { return false }
+        commitLivePartialMarkedTextAsPreview(preview)
+        activeMarkedText = ""
+        activeMarkedTextOwner = nil
+        committedLivePartialPreview = CommittedLivePartialPreview(commandID: commandID, text: preview)
+        return true
     }
 
     private func commitLivePartialPreviewForSending(_ status: KeyboardBridgeStatus, partial: String) {
@@ -8634,7 +8686,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
 
         if activeMarkedTextOwner == .livePartial {
-            commitTextReplacingMarkedText(preview)
+            commitLivePartialMarkedTextAsPreview(preview)
         } else {
             guard activeMarkedText.isEmpty else { return }
             textDocumentProxy.insertText(preview)
@@ -8670,12 +8722,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         guard activeMarkedTextOwner == .livePartial,
               !activeMarkedText.isEmpty
         else { return false }
-        // The host app can send or clear the marked preview while the server
-        // is still finishing. In that case our marked-text bookkeeping is
-        // stale, so the final result must not be inserted into an empty input
-        // field. Some target apps do not expose active marked text in
-        // documentContextBeforeInput / documentContextAfterInput, so absence
-        // from context alone is not enough to prove the preview was consumed.
+        // The host app or iOS system UI can commit/clear the marked preview
+        // while the server is still finishing. If our marked-text bookkeeping
+        // is stale, falling back to setMarkedText(...).unmarkText() can append
+        // the final result after the old preview instead of replacing it.
         guard let before = textDocumentProxy.documentContextBeforeInput else {
             return false
         }
@@ -8692,12 +8742,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         if let after = textDocumentProxy.documentContextAfterInput,
            !after.isEmpty,
            (after.hasPrefix(markedText) || (before + after).contains(markedText)) {
-            return false
-        }
-        if textDocumentProxy.hasText {
-            kbLog.notice(
-                "live partial absent from context but input still has text; committing final result beforeLen=\(before.count, privacy: .public)"
-            )
             return false
         }
         return true
@@ -9540,6 +9584,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 isCommandPressActive = false
                 if command.action == .stop {
                     pendingStopCommandID = command.id
+                    commitLivePartialBeforeHostReturnIfNeeded(commandID: command.id)
                 }
             }
             if command.action == .cancel {
@@ -9629,6 +9674,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 tapRecordingActive = false
                 isCommandPressActive = false
                 pendingStopCommandID = commandID
+                commitLivePartialBeforeHostReturnIfNeeded(commandID: commandID)
             }
             bridgeStatus = KeyboardBridgeStatus(
                 commandID: commandID,
@@ -10076,6 +10122,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             } else {
                 replaceMarkedText(partial, owner: .livePartial)
             }
+        } else if commitActiveLivePartialPreviewForSending(status) {
+            // The stop/sending status can arrive without a fresh partial. Keep
+            // the last visible preview anchored so the final result replaces it.
         } else if status.state != .result, activeMarkedTextOwner == .livePartial {
             // .result is handled below — don't clear here or the commit step
             // would have no marked text to replace.

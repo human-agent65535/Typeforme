@@ -160,6 +160,24 @@ enum VocabularyCandidateSelector {
         }
     }
 
+    private struct MixedScriptPattern {
+        let segments: [MixedScriptSegment]
+        let hanAnchorCount: Int
+        let slotCount: Int
+        let minCJKLength: Int
+        let maxCJKLength: Int
+    }
+
+    private enum MixedScriptSegment {
+        case han(String)
+        case slot(String, minChars: Int, maxChars: Int, pinyinOptions: [[String]])
+    }
+
+    private struct MixedScriptAlignment {
+        let slotCharCount: Int
+        let extraSlotChars: Int
+    }
+
     static func select(
         from entries: [DictionaryEntry],
         rawText: String,
@@ -302,6 +320,7 @@ enum VocabularyCandidateSelector {
 
         if evidenceText.source.isTranscript {
             consider(chinesePhoneticEvidence(for: term, in: evidenceText))
+            consider(mixedScriptSkeletonEvidence(for: term, in: evidenceText))
             consider(englishPhoneticEvidence(for: term, in: evidenceText))
             consider(crossScriptEnglishPhoneticEvidence(for: term, in: evidenceText))
         }
@@ -540,6 +559,60 @@ enum VocabularyCandidateSelector {
                     matchedSpan: window.text,
                     matchKind: "cross_script_near_phonetic",
                     confidence: roundedConfidence(min(0.82, match.score)),
+                    evidenceText: evidenceText,
+                    matchedStart: window.startChar,
+                    matchedEnd: window.endChar
+                )
+                best = bestEvidence(best, candidate)
+            }
+        }
+        return best
+    }
+
+    private static func mixedScriptSkeletonEvidence(for term: String, in evidenceText: EvidenceText) -> CandidateEvidence? {
+        guard UnicodeScriptClassifier.containsHanBMP(evidenceText.text),
+              let pattern = mixedScriptPattern(for: term)
+        else { return nil }
+
+        let approximations = mixedScriptPinyinApproximations(for: pattern)
+        guard !approximations.isEmpty else { return nil }
+
+        var best: CandidateEvidence?
+        for window in cjkWindows(
+            in: evidenceText.text,
+            minLength: pattern.minCJKLength,
+            maxLength: pattern.maxCJKLength
+        ) {
+            guard let alignment = mixedScriptAlignment(for: pattern, windowText: window.text) else {
+                continue
+            }
+
+            for approximation in approximations {
+                let penalty = min(10, alignment.extraSlotChars * 3 + max(0, pattern.slotCount - 1) * 2)
+                if window.phonetic == approximation.key || window.loosePhonetic == approximation.looseKey {
+                    let candidate = candidateEvidence(
+                        score: 92 + evidenceText.source.sourceScore - penalty,
+                        matchedSpan: window.text,
+                        matchKind: "mixed_script_skeleton",
+                        confidence: roundedConfidence(max(0.82, 0.9 - Double(penalty) / 100.0)),
+                        evidenceText: evidenceText,
+                        matchedStart: window.startChar,
+                        matchedEnd: window.endChar
+                    )
+                    best = bestEvidence(best, candidate)
+                    continue
+                }
+
+                guard approximation.key.count >= 5,
+                      window.phonetic.count >= 5,
+                      let match = phoneticMatcher.score(window.phonetic, against: approximation.key),
+                      match.score >= 0.8
+                else { continue }
+                let candidate = candidateEvidence(
+                    score: Int((66.0 + match.score * 18.0).rounded()) + evidenceText.source.sourceScore - penalty,
+                    matchedSpan: window.text,
+                    matchKind: "mixed_script_near_skeleton",
+                    confidence: roundedConfidence(min(0.84, match.score)),
                     evidenceText: evidenceText,
                     matchedStart: window.startChar,
                     matchedEnd: window.endChar
@@ -815,10 +888,172 @@ enum VocabularyCandidateSelector {
         return runs
     }
 
+    private static func mixedScriptPattern(for term: String) -> MixedScriptPattern? {
+        guard UnicodeScriptClassifier.containsHanBMP(term),
+              term.contains(where: isASCIILetterOrNumber)
+        else { return nil }
+
+        var segments: [MixedScriptSegment] = []
+        var hanBuffer = ""
+        var slotBuffer = ""
+
+        func flushHan() {
+            guard !hanBuffer.isEmpty else { return }
+            segments.append(.han(hanBuffer))
+            hanBuffer = ""
+        }
+
+        func flushSlot() {
+            guard !slotBuffer.isEmpty else { return }
+            let pinyinOptions = acronymPinyinSyllables(for: slotBuffer)
+            let maxChars = min(
+                4,
+                max(1, pinyinOptions.map(\.count).max() ?? slotBuffer.count)
+            )
+            segments.append(.slot(
+                slotBuffer,
+                minChars: 1,
+                maxChars: maxChars,
+                pinyinOptions: pinyinOptions
+            ))
+            slotBuffer = ""
+        }
+
+        for character in term {
+            if character.unicodeScalars.contains(where: UnicodeScriptClassifier.isHanBMP) {
+                flushSlot()
+                hanBuffer.append(character)
+            } else if isASCIILetterOrNumber(character) {
+                flushHan()
+                slotBuffer.append(character)
+            } else {
+                flushHan()
+                flushSlot()
+            }
+        }
+        flushHan()
+        flushSlot()
+
+        var hanAnchorCount = 0
+        var slotCount = 0
+        var maxSlotChars = 0
+        for segment in segments {
+            switch segment {
+            case .han(let text):
+                hanAnchorCount += UnicodeScriptClassifier.hanBMPCount(in: text)
+            case .slot(_, _, let maxChars, _):
+                slotCount += 1
+                maxSlotChars += maxChars
+            }
+        }
+
+        guard slotCount > 0, hanAnchorCount >= 2 else { return nil }
+        return MixedScriptPattern(
+            segments: segments,
+            hanAnchorCount: hanAnchorCount,
+            slotCount: slotCount,
+            minCJKLength: hanAnchorCount + slotCount,
+            maxCJKLength: hanAnchorCount + maxSlotChars
+        )
+    }
+
+    private static func mixedScriptPinyinApproximations(for pattern: MixedScriptPattern) -> [PinyinApproximation] {
+        var variants: [[String]] = [[]]
+        for segment in pattern.segments {
+            let options: [[String]]
+            switch segment {
+            case .han(let text):
+                let syllables = spacedPinyinKey(text)
+                    .split(separator: " ")
+                    .map(String.init)
+                options = [syllables]
+            case .slot(_, _, _, let pinyinOptions):
+                options = pinyinOptions
+            }
+            guard !options.isEmpty else { continue }
+            variants = variants.flatMap { prefix in
+                options.map { prefix + $0 }
+            }
+            if variants.count > 32 {
+                variants = Array(variants.prefix(32))
+            }
+        }
+
+        return cleanedPinyinLists(variants)
+            .map { syllables in
+                syllables
+                    .map { compactNormalized($0) }
+                    .filter { !$0.isEmpty }
+            }
+            .filter { $0.count >= 2 && $0.count <= 10 && $0.joined().count >= 4 }
+            .map { PinyinApproximation(syllables: $0) }
+            .reduce(into: []) { output, approximation in
+                guard !output.contains(approximation) else { return }
+                output.append(approximation)
+            }
+    }
+
+    private static func mixedScriptAlignment(
+        for pattern: MixedScriptPattern,
+        windowText: String
+    ) -> MixedScriptAlignment? {
+        let chars = Array(windowText)
+
+        func match(
+            segmentIndex: Int,
+            charIndex: Int,
+            slotCharCount: Int,
+            extraSlotChars: Int
+        ) -> MixedScriptAlignment? {
+            guard segmentIndex < pattern.segments.count else {
+                guard charIndex == chars.count else { return nil }
+                return MixedScriptAlignment(
+                    slotCharCount: slotCharCount,
+                    extraSlotChars: extraSlotChars
+                )
+            }
+
+            switch pattern.segments[segmentIndex] {
+            case .han(let text):
+                let anchor = Array(text)
+                guard charIndex + anchor.count <= chars.count else { return nil }
+                let candidateAnchorChars = Array(chars[charIndex..<(charIndex + anchor.count)])
+                let candidateAnchor = String(candidateAnchorChars)
+                guard candidateAnchorChars == anchor || phoneticKey(candidateAnchor) == phoneticKey(text) else { return nil }
+                return match(
+                    segmentIndex: segmentIndex + 1,
+                    charIndex: charIndex + anchor.count,
+                    slotCharCount: slotCharCount,
+                    extraSlotChars: extraSlotChars
+                )
+            case .slot(_, let minChars, let maxChars, _):
+                guard charIndex < chars.count else { return nil }
+                let remaining = chars.count - charIndex
+                guard remaining >= minChars else { return nil }
+                for length in minChars...min(maxChars, remaining) {
+                    if let result = match(
+                        segmentIndex: segmentIndex + 1,
+                        charIndex: charIndex + length,
+                        slotCharCount: slotCharCount + length,
+                        extraSlotChars: extraSlotChars + max(0, length - minChars)
+                    ) {
+                        return result
+                    }
+                }
+                return nil
+            }
+        }
+
+        return match(segmentIndex: 0, charIndex: 0, slotCharCount: 0, extraSlotChars: 0)
+    }
+
     private static func pronunciationHints(for surface: String) -> [String] {
         var hints: [String] = []
         if UnicodeScriptClassifier.containsHanBMP(surface) {
             hints.append(spacedPinyinKey(surface))
+        }
+        if let pattern = mixedScriptPattern(for: surface) {
+            hints.append(contentsOf: mixedScriptPinyinApproximations(for: pattern).prefix(6).map(\.spoken))
         }
         if UnicodeScriptClassifier.containsASCIILatinLetter(surface) {
             hints.append(normalize(splitCamelCase(surface)))
@@ -974,45 +1209,7 @@ enum VocabularyCandidateSelector {
     }
 
     private static func letterPinyinSequences(for character: Character) -> [[String]] {
-        switch character {
-        case "a": return [["ei"]]
-        case "b": return [["bi"]]
-        case "c": return [["xi"], ["si"]]
-        case "d": return [["di"]]
-        case "e": return [["yi"]]
-        case "f": return [["ai", "fu"], ["fu"]]
-        case "g": return [["ji"]]
-        case "h": return [["ai", "chi"], ["chi"]]
-        case "i": return [["ai"]]
-        case "j": return [["jie"]]
-        case "k": return [["kei"]]
-        case "l": return [["ai", "er"], ["er"]]
-        case "m": return [["ai", "mu"], ["mu"]]
-        case "n": return [["en"]]
-        case "o": return [["ou"]]
-        case "p": return [["pi"]]
-        case "q": return [["qiu"]]
-        case "r": return [["a", "er"], ["er"]]
-        case "s": return [["ai", "si"], ["si"]]
-        case "t": return [["ti"]]
-        case "u": return [["you"]]
-        case "v": return [["wei"]]
-        case "w": return [["da", "bu", "liu"]]
-        case "x": return [["ai", "ke", "si"], ["ke", "si"]]
-        case "y": return [["wai"]]
-        case "z": return [["zi"]]
-        case "0": return [["ling"]]
-        case "1": return [["wan"]]
-        case "2": return [["tu"]]
-        case "3": return [["si", "rui"]]
-        case "4": return [["fo"]]
-        case "5": return [["fai", "fu"], ["fu"]]
-        case "6": return [["si", "ke", "si"]]
-        case "7": return [["sai", "wen"]]
-        case "8": return [["ei", "te"]]
-        case "9": return [["nai"]]
-        default: return [[String(character)]]
-        }
+        ZhCNAlnumReadingProvider.pinyinSyllableOptions(for: character)
     }
 
     private static func splitCamelCase(_ text: String) -> String {

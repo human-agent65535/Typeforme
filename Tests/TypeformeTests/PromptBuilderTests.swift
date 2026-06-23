@@ -387,6 +387,29 @@ struct PromptBuilderTests {
         #expect(!prompt.contains("\"text\":\"我刚和陈屿确认了预算。\""))
     }
 
+    @Test func userPromptIncludesMixedScriptVocabularyDecisionExample() {
+        let request = CorrectionRequest(
+            correctionMode: .polish,
+            frontmostAppName: "Notes",
+            frontmostBundleID: "com.apple.Notes",
+            appCategory: .document,
+            languageIDs: ["zh-CN", "en-US"],
+            rawTranscript: "刚刚测试样例微词条这个词",
+            userDictionary: [
+                DictionaryEntry(type: "technical_term", surface: "样例V词条"),
+            ]
+        )
+
+        let prompt = PromptBuilder.userPrompt(for: request)
+
+        #expect(prompt.contains("\"surface\":\"样例V词条\""))
+        #expect(prompt.contains("\"matched_span\":\"样例微词条\""))
+        #expect(prompt.contains("\"match_kind\":\"mixed_script_skeleton\""))
+        #expect(prompt.contains("yang li wei ci tiao"))
+        #expect(prompt.contains("\"raw_transcript\":\"这个叫样例微词条\""))
+        #expect(prompt.contains("\"text\":\"这个叫样例V词条。\""))
+    }
+
     @Test func userPromptCarriesReadOnlyDictationContext() {
         let request = CorrectionRequest(
             correctionMode: .polish,

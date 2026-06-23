@@ -124,7 +124,9 @@ enum PromptBuilder {
             selected.append(example)
         }
 
-        if vocabularyCandidates.contains(where: { $0.matchKind.hasPrefix("cross_script") }) {
+        if vocabularyCandidates.contains(where: { $0.matchKind.hasPrefix("mixed_script") }) {
+            add(.vocabularyMixedScriptTerm)
+        } else if vocabularyCandidates.contains(where: { $0.matchKind.hasPrefix("cross_script") }) {
             add(.vocabularyCrossScriptProduct)
         } else if vocabularyCandidates.contains(where: { $0.matchSource == "alternate_transcript" }) {
             add(.vocabularyAlternatePersonName)
@@ -507,6 +509,26 @@ fileprivate extension PromptBuilder.PromptExample {
                 matchedEnd: 5,
                 matchKind: "cross_script_phonetic",
                 confidence: 0.88,
+                evidenceSource: "transcript"
+            ),
+        ]
+    )
+
+    static let vocabularyMixedScriptTerm = Self(
+        rawTranscript: "这个叫样例微词条",
+        outputText: "这个叫样例V词条。",
+        vocabularyCandidates: [
+            VocabularyCandidatePayload(
+                type: "technical_term",
+                surface: "样例V词条",
+                speechHint: "yanglivcitiao",
+                pronunciations: ["yang li V ci tiao", "yang li wei ci tiao"],
+                matchedSpan: "样例微词条",
+                matchSource: "raw_transcript",
+                matchedStart: 3,
+                matchedEnd: 8,
+                matchKind: "mixed_script_skeleton",
+                confidence: 0.9,
                 evidenceSource: "transcript"
             ),
         ]

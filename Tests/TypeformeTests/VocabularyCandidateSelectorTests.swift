@@ -144,6 +144,35 @@ struct VocabularyCandidateSelectorTests {
         #expect(payload[0].pronunciations.contains("si li pu sai kou"))
     }
 
+    @Test func selectsMixedScriptTermFromChineseASRSlot() {
+        let entries = [
+            DictionaryEntry(type: "technical_term", surface: "样例V词条"),
+            DictionaryEntry(type: "product", surface: "示例AR设备"),
+        ]
+
+        let payload = VocabularyCandidateSelector.promptPayload(
+            from: entries,
+            rawText: "刚刚测试样例微词条这个词",
+            alternateTranscripts: ["刚刚测试样例维词条这个词"]
+        )
+
+        #expect(payload.first?.surface == "样例V词条")
+        #expect(payload.first?.matchedSpan == "样例微词条")
+        #expect(payload.first?.matchedStart == 4)
+        #expect(payload.first?.matchedEnd == 9)
+        #expect(payload.first?.matchKind == "mixed_script_skeleton")
+        #expect(payload.first?.pronunciations.contains("yang li wei ci tiao") == true)
+        #expect(!payload.contains { $0.surface == "示例AR设备" })
+
+        let homophoneAnchorPayload = VocabularyCandidateSelector.promptPayload(
+            from: entries,
+            rawText: "刚刚测试洋例微词条这个词"
+        )
+        #expect(homophoneAnchorPayload.first?.surface == "样例V词条")
+        #expect(homophoneAnchorPayload.first?.matchedSpan == "洋例微词条")
+        #expect(homophoneAnchorPayload.first?.matchKind == "mixed_script_skeleton")
+    }
+
     @Test func doesNotSelectUnrelatedEnglishVocabularyFromChineseTranscript() {
         let entries = [
             DictionaryEntry(type: "product", surface: "codex"),
@@ -153,6 +182,19 @@ struct VocabularyCandidateSelectorTests {
         let payload = VocabularyCandidateSelector.promptPayload(
             from: entries,
             rawText: "今天开会讨论项目进度"
+        )
+
+        #expect(payload.isEmpty)
+    }
+
+    @Test func doesNotSelectMixedScriptTermByGlobalTopicSimilarity() {
+        let entries = [
+            DictionaryEntry(type: "technical_term", surface: "样例V词条"),
+        ]
+
+        let payload = VocabularyCandidateSelector.promptPayload(
+            from: entries,
+            rawText: "普通问题只是在讨论示例设备"
         )
 
         #expect(payload.isEmpty)
