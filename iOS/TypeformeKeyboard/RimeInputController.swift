@@ -90,16 +90,28 @@ typealias RimeKeyboardDictionaryTier = KeyboardRimeDictionaryTier
 
 struct RimeKeyboardProfile: Equatable {
     var dictionaryTier: RimeKeyboardDictionaryTier = .standard
-    var correctionEnabled: Bool = true
+    var learningEnabled: Bool = true
+    var correctionEnabled: Bool = false
 
     var schemaID: String {
+        let base: String
         switch dictionaryTier {
         case .standard:
-            return correctionEnabled ? "typeforme_pinyin" : "typeforme_pinyin_no_correction"
+            base = "typeforme_pinyin"
         case .extended:
-            return correctionEnabled ? "typeforme_pinyin_ext" : "typeforme_pinyin_ext_no_correction"
+            base = "typeforme_pinyin_ext"
         case .large:
-            return correctionEnabled ? "typeforme_pinyin_large" : "typeforme_pinyin_large_no_correction"
+            base = "typeforme_pinyin_large"
+        }
+        switch (correctionEnabled, learningEnabled) {
+        case (true, true):
+            return base
+        case (false, true):
+            return "\(base)_no_correction"
+        case (true, false):
+            return "\(base)_no_learning"
+        case (false, false):
+            return "\(base)_no_correction_no_learning"
         }
     }
 }

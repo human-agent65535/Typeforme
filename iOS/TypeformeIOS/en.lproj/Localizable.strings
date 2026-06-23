@@ -47,7 +47,7 @@
 "Pinyin Correction" = "Pinyin Correction";
 "Standard" = "Standard";
 "Extended" = "Extended";
-"Large" = "Large";
+"Extra Large" = "Extra Large";
 "Default text input" = "Default text input";
 "Chinese punctuation" = "Chinese punctuation";
 "Chinese self-learning" = "Chinese self-learning";
@@ -68,7 +68,7 @@
 "Turn off to make the text keyboard English-only and hide the Chinese/English switch key." = "Turn off to make the text keyboard English-only and hide the Chinese/English switch key.";
 "Controls how long Typeforme keeps keyboard dictation ready after the host app is opened." = "Controls how long Typeforme keeps keyboard dictation ready after the host app is opened.";
 "Only active when the keyboard is in English mode." = "Only active when the keyboard is in English mode.";
-"Chinese self-learning is Rime's user dictionary. Touch learning automatically adapts per-key tap offsets after corrections and stores no text. Reset Touch Learning only clears the tap-position model." = "Chinese self-learning is Rime's user dictionary. Touch learning automatically adapts per-key tap offsets after corrections and stores no text. Reset Touch Learning only clears the tap-position model.";
+"Chinese self-learning controls Rime's user dictionary. Touch learning adapts per-key tap offsets when on; when off, text keys use fixed midpoint hit routing." = "Chinese self-learning controls Rime's user dictionary. Touch learning adapts per-key tap offsets when on; when off, text keys use fixed midpoint hit routing.";
 
 // VoiceInputMode (shared with keyboard)
 "Hold" = "Hold";
@@ -207,6 +207,8 @@
 "This preview setting is local to the iPhone keyboard and applies immediately. It does not change the Mac live transcript setting." = "This preview setting is local to the iPhone keyboard and applies immediately. It does not change the Mac live transcript setting.";
 "This preview setting is saved to the paired Mac when you tap Done. It does not change the iPhone keyboard preview." = "This preview setting is saved to the paired Mac when you tap Done. It does not change the iPhone keyboard preview.";
 "Apple Speech is local. Server uses Mac." = "Apple Speech is local. Server uses Mac.";
+"Server-side" = "Server-side";
+"Server Nemotron runs on the Mac. Apple Speech recognition mode only applies to Apple Speech." = "Server Nemotron runs on the Mac. Apple Speech recognition mode only applies to Apple Speech.";
 "Preview follows enabled ASR sources." = "Preview follows enabled ASR sources.";
 "Source off" = "Source off";
 "Update Typeforme on the paired Mac, then try again." = "Update Typeforme on the paired Mac, then try again.";

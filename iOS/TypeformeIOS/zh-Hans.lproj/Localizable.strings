@@ -47,7 +47,7 @@
 "Pinyin Correction" = "拼音纠错";
 "Standard" = "标准";
 "Extended" = "扩展";
-"Large" = "大词库";
+"Extra Large" = "超大词库";
 "Default text input" = "默认文本输入";
 "Chinese punctuation" = "中文标点";
 "Chinese self-learning" = "中文自学习";
@@ -68,7 +68,7 @@
 "Turn off to make the text keyboard English-only and hide the Chinese/English switch key." = "关闭后文本键盘只使用英文,并隐藏中英切换键。";
 "Controls how long Typeforme keeps keyboard dictation ready after the host app is opened." = "控制从键盘打开宿主 app 后,Typeforme 保持听写就绪的时长。";
 "Only active when the keyboard is in English mode." = "仅在键盘处于英文模式时生效。";
-"Chinese self-learning is Rime's user dictionary. Touch learning automatically adapts per-key tap offsets after corrections and stores no text. Reset Touch Learning only clears the tap-position model." = "中文自学习是 Rime 用户词典。触控学习会在纠错后自动适配每个按键的触点偏移,不保存输入文本。重置触控学习只会清除触点模型。";
+"Chinese self-learning controls Rime's user dictionary. Touch learning adapts per-key tap offsets when on; when off, text keys use fixed midpoint hit routing." = "中文自学习控制 Rime 用户词典。触控学习开启时会适配每个按键的触点偏移;关闭时文本键按固定中线命中。";
 
 // VoiceInputMode (与键盘扩展共享)
 "Hold" = "按住";
@@ -207,6 +207,8 @@
 "This preview setting is local to the iPhone keyboard and applies immediately. It does not change the Mac live transcript setting." = "这个预览设置只作用于 iPhone 键盘,并且立即生效。它不会改变 Mac 端自己的实时转写设置。";
 "This preview setting is saved to the paired Mac when you tap Done. It does not change the iPhone keyboard preview." = "点击完成后,这个预览设置会保存到配对的 Mac。它不会改变 iPhone 键盘预览设置。";
 "Apple Speech is local. Server uses Mac." = "Apple Speech 本地预览；Server 使用 Mac。";
+"Server-side" = "服务端";
+"Server Nemotron runs on the Mac. Apple Speech recognition mode only applies to Apple Speech." = "Server Nemotron 在 Mac 上运行。Apple Speech 识别模式只作用于 Apple Speech。";
 "Preview follows enabled ASR sources." = "预览跟随已启用 ASR 源。";
 "Source off" = "源未开启";
 "Update Typeforme on the paired Mac, then try again." = "请先更新配对 Mac 上的 Typeforme,然后重试。";

@@ -279,6 +279,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private var isAutoCapitalizationEnabled = true
     private var isCharacterPreviewEnabled = false
     private var isChineseInputEnabled = true
+    private var isTouchLearningEnabled = true
     private var chinesePunctuationStyle: KeyboardChinesePunctuationStyle = .chinese
     private let rimeInput = RimeInputController()
     private lazy var textTouchLearner = TextKeyTouchLearner(
@@ -1281,7 +1282,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                point.x > rightBoundary {
                 return nil
             }
-            if let chosen = learnedInterKeyGapWinner(buttons: buttons, index: index, point: point) {
+            if isTouchLearningEnabled,
+               let chosen = learnedInterKeyGapWinner(buttons: buttons, index: index, point: point) {
                 return chosen
             }
             let isLastButton = index == buttons.index(before: buttons.endIndex)
@@ -1323,6 +1325,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         rightBoundary: CGFloat,
         point: CGPoint
     ) -> UIButton {
+        guard isTouchLearningEnabled else { return buttons[index].button }
         let gutter = TextKeyboardTouchModel.gutterRadius
         if index > buttons.startIndex,
            point.x - leftBoundary < gutter,
@@ -1477,6 +1480,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func registerCommittedTextTouch(_ sample: TextKeyTouchSample) {
+        guard isTouchLearningEnabled else {
+            pendingTextTouchSample = nil
+            pendingTextTouchCorrection = nil
+            return
+        }
         if let correction = pendingTextTouchCorrection {
             let isCorrectionCandidate = sample.committedAt - correction.startedAt <= Self.textTouchCorrectionWindow
                 && correction.sample.character != sample.character
@@ -1542,6 +1550,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
         guard let sample = pendingTextTouchSample else { return }
         pendingTextTouchSample = nil
+        guard isTouchLearningEnabled else { return }
         guard now - sample.committedAt <= Self.textTouchPositiveTTL else { return }
         textTouchLearner.recordTouch(
             touchPoint: sample.touchPoint,
@@ -1558,6 +1567,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     private func beginTextTouchCorrectionFromBackspace(compositionActive: Bool) {
         guard deleteRepeatTask == nil else { return }
+        guard isTouchLearningEnabled else {
+            pendingTextTouchSample = nil
+            pendingTextTouchCorrection = nil
+            return
+        }
         let now = Date().timeIntervalSince1970
         guard let sample = pendingTextTouchSample else {
             pendingTextTouchCorrection = nil
@@ -1940,6 +1954,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let previousRimeProfile = rimeProfile
         let previousRimeUserPhrasesRevision = rimeUserPhrasesRevision
         let previousTextInputLanguage = textInputLanguage
+        let previousTouchLearningEnabled = isTouchLearningEnabled
 
         isAutoCapitalizationEnabled = payload.autoCapitalizationEnabled
         isCharacterPreviewEnabled = payload.characterPreviewEnabled
@@ -1949,7 +1964,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         defaults.set(payload.chineseInputEnabled, forKey: hostChineseInputEnabledKey)
         chinesePunctuationStyle = payload.chinesePunctuationStyle
         rimeProfile.dictionaryTier = payload.rimeDictionaryTier
+        rimeProfile.learningEnabled = payload.rimeLearningEnabled
         rimeProfile.correctionEnabled = payload.rimeCorrectionEnabled
+        isTouchLearningEnabled = payload.touchLearningEnabled
+        if previousTouchLearningEnabled && !isTouchLearningEnabled {
+            pendingTextTouchSample = nil
+            pendingTextTouchCorrection = nil
+        }
         let hostRimeUserPhrases = payload.rimeUserPhrases
         let hostRimeUserPhrasesRevision = payload.rimeUserPhrasesRevision
         let userPhrasesChanged = hostRimeUserPhrasesRevision != rimeUserPhrasesRevision
@@ -2042,7 +2063,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             chineseInputEnabled: isChineseInputEnabled,
             chinesePunctuationStyle: chinesePunctuationStyle,
             rimeDictionaryTier: rimeProfile.dictionaryTier,
+            rimeLearningEnabled: rimeProfile.learningEnabled,
             rimeCorrectionEnabled: rimeProfile.correctionEnabled,
+            touchLearningEnabled: isTouchLearningEnabled,
             rimeUserPhrases: [],
             rimeUserPhrasesRevision: "",
             defaultTextInputLanguage: hostDefaultLanguage,
@@ -7393,7 +7416,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             commitTextReplacingMarkedText(state.commitText)
             activeMarkedText = ""
             activeMarkedTextOwner = nil
-            chineseLearningRecorder.recordCommit(state.commitText)
+            if rimeProfile.learningEnabled {
+                chineseLearningRecorder.recordCommit(state.commitText)
+            }
         }
 
         let composingText = rimeMarkedText(for: state)

@@ -329,7 +329,9 @@ final class AppState {
     var keyboardChineseInputEnabled: Bool
     var keyboardChinesePunctuationStyle: KeyboardChinesePunctuationStyle
     var keyboardRimeDictionaryTier: KeyboardRimeDictionaryTier
+    var keyboardRimeLearningEnabled: Bool
     var keyboardRimeCorrectionEnabled: Bool
+    var keyboardTouchLearningEnabled: Bool
     var keyboardDefaultTextInputLanguage: KeyboardDefaultTextInputLanguage
     private(set) var keyboardRimeLearningResetGeneration: Int
     private(set) var keyboardTouchLearningResetGeneration: Int
@@ -382,7 +384,9 @@ final class AppState {
     private static let keyboardChineseInputEnabledKey = "keyboard.chineseInputEnabled"
     private static let keyboardChinesePunctuationStyleKey = "keyboard.chinesePunctuationStyle"
     private static let keyboardRimeDictionaryTierKey = "keyboard.rimeDictionaryTier"
+    private static let keyboardRimeLearningKey = "keyboard.rimeLearningEnabled"
     private static let keyboardRimeCorrectionKey = "keyboard.rimeCorrectionEnabled"
+    private static let keyboardTouchLearningKey = "keyboard.touchLearningEnabled"
     private static let keyboardDefaultTextInputLanguageKey = "keyboard.defaultTextInputLanguage"
     private static let keyboardRimeLearningResetGenerationKey = "keyboard.rimeLearningResetGeneration"
     private static let keyboardTouchLearningResetGenerationKey = "keyboard.touchLearningResetGeneration"
@@ -586,8 +590,12 @@ final class AppState {
             .flatMap(KeyboardChinesePunctuationStyle.init(rawValue:)) ?? .chinese
         self.keyboardRimeDictionaryTier = UserDefaults.standard.string(forKey: Self.keyboardRimeDictionaryTierKey)
             .flatMap(KeyboardRimeDictionaryTier.init(rawValue:)) ?? .standard
+        self.keyboardRimeLearningEnabled = UserDefaults.standard.object(forKey: Self.keyboardRimeLearningKey)
+            .map { _ in UserDefaults.standard.bool(forKey: Self.keyboardRimeLearningKey) } ?? true
         self.keyboardRimeCorrectionEnabled = UserDefaults.standard.object(forKey: Self.keyboardRimeCorrectionKey)
-            .map { _ in UserDefaults.standard.bool(forKey: Self.keyboardRimeCorrectionKey) } ?? true
+            .map { _ in UserDefaults.standard.bool(forKey: Self.keyboardRimeCorrectionKey) } ?? false
+        self.keyboardTouchLearningEnabled = UserDefaults.standard.object(forKey: Self.keyboardTouchLearningKey)
+            .map { _ in UserDefaults.standard.bool(forKey: Self.keyboardTouchLearningKey) } ?? true
         self.keyboardDefaultTextInputLanguage = UserDefaults.standard.string(forKey: Self.keyboardDefaultTextInputLanguageKey)
             .flatMap(KeyboardDefaultTextInputLanguage.init(rawValue:)) ?? .lastUsed
         self.keyboardRimeLearningResetGeneration = UserDefaults.standard.integer(forKey: Self.keyboardRimeLearningResetGenerationKey)
@@ -803,6 +811,24 @@ final class AppState {
             \.keyboardRimeCorrectionEnabled,
             to: enabled,
             key: Self.keyboardRimeCorrectionKey
+        ) else { return }
+        publishKeyboardDefaults()
+    }
+
+    func setKeyboardRimeLearningEnabled(_ enabled: Bool) {
+        guard updateStoredBoolPreference(
+            \.keyboardRimeLearningEnabled,
+            to: enabled,
+            key: Self.keyboardRimeLearningKey
+        ) else { return }
+        publishKeyboardDefaults()
+    }
+
+    func setKeyboardTouchLearningEnabled(_ enabled: Bool) {
+        guard updateStoredBoolPreference(
+            \.keyboardTouchLearningEnabled,
+            to: enabled,
+            key: Self.keyboardTouchLearningKey
         ) else { return }
         publishKeyboardDefaults()
     }
@@ -1050,7 +1076,9 @@ final class AppState {
             chineseInputEnabled: keyboardChineseInputEnabled,
             chinesePunctuationStyle: keyboardChinesePunctuationStyle,
             rimeDictionaryTier: keyboardRimeDictionaryTier,
+            rimeLearningEnabled: keyboardRimeLearningEnabled,
             rimeCorrectionEnabled: keyboardRimeCorrectionEnabled,
+            touchLearningEnabled: keyboardTouchLearningEnabled,
             rimeUserPhrases: macSettings?.rimeUserPhrases ?? cachedServerRimeUserPhrases,
             defaultTextInputLanguage: keyboardDefaultTextInputLanguage,
             rimeLearningResetGeneration: keyboardRimeLearningResetGeneration,

@@ -210,7 +210,7 @@ enum KeyboardRimeDictionaryTier: String, CaseIterable, Identifiable, Codable {
         case .extended:
             return NSLocalizedString("Extended", comment: "Rime dictionary tier")
         case .large:
-            return NSLocalizedString("Large", comment: "Rime dictionary tier")
+            return NSLocalizedString("Extra Large", comment: "Rime dictionary tier")
         }
     }
 }
@@ -247,7 +247,9 @@ struct KeyboardDefaultsPayload: Codable, Equatable {
     var chineseInputEnabled: Bool
     var chinesePunctuationStyle: KeyboardChinesePunctuationStyle
     var rimeDictionaryTier: KeyboardRimeDictionaryTier
+    var rimeLearningEnabled: Bool
     var rimeCorrectionEnabled: Bool
+    var touchLearningEnabled: Bool
     var rimeUserPhrases: [String]
     var rimeUserPhrasesRevision: String
     var defaultTextInputLanguage: KeyboardDefaultTextInputLanguage
@@ -266,7 +268,9 @@ struct KeyboardDefaultsPayload: Codable, Equatable {
         chineseInputEnabled: Bool,
         chinesePunctuationStyle: KeyboardChinesePunctuationStyle,
         rimeDictionaryTier: KeyboardRimeDictionaryTier,
+        rimeLearningEnabled: Bool = true,
         rimeCorrectionEnabled: Bool,
+        touchLearningEnabled: Bool = true,
         rimeUserPhrases: [String],
         rimeUserPhrasesRevision: String? = nil,
         defaultTextInputLanguage: KeyboardDefaultTextInputLanguage,
@@ -285,7 +289,9 @@ struct KeyboardDefaultsPayload: Codable, Equatable {
         self.chineseInputEnabled = chineseInputEnabled
         self.chinesePunctuationStyle = chinesePunctuationStyle
         self.rimeDictionaryTier = rimeDictionaryTier
+        self.rimeLearningEnabled = rimeLearningEnabled
         self.rimeCorrectionEnabled = rimeCorrectionEnabled
+        self.touchLearningEnabled = touchLearningEnabled
         self.rimeUserPhrases = normalizedPhrases
         self.rimeUserPhrasesRevision = rimeUserPhrasesRevision ?? Self.rimeUserPhrasesRevision(normalizedPhrases)
         self.defaultTextInputLanguage = defaultTextInputLanguage
@@ -314,7 +320,9 @@ struct KeyboardDefaultsPayload: Codable, Equatable {
             KeyboardRimeDictionaryTier.self,
             forKey: .rimeDictionaryTier
         ) ?? .standard
-        rimeCorrectionEnabled = try container.decodeIfPresent(Bool.self, forKey: .rimeCorrectionEnabled) ?? true
+        rimeLearningEnabled = try container.decodeIfPresent(Bool.self, forKey: .rimeLearningEnabled) ?? true
+        rimeCorrectionEnabled = try container.decodeIfPresent(Bool.self, forKey: .rimeCorrectionEnabled) ?? false
+        touchLearningEnabled = try container.decodeIfPresent(Bool.self, forKey: .touchLearningEnabled) ?? true
         rimeUserPhrases = normalizedPhrases
         rimeUserPhrasesRevision = try container.decodeIfPresent(String.self, forKey: .rimeUserPhrasesRevision)
             ?? Self.rimeUserPhrasesRevision(normalizedPhrases)
@@ -338,7 +346,9 @@ struct KeyboardDefaultsPayload: Codable, Equatable {
         case chineseInputEnabled = "chinese_input_enabled"
         case chinesePunctuationStyle = "chinese_punctuation_style"
         case rimeDictionaryTier = "rime_dictionary_tier"
+        case rimeLearningEnabled = "rime_learning_enabled"
         case rimeCorrectionEnabled = "rime_correction_enabled"
+        case touchLearningEnabled = "touch_learning_enabled"
         case rimeUserPhrases = "rime_user_phrases"
         case rimeUserPhrasesRevision = "rime_user_phrases_revision"
         case defaultTextInputLanguage = "default_text_input_language"

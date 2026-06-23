@@ -984,6 +984,8 @@ private struct KeyboardSettingsView: View {
                 Text("Only active when the keyboard is in English mode.")
             }
             Section {
+                Toggle("Chinese self-learning", isOn: rimeLearningBinding)
+                    .disabled(!state.keyboardChineseInputEnabled)
                 NavigationLink {
                     ChineseLearningStatsView()
                 } label: {
@@ -1000,10 +1002,7 @@ private struct KeyboardSettingsView: View {
                     Text("Reset Chinese Learning")
                 }
                 .disabled(!state.keyboardChineseInputEnabled)
-                LabeledContent("Touch learning") {
-                    Text("Automatic")
-                        .foregroundStyle(.secondary)
-                }
+                Toggle("Touch learning", isOn: touchLearningBinding)
                 NavigationLink {
                     TouchLearningStatsView()
                 } label: {
@@ -1017,7 +1016,7 @@ private struct KeyboardSettingsView: View {
             } header: {
                 Text("Learning")
             } footer: {
-                Text("Chinese self-learning is Rime's user dictionary. Touch learning automatically adapts per-key tap offsets after corrections and stores no text. Reset Touch Learning only clears the tap-position model.")
+                Text("Chinese self-learning controls Rime's user dictionary. Touch learning adapts per-key tap offsets when on; when off, text keys use fixed midpoint hit routing.")
             }
             LivePreviewSettingsSection()
             Section {
@@ -1098,6 +1097,22 @@ private struct KeyboardSettingsView: View {
         }
     }
 
+    private var rimeLearningBinding: Binding<Bool> {
+        Binding {
+            state.keyboardRimeLearningEnabled
+        } set: { enabled in
+            state.setKeyboardRimeLearningEnabled(enabled)
+        }
+    }
+
+    private var touchLearningBinding: Binding<Bool> {
+        Binding {
+            state.keyboardTouchLearningEnabled
+        } set: { enabled in
+            state.setKeyboardTouchLearningEnabled(enabled)
+        }
+    }
+
     private var defaultTextInputLanguageBinding: Binding<KeyboardDefaultTextInputLanguage> {
         Binding {
             state.keyboardDefaultTextInputLanguage
@@ -1148,26 +1163,36 @@ private struct LivePreviewSettingsSection: View {
             }
             .pickerStyle(.menu)
             .disabled(!state.keyboardLivePreviewEnabled || state.isBusy)
-            Picker("Preview Recognition", selection: livePreviewRecognitionModeBinding) {
-                ForEach(KeyboardLivePreviewRecognitionMode.allCases) { mode in
-                    Text(mode.title).tag(mode)
+            if state.keyboardLivePreviewSource == .appleSpeech {
+                Picker("Preview Recognition", selection: livePreviewRecognitionModeBinding) {
+                    ForEach(KeyboardLivePreviewRecognitionMode.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
                 }
+                .pickerStyle(.menu)
+                .disabled(!state.keyboardLivePreviewEnabled || state.isBusy)
+            } else {
+                LabeledContent("Preview Recognition") {
+                    Text("Server-side")
+                        .foregroundStyle(.secondary)
+                }
+                .disabled(!state.keyboardLivePreviewEnabled)
             }
-            .pickerStyle(.menu)
-            .disabled(
-                !state.keyboardLivePreviewEnabled
-                    || state.keyboardLivePreviewSource != .appleSpeech
-                    || state.isBusy
-            )
         } header: {
             Text(title)
         } footer: {
-            Text("Apple Speech is local. Server uses Mac.")
+            Text(livePreviewFooter)
         }
     }
 
     private var sourceOptions: [KeyboardLivePreviewSource] {
         KeyboardLivePreviewSource.allCases
+    }
+
+    private var livePreviewFooter: LocalizedStringKey {
+        state.keyboardLivePreviewSource == .serverNemotron
+            ? "Server Nemotron runs on the Mac. Apple Speech recognition mode only applies to Apple Speech."
+            : "Apple Speech is local. Server uses Mac."
     }
 
     private func isSourceEnabled(_ source: KeyboardLivePreviewSource) -> Bool {
@@ -2370,12 +2395,6 @@ private struct ChineseLearningStatsView: View {
         List {
             if let snapshot, !snapshot.entries.isEmpty {
                 Section {
-                    LabeledContent("Phrases tracked", value: "\(snapshot.entries.count)")
-                    LabeledContent("Updated", value: Self.relativeDate(snapshot.updatedAt))
-                } footer: {
-                    Text("Multi-character phrases committed on the keyboard — the signal Rime's self-learning trains on. Reset Chinese Learning clears both the dictionary and this list.")
-                }
-                Section("Recent phrases") {
                     ForEach(snapshot.entries, id: \.text) { entry in
                         HStack {
                             Text(entry.text)
