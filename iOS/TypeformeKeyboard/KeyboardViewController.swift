@@ -593,6 +593,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private let keyRowsStack = UIStackView()
     private let candidateGridScrollView = UIScrollView()
     private let candidateGridStack = UIStackView()
+    private let candidateTextOverlay = UIView()
+    private var reusableCandidateTextOverlayLabels: [UILabel] = []
     private let keyPreviewBubble = UIView()
     private let keyPreviewLabel = UILabel()
     private lazy var textTrackpadPanRecognizer = UIPanGestureRecognizer(target: self, action: #selector(handleTextTrackpadPan(_:)))
@@ -2062,6 +2064,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         keyboardContentView.isOpaque = false
         keyboardContentView.clipsToBounds = false
 
+        candidateTextOverlay.translatesAutoresizingMaskIntoConstraints = true
+        candidateTextOverlay.isUserInteractionEnabled = false
+        candidateTextOverlay.backgroundColor = .clear
+        candidateTextOverlay.isOpaque = false
+        candidateTextOverlay.clipsToBounds = false
+        candidateTextOverlay.isHidden = true
+
         rootStack.axis = .vertical
         rootStack.spacing = Self.stackSpacing
         rootStack.translatesAutoresizingMaskIntoConstraints = false
@@ -2074,6 +2083,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         view.addSubview(keyboardSurfaceView)
         view.addSubview(keyboardContentView)
         keyboardContentView.addSubview(rootStack)
+        view.addSubview(candidateTextOverlay)
         view.addSubview(keyboardTouchOverlay)
         setKeyboardContentVisible(true)
 
@@ -2092,6 +2102,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         UIView.performWithoutAnimation {
             self.view.alpha = 1
             self.keyboardContentView.alpha = visible ? 1 : 0
+            self.candidateTextOverlay.alpha = visible ? 1 : 0
             self.keyboardTouchOverlay.alpha = visible ? 1 : 0
         }
         CATransaction.commit()
@@ -2245,6 +2256,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
         if keyboardContentView.frame != frame {
             keyboardContentView.frame = frame
+        }
+        if candidateTextOverlay.frame != frame {
+            candidateTextOverlay.frame = frame
         }
         if keyboardTouchOverlay.frame != frame {
             keyboardTouchOverlay.frame = frame
@@ -3058,6 +3072,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         updateCandidateScrollViewport()
         updateCandidateGridCollapseButtonFrame()
         updateKeyboardSurfaceMask()
+        updateCandidateTextOverlay()
         applyToolbarIconLayoutTweaks()
         updateKeyboardOverlayOrdering()
         setKeyboardContentVisible(true)
@@ -3393,6 +3408,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         candidateGridScrollView.delaysContentTouches = false
         candidateGridScrollView.canCancelContentTouches = true
         candidateGridScrollView.isDirectionalLockEnabled = true
+        candidateGridScrollView.delegate = self
         candidateGridScrollView.addGestureRecognizer(candidateGridTapRecognizer)
         candidateGridScrollView.clipsToBounds = true
         candidateGridScrollView.isHidden = true
@@ -4336,6 +4352,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             recording: showsTextToolbarVoicePrint,
             sending: isSendingState || (isErrorState && !isTransientKeyboardErrorState)
         )
+        updateCandidateTextOverlay()
         if isRecordingState {
             let audioLevel = currentBridgeStatus?.audioLevel
             voicePrint.updateLevel(audioLevel)
@@ -7549,6 +7566,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             textToolbar.layoutIfNeeded()
             updateCandidateScrollViewport()
             updateKeyboardSurfaceMask()
+            updateCandidateTextOverlay()
             removeCandidateRefreshAnimations()
         }
         CATransaction.commit()
@@ -7563,6 +7581,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             textCandidateGridButton,
             candidateGridCollapseButton,
             candidateTrailingSpacer,
+            candidateTextOverlay,
             textToolbar,
         ]
         for container in containers {
@@ -7586,6 +7605,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             candidateStack.removeArrangedSubview(view)
             view.isHidden = true
         }
+        hideCandidateTextOverlay()
     }
 
     /// Materializes inline candidate cells up to `targetCount`, keeping the
@@ -7613,8 +7633,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
-        guard scrollView === candidateScrollView else { return }
-        appendInlineCandidatesForScrollPositionIfNeeded()
+        if scrollView === candidateScrollView {
+            appendInlineCandidatesForScrollPositionIfNeeded()
+            updateCandidateTextOverlay()
+        } else if scrollView === candidateGridScrollView {
+            updateCandidateTextOverlay()
+        }
     }
 
     private func appendInlineCandidatesForScrollPositionIfNeeded() {
@@ -7663,6 +7687,105 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         candidateScrollView.contentInset.right = 0
         candidateScrollView.horizontalScrollIndicatorInsets.right = 0
         candidateScrollView.layer.mask = nil
+    }
+
+    private func updateCandidateTextOverlay() {
+        guard isViewLoaded,
+              keyboardFocus == .text,
+              candidateTextOverlay.bounds.width > 0,
+              candidateTextOverlay.bounds.height > 0
+        else {
+            hideCandidateTextOverlay()
+            return
+        }
+
+        let sourceButtons: [UIButton]
+        let viewport: CGRect
+        if isCandidateGridExpanded {
+            guard !candidateGridScrollView.isHidden,
+                  candidateGridScrollView.bounds.width > 0,
+                  candidateGridScrollView.bounds.height > 0
+            else {
+                hideCandidateTextOverlay()
+                return
+            }
+            sourceButtons = candidateGridStack.arrangedSubviews
+                .compactMap { $0 as? UIStackView }
+                .flatMap { row in row.arrangedSubviews.compactMap { $0 as? UIButton } }
+            viewport = candidateGridScrollView.convert(candidateGridScrollView.bounds, to: candidateTextOverlay)
+        } else {
+            guard !candidateScrollView.isHidden,
+                  !textCandidateGridButton.isHidden,
+                  candidateScrollView.bounds.width > 0,
+                  candidateScrollView.bounds.height > 0
+            else {
+                hideCandidateTextOverlay()
+                return
+            }
+            sourceButtons = candidateStack.arrangedSubviews.compactMap { $0 as? UIButton }
+            viewport = candidateScrollView.convert(candidateScrollView.bounds, to: candidateTextOverlay)
+        }
+
+        let clippedViewport = viewport.intersection(candidateTextOverlay.bounds)
+        guard !clippedViewport.isNull, !sourceButtons.isEmpty else {
+            hideCandidateTextOverlay()
+            return
+        }
+
+        var visibleLabelCount = 0
+        let visibleBounds = clippedViewport.insetBy(dx: -2, dy: -2)
+        for button in sourceButtons {
+            guard !button.isHidden,
+                  button.alpha > 0.01,
+                  button.bounds.width > 0,
+                  button.bounds.height > 0,
+                  let text = button.accessibilityLabel,
+                  !text.isEmpty
+            else { continue }
+
+            let frame = button.convert(button.bounds, to: candidateTextOverlay)
+            guard frame.intersects(visibleBounds) else { continue }
+
+            let label = candidateTextOverlayLabel(at: visibleLabelCount)
+            label.text = text
+            label.font = candidateFont(weight: .regular)
+            label.textColor = .label
+            label.frame = frame
+            label.isHidden = false
+            visibleLabelCount += 1
+        }
+
+        for index in visibleLabelCount..<reusableCandidateTextOverlayLabels.count {
+            reusableCandidateTextOverlayLabels[index].isHidden = true
+        }
+        candidateTextOverlay.isHidden = visibleLabelCount == 0
+    }
+
+    private func candidateTextOverlayLabel(at index: Int) -> UILabel {
+        while reusableCandidateTextOverlayLabels.count <= index {
+            let label = UILabel()
+            label.isUserInteractionEnabled = false
+            label.isOpaque = false
+            label.backgroundColor = .clear
+            label.textAlignment = .center
+            label.numberOfLines = 1
+            label.lineBreakMode = .byTruncatingTail
+            label.adjustsFontSizeToFitWidth = true
+            label.minimumScaleFactor = 0.6
+            label.layer.shadowOpacity = 0
+            label.layer.shadowRadius = 0
+            label.layer.shadowOffset = .zero
+            candidateTextOverlay.addSubview(label)
+            reusableCandidateTextOverlayLabels.append(label)
+        }
+        return reusableCandidateTextOverlayLabels[index]
+    }
+
+    private func hideCandidateTextOverlay() {
+        candidateTextOverlay.isHidden = true
+        for label in reusableCandidateTextOverlayLabels {
+            label.isHidden = true
+        }
     }
 
     private var isRunningInsideHostApp: Bool {
@@ -7737,6 +7860,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func candidateText(of button: UIButton) -> String {
+        if let text = button.accessibilityLabel,
+           !text.isEmpty {
+            return text
+        }
         if let attributed = button.configuration?.attributedTitle {
             return String(attributed.characters)
         }
@@ -7896,6 +8023,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     private func updateKeyboardOverlayOrdering() {
         view.bringSubviewToFront(keyboardContentView)
+        view.bringSubviewToFront(candidateTextOverlay)
         view.bringSubviewToFront(keyboardTouchOverlay)
         view.bringSubviewToFront(correctionPopoverDismissOverlay)
         view.bringSubviewToFront(correctionPopover)
@@ -7935,6 +8063,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         view.layoutIfNeeded()
         updateCandidateGridCollapseButtonFrame()
         updateKeyboardSurfaceMask()
+        updateCandidateTextOverlay()
         updateKeyboardOverlayOrdering()
     }
 
@@ -8080,26 +8209,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         button.widthAnchor.constraint(equalToConstant: width).isActive = true
         button.setContentHuggingPriority(.required, for: .horizontal)
         button.setContentCompressionResistancePriority(.required, for: .horizontal)
-        // Match iOS native: the expanded panel is visually uniform — no
-        // first-cell highlight, no per-cell border. Use an attributed title
-        // so the paragraph style sticks (UIButton.Configuration overrides
-        // titleLabel settings on every layout pass).
-        let paragraph = NSMutableParagraphStyle()
-        paragraph.lineBreakMode = .byTruncatingTail
-        paragraph.alignment = .center
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: candidateFont(weight: .regular),
-            .foregroundColor: UIColor.label,
-            .paragraphStyle: paragraph,
-        ]
-        var configuration = UIButton.Configuration.plain()
-        configuration.attributedTitle = AttributedString(NSAttributedString(string: candidate.text, attributes: attributes))
-        configuration.titleLineBreakMode = .byTruncatingTail
-        configuration.cornerStyle = .fixed
-        configuration.background.cornerRadius = 0
-        configuration.background.backgroundColor = .clear
-        configuration.contentInsets = .zero
-        button.configuration = configuration
+        button.configuration = candidateTextlessButtonConfiguration()
         button.layer.borderWidth = 0
         button.layer.borderColor = UIColor.clear.cgColor
         button.titleLabel?.numberOfLines = 1
@@ -8156,28 +8266,24 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         selectionIndex: Int
     ) {
         button.tag = selectionIndex
-        let paragraph = NSMutableParagraphStyle()
-        paragraph.lineBreakMode = .byTruncatingTail
-        paragraph.alignment = .center
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: candidateFont(weight: .regular),
-            .foregroundColor: UIColor.label,
-            .paragraphStyle: paragraph,
-        ]
-        var configuration = UIButton.Configuration.plain()
-        configuration.attributedTitle = AttributedString(NSAttributedString(string: candidate.text, attributes: attributes))
-        configuration.titleLineBreakMode = .byTruncatingTail
-        configuration.subtitle = nil
-        configuration.cornerStyle = .fixed
-        configuration.contentInsets = .zero
-        configuration.baseForegroundColor = .label
-        configuration.background.cornerRadius = 0
-        configuration.background.backgroundColor = .clear
-        button.configuration = configuration
+        button.configuration = candidateTextlessButtonConfiguration()
         button.titleLabel?.numberOfLines = 1
         button.titleLabel?.lineBreakMode = .byTruncatingTail
         button.accessibilityLabel = candidate.text
         candidateButtonWidthConstraints[displayIndex].constant = candidateButtonMinimumWidth(for: candidate)
+    }
+
+    private func candidateTextlessButtonConfiguration() -> UIButton.Configuration {
+        var configuration = UIButton.Configuration.plain()
+        configuration.title = nil
+        configuration.subtitle = nil
+        configuration.titleLineBreakMode = .byTruncatingTail
+        configuration.cornerStyle = .fixed
+        configuration.contentInsets = .zero
+        configuration.baseForegroundColor = .clear
+        configuration.background.cornerRadius = 0
+        configuration.background.backgroundColor = .clear
+        return configuration
     }
 
     @objc private func candidateButtonTapped(_ sender: UIButton) {
