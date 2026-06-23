@@ -48,6 +48,18 @@ struct BridgeWireModelsTests {
         #expect(RecognitionSource.appleSpeech.supportsLivePreview)
     }
 
+    @Test func languageOptionContractUsesSharedBridgeKeys() throws {
+        let option = BridgeLanguageOption(id: "zz", displayName: "Zulu Custom")
+
+        let object = try encodedJSONObject(option)
+
+        #expect(object["id"] as? String == "zz")
+        #expect(object["display_name"] as? String == "Zulu Custom")
+        #expect(BridgeLanguageOption.allLanguages.count >= 95)
+        #expect(BridgeLanguageOption.asASROptions([option]).first?.id == "zz")
+        #expect(BridgeLanguageOption.asASROptions([option]).first?.displayName == "Zulu Custom")
+    }
+
     @Test func healthResponseUsesSharedBridgeKeys() throws {
         let response = BridgeHealthResponse(
             ok: true,

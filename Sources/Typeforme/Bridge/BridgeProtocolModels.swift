@@ -134,6 +134,41 @@ struct BridgeSettingOption: Codable, Sendable, Identifiable, Hashable {
     }
 }
 
+struct BridgeLanguageOption: Codable, Sendable, Identifiable, Hashable, BridgeLanguageOptionRepresentable {
+    let id: String
+    let displayName: String
+
+    init(id: String, displayName: String) {
+        self.id = id
+        self.displayName = displayName
+    }
+
+    init(_ option: ASRLanguageOption) {
+        self.id = option.id
+        self.displayName = option.displayName
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case displayName = "display_name"
+    }
+
+    static let allLanguages = ASRLanguageSelection.all.map(BridgeLanguageOption.init)
+
+    static func asASROptions(_ options: [BridgeLanguageOption]) -> [ASRLanguageOption] {
+        let resolved = options.compactMap { option -> ASRLanguageOption? in
+            if let known = ASRLanguageSelection.option(for: option.id) {
+                return known
+            }
+            let id = option.id.trimmingCharacters(in: .whitespacesAndNewlines)
+            let name = option.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !id.isEmpty, !name.isEmpty else { return nil }
+            return ASRLanguageOption(id: id, displayName: name, languageCode: id)
+        }
+        return resolved.isEmpty ? ASRLanguageSelection.all : resolved
+    }
+}
+
 struct BridgeModelStatus: Codable, Sendable, Identifiable, Hashable {
     let id: String
     let kind: String
