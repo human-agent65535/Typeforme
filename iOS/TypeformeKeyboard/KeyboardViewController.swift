@@ -505,6 +505,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     /// the host app even when `point(inside:)` returns true.
     private static let keyboardTouchableBackgroundColor = UIColor.white.withAlphaComponent(0.01)
     private static let candidateExpandButtonWidth: CGFloat = 45
+    private static let candidateChevronSymbolPointSize: CGFloat = 21
+    private static let candidateExpandActionHeight: CGFloat = 58
     /// 34pt (was 25): 20pt candidate text on a 25pt-tall strip was the single
     /// most-missed target on the keyboard. The extra 9pt comes out of total
     /// keyboard height (content height +9), so key rows are unchanged.
@@ -761,7 +763,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         case .textKey, .focusSurface:
             return target
         case .candidateAction:
-            return nil
+            return shouldKeyboardOverlayHandleCandidateAction(at: point) ? target : nil
         }
     }
 
@@ -884,7 +886,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 lastTextKeyCommitAt = CACurrentMediaTime()
             }
             return didCommit
-        case .candidateAction, .focusSurface:
+        case .candidateAction(let button):
+            controlPressDown(button)
+            return false
+        case .focusSurface:
             return false
         }
     }
@@ -894,7 +899,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         switch target {
         case .textKey(let button):
             resetPressedControlState(button)
-        case .candidateAction, .focusSurface:
+        case .candidateAction(let button):
+            resetPressedControlState(button)
+            if candidateActionColumnFrame().contains(point) {
+                button.sendActions(for: .touchUpInside)
+            }
+        case .focusSurface:
             break
         }
     }
@@ -947,9 +957,23 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         switch target {
         case .textKey(let button):
             resetPressedControlState(button)
-        case .candidateAction, .focusSurface:
+        case .candidateAction(let button):
+            resetPressedControlState(button)
+        case .focusSurface:
             break
         }
+    }
+
+    private func shouldKeyboardOverlayHandleCandidateAction(at point: CGPoint) -> Bool {
+        guard keyboardFocus == .text,
+              !isCandidateGridExpanded,
+              !textCandidateGridButton.isHidden
+        else { return false }
+
+        let directButtonFrame = textCandidateGridButton
+            .convert(textCandidateGridButton.bounds, to: view)
+            .insetBy(dx: -Self.candidateActionColumnGap, dy: -Self.candidateExpandTouchOverflowY)
+        return !directButtonFrame.contains(point)
     }
 
     private func isCandidateScrollableSurfacePoint(_ point: CGPoint) -> Bool {
@@ -3096,10 +3120,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             textToolsButton,
             textKeyboardSwitchButton,
             textHostSettingsButton,
-            textCandidateGridButton,
         ].forEach { button in
             button.imageView?.transform = toolbarIconTransform
         }
+        textCandidateGridButton.imageView?.transform = .identity
         candidateGridCollapseButton.imageView?.transform = .identity
     }
 
@@ -4027,7 +4051,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             configuration.background.cornerRadius = 0
         }
         configuration.preferredSymbolConfigurationForImage = UIImage.SymbolConfiguration(
-            pointSize: isExpanded ? 22 : 18,
+            pointSize: Self.candidateChevronSymbolPointSize,
             weight: .medium
         )
         button.configuration = configuration
@@ -7726,14 +7750,14 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             viewport = candidateScrollView.convert(candidateScrollView.bounds, to: candidateTextOverlay)
         }
 
-        let clippedViewport = viewport.intersection(candidateTextOverlay.bounds)
-        guard !clippedViewport.isNull, !sourceButtons.isEmpty else {
+        let safeViewport = candidateTextOverlaySafeViewport(for: viewport)
+        guard !safeViewport.isNull, !sourceButtons.isEmpty else {
             hideCandidateTextOverlay()
             return
         }
 
         var visibleLabelCount = 0
-        let visibleBounds = clippedViewport.insetBy(dx: -2, dy: -2)
+        let visibleBounds = safeViewport.insetBy(dx: -2, dy: -2)
         for button in sourceButtons {
             guard !button.isHidden,
                   button.alpha > 0.01,
@@ -7744,7 +7768,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             else { continue }
 
             let frame = button.convert(button.bounds, to: candidateTextOverlay)
-            guard frame.intersects(visibleBounds) else { continue }
+            guard frame.intersects(visibleBounds),
+                  frame.maxX <= safeViewport.maxX + 0.5
+            else { continue }
 
             let label = candidateTextOverlayLabel(at: visibleLabelCount)
             label.text = text
@@ -7759,6 +7785,20 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             reusableCandidateTextOverlayLabels[index].isHidden = true
         }
         candidateTextOverlay.isHidden = visibleLabelCount == 0
+    }
+
+    private func candidateTextOverlaySafeViewport(for viewport: CGRect) -> CGRect {
+        var safeViewport = viewport.intersection(candidateTextOverlay.bounds)
+        guard !safeViewport.isNull else { return .null }
+
+        let actionFrame = candidateActionColumnFrame()
+        guard !actionFrame.isNull else { return safeViewport }
+
+        let overlayActionFrame = candidateTextOverlay.convert(actionFrame, from: view)
+        guard overlayActionFrame.intersects(safeViewport) else { return safeViewport }
+
+        safeViewport.size.width = max(0, overlayActionFrame.minX - safeViewport.minX)
+        return safeViewport.width > 1 ? safeViewport : .null
     }
 
     private func candidateTextOverlayLabel(at index: Int) -> UILabel {
@@ -7994,7 +8034,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         frame.origin.y = min(frame.minY, toolbarFrame.minY)
         if !isCandidateGridExpanded, !keyRowsStack.isHidden {
             let keyRowsFrame = keyRowsStack.convert(keyRowsStack.bounds, to: view)
-            let bottom = min(max(frame.maxY, toolbarFrame.maxY + 20), keyRowsFrame.minY - 2)
+            let minimumBottom = toolbarFrame.minY + Self.candidateExpandActionHeight
+            let bottom = min(max(frame.maxY, minimumBottom), keyRowsFrame.minY - 2)
             frame.size.height = max(0, bottom - frame.minY)
         }
         return frame
@@ -8010,9 +8051,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         guard shouldShow else { return }
 
         let gridFrame = candidateGridScrollView.convert(candidateGridScrollView.bounds, to: view)
-        let buttonHeight = min(Self.candidateGridRowHeight, max(44, gridFrame.height))
+        let buttonHeight = min(Self.candidateToolbarHeight, gridFrame.height)
         candidateGridCollapseButton.frame = CGRect(
-            x: max(view.bounds.minX, view.bounds.maxX - Self.candidateExpandButtonWidth),
+            x: max(view.bounds.minX, view.bounds.maxX - Self.rootHorizontalInset - Self.candidateExpandButtonWidth),
             y: gridFrame.minY,
             width: Self.candidateExpandButtonWidth,
             height: buttonHeight
@@ -11020,12 +11061,12 @@ final class KeyboardTouchOverlayView: UIView {
         let target = resolveTouchTarget(at: controllerPoint, hitController: hitController)
         hitController.logKeyboardTouchEvent("hitTest", target: target, point: controllerPoint)
         switch target {
-        case .textKey, .focusSurface:
+        case .textKey, .candidateAction, .focusSurface:
             pendingActivationTarget = target
             pendingActivationPoint = controllerPoint
             pendingActivationResolvedAt = CACurrentMediaTime()
             return self
-        case .candidateAction, .none:
+        case .none:
             clearPendingActivation()
             return nil
         }
