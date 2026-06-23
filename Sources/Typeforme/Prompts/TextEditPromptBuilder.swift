@@ -15,7 +15,7 @@ enum TextEditPromptBuilder {
             Decision order:
             1. Read context_before + target_text + context_after as one local sentence.
             2. Because the user explicitly selected target_text, prefer replacing target_text with spoken_instruction after correcting obvious ASR errors.
-            3. If spoken_instruction is a plausible direct replacement or a known UI/product term such as server, UI, iOS, correction, restyle, tap to speak, hold to speak, or start recording, use it even when target_text is also a coherent word.
+            3. If spoken_instruction is a plausible direct replacement or a known UI/product term such as server, UI, iOS, correction, refine, tap to speak, hold to speak, or start recording, use it even when target_text is also a coherent word.
             4. If literal spoken_instruction is incoherent, unrelated, wrong-language, or a near-homophone/domain mismatch, treat it as noisy ASR and choose the nearest context-coherent replacement.
             5. Keep target_text only when spoken_instruction is empty, clearly unusable noise, or would make the local sentence worse after ASR correction.
             In repair_selection, a language/script mismatch alone is evidence to reason about, not permission to change the target language. Preserve the language and script required by target_text/context and express the user's intended replacement in that target language.

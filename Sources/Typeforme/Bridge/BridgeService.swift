@@ -14,7 +14,7 @@ enum BridgeServiceError: LocalizedError {
         case .emptyTranscript:
             return "Audio produced an empty transcript"
         case .missingSession:
-            return "Restyle session not found or expired"
+            return "Refine session not found or expired"
         case .invalidRequest(let why):
             return "Invalid request: \(why)"
         }
@@ -573,7 +573,7 @@ final class BridgeService {
         return response
     }
 
-    func restyle(_ request: BridgeRestyleRequest) async throws -> BridgeRestyleResponse {
+    func refine(_ request: BridgeRefineRequest) async throws -> BridgeRefineResponse {
         pruneExpiredSessions()
         let start = Date()
         let jobID = BridgeClientJobID.normalized(request.clientJobID)
@@ -655,7 +655,7 @@ final class BridgeService {
             createdAt: Date()
         ))
 
-        let response = BridgeRestyleResponse(
+        let response = BridgeRefineResponse(
             sessionID: sessionID,
             text: correction.result.text,
             correctionMode: correctionMode.rawValue,

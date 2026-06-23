@@ -3296,10 +3296,10 @@ struct BridgeSettingsView: View {
                     .foregroundStyle(.secondary)
             }
             Section("Endpoints") {
-                Text("GET  /v1/health\nGET  /v1/pairing\nGET  /v1/settings\nGET  /v1/jobs/:jobID/events\nWS   /v1/live-preview/:sessionID/socket\nPOST /v1/settings\nPOST /v1/dictate\nPOST /v1/live-preview/start\nPOST /v1/live-preview/:sessionID/finish\nPOST /v1/restyle\nPOST /v1/edit-text")
+                Text("GET  /v1/health\nGET  /v1/pairing\nGET  /v1/settings\nGET  /v1/jobs/:jobID/events\nWS   /v1/live-preview/:sessionID/socket\nPOST /v1/settings\nPOST /v1/dictate\nPOST /v1/live-preview/start\nPOST /v1/live-preview/:sessionID/finish\nPOST /v1/refine\nPOST /v1/edit-text")
                     .font(.system(.callout, design: .monospaced))
                     .foregroundStyle(.secondary)
-                Text("All endpoints require the bearer token. Missing or wrong tokens return an empty not-found response. /v1/pairing returns token plus enabled LAN/public URLs for first setup; clients pull languages and defaults from /v1/settings. /v1/jobs/:jobID/events streams transcript and refine status. /v1/live-preview/:sessionID/socket accepts PCM binary frames and returns live preview partial/final JSON frames on the same WebSocket. /v1/dictate uses multipart audio file upload and returns refined text. /v1/restyle reuses text from a recent session or submitted text so mode switching does not require another recording. /v1/edit-text edits a selected or targeted text span from a spoken repair or command.")
+                Text("All endpoints require the bearer token. Missing or wrong tokens return an empty not-found response. /v1/pairing returns token plus enabled LAN/public URLs for first setup; clients pull languages and defaults from /v1/settings. /v1/jobs/:jobID/events streams transcript and refine status. /v1/live-preview/:sessionID/socket accepts PCM binary frames and returns live preview partial/final JSON frames on the same WebSocket. /v1/dictate uses multipart audio file upload and returns refined text. /v1/refine reuses text from a recent session or submitted text so mode switching does not require another recording. /v1/edit-text edits a selected or targeted text span from a spoken repair or command.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
@@ -3520,7 +3520,7 @@ private struct BridgeActivityMetrics: View {
             BridgeActivityMetricCell(
                 title: "Work",
                 value: "\(workRequestCount)",
-                detail: "\(snapshot.count(for: .dictate)) dictate / \(snapshot.count(for: .restyle)) restyle / \(snapshot.count(for: .editText)) edit"
+                detail: "\(snapshot.count(for: .dictate)) dictate / \(snapshot.count(for: .refine)) refine / \(snapshot.count(for: .editText)) edit"
             )
         }
         .frame(minHeight: 58)
@@ -3548,7 +3548,7 @@ private struct BridgeActivityMetrics: View {
     }
 
     private var workRequestCount: Int {
-        snapshot.count(for: .dictate) + snapshot.count(for: .restyle) + snapshot.count(for: .editText)
+        snapshot.count(for: .dictate) + snapshot.count(for: .refine) + snapshot.count(for: .editText)
     }
 
     private static let timeFormatter: DateFormatter = {

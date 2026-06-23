@@ -187,7 +187,7 @@ extension KeyboardBridgeCommandAction {
             // `.stop` only waits for the host to acknowledge receipt. The
             // host publishes transcription progress/result asynchronously.
             return 1.5
-        case .restyleText:
+        case .refineText:
             return 30
         }
     }

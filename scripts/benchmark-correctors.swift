@@ -1,6 +1,6 @@
 #!/usr/bin/env swift
 // Benchmarks Typeforme correction through the running app's Bridge API.
-// This intentionally exercises /v1/settings, /v1/restyle, and /v1/edit-text
+// This intentionally exercises /v1/settings, /v1/refine, and /v1/edit-text
 // so timings include the same app settings, prompts, validators, and response
 // handling used by the product.
 import Darwin
@@ -106,25 +106,25 @@ let samples = [
     EvalSample(name: "correction_polish_preserves_edit_intent", rawTranscript: "明天买苹果两个梨子不要了香蕉一个改两个"),
     EvalSample(name: "correction_new_transcript_scope_with_context", rawTranscript: "第二句只写 server latency 和 total latency 要分开显示", contextBefore: "第一句已经写好：host app 第一次打开会白屏。"),
 
-    // Restyle / correction modes.
-    EvalSample(name: "restyle_polish_plus_logic", correctionMode: "polish_plus", rawTranscript: "transcript 没问题 但是逻辑表达很别扭 polish+ 应该帮我把因果关系讲清楚"),
-    EvalSample(name: "restyle_structure_list", correctionMode: "structure_plus", rawTranscript: "明天买苹果香蕉然后下午三点开会"),
-    EvalSample(name: "restyle_polish_plus_final_intent", correctionMode: "polish_plus", rawTranscript: "去超市买火腿一个取消火腿改鸡腿萝卜一个改两个"),
-    EvalSample(name: "restyle_structure_final_effective_list", correctionMode: "structure_plus", rawTranscript: "去超市买鸡腿两个火腿不要了萝卜一个改两个"),
-    EvalSample(name: "restyle_polish_plus_dependency_order", correctionMode: "polish_plus", rawTranscript: "先 deploy 到 iOS 不对先跑测试再 deploy 然后看 debug log"),
-    EvalSample(name: "restyle_polish_plus_location_quantity_revision", correctionMode: "polish_plus", rawTranscript: "去超市买三个李子一个西瓜还是买两个西瓜吧然后去市场买一条鱼让师傅切好切之前别忘了把鳞刮了"),
-    EvalSample(name: "restyle_structure_location_preserved", correctionMode: "structure_plus", rawTranscript: "去超市买三个李子一个西瓜还是买两个西瓜吧然后去市场买一条鱼让师傅切好切之前别忘了把鳞刮了"),
-    EvalSample(name: "restyle_formal_final_intent", correctionMode: "formal_plus", rawTranscript: "这次采购火腿不要了改成鸡腿萝卜一个改两个"),
-    EvalSample(name: "restyle_formal_preserve_tokens", correctionMode: "formal_plus", rawTranscript: "这个 bug 很烦 但是我们今天先 ship 小修"),
-    EvalSample(name: "restyle_preserve_uncertainty", correctionMode: "polish_plus", rawTranscript: "我不确定这个模型是不是会过度改写"),
-    EvalSample(name: "restyle_no_added_fact", correctionMode: "polish_plus", rawTranscript: "这个测试样例只有两个事实 A 和 B"),
-    EvalSample(name: "restyle_deploy_steps", correctionMode: "structure_plus", rawTranscript: "先 deploy 到 iOS 然后看 debug log"),
-    EvalSample(name: "restyle_spacing_technical_tokens", correctionMode: "polish", rawTranscript: "今天看一下 server latency 和 total latency"),
-    EvalSample(name: "restyle_question_preserved", correctionMode: "formal_plus", rawTranscript: "这个 correction 和 restyle 是一起做的吗"),
-    EvalSample(name: "restyle_japanese_target", correctionMode: "polish", rawTranscript: "この機能は便利だけど UI が少し重い"),
-    EvalSample(name: "restyle_vietnamese_target", correctionMode: "polish", rawTranscript: "ứng dụng này mở hơi chậm nhưng server vẫn ổn"),
-    EvalSample(name: "restyle_polish_plus_preserves_label", correctionMode: "polish_plus", rawTranscript: "这个 Polish+ 结果应该更自然 但不要把 Polish+ 名字改掉"),
-    EvalSample(name: "restyle_structured_debug_metrics", correctionMode: "structure_plus", rawTranscript: "host 里显示 server total transcription latency correction latency"),
+    // Refine / correction modes.
+    EvalSample(name: "refine_polish_plus_logic", correctionMode: "polish_plus", rawTranscript: "transcript 没问题 但是逻辑表达很别扭 polish+ 应该帮我把因果关系讲清楚"),
+    EvalSample(name: "refine_structure_list", correctionMode: "structure_plus", rawTranscript: "明天买苹果香蕉然后下午三点开会"),
+    EvalSample(name: "refine_polish_plus_final_intent", correctionMode: "polish_plus", rawTranscript: "去超市买火腿一个取消火腿改鸡腿萝卜一个改两个"),
+    EvalSample(name: "refine_structure_final_effective_list", correctionMode: "structure_plus", rawTranscript: "去超市买鸡腿两个火腿不要了萝卜一个改两个"),
+    EvalSample(name: "refine_polish_plus_dependency_order", correctionMode: "polish_plus", rawTranscript: "先 deploy 到 iOS 不对先跑测试再 deploy 然后看 debug log"),
+    EvalSample(name: "refine_polish_plus_location_quantity_revision", correctionMode: "polish_plus", rawTranscript: "去超市买三个李子一个西瓜还是买两个西瓜吧然后去市场买一条鱼让师傅切好切之前别忘了把鳞刮了"),
+    EvalSample(name: "refine_structure_location_preserved", correctionMode: "structure_plus", rawTranscript: "去超市买三个李子一个西瓜还是买两个西瓜吧然后去市场买一条鱼让师傅切好切之前别忘了把鳞刮了"),
+    EvalSample(name: "refine_formal_final_intent", correctionMode: "formal_plus", rawTranscript: "这次采购火腿不要了改成鸡腿萝卜一个改两个"),
+    EvalSample(name: "refine_formal_preserve_tokens", correctionMode: "formal_plus", rawTranscript: "这个 bug 很烦 但是我们今天先 ship 小修"),
+    EvalSample(name: "refine_preserve_uncertainty", correctionMode: "polish_plus", rawTranscript: "我不确定这个模型是不是会过度改写"),
+    EvalSample(name: "refine_no_added_fact", correctionMode: "polish_plus", rawTranscript: "这个测试样例只有两个事实 A 和 B"),
+    EvalSample(name: "refine_deploy_steps", correctionMode: "structure_plus", rawTranscript: "先 deploy 到 iOS 然后看 debug log"),
+    EvalSample(name: "refine_spacing_technical_tokens", correctionMode: "polish", rawTranscript: "今天看一下 server latency 和 total latency"),
+    EvalSample(name: "refine_question_preserved", correctionMode: "formal_plus", rawTranscript: "这个 correction 和 refine 是一起做的吗"),
+    EvalSample(name: "refine_japanese_target", correctionMode: "polish", rawTranscript: "この機能は便利だけど UI が少し重い"),
+    EvalSample(name: "refine_vietnamese_target", correctionMode: "polish", rawTranscript: "ứng dụng này mở hơi chậm nhưng server vẫn ổn"),
+    EvalSample(name: "refine_polish_plus_preserves_label", correctionMode: "polish_plus", rawTranscript: "这个 Polish+ 结果应该更自然 但不要把 Polish+ 名字改掉"),
+    EvalSample(name: "refine_structured_debug_metrics", correctionMode: "structure_plus", rawTranscript: "host 里显示 server total transcription latency correction latency"),
 
     // Selection repair: target_text is the only editable span.
     EvalSample(name: "repair_english_target_chinese_spoken", task: .editRepair, contextBefore: "Please ", contextAfter: " this section in the final draft.", targetText: "do not write", spokenInstruction: "不写"),
@@ -134,7 +134,7 @@ let samples = [
     EvalSample(name: "repair_hold_to_speak", task: .editRepair, contextBefore: "The microphone button label should read ", contextAfter: " while recording voice.", targetText: "hold to steak", spokenInstruction: "hold to steak"),
     EvalSample(name: "repair_cloudflare_to_server", task: .editRepair, contextBefore: "左上角显示 ", contextAfter: " 状态。", targetText: "Cloudflare", spokenInstruction: "server"),
     EvalSample(name: "repair_typo_correction", task: .editRepair, contextBefore: "The field should show ", contextAfter: " latency.", targetText: "corrextion", spokenInstruction: "correction"),
-    EvalSample(name: "repair_restyle_label", task: .editRepair, contextBefore: "The metric label should be ", contextAfter: " in the host app.", targetText: "correction", spokenInstruction: "restyle"),
+    EvalSample(name: "repair_refine_label", task: .editRepair, contextBefore: "The metric label should be ", contextAfter: " in the host app.", targetText: "correction", spokenInstruction: "refine"),
     EvalSample(name: "repair_ios_capitalization", task: .editRepair, contextBefore: "Deploy to ", contextAfter: " after tests.", targetText: "ios", spokenInstruction: "iOS"),
     EvalSample(name: "repair_duplicate_span_only", task: .editRepair, contextBefore: "第一个按钮叫 submit，第二个按钮叫 ", contextAfter: "。", targetText: "submit", spokenInstruction: "cancel"),
     EvalSample(name: "repair_japanese_ui_term", task: .editRepair, contextBefore: "この ", contextAfter: " が少し重い。", targetText: "ユーアイ", spokenInstruction: "UI"),
@@ -326,7 +326,7 @@ struct BenchmarkMain {
     private static func runSample(_ sample: EvalSample, client: BridgeClient) async throws -> [String: Any] {
         switch sample.task {
         case .correction:
-            return try await client.postJSON("/v1/restyle", body: [
+            return try await client.postJSON("/v1/refine", body: [
                 "raw_transcript": sample.rawTranscript,
                 "language_ids": defaultBenchmarkLanguageIDs,
                 "correction_mode": sample.correctionMode,
@@ -616,7 +616,7 @@ struct BenchmarkMain {
             "local_hardware": envString("TYPEFORME_BENCHMARK_LOCAL_HARDWARE", environment: environment) ?? "Apple M4 Max 16-core / 64GB",
             "timeouts_ms": timeoutMetadata,
             "measurement": [
-                "wall_ms": "Full client-observed Bridge request latency for /v1/restyle or /v1/edit-text.",
+                "wall_ms": "Full client-observed Bridge request latency for /v1/refine or /v1/edit-text.",
                 "app_ms": "Server-reported correction/edit latency returned by Typeforme when present.",
             ],
         ]

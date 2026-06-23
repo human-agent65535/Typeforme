@@ -371,15 +371,15 @@ final class BridgeHTTPServer: @unchecked Sendable {
             }
         }
 
-        router.post("v1/restyle") { request, context async -> Response in
+        router.post("v1/refine") { request, context async -> Response in
             await Self.authorizedDecodedRecordedRequest(
-                .restyle,
+                .refine,
                 request: request,
                 context: context,
-                decode: { try await Self.decodeJSON(BridgeRestyleRequest.self, from: request) },
+                decode: { try await Self.decodeJSON(BridgeRefineRequest.self, from: request) },
                 metadata: { BridgeRequestMetadata(appName: $0.appName, bundleID: $0.bundleID) }
             ) { payload in
-                let response = try await service.restyle(payload)
+                let response = try await service.refine(payload)
                 return Self.jsonResponse(response)
             }
         }

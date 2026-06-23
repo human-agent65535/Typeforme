@@ -152,7 +152,7 @@ struct RemoteBridgeClient {
         return response
     }
 
-    func restyle(
+    func refine(
         sessionID: String?,
         rawTranscript: String?,
         languageIDs: [String],
@@ -161,8 +161,8 @@ struct RemoteBridgeClient {
         appCategory: AppCategory,
         contextBefore: String = "",
         contextAfter: String = ""
-    ) async throws -> BridgeRestyleResponse {
-        let payload = BridgeRestyleRequest(
+    ) async throws -> BridgeRefineResponse {
+        let payload = BridgeRefineRequest(
             sessionID: sessionID,
             rawTranscript: rawTranscript,
             languageIDs: languageIDs,
@@ -173,8 +173,8 @@ struct RemoteBridgeClient {
             contextBefore: contextBefore,
             contextAfter: contextAfter
         )
-        let endpoint = BridgeAPIEndpoint.restyle
-        let response: BridgeRestyleResponse = try await request(
+        let endpoint = BridgeAPIEndpoint.refine
+        let response: BridgeRefineResponse = try await request(
             path: endpoint.path,
             method: endpoint.method,
             json: payload,
@@ -224,7 +224,7 @@ struct RemoteBridgeClient {
         )
     }
 
-    private func validate(_ response: BridgeRestyleResponse) throws {
+    private func validate(_ response: BridgeRefineResponse) throws {
         try validateTextResponse(
             text: response.text,
             status: response.correctionStatus,

@@ -11,7 +11,7 @@ enum BridgeRequestEndpoint: String, CaseIterable, Hashable, Sendable {
     case livePreviewStart
     case livePreviewSocket
     case livePreviewFinish
-    case restyle
+    case refine
     case editText
 
     var displayName: String {
@@ -25,7 +25,7 @@ enum BridgeRequestEndpoint: String, CaseIterable, Hashable, Sendable {
         case .livePreviewStart: return "Live preview start"
         case .livePreviewSocket: return "Live preview socket"
         case .livePreviewFinish: return "Live preview finish"
-        case .restyle: return "Restyle"
+        case .refine: return "Refine"
         case .editText: return "Edit text"
         }
     }
@@ -41,7 +41,7 @@ enum BridgeRequestEndpoint: String, CaseIterable, Hashable, Sendable {
         case .livePreviewStart: return BridgeAPIEndpoint.livePreviewStart.methodAndPath
         case .livePreviewSocket: return BridgeAPIEndpoint.livePreviewSocketTemplate.methodAndPath
         case .livePreviewFinish: return BridgeAPIEndpoint.livePreviewFinishTemplate.methodAndPath
-        case .restyle: return BridgeAPIEndpoint.restyle.methodAndPath
+        case .refine: return BridgeAPIEndpoint.refine.methodAndPath
         case .editText: return BridgeAPIEndpoint.editText.methodAndPath
         }
     }

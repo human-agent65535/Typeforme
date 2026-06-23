@@ -210,16 +210,16 @@ struct BridgeClient: Sendable {
         )
     }
 
-    func restyle(
+    func refine(
         sessionID: String?,
         rawTranscript: String?,
         languageIDs: [String],
         correctionMode: CorrectionModeID,
         clientJobID: String? = nil,
         onJobEvent: (@Sendable (BridgeJobStatusEvent) async -> Void)? = nil
-    ) async throws -> BridgeRestyleResponse {
+    ) async throws -> BridgeRefineResponse {
         try await performWithJobEvents(clientJobID: clientJobID, onJobEvent: onJobEvent) { normalizedJobID in
-            let payload = BridgeRestyleRequest(
+            let payload = BridgeRefineRequest(
                 sessionID: sessionID,
                 rawTranscript: rawTranscript,
                 clientJobID: normalizedJobID,
@@ -228,7 +228,7 @@ struct BridgeClient: Sendable {
                 appName: Self.clientAppName,
                 appCategory: Self.clientAppCategory.rawValue
             )
-            let endpoint = BridgeAPIEndpoint.restyle
+            let endpoint = BridgeAPIEndpoint.refine
             return try await request(path: endpoint.path, method: endpoint.method, json: payload, timeout: 20)
         }
     }

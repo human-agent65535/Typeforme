@@ -85,7 +85,7 @@ enum AppPhase: Equatable {
     case preparing
     case recording
     case sending
-    case restyling
+    case refining
     case success(SuccessKind)
     case failure(String)
 
@@ -97,7 +97,7 @@ enum AppPhase: Equatable {
 
     var isBusy: Bool {
         switch self {
-        case .preparing, .recording, .sending, .restyling: return true
+        case .preparing, .recording, .sending, .refining: return true
         default: return false
         }
     }
@@ -115,7 +115,7 @@ enum AppPhase: Equatable {
         case .preparing: return "Preparing"
         case .recording: return "Recording"
         case .sending: return "Transcribing"
-        case .restyling: return "Refining"
+        case .refining: return "Refining"
         case .success(.ready): return "Result ready"
         case .success(.copied): return "Copied"
         case .success(.inserted): return "Inserted"
@@ -459,7 +459,7 @@ final class AppState {
         context.intent == .command ? .commandEditing : .dictation
     }
 
-    private struct RestyleSource {
+    private struct RefineSource {
         let sessionID: String?
         let rawTranscript: String?
     }
@@ -498,8 +498,8 @@ final class AppState {
         phase.isBusy
     }
 
-    var canRestyleCurrentResult: Bool {
-        !phase.isBusy && currentRestyleSource() != nil
+    var canRefineCurrentResult: Bool {
+        !phase.isBusy && currentRefineSource() != nil
     }
 
     var isConfigured: Bool {
@@ -1681,13 +1681,13 @@ final class AppState {
         // Block mode changes while a request is mid-flight to avoid a stale
         // result coming back in the old mode while the UI shows the new one.
         guard !isBusy else { return }
-        guard let source = currentRestyleSource() else {
+        guard let source = currentRefineSource() else {
             rawTranscript = ""
             sessionID = nil
             lastGeneratedResultText = nil
             applyKeyboardDefaultCorrectionMode(newMode)
             setPhase(.idle)
-            // Without a result to restyle, a chip tap silently changed the
+            // Without a result to refine, a chip tap silently changed the
             // default style — invisible, and it also retargets the keyboard's
             // default. Say so.
             showTransient("Default style: \(newMode.title)")
@@ -1695,7 +1695,7 @@ final class AppState {
         }
         correctionMode = newMode
         // Happy-path: reuse the cached route (5-30s TTL) instead of re-probing
-        // local + cloud before every Restyle tap. If the cache is stale,
+        // local + cloud before every Refine tap. If the cache is stale,
         // refreshRoute does a full resolve; if it's fresh we go straight to
         // POST. Errors below invalidate the cache so the next attempt re-probes.
         await refreshRoute(force: false, probeAllEndpoints: false, showIndicator: false)
@@ -1704,15 +1704,15 @@ final class AppState {
             return
         }
         do {
-            setPhase(.restyling)
+            setPhase(.refining)
             let client = BridgeClient(baseURL: baseURL, token: config.token)
-            let restyleJobID = "ios_\(UUID().uuidString.replacingOccurrences(of: "-", with: "_"))"
-            let response = try await client.restyle(
+            let refineJobID = "ios_\(UUID().uuidString.replacingOccurrences(of: "-", with: "_"))"
+            let response = try await client.refine(
                 sessionID: source.sessionID,
                 rawTranscript: source.rawTranscript,
                 languageIDs: activeLanguageIDs,
                 correctionMode: newMode,
-                clientJobID: restyleJobID,
+                clientJobID: refineJobID,
                 onJobEvent: { [weak self] event in
                     await self?.applyBridgeJobStatus(event, keyboardCommandID: nil)
                 }
@@ -1741,7 +1741,7 @@ final class AppState {
             )
         } catch {
             // Invalidate the route cache on both auth and network errors so
-            // the next Restyle tap re-probes instead of reusing a dead route.
+            // the next Refine tap re-probes instead of reusing a dead route.
             if shouldRetryBridgeRequest(after: error) {
                 routeFetchedAt = nil
             }
@@ -1767,17 +1767,17 @@ final class AppState {
         setPhase(.idle)
     }
 
-    private func currentRestyleSource() -> RestyleSource? {
-        // Restyle acts on the visible Result editor. Passing the old session
+    private func currentRefineSource() -> RefineSource? {
+        // Refine acts on the visible Result editor. Passing the old session
         // would make the Mac prefer the original raw transcript and discard
         // manual edits or the previous style output.
         let visibleText = resultText.trimmingCharacters(in: .whitespacesAndNewlines)
         if !visibleText.isEmpty {
-            return RestyleSource(sessionID: nil, rawTranscript: visibleText)
+            return RefineSource(sessionID: nil, rawTranscript: visibleText)
         }
         let rawText = rawTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !rawText.isEmpty else { return nil }
-        return RestyleSource(sessionID: sessionID, rawTranscript: rawText)
+        return RefineSource(sessionID: sessionID, rawTranscript: rawText)
     }
 
     func handleOpenURL(_ url: URL, sourceApplication: String? = nil) async {
@@ -2782,8 +2782,8 @@ final class AppState {
             }
             clearKeyboardCaptureContext()
             publishKeyboardStatus(.standby, commandID: command.id, message: "Ready")
-        case .restyleText:
-            await restyleKeyboardText(command)
+        case .refineText:
+            await refineKeyboardText(command)
         }
         return keyboardBridgeStatus
     }
@@ -2825,7 +2825,7 @@ final class AppState {
         return keyboardBridgeStatus
     }
 
-    private func restyleKeyboardText(_ command: KeyboardBridgeCommand) async {
+    private func refineKeyboardText(_ command: KeyboardBridgeCommand) async {
         guard !isBusy else {
             publishKeyboardStatus(.error, commandID: command.id, message: "Typeforme is busy")
             return
@@ -2839,7 +2839,7 @@ final class AppState {
         }
         let existingResultText = resultText.trimmingCharacters(in: .whitespacesAndNewlines)
         let existingGeneratedText = lastGeneratedResultText?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let isRestylingCurrentDictationResult = source == existingResultText
+        let isRefiningCurrentDictationResult = source == existingResultText
             || source == existingGeneratedText
         let preservedRawTranscript = rawTranscript
         correctionMode = requestedCorrectionMode
@@ -2859,7 +2859,7 @@ final class AppState {
         }
 
         do {
-            setPhase(.restyling)
+            setPhase(.refining)
             publishKeyboardStatus(
                 .sending,
                 commandID: command.id,
@@ -2867,14 +2867,14 @@ final class AppState {
                 processingStage: .refining
             )
             let client = BridgeClient(baseURL: baseURL, token: config.token)
-            let restyleJobID = "ios_\(UUID().uuidString.replacingOccurrences(of: "-", with: "_"))"
+            let refineJobID = "ios_\(UUID().uuidString.replacingOccurrences(of: "-", with: "_"))"
             let keyboardCommandID = command.id
-            let response = try await client.restyle(
+            let response = try await client.refine(
                 sessionID: nil,
                 rawTranscript: source,
                 languageIDs: activeLanguageIDs,
                 correctionMode: requestedCorrectionMode,
-                clientJobID: restyleJobID,
+                clientJobID: refineJobID,
                 onJobEvent: { [weak self] event in
                     await self?.applyBridgeJobStatus(event, keyboardCommandID: keyboardCommandID)
                 }
@@ -2888,7 +2888,7 @@ final class AppState {
 
             resultText = text
             lastGeneratedResultText = text
-            rawTranscript = isRestylingCurrentDictationResult ? preservedRawTranscript : ""
+            rawTranscript = isRefiningCurrentDictationResult ? preservedRawTranscript : ""
             sessionID = response.sessionID
             latestServerTiming = ServerTimingSummary(
                 transcriptionLatencyMs: nil,
@@ -2908,7 +2908,7 @@ final class AppState {
                     ? Self.degradedCorrectionMessage(for: .inserted)
                     : "Refined",
                 resultText: text,
-                rawTranscriptLength: isRestylingCurrentDictationResult
+                rawTranscriptLength: isRefiningCurrentDictationResult
                     ? preservedRawTranscript.trimmingCharacters(in: .whitespacesAndNewlines).count
                     : nil
             )
@@ -3281,7 +3281,7 @@ final class AppState {
 
         guard let stageMessage else { return }
         if (event.stage == .transcriptReady || event.stage == .refining), phase == .sending {
-            setPhase(.restyling)
+            setPhase(.refining)
         }
         processingStatusMessage = stageMessage
         if event.stage != .resultReady, let keyboardCommandID {
@@ -3308,7 +3308,7 @@ final class AppState {
         bridgeRefiningStatusTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(Self.bridgeRefiningStatusDelay * 1_000_000_000))
             guard !Task.isCancelled, let self, self.phase == .sending else { return }
-            self.setPhase(.restyling)
+            self.setPhase(.refining)
             self.processingStatusMessage = message
             if let keyboardCommandID {
                 self.publishKeyboardStatus(

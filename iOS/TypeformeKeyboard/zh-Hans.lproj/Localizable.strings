@@ -60,7 +60,7 @@
 "Enable Full Access" = "允许完全访问";
 "Command selected text" = "对选中文本下达指令";
 "Pick refine style" = "选择优化风格";
-"Undo restyle" = "撤销改写";
+"Undo refine" = "撤销改写";
 "Cancel recording" = "取消录音";
 "Paste from Clipboard" = "从剪贴板粘贴";
 "Voice level" = "音量";

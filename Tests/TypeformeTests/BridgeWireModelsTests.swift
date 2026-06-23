@@ -8,7 +8,7 @@ struct BridgeWireModelsTests {
         #expect(BridgeAPIEndpoint.health.methodAndPath == "GET /v1/health")
         #expect(BridgeAPIEndpoint.settingsWrite.methodAndPath == "POST /v1/settings")
         #expect(BridgeAPIEndpoint.dictate.methodAndPath == "POST /v1/dictate")
-        #expect(BridgeAPIEndpoint.restyle.methodAndPath == "POST /v1/restyle")
+        #expect(BridgeAPIEndpoint.refine.methodAndPath == "POST /v1/refine")
         #expect(BridgeAPIEndpoint.editText.methodAndPath == "POST /v1/edit-text")
         #expect(BridgeAPIEndpoint.jobEvents(jobID: "ios_1").path == "/v1/jobs/ios_1/events")
         #expect(BridgeRequestEndpoint.livePreviewSocket.methodAndPath == "WS /v1/live-preview/:sessionID/socket")
@@ -77,8 +77,8 @@ struct BridgeWireModelsTests {
         #expect(object["settings_revision"] as? String == "abc")
     }
 
-    @Test func restyleRequestEncodesSharedBridgeKeys() throws {
-        let request = BridgeRestyleRequest(
+    @Test func refineRequestEncodesSharedBridgeKeys() throws {
+        let request = BridgeRefineRequest(
             sessionID: "session-1",
             rawTranscript: "hello",
             clientJobID: "ios_job_1",

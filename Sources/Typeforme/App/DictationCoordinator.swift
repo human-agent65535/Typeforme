@@ -246,7 +246,7 @@ final class DictationCoordinator: ObservableObject {
         activeTextEditIntent == .command && (state == .transcribing || state == .correcting)
     }
 
-    private var canRestyleFocusedInputFromHUD: Bool {
+    private var canRefineFocusedInputFromHUD: Bool {
         state == .idle && voicePreviewHUDExpanded
     }
 
@@ -661,12 +661,12 @@ final class DictationCoordinator: ObservableObject {
 
     // MARK: - Mode switching
 
-    /// Style chips in the HUD action bar restyle the focused input's current
+    /// Style chips in the HUD action bar refine the focused input's current
     /// text in place. Only valid while idle with the bar expanded — during an
     /// active dictation the chips are disabled.
     func requestCorrectionModeChange(to newMode: CorrectionMode) async {
-        guard canRestyleFocusedInputFromHUD else { return }
-        await restyleFocusedInput(to: newMode)
+        guard canRefineFocusedInputFromHUD else { return }
+        await refineFocusedInput(to: newMode)
     }
 
     // MARK: - Request building
@@ -1034,7 +1034,7 @@ final class DictationCoordinator: ObservableObject {
         }
     }
 
-    private func restyleFocusedInput(to newMode: CorrectionMode) async {
+    private func refineFocusedInput(to newMode: CorrectionMode) async {
         guard !startInProgress else { return }
         if !AppPermissions.accessibilityTrusted {
             AppPermissions.requestAccessibility()
@@ -1063,7 +1063,7 @@ final class DictationCoordinator: ObservableObject {
             let text: String
             if AppSettings.processingMode == .client {
                 let resolved = try await RemoteBridgeClient.resolvedFromSettings(probeAllEndpoints: false)
-                let response = try await resolved.client.restyle(
+                let response = try await resolved.client.refine(
                     sessionID: nil,
                     rawTranscript: sourceText,
                     languageIDs: AppSettings.clientLanguageIDs,
@@ -1132,7 +1132,7 @@ final class DictationCoordinator: ObservableObject {
         } catch TextCommitterError.cancelled {
             transition(to: .idle)
         } catch {
-            reportError("Restyle failed: \(error.localizedDescription)")
+            reportError("Refine failed: \(error.localizedDescription)")
             scheduleAutoReset(after: Self.errorResetDelay)
         }
     }

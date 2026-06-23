@@ -16,7 +16,7 @@ The iOS host app and keyboard extension use a paired Mac Server for final transc
 - Live Preview: Apple Speech or NVIDIA Nemotron can show partial text while recording when the source is enabled.
 - User vocabulary: feeds refinement context and can sync to iOS pinyin candidates.
 - iOS keyboard: English and Simplified Chinese input; Chinese input is built on Rime pinyin with typo correction, touch learning, Chinese learning data, and user vocabulary support.
-- Bridge API: lets iOS and Mac clients pair with a Mac Server, pull settings, upload audio, stream job status, use live preview, restyle text, and request text edits.
+- Bridge API: lets iOS and Mac clients pair with a Mac Server, pull settings, upload audio, stream job status, use live preview, refine text, and request text edits.
 
 ## Screenshots
 

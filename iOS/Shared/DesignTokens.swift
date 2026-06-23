@@ -10,7 +10,7 @@ enum OrbGradient {
     case idle
     /// Live recording. Red, the universal "we're capturing" signal.
     case recording
-    /// Transcribing / restyling / opening host. Purple-indigo, distinct from
+    /// Transcribing / refining / opening host. Purple-indigo, distinct from
     /// the red of recording so users see when their voice is being processed
     /// rather than captured.
     case sending

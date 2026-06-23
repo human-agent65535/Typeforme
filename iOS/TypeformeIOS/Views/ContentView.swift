@@ -548,7 +548,7 @@ private struct HeroRecordCard: View {
                 if isRecording {
                     VoicePrintBars(level: state.hostRecordingLevel, isActive: true, tint: .white)
                         .frame(width: orbDiameter * 0.62, height: orbDiameter * 0.34)
-                } else if state.isRefreshingRoute || state.phase == .preparing || state.phase == .sending || state.phase == .restyling {
+                } else if state.isRefreshingRoute || state.phase == .preparing || state.phase == .sending || state.phase == .refining {
                     ProgressView()
                         .controlSize(.large)
                         .tint(.white)
@@ -618,7 +618,7 @@ private struct HeroRecordCard: View {
             return NSLocalizedString("Preparing…", comment: "Host recording preparing title")
         }
         if isRecording { return state.inputMode.recordingTitle }
-        if state.phase == .sending || state.phase == .restyling,
+        if state.phase == .sending || state.phase == .refining,
            let stage = state.processingStatusMessage,
            !stage.isEmpty {
             return stage
@@ -626,7 +626,7 @@ private struct HeroRecordCard: View {
         switch state.phase {
         case .sending:
             return NSLocalizedString("Transcribing", comment: "Bridge job stage")
-        case .restyling:
+        case .refining:
             return NSLocalizedString("Refining", comment: "Bridge job stage")
         default:
             return state.isRefreshingRoute
@@ -643,11 +643,11 @@ private struct HeroRecordCard: View {
             return state.inputMode == .tap ? "Tap again when you're done." : "Keep holding while you speak."
         }
         if let installing = state.activeModelInstallText,
-           state.phase == .sending || state.phase == .restyling {
+           state.phase == .sending || state.phase == .refining {
             return installing
         }
         switch state.phase {
-        case .sending, .restyling:
+        case .sending, .refining:
             // Title now carries the live stage label — leave detail empty so
             // the orb doesn't show "Transcribing" / "Refining" twice on two
             // lines.
@@ -678,7 +678,7 @@ private struct HeroRecordCard: View {
             && state.routeStatus.activeURL == nil
             && !isRecording
             && state.phase != .sending
-            && state.phase != .restyling
+            && state.phase != .refining
     }
 
     private var accessibilityHint: String {
@@ -698,7 +698,7 @@ private struct HeroRecordCard: View {
         if isPressed || isRecording { return .recording }
         if state.isRefreshingRoute { return .sending }
         switch state.phase {
-        case .sending, .restyling: return .sending
+        case .sending, .refining: return .sending
         case .success:             return .success
         default:                   return .idle
         }
@@ -1247,7 +1247,7 @@ private struct ResultCard: View {
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.secondary)
                 Spacer()
-                if state.phase == .restyling {
+                if state.phase == .refining {
                     ProgressView()
                         .scaleEffect(0.7)
                 }

@@ -208,7 +208,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             }
         }
 
-        var restyleUndoScope: RestyleUndoScope {
+        var refineUndoScope: RefineUndoScope {
             switch self {
             case .selection:
                 return .selection
@@ -228,21 +228,21 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let text: String
     }
 
-    private enum RestyleUndoScope: String, Codable {
+    private enum RefineUndoScope: String, Codable {
         case selection
         case context
     }
 
-    private struct RestyleUndoTarget: Codable {
-        let scope: RestyleUndoScope
+    private struct RefineUndoTarget: Codable {
+        let scope: RefineUndoScope
         let text: String
         let contextBefore: String
         let contextAfter: String
     }
 
-    private struct RestyleUndoState: Codable {
+    private struct RefineUndoState: Codable {
         let restoredText: String
-        let current: RestyleUndoTarget
+        let current: RefineUndoTarget
         let updatedAt: TimeInterval
     }
 
@@ -262,7 +262,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private let touchLearningResetGenerationKey = "keyboard.touchLearningResetGeneration"
     private let rimeUserPhrasesRevisionKey = "keyboard.rimeUserPhrasesRevision"
     private let lastInsertedCommandIDKey = "keyboard.lastInsertedCommandID"
-    private let restyleUndoStateKey = "keyboard.restyleUndoState.v2"
+    private let refineUndoStateKey = "keyboard.refineUndoState.v2"
     private let textTouchLearningStatsKey = "keyboard.textTouchGaussianStats.v1"
     private let keyboardTouchTraceEnabledKey = "keyboard.touchTraceEnabled"
     private let keyPressOverlayTag = 0x74797065
@@ -372,7 +372,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private var pendingStopCommandID: String?
     private var recentSelectionTarget: TextRewriteTarget?
     private var recentSelectionCapturedAt: TimeInterval = 0
-    private var restyleUndoState: RestyleUndoState?
+    private var refineUndoState: RefineUndoState?
     private var styleRewriteCommandID: String?
     private var isTextSpaceCursorTracking = false
     private var textSpaceCursorStartX: CGFloat = 0
@@ -409,7 +409,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     /// rather than reject deliberate quick taps.
     private let minimumIntentReleaseDuration: TimeInterval = 0.10
     private let selectionSnapshotTTL: TimeInterval = 1.25
-    private let restyleUndoStateTTL: TimeInterval = 10 * 60
+    private let refineUndoStateTTL: TimeInterval = 10 * 60
     private static let dictationContextLimit = 600
     private static let textRewriteContextExpansionLimit = 2_000
     private static let textRewriteContextExpansionMaxSteps = 40
@@ -486,7 +486,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private let voiceTitleLabel = UILabel()
     private let inputModeSwitch = VoiceInputModeSwitch()
     /// Driving-safe "send" button on the voice keyboard's left column,
-    /// above the Restyle trigger. Tapping inserts "\n" via the host text
+    /// above the Refine trigger. Tapping inserts "\n" via the host text
     /// document proxy — in chat apps (iMessage / WhatsApp / WeChat) that
     /// triggers the send action. Bigger and more obvious than the host
     /// app's own send button so it's easier to hit one-handed.
@@ -1838,7 +1838,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         cancelRefineTimeoutWatchdog()
         cancelActiveRecordingForKeyboardDismissal()
         cancelBridgeCommandTasks()
-        restyleUndoState = nil
+        refineUndoState = nil
         styleRewriteTask?.cancel()
         styleRewriteTask = nil
         styleConfigureTask?.cancel()
@@ -2952,7 +2952,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     /// follows the host's reported intent — e.g., "发送" in iMessage,
     /// "换行" in Notes.
     /// Visual: filled blue with paperplane to stand apart from the gray
-    /// frosted Restyle picker directly below it. The two stacked buttons
+    /// frosted Refine picker directly below it. The two stacked buttons
     /// would otherwise be indistinguishable.
     private func applyVoiceSendButtonConfiguration() {
         var configuration = UIButton.Configuration.filled()
@@ -2992,7 +2992,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         // Insert a newline — host decides if that's "send" (chat apps) or
         // an actual newline (notes / mail / compose). Same path the text
         // Return key uses.
-        clearRestyleUndoStateForManualEdit()
+        clearRefineUndoStateForManualEdit()
         textDocumentProxy.insertText("\n")
         lightHaptic()
     }
@@ -3285,8 +3285,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
         configureCapsuleButton(voiceUndoButton, title: "", image: "arrow.uturn.backward", style: .utility)
         voiceUndoButton.widthAnchor.constraint(equalToConstant: 48).isActive = true
-        voiceUndoButton.accessibilityLabel = NSLocalizedString("Undo restyle", comment: "Accessibility label for undoing the latest restyle")
-        voiceUndoButton.addTarget(self, action: #selector(undoRestyleTapped), for: .touchUpInside)
+        voiceUndoButton.accessibilityLabel = NSLocalizedString("Undo refine", comment: "Accessibility label for undoing the latest refine")
+        voiceUndoButton.addTarget(self, action: #selector(undoRefineTapped), for: .touchUpInside)
         attachPressAnimation(voiceUndoButton)
 
         configureCapsuleButton(spaceButton, title: "space", image: nil, style: .key)
@@ -3358,8 +3358,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
         configureToolbarIconButton(textUndoButton, image: "arrow.uturn.backward")
         textUndoButton.widthAnchor.constraint(equalToConstant: 32).isActive = true
-        textUndoButton.accessibilityLabel = NSLocalizedString("Undo restyle", comment: "Accessibility label for undoing the latest restyle")
-        textUndoButton.addTarget(self, action: #selector(undoRestyleTapped), for: .touchUpInside)
+        textUndoButton.accessibilityLabel = NSLocalizedString("Undo refine", comment: "Accessibility label for undoing the latest refine")
+        textUndoButton.addTarget(self, action: #selector(undoRefineTapped), for: .touchUpInside)
         attachPressAnimation(textUndoButton)
 
         configureToolbarIconButton(textToolsButton, image: "mic.fill")
@@ -4401,7 +4401,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             }
         }
         textToolbarStatusLabel.alpha = showsTextToolbarStatus ? 1 : 0
-        updateRestyleUndoButtons()
+        updateRefineUndoButtons()
         applyTextToolbarRecordingOverlay(
             recording: showsTextToolbarVoicePrint,
             sending: isSendingState || (isErrorState && !isTransientKeyboardErrorState)
@@ -4654,7 +4654,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
         keyPreviewBubble.layer.removeAllAnimations()
         keyPreviewLabel.text = title
-        // Candidate previews restyle the shared label; restore the key look.
+        // Candidate previews refine the shared label; restore the key look.
         keyPreviewLabel.font = .systemFont(ofSize: 30, weight: .semibold)
         let keyFrame = control.convert(control.bounds, to: view)
         let bubbleWidth = min(max(keyFrame.width + 18, 48), 76)
@@ -5912,7 +5912,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         rewriteCurrentInputOrPasteboard(using: preset)
     }
 
-    @objc private func undoRestyleTapped() {
+    @objc private func undoRefineTapped() {
         // While recording, this button morphs into the cancel affordance —
         // tap mode has no held finger to slide up with.
         if currentBridgeStatus?.state == .recording {
@@ -5922,23 +5922,23 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             return
         }
         lightHaptic()
-        guard let undo = freshRestyleUndoState(),
-              replaceRestyleUndoTarget(undo.current, with: undo.restoredText)
+        guard let undo = freshRefineUndoState(),
+              replaceRefineUndoTarget(undo.current, with: undo.restoredText)
         else {
-            clearRestyleUndoState(updateButtons: false)
+            clearRefineUndoState(updateButtons: false)
             showTextKeyboardNotice(
-                NSLocalizedString("Undo unavailable", comment: "Inline status when restyle undo cannot be applied"),
+                NSLocalizedString("Undo unavailable", comment: "Inline status when refine undo cannot be applied"),
                 color: .systemRed
             )
             updateUI()
             return
         }
 
-        clearRestyleUndoState(updateButtons: false)
+        clearRefineUndoState(updateButtons: false)
         recentSelectionTarget = nil
         defaults.removeObject(forKey: lastInsertedCommandIDKey)
         showTextKeyboardNotice(
-            NSLocalizedString("Restored", comment: "Inline status after undoing a restyle"),
+            NSLocalizedString("Restored", comment: "Inline status after undoing a refine"),
             color: .systemGreen
         )
         updateUI()
@@ -6032,12 +6032,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
     }
 
-    private func updateRestyleUndoButtons() {
+    private func updateRefineUndoButtons() {
         let isBlocked = currentBridgeStatus?.state == .recording
             || currentBridgeStatus?.state == .sending
             || isStartRequestInFlight
             || styleRewriteCommandID != nil
-        let canUndo = !isBlocked && freshRestyleUndoState() != nil
+        let canUndo = !isBlocked && freshRefineUndoState() != nil
         if canUndo {
             textUndoButton.isHidden = false
         }
@@ -6057,7 +6057,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             )
             voiceUndoButton.accessibilityLabel = showsCancel
                 ? NSLocalizedString("Cancel dictation", comment: "Accessibility label for cancelling the active recording")
-                : NSLocalizedString("Undo restyle", comment: "Accessibility label for undoing the latest restyle")
+                : NSLocalizedString("Undo refine", comment: "Accessibility label for undoing the latest refine")
         }
         if showsCancel {
             voiceUndoButton.isEnabled = true
@@ -6075,7 +6075,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             }
             textUndoButton.accessibilityLabel = textShowsCancel
                 ? NSLocalizedString("Cancel dictation", comment: "Accessibility label for cancelling the active recording")
-                : NSLocalizedString("Undo restyle", comment: "Accessibility label for undoing the latest restyle")
+                : NSLocalizedString("Undo refine", comment: "Accessibility label for undoing the latest refine")
         }
         if textShowsCancel {
             textUndoButton.isHidden = false
@@ -6087,23 +6087,23 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
     }
 
-    private func clearRestyleUndoStateForManualEdit() {
-        guard restyleUndoState != nil || defaults.data(forKey: restyleUndoStateKey) != nil else { return }
-        clearRestyleUndoState(updateButtons: false)
-        updateRestyleUndoButtons()
+    private func clearRefineUndoStateForManualEdit() {
+        guard refineUndoState != nil || defaults.data(forKey: refineUndoStateKey) != nil else { return }
+        clearRefineUndoState(updateButtons: false)
+        updateRefineUndoButtons()
     }
 
-    private func clearRestyleUndoState(updateButtons: Bool = true) {
-        restyleUndoState = nil
-        defaults.removeObject(forKey: restyleUndoStateKey)
+    private func clearRefineUndoState(updateButtons: Bool = true) {
+        refineUndoState = nil
+        defaults.removeObject(forKey: refineUndoStateKey)
         if updateButtons {
-            updateRestyleUndoButtons()
+            updateRefineUndoButtons()
         }
     }
 
     /// Builds the trigger button's compact "current preset + chevron"
     /// configuration. Shares the `capsuleButtonConfiguration` factory used
-    /// by the bottom utility row so the Restyle chip's frosted-glass blur,
+    /// by the bottom utility row so the Refine chip's frosted-glass blur,
     /// stroke, capsule shape, and contrast match paste / space / delete /
     /// return exactly. The chevron sits on the TRAILING side (matches
     /// iOS picker affordance); the dynamic title is the current mode.
@@ -6149,7 +6149,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
 
         let command = KeyboardBridgeCommand(
-            action: .restyleText,
+            action: .refineText,
             correctionMode: preset.rawValue,
             text: target.text
         )
@@ -6167,7 +6167,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 let status = try await localClient.send(
                     command,
                     bridgeToken: bridgeToken,
-                    timeout: KeyboardBridgeCommandAction.restyleText.requestTimeout
+                    timeout: KeyboardBridgeCommandAction.refineText.requestTimeout
                 )
                 guard !Task.isCancelled else { return }
                 await MainActor.run {
@@ -6230,7 +6230,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             return captureSelectionTarget(selected)
         }
 
-        if let undoTarget = currentTextRewriteTargetFromActiveRestyleUndo() {
+        if let undoTarget = currentTextRewriteTargetFromActiveRefineUndo() {
             return undoTarget
         }
 
@@ -6246,15 +6246,15 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         return nil
     }
 
-    private func currentTextRewriteTargetFromActiveRestyleUndo() -> TextRewriteTarget? {
-        guard let undo = freshRestyleUndoState(),
+    private func currentTextRewriteTargetFromActiveRefineUndo() -> TextRewriteTarget? {
+        guard let undo = freshRefineUndoState(),
               let target = textRewriteTarget(matching: undo.current)
         else { return nil }
-        kbLog.debug("using active restyle undo target for chained rewrite")
+        kbLog.debug("using active refine undo target for chained rewrite")
         return target
     }
 
-    private func textRewriteTarget(matching target: RestyleUndoTarget) -> TextRewriteTarget? {
+    private func textRewriteTarget(matching target: RefineUndoTarget) -> TextRewriteTarget? {
         let currentBefore = textDocumentProxy.documentContextBeforeInput ?? ""
         let currentAfter = textDocumentProxy.documentContextAfterInput ?? ""
 
@@ -6481,7 +6481,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             updateUI()
             return
         }
-        recordRestyleUndoState(originalTarget: target, rewrittenText: text)
+        recordRefineUndoState(originalTarget: target, rewrittenText: text)
         defaults.set(commandID, forKey: lastInsertedCommandIDKey)
         recentSelectionTarget = nil
         applyDefaultCorrectionModeFromHost(status.defaultCorrectionMode)
@@ -6518,71 +6518,71 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         return true
     }
 
-    private func freshRestyleUndoState() -> RestyleUndoState? {
+    private func freshRefineUndoState() -> RefineUndoState? {
         let now = Date().timeIntervalSince1970
-        if let undo = restyleUndoState {
-            guard now - undo.updatedAt <= restyleUndoStateTTL else {
-                clearRestyleUndoState(updateButtons: false)
+        if let undo = refineUndoState {
+            guard now - undo.updatedAt <= refineUndoStateTTL else {
+                clearRefineUndoState(updateButtons: false)
                 return nil
             }
             return undo
         }
 
-        guard let data = defaults.data(forKey: restyleUndoStateKey) else { return nil }
-        guard let undo = try? JSONDecoder().decode(RestyleUndoState.self, from: data) else {
-            defaults.removeObject(forKey: restyleUndoStateKey)
+        guard let data = defaults.data(forKey: refineUndoStateKey) else { return nil }
+        guard let undo = try? JSONDecoder().decode(RefineUndoState.self, from: data) else {
+            defaults.removeObject(forKey: refineUndoStateKey)
             return nil
         }
-        guard now - undo.updatedAt <= restyleUndoStateTTL else {
-            defaults.removeObject(forKey: restyleUndoStateKey)
+        guard now - undo.updatedAt <= refineUndoStateTTL else {
+            defaults.removeObject(forKey: refineUndoStateKey)
             return nil
         }
-        restyleUndoState = undo
+        refineUndoState = undo
         return undo
     }
 
-    private func recordRestyleUndoState(originalTarget: TextRewriteTarget, rewrittenText: String) {
+    private func recordRefineUndoState(originalTarget: TextRewriteTarget, rewrittenText: String) {
         let now = Date().timeIntervalSince1970
-        let current = currentRestyleUndoTarget(
+        let current = currentRefineUndoTarget(
             for: rewrittenText,
-            scope: originalTarget.restyleUndoScope
+            scope: originalTarget.refineUndoScope
         )
-            ?? expectedRestyleUndoTarget(originalTarget: originalTarget, rewrittenText: rewrittenText)
+            ?? expectedRefineUndoTarget(originalTarget: originalTarget, rewrittenText: rewrittenText)
 
         let restoredText: String
-        if let previous = freshRestyleUndoState(),
-           targetsBelongToSameRestyleSession(previous.current, originalTarget) {
+        if let previous = freshRefineUndoState(),
+           targetsBelongToSameRefineSession(previous.current, originalTarget) {
             restoredText = previous.restoredText
         } else {
             restoredText = originalTarget.text
         }
 
-        let next = RestyleUndoState(
+        let next = RefineUndoState(
             restoredText: restoredText,
             current: current,
             updatedAt: now
         )
-        restyleUndoState = next
+        refineUndoState = next
         if let data = try? JSONEncoder().encode(next) {
-            defaults.set(data, forKey: restyleUndoStateKey)
+            defaults.set(data, forKey: refineUndoStateKey)
         }
-        updateRestyleUndoButtons()
+        updateRefineUndoButtons()
     }
 
-    private func expectedRestyleUndoTarget(
+    private func expectedRefineUndoTarget(
         originalTarget: TextRewriteTarget,
         rewrittenText: String
-    ) -> RestyleUndoTarget {
+    ) -> RefineUndoTarget {
         switch originalTarget {
         case .selection(_, let contextBefore, let contextAfter):
-            return RestyleUndoTarget(
+            return RefineUndoTarget(
                 scope: .selection,
                 text: rewrittenText,
                 contextBefore: contextBefore,
                 contextAfter: contextAfter
             )
         case .context:
-            return RestyleUndoTarget(
+            return RefineUndoTarget(
                 scope: .context,
                 text: rewrittenText,
                 contextBefore: "",
@@ -6591,9 +6591,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
     }
 
-    private func currentRestyleUndoTarget(for text: String, scope: RestyleUndoScope) -> RestyleUndoTarget? {
+    private func currentRefineUndoTarget(for text: String, scope: RefineUndoScope) -> RefineUndoTarget? {
         if textDocumentProxy.selectedText == text {
-            return RestyleUndoTarget(
+            return RefineUndoTarget(
                 scope: scope,
                 text: text,
                 contextBefore: textDocumentProxy.documentContextBeforeInput ?? "",
@@ -6603,11 +6603,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
         let currentBefore = textDocumentProxy.documentContextBeforeInput ?? ""
         guard currentBefore.hasSuffix(text) else {
-            kbLog.notice("restyle undo skipped: rewritten text is not anchored at cursor")
+            kbLog.notice("refine undo skipped: rewritten text is not anchored at cursor")
             return nil
         }
 
-        return RestyleUndoTarget(
+        return RefineUndoTarget(
             scope: scope,
             text: text,
             contextBefore: String(currentBefore.dropLast(text.count)),
@@ -6615,8 +6615,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         )
     }
 
-    private func targetsBelongToSameRestyleSession(_ lhs: RestyleUndoTarget, _ rhs: TextRewriteTarget) -> Bool {
-        guard lhs.scope == rhs.restyleUndoScope,
+    private func targetsBelongToSameRefineSession(_ lhs: RefineUndoTarget, _ rhs: TextRewriteTarget) -> Bool {
+        guard lhs.scope == rhs.refineUndoScope,
               lhs.text == rhs.text
         else { return false }
         switch rhs {
@@ -6627,7 +6627,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
     }
 
-    private func replaceRestyleUndoTarget(_ target: RestyleUndoTarget, with text: String) -> Bool {
+    private func replaceRefineUndoTarget(_ target: RefineUndoTarget, with text: String) -> Bool {
         if !activeMarkedText.isEmpty {
             replaceMarkedText("")
         }
@@ -6652,7 +6652,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             return replaceContextText(text, before: "", after: target.text)
         }
 
-        kbLog.notice("restyle undo skipped: current text no longer matches undo target")
+        kbLog.notice("refine undo skipped: current text no longer matches undo target")
         return false
     }
 
@@ -7165,7 +7165,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 ? character.uppercased()
                 : character
             let consumesAutoCapSuppression = isAlphabetic && isTextAutoCapitalizationSuppressed
-            clearRestyleUndoStateForManualEdit()
+            clearRefineUndoStateForManualEdit()
             textDocumentProxy.insertText(output)
             if consumesAutoCapSuppression {
                 isTextAutoCapitalizationSuppressed = false
@@ -7183,10 +7183,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
         if isTextShiftEnabled {
             commitDisplayedRimeCompositionIfNeeded()
-            clearRestyleUndoStateForManualEdit()
+            clearRefineUndoStateForManualEdit()
             textDocumentProxy.insertText(character.uppercased())
             resetShiftIfSticky()
-            renderRestyleSuggestionsIfIdle()
+            renderRefineSuggestionsIfIdle()
             return true
         }
 
@@ -7201,7 +7201,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             pendingRimeDirectTextKeys.removeAll()
             applyRimeState(state)
             resetShiftIfSticky()
-            renderRestyleSuggestionsIfIdle()
+            renderRefineSuggestionsIfIdle()
             return true
         case .notReady(let state):
             queuePendingRimeCharacter(character, state: state)
@@ -7237,12 +7237,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             pendingRimeDirectTextKeys.removeAll()
             applyRimeState(state)
             guard !queuedDirectText.isEmpty else { return }
-            clearRestyleUndoStateForManualEdit()
+            clearRefineUndoStateForManualEdit()
             textDocumentProxy.insertText(queuedDirectText)
             if !resetShiftIfSticky() {
                 refreshEnglishLetterCasingIfNeeded()
             }
-            renderRestyleSuggestionsIfIdle()
+            renderRefineSuggestionsIfIdle()
             return
         }
 
@@ -7273,12 +7273,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             } else {
                 applyRimeState(replayState)
             }
-            clearRestyleUndoStateForManualEdit()
+            clearRefineUndoStateForManualEdit()
             textDocumentProxy.insertText(queuedDirectText)
             if !resetShiftIfSticky() {
                 refreshEnglishLetterCasingIfNeeded()
             }
-            renderRestyleSuggestionsIfIdle()
+            renderRefineSuggestionsIfIdle()
         } else {
             applyRimeState(replayState)
         }
@@ -7286,7 +7286,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     private func handleTextBackspace() {
         guard keyboardFocus == .text else {
-            clearRestyleUndoStateForManualEdit()
+            clearRefineUndoStateForManualEdit()
             textDocumentProxy.deleteBackward()
             return
         }
@@ -7314,18 +7314,18 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         } else {
             beginTextTouchCorrectionFromBackspace(compositionActive: false)
             replaceMarkedText("")
-            clearRestyleUndoStateForManualEdit()
+            clearRefineUndoStateForManualEdit()
             textDocumentProxy.deleteBackward()
             if !resetShiftIfSticky() {
                 refreshEnglishLetterCasingIfNeeded()
             }
-            renderRestyleSuggestionsIfIdle()
+            renderRefineSuggestionsIfIdle()
         }
     }
 
     private func handleTextSpace() {
         guard keyboardFocus == .text else {
-            clearRestyleUndoStateForManualEdit()
+            clearRefineUndoStateForManualEdit()
             textDocumentProxy.insertText(" ")
             return
         }
@@ -7347,7 +7347,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
         if textInputLanguage == .english {
             commitDisplayedRimeCompositionIfNeeded()
-            clearRestyleUndoStateForManualEdit()
+            clearRefineUndoStateForManualEdit()
             textDocumentProxy.insertText(" ")
             if !resetShiftIfSticky() {
                 refreshEnglishLetterCasingIfNeeded()
@@ -7359,7 +7359,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         if shouldCommitRawRimeInputBeforeSeparator(currentState) {
             commitRawRimeInput(currentState.input, appending: " ")
             resetShiftIfSticky()
-            renderRestyleSuggestionsIfIdle()
+            renderRefineSuggestionsIfIdle()
             return
         }
 
@@ -7371,7 +7371,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let state = result.state
         applyRimeState(state)
         if !result.wasComposing, state.commitText.isEmpty, !state.isComposing {
-            clearRestyleUndoStateForManualEdit()
+            clearRefineUndoStateForManualEdit()
             textDocumentProxy.insertText(" ")
         }
         resetShiftIfSticky()
@@ -7380,7 +7380,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private func handleTextReturn() {
         guard keyboardFocus == .text else {
             commitLivePartialBeforeHostReturnIfNeeded()
-            clearRestyleUndoStateForManualEdit()
+            clearRefineUndoStateForManualEdit()
             textDocumentProxy.insertText("\n")
             return
         }
@@ -7395,7 +7395,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             if currentState.isComposing {
                 applyRimeState(rimeInput.clearComposition())
             }
-            clearRestyleUndoStateForManualEdit()
+            clearRefineUndoStateForManualEdit()
             textDocumentProxy.insertText("\n")
             if !resetShiftIfSticky() {
                 refreshEnglishLetterCasingIfNeeded()
@@ -7405,7 +7405,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
         let state = commitDisplayedRimeCompositionIfNeeded(from: currentState)
         if state.commitText.isEmpty {
-            clearRestyleUndoStateForManualEdit()
+            clearRefineUndoStateForManualEdit()
             textDocumentProxy.insertText("\n")
         }
         if !resetShiftIfSticky() {
@@ -7417,7 +7417,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         if !state.commitText.isEmpty {
             acceptPendingTextTouchIfSurvived()
             resetQuoteParity()
-            clearRestyleUndoStateForManualEdit()
+            clearRefineUndoStateForManualEdit()
             commitTextReplacingMarkedText(state.commitText)
             activeMarkedText = ""
             activeMarkedTextOwner = nil
@@ -7441,7 +7441,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         guard !text.isEmpty else { return }
         acceptPendingTextTouchIfSurvived()
         resetQuoteParity()
-        clearRestyleUndoStateForManualEdit()
+        clearRefineUndoStateForManualEdit()
         commitTextReplacingMarkedText(text)
         activeMarkedText = ""
         activeMarkedTextOwner = nil
@@ -7734,7 +7734,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         textWandButton.isHidden = !showAllIdleIcons
         textToolsButton.isHidden = !showAllIdleIcons // mic
         textStylePickerButton.isHidden = !showAllIdleIcons
-        textUndoButton.isHidden = !(showAllIdleIcons || freshRestyleUndoState() != nil)
+        textUndoButton.isHidden = !(showAllIdleIcons || freshRefineUndoState() != nil)
         textKeyboardSwitchButton.isHidden = !showAllIdleIcons
         textHostSettingsButton.isHidden = !showAllIdleIcons || isRunningInsideHostApp
     }
@@ -8412,7 +8412,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         widthConstraint.constant = max(72, candidateScrollView.bounds.width)
     }
 
-    private func renderRestyleSuggestionsIfIdle() {
+    private func renderRefineSuggestionsIfIdle() {
         guard keyboardFocus == .text else { return }
         renderRimeState(RimeKeyboardState(
             isReady: true,
@@ -8895,24 +8895,24 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         if !pendingRimeCharacters.isEmpty || !pendingRimeDirectTextKeys.isEmpty {
             queuePendingRimeDirectTextKey(directText, state: currentState)
             resetShiftIfSticky()
-            renderRestyleSuggestionsIfIdle()
+            renderRefineSuggestionsIfIdle()
             return
         }
         if currentState.isComposing {
             if let literalText = latinLiteralCommitTextBeforeDirectKey(currentState, character: character) {
                 commitRawRimeInput(literalText, appending: directText)
                 resetShiftIfSticky()
-                renderRestyleSuggestionsIfIdle()
+                renderRefineSuggestionsIfIdle()
                 return
             }
             applyRimeState(rimeInput.commitComposition())
         } else {
             replaceMarkedText("")
         }
-        clearRestyleUndoStateForManualEdit()
+        clearRefineUndoStateForManualEdit()
         textDocumentProxy.insertText(directText)
         resetShiftIfSticky()
-        renderRestyleSuggestionsIfIdle()
+        renderRefineSuggestionsIfIdle()
     }
 
     private func latinLiteralCommitTextBeforeDirectKey(
@@ -9069,11 +9069,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let context = textDocumentProxy.documentContextBeforeInput ?? ""
         let count = deletionCountToWordBoundary(in: context)
         guard count > 0 else {
-            clearRestyleUndoStateForManualEdit()
+            clearRefineUndoStateForManualEdit()
             textDocumentProxy.deleteBackward()
             return
         }
-        clearRestyleUndoStateForManualEdit()
+        clearRefineUndoStateForManualEdit()
         deleteBackward(characterCount: count)
     }
 
@@ -9081,11 +9081,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let context = textDocumentProxy.documentContextBeforeInput ?? ""
         let count = deletionCountToLineBoundary(in: context)
         guard count > 0 else {
-            clearRestyleUndoStateForManualEdit()
+            clearRefineUndoStateForManualEdit()
             textDocumentProxy.deleteBackward()
             return
         }
-        clearRestyleUndoStateForManualEdit()
+        clearRefineUndoStateForManualEdit()
         deleteBackward(characterCount: count)
     }
 
@@ -9164,7 +9164,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         keyView.alpha = 1
         keyView.transform = .identity
         setTextTrackpadMode(false)
-        renderRestyleSuggestionsIfIdle()
+        renderRefineSuggestionsIfIdle()
     }
 
     private func setTextTrackpadMode(_ enabled: Bool) {
@@ -9559,7 +9559,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 message = "Ready"
             case .stop:
                 message = stopProcessingStatusTitle
-            case .configure, .restyleText:
+            case .configure, .refineText:
                 message = "Ready"
             }
             bridgeStatus = KeyboardBridgeStatus(
@@ -9664,7 +9664,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             activeRecordingTextTarget = nil
             cancelScheduledHostOpen()
             _ = postAuthenticatedKeyboardRequest(KeyboardDarwinNotificationName.requestCancelDictation)
-        case .configure, .restyleText:
+        case .configure, .refineText:
             break
         }
     }
@@ -10133,9 +10133,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             }
             if didApply {
                 if let appliedRewriteTarget {
-                    recordRestyleUndoState(originalTarget: appliedRewriteTarget, rewrittenText: text)
+                    recordRefineUndoState(originalTarget: appliedRewriteTarget, rewrittenText: text)
                 } else {
-                    clearRestyleUndoState(updateButtons: false)
+                    clearRefineUndoState(updateButtons: false)
                 }
                 defaults.set(commandID, forKey: lastInsertedCommandIDKey)
                 recentSelectionTarget = nil

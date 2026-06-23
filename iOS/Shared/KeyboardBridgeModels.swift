@@ -569,7 +569,7 @@ enum KeyboardBridgeCommandAction: String, Codable {
     case stop
     case cancel
     case configure
-    case restyleText = "restyle_text"
+    case refineText = "refine_text"
 }
 
 typealias KeyboardTextEditIntent = TextEditIntent

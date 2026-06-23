@@ -75,7 +75,7 @@ enum BridgeAPIEndpoint {
     static let settingsWrite = BridgeAPIRoute(method: "POST", path: "/v1/settings")
     static let dictate = BridgeAPIRoute(method: "POST", path: "/v1/dictate")
     static let livePreviewStart = BridgeAPIRoute(method: "POST", path: "/v1/live-preview/start")
-    static let restyle = BridgeAPIRoute(method: "POST", path: "/v1/restyle")
+    static let refine = BridgeAPIRoute(method: "POST", path: "/v1/refine")
     static let editText = BridgeAPIRoute(method: "POST", path: "/v1/edit-text")
 
     static let jobEventsTemplate = BridgeAPIRoute(method: "GET", path: "/v1/jobs/:jobID/events")
@@ -285,7 +285,7 @@ struct BridgeSettingsUpdateRequest: Codable, Sendable {
     }
 }
 
-struct BridgeRestyleRequest: Codable, Sendable {
+struct BridgeRefineRequest: Codable, Sendable {
     var sessionID: String?
     var rawTranscript: String?
     var clientJobID: String?
@@ -447,7 +447,7 @@ struct BridgeDictateResponse: Codable, Sendable {
     }
 }
 
-struct BridgeRestyleResponse: Codable, Sendable {
+struct BridgeRefineResponse: Codable, Sendable {
     let sessionID: String
     let text: String
     let correctionMode: String?

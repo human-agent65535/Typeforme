@@ -304,7 +304,7 @@ struct BridgeSettingsPayload: Codable, Sendable {
         correctionBackend: CorrectionBackendKind
     ) -> [BridgeModelStatus] {
         selectedASRModelStatuses(sources: sources)
-            + [selectedRestyleModelStatus(correctionBackend: correctionBackend)]
+            + [selectedRefineModelStatus(correctionBackend: correctionBackend)]
     }
 
     fileprivate static func currentASRTimeoutSec(sourceID: String) -> Double {
@@ -364,13 +364,13 @@ struct BridgeSettingsPayload: Codable, Sendable {
         )
     }
 
-    private static func selectedRestyleModelStatus(
+    private static func selectedRefineModelStatus(
         correctionBackend: CorrectionBackendKind
     ) -> BridgeModelStatus {
         guard !correctionBackend.isExternalCompatible else {
             return BridgeModelStatus(
-                id: "restyle:\(correctionBackend.rawValue)",
-                kind: "restyle",
+                id: "refine:\(correctionBackend.rawValue)",
+                kind: "refine",
                 displayName: correctionBackend.displayName,
                 installed: true,
                 installing: false,
@@ -378,12 +378,12 @@ struct BridgeSettingsPayload: Codable, Sendable {
             )
         }
 
-        let modelPath = restyleModelPath(for: correctionBackend)
+        let modelPath = refineModelPath(for: correctionBackend)
         let installed = FileManager.default.fileExists(atPath: modelPath)
         let installing = ModelInstallRegistry.isInstalling(path: modelPath)
         return BridgeModelStatus(
-            id: "restyle:\(correctionBackend.rawValue)",
-            kind: "restyle",
+            id: "refine:\(correctionBackend.rawValue)",
+            kind: "refine",
             displayName: correctionBackend.displayName,
             installed: installed,
             installing: installing,
@@ -391,7 +391,7 @@ struct BridgeSettingsPayload: Codable, Sendable {
         )
     }
 
-    private static func restyleModelPath(for backend: CorrectionBackendKind) -> String {
+    private static func refineModelPath(for backend: CorrectionBackendKind) -> String {
         switch backend {
         case .qwen35_2B:
             return AppSettings.llama2BPath
