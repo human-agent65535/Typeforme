@@ -84,13 +84,12 @@ enum PromptBuilder {
         Use the examples only as decision patterns. Now process the single input_json below using the correction_mode named in its context, and follow that mode's rules — do not default to a milder mode regardless of phrasing here.
         </actual_task>
         """)
-        if let json = PromptPayloadEncoder.jsonString(input) {
-            parts.append("""
-            <input_json>
-            \(json)
-            </input_json>
-            """)
-        }
+        let json = PromptPayloadEncoder.jsonString(input)
+        parts.append("""
+        <input_json>
+        \(json)
+        </input_json>
+        """)
         parts.append("Return the corrected insertion text as the JSON object described above.")
         return parts.joined(separator: "\n")
     }
@@ -257,8 +256,8 @@ enum PromptBuilder {
             rawTranscript: example.rawTranscript
         )
         let output = ["text": example.outputText]
-        let inputJSON = PromptPayloadEncoder.jsonString(input) ?? "{}"
-        let outputJSON = PromptPayloadEncoder.jsonString(output) ?? "{\"text\":\"\"}"
+        let inputJSON = PromptPayloadEncoder.jsonString(input)
+        let outputJSON = PromptPayloadEncoder.jsonString(output)
         return """
         <example>
         Input:

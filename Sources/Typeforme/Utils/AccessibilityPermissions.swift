@@ -26,7 +26,7 @@ enum AccessibilityPermissions {
     /// should run `requestTrustPrompt()` right after to (re-)register.
     @discardableResult
     static func resetGrant() -> Bool {
-        let bundleID = Bundle.main.bundleIdentifier ?? "com.example.typeforme.mac"
+        let bundleID = BundleIdentity.mainBundleIdentifier
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
         p.arguments = ["reset", "Accessibility", bundleID]

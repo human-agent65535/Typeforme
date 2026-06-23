@@ -56,7 +56,16 @@ enum CommandLineHandler {
                     transcript: nil,
                     error: error.localizedDescription
                 )
-                fputs((String(data: (try? BridgeJSON.encodePrettySorted(payload)) ?? Data(), encoding: .utf8) ?? error.localizedDescription) + "\n", stderr)
+                let data: Data
+                do {
+                    data = try BridgeJSON.encodePrettySorted(payload)
+                } catch {
+                    preconditionFailure("Could not encode debug transcribe error payload: \(error)")
+                }
+                guard let output = String(data: data, encoding: .utf8) else {
+                    preconditionFailure("Could not decode debug transcribe error payload as UTF-8")
+                }
+                fputs(output + "\n", stderr)
                 Foundation.exit(2)
             }
         }

@@ -261,7 +261,12 @@ struct BridgeSettingsPayload: Codable, Sendable {
     }
 
     private static func settingsRevision(for payload: BridgeSettingsRevisionPayload) -> String {
-        let data = (try? BridgeJSON.encodeSorted(payload)) ?? Data()
+        let data: Data
+        do {
+            data = try BridgeJSON.encodeSorted(payload)
+        } catch {
+            preconditionFailure("Could not encode bridge settings revision payload: \(error)")
+        }
         let digest = SHA256.hash(data: data)
         return digest.map { String(format: "%02x", $0) }.joined()
     }

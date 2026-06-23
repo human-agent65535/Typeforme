@@ -6,7 +6,7 @@ import os.lock
 /// Keys are grouped by feature area; Settings UI may present them under a
 /// different sidebar structure.
 enum AppSettings {
-    private static let currentMacDefaultsDomain = Bundle.main.bundleIdentifier ?? "com.example.typeforme.mac"
+    private static let currentMacDefaultsDomain = BundleIdentity.mainBundleIdentifier
 
     enum Keys {
         // Recording
@@ -194,7 +194,7 @@ enum AppSettings {
     }
 
     private static func persistedObject(forKey key: String) -> Any? {
-        let domainName = Bundle.main.bundleIdentifier ?? currentMacDefaultsDomain
+        let domainName = BundleIdentity.mainBundleIdentifier
         return UserDefaults.standard.persistentDomain(forName: domainName)?[key]
     }
 

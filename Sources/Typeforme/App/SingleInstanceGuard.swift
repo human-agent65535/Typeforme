@@ -49,7 +49,7 @@ final class SingleInstanceGuard {
     }
 
     private func activateExistingInstance() {
-        let bundleID = Bundle.main.bundleIdentifier ?? "com.example.typeforme.mac"
+        let bundleID = BundleIdentity.mainBundleIdentifier
         let currentPID = getpid()
         guard let existing = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
             .first(where: { $0.processIdentifier != currentPID })

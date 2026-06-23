@@ -134,13 +134,12 @@ enum TextEditPromptBuilder {
         if let directive = requestDirective(for: request) {
             parts.append(directive)
         }
-        if let json = PromptPayloadEncoder.jsonString(input) {
-            parts.append("""
-            <input_json>
-            \(json)
-            </input_json>
-            """)
-        }
+        let json = PromptPayloadEncoder.jsonString(input)
+        parts.append("""
+        <input_json>
+        \(json)
+        </input_json>
+        """)
         parts.append("Return only the replacement JSON object described above.")
         return parts.joined(separator: "\n")
     }

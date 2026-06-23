@@ -58,7 +58,7 @@ struct BridgeEndpoints: Codable, Equatable {
         self.publicBridgeURL = PairingConfig.normalizedBaseURL(
             try container.decodeIfPresent(String.self, forKey: .publicBridgeURL) ?? ""
         )
-        self.token = (try container.decodeIfPresent(String.self, forKey: .token) ?? "")
+        self.token = try container.decode(String.self, forKey: .token)
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
@@ -133,13 +133,34 @@ struct PairingPayload: Decodable, Equatable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        lanBridgeURL = (try container.decodeIfPresent(String.self, forKey: .lanBridgeURL) ?? "")
+        let decodedLANBridgeURL = try container.decodeIfPresent(String.self, forKey: .lanBridgeURL) ?? ""
+        let decodedLANBridgeURLs = try container.decodeIfPresent([String].self, forKey: .lanBridgeURLs) ?? []
+        let localCandidates = PairingConfig.uniqueBridgeURLs([decodedLANBridgeURL] + decodedLANBridgeURLs)
+        let normalizedPublicBridgeURL = PairingConfig.normalizedBaseURL(
+            try container.decodeIfPresent(String.self, forKey: .publicBridgeURL) ?? ""
+        )
+        let decodedToken = try container.decode(String.self, forKey: .token)
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        lanBridgeURLs = try container.decodeIfPresent([String].self, forKey: .lanBridgeURLs) ?? []
-        publicBridgeURL = (try container.decodeIfPresent(String.self, forKey: .publicBridgeURL) ?? "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        token = (try container.decodeIfPresent(String.self, forKey: .token) ?? "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !decodedToken.isEmpty else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .token,
+                in: container,
+                debugDescription: "Pairing token cannot be empty"
+            )
+        }
+        guard !localCandidates.isEmpty || !normalizedPublicBridgeURL.isEmpty else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .lanBridgeURL,
+                in: container,
+                debugDescription: "Pairing payload must include at least one bridge URL"
+            )
+        }
+
+        lanBridgeURL = localCandidates.first ?? ""
+        lanBridgeURLs = localCandidates
+        publicBridgeURL = normalizedPublicBridgeURL
+        token = decodedToken
     }
 
     func config(
@@ -332,93 +353,7 @@ struct PairingLanguageOption: Codable, Equatable, Identifiable, BridgeLanguageOp
     }
 }
 
-struct BridgeUserDictionaryEntry: Codable, Equatable, Identifiable, Hashable {
-    static let suggestedTypes = [
-        "person",
-        "organization",
-        "product",
-        "project",
-        "place",
-        "technical_term",
-        "acronym",
-        "phrase",
-        "other",
-    ]
-
-    var id: UUID
-    var type: String
-    var surface: String
-
-    enum CodingKeys: String, CodingKey {
-        case id
-        case type
-        case surface
-    }
-
-    init(
-        id: UUID = UUID(),
-        type: String = "other",
-        surface: String
-    ) {
-        self.id = id
-        self.type = Self.normalizedType(type)
-        self.surface = Self.cleanedSurface(surface)
-    }
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.init(
-            id: try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID(),
-            type: try container.decodeIfPresent(String.self, forKey: .type) ?? "other",
-            surface: try container.decodeIfPresent(String.self, forKey: .surface) ?? ""
-        )
-    }
-
-    var isValid: Bool {
-        !surface.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-
-    var displayType: String {
-        Self.displayType(for: type)
-    }
-
-    static func cleanedSurface(_ value: String) -> String {
-        value
-            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    static func displayType(for type: String) -> String {
-        type.replacingOccurrences(of: "_", with: " ")
-    }
-
-    static func normalizedType(_ value: String) -> String {
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return "other" }
-        return trimmed
-            .lowercased()
-            .replacingOccurrences(of: " ", with: "_")
-    }
-
-    static func normalizedEntries(_ entries: [BridgeUserDictionaryEntry]) -> [BridgeUserDictionaryEntry] {
-        var seenIDs = Set<UUID>()
-        return entries.compactMap { incoming in
-            let entry = BridgeUserDictionaryEntry(
-                id: incoming.id,
-                type: incoming.type,
-                surface: incoming.surface
-            )
-            guard entry.isValid else { return nil }
-            guard seenIDs.insert(entry.id).inserted else { return nil }
-            return entry
-        }
-        .sorted {
-            if $0.type != $1.type { return $0.type < $1.type }
-            if $0.surface != $1.surface { return $0.surface < $1.surface }
-            return $0.id.uuidString < $1.id.uuidString
-        }
-    }
-}
+typealias BridgeUserDictionaryEntry = DictionaryEntry
 
 enum RecognitionSource: String, CaseIterable, Codable, Identifiable, Equatable {
     case qwen = "qwen3-asr-llama"

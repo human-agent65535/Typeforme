@@ -58,14 +58,13 @@ actor ModelAutoInstaller {
         guard let url = URL(string: trimmedURL) else {
             throw ModelAutoInstallError.invalidURL(trimmedURL)
         }
-        let existingFileChecksumPolicy = ModelDownloadIntegrity.expectedSHA256(for: url)
-            .map(ModelDownloadChecksumPolicy.verifySHA256) ?? .allowMissingChecksum
+        let checksumPolicy = try ModelDownloadIntegrity.checksumPolicy(for: url, label: label)
 
         if FileManager.default.fileExists(atPath: path) {
             do {
                 try ModelDownloadIntegrity.validateFile(
                     at: URL(fileURLWithPath: path),
-                    checksumPolicy: existingFileChecksumPolicy,
+                    checksumPolicy: checksumPolicy,
                     expectedBytes: expectedBytes,
                     label: label
                 )
@@ -83,7 +82,6 @@ actor ModelAutoInstaller {
 
         let destination = URL(fileURLWithPath: path)
         let task = Task {
-            let checksumPolicy = try ModelDownloadIntegrity.checksumPolicy(for: url, label: label)
             try await Self.download(
                 from: url,
                 to: destination,

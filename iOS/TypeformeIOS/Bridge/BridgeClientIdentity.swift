@@ -17,7 +17,7 @@ enum BridgeClientIdentity {
         request.setValue("Typeforme iOS", forHTTPHeaderField: BridgeClientIdentityHeaders.name)
         request.setValue("iOS", forHTTPHeaderField: BridgeClientIdentityHeaders.platform)
         request.setValue(
-            Bundle.main.bundleIdentifier ?? TypeformeBundleConfiguration.hostBundleIdentifier,
+            TypeformeBundleConfiguration.currentBundleIdentifier,
             forHTTPHeaderField: BridgeClientIdentityHeaders.bundleID
         )
     }

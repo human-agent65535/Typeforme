@@ -138,7 +138,7 @@ struct VocabularyCandidateSelectorTests {
         #expect(payload[0].matchKind == "same_pinyin")
         #expect(payload[0].confidence >= 0.9)
         #expect(payload[0].evidenceSource == "transcript")
-        let json = PromptPayloadEncoder.jsonString(payload) ?? ""
+        let json = PromptPayloadEncoder.jsonString(payload)
         #expect(json.contains("\"speech_hint\":\"yanglijia\""))
         #expect(json.contains("\"matched_span\":\"样例佳\""))
         #expect(json.contains("\"match_source\":\"raw_transcript\""))

@@ -20,16 +20,19 @@ struct ModelDownloadIntegrityTests {
         #expect(ModelDownloadIntegrity.expectedSHA256(for: url) == "aaf42c8b7c3cab2bf3d69c355048d4a0ee9973d48f16c731c0520ee914699223")
     }
 
-    @Test func checksumPolicyRequiresKnownSHAForAutomaticDownloads() throws {
+    @Test func checksumPolicyRequiresKnownSHAForDownloads() throws {
         let url = try #require(URL(string: "https://example.com/custom-model.gguf"))
         #expect(throws: ModelDownloadIntegrityError.self) {
             try ModelDownloadIntegrity.checksumPolicy(for: url, label: "custom")
         }
-        #expect(try ModelDownloadIntegrity.checksumPolicy(
-            for: url,
-            label: "custom",
-            allowMissingChecksum: true
-        ) == .allowMissingChecksum)
+    }
+
+    @Test func nemotronDownloadURLsHaveTrustedSHA256() throws {
+        let spec = NvidiaNemotronASRModelCatalog.spec(for: NvidiaNemotronASRModelCatalog.defaultID)
+        for file in spec.files {
+            let url = try #require(URL(string: file.defaultURL))
+            #expect(ModelDownloadIntegrity.expectedSHA256(for: url) != nil, "\(file.label) is missing SHA256")
+        }
     }
 
     @Test func validatesSHA256WithoutLoadingWholeFile() throws {

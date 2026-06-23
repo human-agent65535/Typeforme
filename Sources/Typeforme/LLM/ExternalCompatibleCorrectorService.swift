@@ -250,11 +250,10 @@ final class ExternalCompatibleCorrectorService: CorrectorService {
             )
         }
         guard selected.isEmpty || modelIDs.contains(selected) else {
-            let fallback = modelIDs[0]
             return ExternalLLMCheckReport(
                 ok: true,
                 status: "Ready",
-                detail: "Selected model \(selected) is not listed. Using \(fallback). \(modelListSummary(modelIDs: modelIDs))",
+                detail: "Selected model \(selected) is not listed. Select a listed model. \(modelListSummary(modelIDs: modelIDs))",
                 modelIDs: modelIDs
             )
         }

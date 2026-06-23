@@ -127,7 +127,7 @@ struct ExternalCompatibleCorrectorServiceTests {
         #expect(report.detail.contains("no models are listed"))
     }
 
-    @Test func reportsMissingSelectedModelAsReadyForRefreshFallback() {
+    @Test func reportsMissingSelectedModelWithoutClaimingImplicitUse() {
         let report = ExternalCompatibleCorrectorService.availabilityReport(
             modelIDs: ["qwen3.6-35b"],
             selectedModel: "qwen3.6-27b",
@@ -136,7 +136,8 @@ struct ExternalCompatibleCorrectorServiceTests {
         #expect(report.ok)
         #expect(report.status == "Ready")
         #expect(report.detail.contains("Selected model qwen3.6-27b is not listed"))
-        #expect(report.detail.contains("Using qwen3.6-35b"))
+        #expect(report.detail.contains("Using qwen3.6-35b") == false)
+        #expect(report.detail.contains("Select a listed model"))
     }
 
     @Test func reportsListedSelectedModelAsReady() {

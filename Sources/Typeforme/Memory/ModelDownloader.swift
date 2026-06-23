@@ -101,6 +101,11 @@ final class ModelDownloader: ObservableObject {
         state = .idle
     }
 
+    func fail(_ message: String) {
+        cancel()
+        state = .failed(message)
+    }
+
     var progress: Double {
         if case .downloading(let received, let total) = state, total > 0 {
             return Double(received) / Double(total)

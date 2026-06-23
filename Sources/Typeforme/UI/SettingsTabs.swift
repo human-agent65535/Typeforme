@@ -89,7 +89,7 @@ struct GeneralSettingsView: View {
                 HStack {
                     Text("Bundle ID")
                     Spacer()
-                    Text(Bundle.main.bundleIdentifier ?? "—")
+                    Text(BundleIdentity.mainBundleIdentifier)
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
                 }
@@ -1676,6 +1676,20 @@ private enum SettingsModelDownloadKey {
     }
 }
 
+@MainActor
+private func strictDownloadChecksumPolicy(
+    for url: URL,
+    label: String,
+    downloader: ModelDownloader
+) -> ModelDownloadChecksumPolicy? {
+    do {
+        return try ModelDownloadIntegrity.checksumPolicy(for: url, label: label)
+    } catch {
+        downloader.fail(error.localizedDescription)
+        return nil
+    }
+}
+
 private struct QwenASRModelRow: View {
     let spec: QwenASRModelSpec
 
@@ -1741,7 +1755,7 @@ private struct QwenASRModelRow: View {
                 Button {
                     startDownloads()
                 } label: {
-                    Label(modelExists && mmprojExists ? "Update" : "Download", systemImage: "arrow.down.circle")
+                    Label(modelExists && mmprojExists ? "Reinstall" : "Download", systemImage: "arrow.down.circle")
                 }
                 .disabled(anyDownloadURLEmpty)
                 Button(role: .destructive) {
@@ -1799,23 +1813,26 @@ private struct QwenASRModelRow: View {
         Task { @MainActor in
             try? AppPaths.ensureDirectories()
             await ASRFactory.shared.stopQwenLlama()
+            guard let modelChecksumPolicy = strictDownloadChecksumPolicy(
+                for: modelDownloadURL,
+                label: "Qwen3-ASR model",
+                downloader: modelDownloader
+            ),
+                  let mmprojChecksumPolicy = strictDownloadChecksumPolicy(
+                    for: mmprojDownloadURL,
+                    label: "Qwen3-ASR mmproj",
+                    downloader: mmprojDownloader
+                  )
+            else { return }
             modelDownloader.start(
                 from: modelDownloadURL,
                 to: URL(fileURLWithPath: effectiveModelPath),
-                checksumPolicy: (try? ModelDownloadIntegrity.checksumPolicy(
-                    for: modelDownloadURL,
-                    label: "Qwen3-ASR model",
-                    allowMissingChecksum: true
-                )) ?? .allowMissingChecksum
+                checksumPolicy: modelChecksumPolicy
             )
             mmprojDownloader.start(
                 from: mmprojDownloadURL,
                 to: URL(fileURLWithPath: effectiveMMProjPath),
-                checksumPolicy: (try? ModelDownloadIntegrity.checksumPolicy(
-                    for: mmprojDownloadURL,
-                    label: "Qwen3-ASR mmproj",
-                    allowMissingChecksum: true
-                )) ?? .allowMissingChecksum
+                checksumPolicy: mmprojChecksumPolicy
             )
         }
     }
@@ -2025,7 +2042,7 @@ private struct NvidiaNemotronASRModelRow: View {
                 Button {
                     startDownloads()
                 } label: {
-                    Label(modelInstalled ? "Update" : "Download", systemImage: "arrow.down.circle")
+                    Label(modelInstalled ? "Reinstall" : "Download", systemImage: "arrow.down.circle")
                 }
                 .disabled(anyDownloadURLEmpty)
                 Button(role: .destructive) {
@@ -2086,14 +2103,15 @@ private struct NvidiaNemotronASRModelRow: View {
 
     private func startDownload(file: NvidiaNemotronASRFileSpec, path: String, url: String, downloader: ModelDownloader) {
         guard let downloadURL = URL(string: url.trimmingCharacters(in: .whitespacesAndNewlines)) else { return }
+        guard let checksumPolicy = strictDownloadChecksumPolicy(
+            for: downloadURL,
+            label: file.label,
+            downloader: downloader
+        ) else { return }
         downloader.start(
             from: downloadURL,
             to: URL(fileURLWithPath: path),
-            checksumPolicy: (try? ModelDownloadIntegrity.checksumPolicy(
-                for: downloadURL,
-                label: file.label,
-                allowMissingChecksum: true
-            )) ?? .allowMissingChecksum,
+            checksumPolicy: checksumPolicy,
             expectedBytes: file.expectedBytes
         )
     }
@@ -2637,6 +2655,7 @@ struct CorrectionSettingsView: View {
         externalLLMDetail = report.detail
         externalLLMModels = report.modelIDs
         if report.ok {
+            let previousModel = externalLLMModel.trimmingCharacters(in: .whitespacesAndNewlines)
             let refreshedModel = ExternalCompatibleCorrectorService.modelSelectionAfterRefresh(
                 current: externalLLMModel,
                 available: report.modelIDs,
@@ -2644,6 +2663,11 @@ struct CorrectionSettingsView: View {
             )
             if refreshedModel != externalLLMModel {
                 externalLLMModel = refreshedModel
+                if previousModel.isEmpty {
+                    externalLLMDetail = "Selected \(refreshedModel). \(report.detail)"
+                } else {
+                    externalLLMDetail = "Previous model \(previousModel) is not listed. Switched to \(refreshedModel)."
+                }
             }
         }
     }
@@ -2720,7 +2744,7 @@ private struct ModelDownloadRow: View {
                     startDownload()
                 } label: {
                     Label(
-                        modelExists ? "Update" : "Download",
+                        modelExists ? "Reinstall" : "Download",
                         systemImage: "arrow.down.circle"
                     )
                 }
@@ -2780,14 +2804,15 @@ private struct ModelDownloadRow: View {
         Task { @MainActor in
             try? AppPaths.ensureDirectories()
             await CorrectorFactory.shared.shutdownAll()
+            guard let checksumPolicy = strictDownloadChecksumPolicy(
+                for: u,
+                label: spec.label,
+                downloader: downloader
+            ) else { return }
             downloader.start(
                 from: u,
                 to: dest,
-                checksumPolicy: (try? ModelDownloadIntegrity.checksumPolicy(
-                    for: u,
-                    label: spec.label,
-                    allowMissingChecksum: true
-                )) ?? .allowMissingChecksum
+                checksumPolicy: checksumPolicy
             )
         }
     }
@@ -3384,17 +3409,24 @@ struct BridgeSettingsView: View {
     }
 
     private func copyPairingJSON() {
-        guard let text = pairingPayloadJSONString() else { return }
-        copyToClipboard(text)
+        copyToClipboard(pairingPayloadJSONString())
         copiedMessage = "JSON copied"
     }
 
     /// Shared encoder for clipboard + QR consumers. Compact (no
     /// `.prettyPrinted`) so the QR is denser; iOS parser tolerates both.
-    private func pairingPayloadJSONString() -> String? {
+    private func pairingPayloadJSONString() -> String {
         let payload = BridgePairingPayload.current()
-        guard let data = try? BridgeJSON.encodeSorted(payload) else { return nil }
-        return String(data: data, encoding: .utf8)
+        let data: Data
+        do {
+            data = try BridgeJSON.encodeSorted(payload)
+        } catch {
+            preconditionFailure("Could not encode pairing payload: \(error)")
+        }
+        guard let text = String(data: data, encoding: .utf8) else {
+            preconditionFailure("Pairing payload JSON was not UTF-8")
+        }
+        return text
     }
 
     private func copyToClipboard(_ text: String) {
@@ -3924,7 +3956,7 @@ struct DiagnosticsSettingsView: View {
                 HStack {
                     Text("Subsystem")
                     Spacer()
-                    Text(Bundle.main.bundleIdentifier ?? "com.example.typeforme.mac").foregroundStyle(.secondary).textSelection(.enabled)
+                    Text(BundleIdentity.mainBundleIdentifier).foregroundStyle(.secondary).textSelection(.enabled)
                 }
                 Text("Open Console.app and filter by Subsystem to see categorized live logs (audio, asr, llm, hotkey, coordinator, …).")
                     .font(.footnote).foregroundStyle(.secondary)

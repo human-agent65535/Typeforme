@@ -13,7 +13,7 @@ enum BridgeClientIdentity {
         request.setValue("Typeforme Mac", forHTTPHeaderField: BridgeClientIdentityHeaders.name)
         request.setValue("macOS", forHTTPHeaderField: BridgeClientIdentityHeaders.platform)
         request.setValue(
-            Bundle.main.bundleIdentifier ?? "com.example.typeforme.mac",
+            BundleIdentity.mainBundleIdentifier,
             forHTTPHeaderField: BridgeClientIdentityHeaders.bundleID
         )
     }

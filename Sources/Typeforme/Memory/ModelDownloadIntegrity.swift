@@ -20,7 +20,6 @@ enum ModelDownloadIntegrityError: LocalizedError {
 
 enum ModelDownloadChecksumPolicy: Equatable, Sendable {
     case verifySHA256(String)
-    case allowMissingChecksum
 }
 
 enum ModelDownloadIntegrity {
@@ -38,22 +37,19 @@ enum ModelDownloadIntegrity {
         "https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-Q4_K_M.gguf": "aaf42c8b7c3cab2bf3d69c355048d4a0ee9973d48f16c731c0520ee914699223",
         "https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf": "00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4",
         "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf": "03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8",
+        "https://huggingface.co/altunenes/parakeet-rs/resolve/main/nemotron-3.5-asr-streaming-0.6b-onnx/encoder.onnx": "d569fbe78b48fbb04e169d324f5d25463838ceed7b5fc3bfe209872441979bd9",
+        "https://huggingface.co/altunenes/parakeet-rs/resolve/main/nemotron-3.5-asr-streaming-0.6b-onnx/encoder.onnx.data": "7584f85df76bc9ae6fbdfa53aa8d97b07a842525d1c501d536d77fd9e4f57ac7",
+        "https://huggingface.co/altunenes/parakeet-rs/resolve/main/nemotron-3.5-asr-streaming-0.6b-onnx/decoder_joint.onnx": "634dfadf24cb4f73c2fae170b36611d68db48186426882cbc8f7e02ed9f2bb29",
+        "https://huggingface.co/altunenes/parakeet-rs/resolve/main/nemotron-3.5-asr-streaming-0.6b-onnx/tokenizer.model": "ce3895e40806f02a26c3a225161b96ef682d6c0054bae32a245dec4258d7d291",
     ]
 
     static func expectedSHA256(for url: URL) -> String? {
         expectedSHA256ByCanonicalURL[canonicalURLString(url)]
     }
 
-    static func checksumPolicy(
-        for url: URL,
-        label: String,
-        allowMissingChecksum: Bool = false
-    ) throws -> ModelDownloadChecksumPolicy {
+    static func checksumPolicy(for url: URL, label: String) throws -> ModelDownloadChecksumPolicy {
         if let expectedSHA256 = expectedSHA256(for: url) {
             return .verifySHA256(expectedSHA256)
-        }
-        if allowMissingChecksum {
-            return .allowMissingChecksum
         }
         throw ModelDownloadIntegrityError.missingChecksum(
             label: label,
@@ -63,7 +59,7 @@ enum ModelDownloadIntegrity {
 
     static func validateFile(
         at url: URL,
-        checksumPolicy: ModelDownloadChecksumPolicy = .allowMissingChecksum,
+        checksumPolicy: ModelDownloadChecksumPolicy? = nil,
         expectedBytes: Int64? = nil,
         label: String
     ) throws {
@@ -78,7 +74,7 @@ enum ModelDownloadIntegrity {
             }
         }
 
-        if case .verifySHA256(let expectedSHA256) = checksumPolicy {
+        if case .verifySHA256(let expectedSHA256)? = checksumPolicy {
             let actual = try sha256Hex(of: url)
             guard actual.caseInsensitiveCompare(expectedSHA256) == .orderedSame else {
                 throw ModelDownloadIntegrityError.checksumMismatch(

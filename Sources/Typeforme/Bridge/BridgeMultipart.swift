@@ -622,9 +622,15 @@ enum BridgeMultipart {
     }
 
     private static func jsonString<T: Encodable>(_ value: T) -> String {
-        guard let data = try? JSONEncoder().encode(value),
-              let text = String(data: data, encoding: .utf8)
-        else { return "[]" }
+        let data: Data
+        do {
+            data = try JSONEncoder().encode(value)
+        } catch {
+            preconditionFailure("Could not encode multipart JSON field: \(error)")
+        }
+        guard let text = String(data: data, encoding: .utf8) else {
+            preconditionFailure("Multipart JSON field was not UTF-8")
+        }
         return text
     }
 }

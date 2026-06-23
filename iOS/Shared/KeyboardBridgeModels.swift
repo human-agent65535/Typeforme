@@ -2,23 +2,32 @@ import CryptoKit
 import Foundation
 
 enum TypeformeBundleConfiguration {
-    static let fallbackBundlePrefix = "com.example"
     static let productIdentifier = "typeforme"
 
     static var bundlePrefix: String {
-        infoString("TypeformeBundlePrefix") ?? fallbackBundlePrefix
+        requiredInfoString("TypeformeBundlePrefix")
     }
 
     static var hostBundleIdentifier: String {
-        infoString("TypeformeHostBundleIdentifier") ?? "\(bundlePrefix).\(productIdentifier)"
+        requiredInfoString("TypeformeHostBundleIdentifier")
     }
 
     static var keyboardBundleIdentifier: String {
-        infoString("TypeformeKeyboardBundleIdentifier") ?? "\(hostBundleIdentifier).keyboard"
+        requiredInfoString("TypeformeKeyboardBundleIdentifier")
     }
 
     static var appGroupIdentifier: String {
-        infoString("TypeformeAppGroupIdentifier") ?? "group.\(hostBundleIdentifier)"
+        requiredInfoString("TypeformeAppGroupIdentifier")
+    }
+
+    static var currentBundleIdentifier: String {
+        guard let identifier = Bundle.main.bundleIdentifier?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+            !identifier.isEmpty
+        else {
+            preconditionFailure("Typeforme requires CFBundleIdentifier at runtime")
+        }
+        return identifier
     }
 
     static var keyboardNotificationNamespace: String {
@@ -36,6 +45,13 @@ enum TypeformeBundleConfiguration {
         let value = Bundle.main.object(forInfoDictionaryKey: key) as? String
         let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private static func requiredInfoString(_ key: String) -> String {
+        guard let value = infoString(key) else {
+            preconditionFailure("Typeforme requires \(key) in Info.plist")
+        }
+        return value
     }
 }
 
@@ -360,9 +376,15 @@ struct KeyboardDefaultsPayload: Codable, Equatable {
     var stableSignature: String {
         var payload = self
         payload.updatedAt = 0
-        guard let data = try? Self.sortedEncoder.encode(payload),
-              let text = String(data: data, encoding: .utf8)
-        else { return UUID().uuidString }
+        let data: Data
+        do {
+            data = try Self.sortedEncoder.encode(payload)
+        } catch {
+            preconditionFailure("Could not encode keyboard defaults signature: \(error)")
+        }
+        guard let text = String(data: data, encoding: .utf8) else {
+            preconditionFailure("Keyboard defaults signature JSON was not UTF-8")
+        }
         return text
     }
 
@@ -391,8 +413,11 @@ struct KeyboardDefaultsPayload: Codable, Equatable {
     }
 
     private static func rimeUserPhrasesRevision(_ phrases: [String]) -> String {
-        guard let data = try? JSONSerialization.data(withJSONObject: phrases, options: [.sortedKeys]) else {
-            return ""
+        let data: Data
+        do {
+            data = try JSONSerialization.data(withJSONObject: phrases, options: [.sortedKeys])
+        } catch {
+            preconditionFailure("Could not encode Rime user phrases revision: \(error)")
         }
         let digest = SHA256.hash(data: data)
         return digest.map { String(format: "%02x", $0) }.joined()
