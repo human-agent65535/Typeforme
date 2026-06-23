@@ -23,7 +23,9 @@ struct HUDView: View {
             return coordinator.voicePreviewHUDExpanded
         case .recording, .transcribing, .correcting:
             return true
-        case .inserting, .success, .error:
+        case .success:
+            return !voicePreviewText.isEmpty
+        case .inserting, .error:
             return false
         }
     }
@@ -136,7 +138,10 @@ struct HUDView: View {
                     .foregroundStyle(.orange)
                     .lineLimit(1)
             }
-            VoicePreviewActionBar(coordinator: coordinator)
+            VoicePreviewActionBar(
+                coordinator: coordinator,
+                drawsChrome: usesActionBarOnlySurface
+            )
         }
         .padding(.horizontal, voicePreviewText.isEmpty ? 6 : 18)
         .padding(.top, voicePreviewText.isEmpty ? 6 : 14)
@@ -173,23 +178,10 @@ struct HUDView: View {
             shape
                 .fill(.ultraThinMaterial)
                 .overlay(
-                    // State-coloured glow along the top edge, fades into the body.
-                    shape
-                        .strokeBorder(stateColor.opacity(0.35), lineWidth: 0.8)
-                        .mask(
-                            LinearGradient(
-                                colors: [.black, .black.opacity(0.0)],
-                                startPoint: .top,
-                                endPoint: .center
-                            )
-                        )
-                        .opacity(stateColor == .clear ? 0 : 1)
-                )
-                .overlay(
                     // Hairline border so the capsule has a defined edge in any bg.
                     // `.separatorColor` is the system semantic for thin dividers
-                    // and reads correctly in both light + dark mode — earlier we
-                    // hardcoded white-opacity, which was invisible in light mode.
+                    // and reads correctly in both light + dark mode; hardcoded
+                    // white-opacity was invisible in light mode.
                     shape.strokeBorder(Color(nsColor: .separatorColor), lineWidth: 0.5)
                 )
         }
@@ -438,6 +430,7 @@ private struct ChipStyle: ViewModifier {
 /// ✕ staying live as Cancel the whole time.
 private struct VoicePreviewActionBar: View {
     @ObservedObject var coordinator: DictationCoordinator
+    let drawsChrome: Bool
 
     var body: some View {
         HStack(spacing: 4) {
@@ -446,6 +439,8 @@ private struct VoicePreviewActionBar: View {
                 recordingCluster
             case .transcribing, .correcting:
                 processingCluster
+            case .success:
+                successCluster
             default:
                 idleCluster
             }
@@ -475,6 +470,8 @@ private struct VoicePreviewActionBar: View {
             Button {
                 if coordinator.state == .idle {
                     coordinator.collapseVoicePreviewHUD()
+                } else if coordinator.state == .success {
+                    coordinator.dismissVoicePreviewHUDFromKeyboard()
                 } else {
                     Task { await coordinator.cancelDictation() }
                 }
@@ -485,20 +482,29 @@ private struct VoicePreviewActionBar: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .foregroundStyle(coordinator.state == .idle ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.red))
-            .help(coordinator.state == .idle ? "Collapse (Esc)" : "Cancel (Esc)")
+            .foregroundStyle(closeButtonTint)
+            .help(closeButtonHelp)
         }
         .padding(5)
         .frame(maxWidth: .infinity)
-        .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(.ultraThinMaterial)
+        .background {
+            if drawsChrome {
+                Capsule(style: .continuous)
+                    .fill(.ultraThinMaterial)
+            }
+        }
+        .overlay {
+            if drawsChrome {
+                Capsule(style: .continuous)
+                    .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 0.5)
+            }
+        }
+        .shadow(
+            color: drawsChrome ? Color.black.opacity(0.14) : Color.clear,
+            radius: drawsChrome ? 14 : 0,
+            x: 0,
+            y: drawsChrome ? 8 : 0
         )
-        .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 0.5)
-        )
-        .shadow(color: Color.black.opacity(0.14), radius: 14, x: 0, y: 8)
     }
 
     private var idleCluster: some View {
@@ -526,7 +532,6 @@ private struct VoicePreviewActionBar: View {
     private var recordingCluster: some View {
         HStack(spacing: 10) {
             RecordingDot()
-                .padding(.leading, 8)
             WaveformView(level: coordinator.audioLevel, state: .recording)
                 .frame(height: 24)
             RecordingElapsedLabel(
@@ -570,7 +575,6 @@ private struct VoicePreviewActionBar: View {
                 symbol: coordinator.state == .correcting ? "sparkles" : "waveform",
                 tint: coordinator.state == .correcting ? .purple : .blue
             )
-            .padding(.leading, 4)
             Text(processingStatusText)
                 .font(.system(size: 11, weight: .semibold, design: .rounded))
                 .foregroundStyle(.secondary)
@@ -586,6 +590,48 @@ private struct VoicePreviewActionBar: View {
         return coordinator.state == .correcting
             ? NSLocalizedString("Refining…", comment: "HUD status")
             : NSLocalizedString("Transcribing…", comment: "HUD status")
+    }
+
+    private var successCluster: some View {
+        let message = successMessage
+        let isWarning = coordinator.lastWarning?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        let tint: Color = isWarning ? .orange : .green
+        return HStack(spacing: 8) {
+            Image(systemName: isWarning ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(tint)
+            Text(message)
+                .font(.system(size: 11, weight: .semibold, design: .rounded))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+        }
+        .layoutPriority(1)
+    }
+
+    private var successMessage: String {
+        let trimmed = coordinator.lastWarning?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? NSLocalizedString("Done", comment: "HUD status") : trimmed
+    }
+
+    private var closeButtonTint: AnyShapeStyle {
+        switch coordinator.state {
+        case .idle, .success:
+            return AnyShapeStyle(.secondary)
+        default:
+            return AnyShapeStyle(Color.red)
+        }
+    }
+
+    private var closeButtonHelp: String {
+        switch coordinator.state {
+        case .idle:
+            return "Collapse (Esc)"
+        case .success:
+            return "Dismiss (Esc)"
+        default:
+            return "Cancel (Esc)"
+        }
     }
 }
 

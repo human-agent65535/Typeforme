@@ -38,9 +38,9 @@ final class HUDWindowController {
     private static let entranceLift: CGFloat = 14
     private static let edgePadding: CGFloat = 8
     /// Chrome around the preview text inside the panel:
-    ///   top padding (14) + bottom padding (6) + VStack spacing (20) + chip row (~28) + small safety buffer (4).
+    ///   top padding (14) + bottom padding (6) + VStack spacing (12) + inline action row (~36) + safety buffer (6).
     /// Matches `HUDView.expandedPreviewBody`'s natural height exactly.
-    private static let previewChromeHeight: CGFloat = 14 + 6 + 20 + 28 + 4
+    private static let previewChromeHeight: CGFloat = 14 + 6 + 12 + 36 + 6
     private static let previewWarningHeight: CGFloat = 36
     private static let livePartialWidthBucket: CGFloat = 72
     /// The anchor `y` is the BOTTOM edge of the panel. Persisted to disk in
@@ -70,9 +70,8 @@ final class HUDWindowController {
         // intrinsicContentSize. Without this, the panel kept growing back to
         // SwiftUI's natural size a moment after our setFrame settled.
         hosting.sizingOptions = []
-        // NSHostingView is layer-backed; the four corners outside the capsule
-        // would otherwise paint an opaque white square that the system shadow
-        // traces, producing a rectangular halo.
+        // NSHostingView is layer-backed; keep its layer transparent so only
+        // the SwiftUI rounded HUD surface paints the borderless panel.
         hosting.wantsLayer = true
         hosting.layer?.backgroundColor = NSColor.clear.cgColor
         panel.contentView = hosting
@@ -300,7 +299,9 @@ final class HUDWindowController {
             return coordinator.voicePreviewHUDExpanded
         case .recording, .transcribing, .correcting:
             return true
-        case .inserting, .success, .error:
+        case .success:
+            return !voicePreviewText(for: state).isEmpty
+        case .inserting, .error:
             return false
         }
     }

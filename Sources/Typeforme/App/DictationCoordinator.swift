@@ -51,6 +51,7 @@ final class DictationCoordinator: ObservableObject {
     private var nvidiaLivePreviewSession: NvidiaNemotronLivePreviewSession?
 
     private static let errorResetDelay: TimeInterval = 8.0
+    private static let successResetDelay: TimeInterval = 1.8
     private static let degradedSuccessResetDelay: TimeInterval = 1.8
     private static let minimumToggleStopInterval: TimeInterval = 0.6
     private static let nvidiaLivePreviewFinishTimeout: TimeInterval = 4
@@ -1124,7 +1125,7 @@ final class DictationCoordinator: ObservableObject {
             lastWarning = warning
             transition(to: .success)
             scheduleAutoReset(
-                after: warning == nil ? 0.8 : Self.degradedSuccessResetDelay,
+                after: warning == nil ? Self.successResetDelay : Self.degradedSuccessResetDelay,
                 keepVoicePreviewExpanded: true
             )
         } catch is CancellationError {
@@ -1155,7 +1156,7 @@ final class DictationCoordinator: ObservableObject {
             lastWarning = warning
             transition(to: .success)
             scheduleAutoReset(
-                after: warning == nil ? 0.8 : Self.degradedSuccessResetDelay,
+                after: warning == nil ? Self.successResetDelay : Self.degradedSuccessResetDelay,
                 keepVoicePreviewExpanded: true
             )
         } catch is CancellationError {
@@ -1200,7 +1201,7 @@ final class DictationCoordinator: ObservableObject {
             lastWarning = warning
             transition(to: .success)
             scheduleAutoReset(
-                after: warning == nil ? 0.8 : Self.degradedSuccessResetDelay,
+                after: warning == nil ? Self.successResetDelay : Self.degradedSuccessResetDelay,
                 keepVoicePreviewExpanded: true
             )
         } catch is CancellationError {

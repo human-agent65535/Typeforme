@@ -27,7 +27,10 @@ final class HUDPanel: NSPanel {
         )
         isOpaque = false
         backgroundColor = .clear
-        hasShadow = true
+        // AppKit shadows are rectangular while a borderless clear panel is
+        // being resized, which shows up as a square outline before SwiftUI's
+        // rounded HUD surface catches up.
+        hasShadow = false
         level = .floating
         becomesKeyOnlyIfNeeded = true
         collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
