@@ -231,9 +231,6 @@ final class BridgeService {
         if let autoCommit = request.autoCommit {
             UserDefaults.standard.set(autoCommit, forKey: AppSettings.Keys.correctionAutoCommit)
         }
-        if let debugMode = request.debugMode {
-            UserDefaults.standard.set(debugMode, forKey: AppSettings.Keys.diagnosticsDebugMode)
-        }
         if let userDictionary = request.userDictionary {
             dictionary.replaceEntries(userDictionary)
         }

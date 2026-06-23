@@ -90,23 +90,7 @@ struct BridgeClient: Sendable {
         _ settings: BridgeMacSettingsPayload,
         timeout: TimeInterval = 15
     ) async throws -> BridgeMacSettingsPayload {
-        let payload = BridgeSettingsUpdateRequest(
-            enabledRecognitionSources: settings.enabledRecognitionSources,
-            asrModelIDsByRecognitionSource: settings.asrModelIDsByRecognitionSource,
-            languageIDs: settings.languageIDs,
-            asrTimeoutSecByRecognitionSource: settings.asrTimeoutSecByRecognitionSource,
-            correctionBackend: settings.correctionBackend,
-            correctionTimeoutMs: settings.correctionTimeoutMs,
-            correctionColdTimeoutMs: settings.correctionColdTimeoutMs,
-            externalLLMBaseURL: settings.externalLLMBaseURL,
-            externalLLMModel: settings.externalLLMModel,
-            livePreviewSource: settings.livePreviewSource,
-            correctionMode: settings.correctionMode.rawValue,
-            numberOutputPreference: settings.numberOutputPreference.rawValue,
-            punctuationPreference: settings.punctuationPreference.rawValue,
-            autoCommit: settings.autoCommit,
-            userDictionary: settings.userDictionary
-        )
+        let payload = BridgeSettingsUpdateRequest(editableSnapshot: settings.editableSnapshot)
         let endpoint = BridgeAPIEndpoint.settingsWrite
         return try await request(path: endpoint.path, method: endpoint.method, json: payload, timeout: timeout)
     }

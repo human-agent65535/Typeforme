@@ -234,6 +234,26 @@ struct BridgeSettingsPayload: Codable, Sendable {
         )
     }
 
+    var editableSnapshot: BridgeSettingsEditableSnapshot {
+        BridgeSettingsEditableSnapshot(
+            enabledRecognitionSources: enabledRecognitionSources,
+            asrModelIDsByRecognitionSource: asrModelIDsByRecognitionSource,
+            languageIDs: languageIDs,
+            asrTimeoutSecByRecognitionSource: asrTimeoutSecByRecognitionSource,
+            correctionBackend: correctionBackend,
+            correctionTimeoutMs: correctionTimeoutMs,
+            correctionColdTimeoutMs: correctionColdTimeoutMs,
+            externalLLMBaseURL: externalLLMBaseURL,
+            externalLLMModel: externalLLMModel,
+            livePreviewSource: livePreviewSource,
+            correctionMode: correctionMode,
+            numberOutputPreference: numberOutputPreference,
+            punctuationPreference: punctuationPreference,
+            autoCommit: autoCommit,
+            userDictionary: userDictionary
+        )
+    }
+
     static func settingsRevision(for payload: BridgeSettingsPayload) -> String {
         settingsRevision(for: BridgeSettingsRevisionPayload(payload))
     }
@@ -272,22 +292,7 @@ struct BridgeSettingsPayload: Codable, Sendable {
     }
 
     private static func normalizedUserDictionary(_ entries: [DictionaryEntry]) -> [DictionaryEntry] {
-        var seenIDs = Set<UUID>()
-        return entries.compactMap { entry in
-            let normalized = DictionaryEntry(
-                id: entry.id,
-                type: entry.type,
-                surface: entry.surface
-            )
-            guard normalized.isValid else { return nil }
-            guard seenIDs.insert(normalized.id).inserted else { return nil }
-            return normalized
-        }
-        .sorted {
-            if $0.type != $1.type { return $0.type < $1.type }
-            if $0.surface != $1.surface { return $0.surface < $1.surface }
-            return $0.id.uuidString < $1.id.uuidString
-        }
+        DictionaryEntry.normalizedEntries(entries)
     }
 
     private static func rimeUserPhrases(from entries: [DictionaryEntry]) -> [String] {
@@ -544,19 +549,12 @@ private struct BridgeResolvedSettings {
     }
 
     func revisionPayload(userDictionary: [DictionaryEntry]) -> BridgeSettingsRevisionPayload {
-        BridgeSettingsRevisionPayload(
+        let editableSnapshot = BridgeSettingsEditableSnapshot(
             enabledRecognitionSources: sources.map(\.rawValue),
-            recognitionSourceOptions: BridgeSettingsPayload.controllableRecognitionSources,
             asrModelIDsByRecognitionSource: BridgeSettingsPayload.currentASRModelIDsByRecognitionSource,
-            asrModelOptionsByRecognitionSource: BridgeSettingsPayload.controllableASRModelOptionsByRecognitionSource,
             languageIDs: languageIDs,
-            supportedLanguages: supportedLanguages,
-            supportedLanguagesByRecognitionSource: supportedBySource,
             asrTimeoutSecByRecognitionSource: BridgeSettingsPayload.currentASRTimeoutSecByRecognitionSource,
             correctionBackend: correctionBackend.rawValue,
-            correctionBackendOptions: BridgeSettingsPayload.controllableCorrectionBackends.map {
-                BridgeSettingOption(id: $0.rawValue, displayName: $0.displayName)
-            },
             correctionTimeoutMs: AppSettings.correctionTimeoutMs,
             correctionColdTimeoutMs: AppSettings.correctionColdTimeoutMs,
             externalLLMBaseURL: AppSettings.externalLLMBaseURL,
@@ -566,34 +564,28 @@ private struct BridgeResolvedSettings {
             numberOutputPreference: AppSettings.numberOutputPreference.rawValue,
             punctuationPreference: AppSettings.punctuationPreference.rawValue,
             autoCommit: AppSettings.autoCommit,
-            debugMode: AppSettings.diagnosticsDebugMode,
             userDictionary: userDictionary
+        )
+        return BridgeSettingsRevisionPayload(
+            editableSnapshot: editableSnapshot,
+            recognitionSourceOptions: BridgeSettingsPayload.controllableRecognitionSources,
+            asrModelOptionsByRecognitionSource: BridgeSettingsPayload.controllableASRModelOptionsByRecognitionSource,
+            supportedLanguages: supportedLanguages,
+            supportedLanguagesByRecognitionSource: supportedBySource,
+            correctionBackendOptions: BridgeSettingsPayload.controllableCorrectionBackends.map {
+                BridgeSettingOption(id: $0.rawValue, displayName: $0.displayName)
+            }
         )
     }
 }
 
 private struct BridgeSettingsRevisionPayload: Encodable {
-    let enabledRecognitionSources: [String]
+    let editableSnapshot: BridgeSettingsEditableSnapshot
     let recognitionSourceOptions: [BridgeSettingOption]
-    let asrModelIDsByRecognitionSource: [String: String]
     let asrModelOptionsByRecognitionSource: [String: [BridgeSettingOption]]
-    let languageIDs: [String]
     let supportedLanguages: [BridgeLanguageOption]
     let supportedLanguagesByRecognitionSource: [String: [BridgeLanguageOption]]
-    let asrTimeoutSecByRecognitionSource: [String: Double]
-    let correctionBackend: String
     let correctionBackendOptions: [BridgeSettingOption]
-    let correctionTimeoutMs: Int
-    let correctionColdTimeoutMs: Int
-    let externalLLMBaseURL: String?
-    let externalLLMModel: String?
-    let livePreviewSource: String
-    let correctionMode: String
-    let numberOutputPreference: String
-    let punctuationPreference: String
-    let autoCommit: Bool
-    let debugMode: Bool
-    let userDictionary: [DictionaryEntry]
 
     enum CodingKeys: String, CodingKey {
         case enabledRecognitionSources = "enabled_recognition_sources"
@@ -615,80 +607,58 @@ private struct BridgeSettingsRevisionPayload: Encodable {
         case numberOutputPreference = "number_output_preference"
         case punctuationPreference = "punctuation_preference"
         case autoCommit = "auto_commit"
-        case debugMode = "debug_mode"
         case userDictionary = "user_dictionary"
     }
 
     init(
-        enabledRecognitionSources: [String],
+        editableSnapshot: BridgeSettingsEditableSnapshot,
         recognitionSourceOptions: [BridgeSettingOption],
-        asrModelIDsByRecognitionSource: [String: String],
         asrModelOptionsByRecognitionSource: [String: [BridgeSettingOption]],
-        languageIDs: [String],
         supportedLanguages: [BridgeLanguageOption],
         supportedLanguagesByRecognitionSource: [String: [BridgeLanguageOption]],
-        asrTimeoutSecByRecognitionSource: [String: Double],
-        correctionBackend: String,
-        correctionBackendOptions: [BridgeSettingOption],
-        correctionTimeoutMs: Int,
-        correctionColdTimeoutMs: Int,
-        externalLLMBaseURL: String?,
-        externalLLMModel: String?,
-        livePreviewSource: String,
-        correctionMode: String,
-        numberOutputPreference: String,
-        punctuationPreference: String,
-        autoCommit: Bool,
-        debugMode: Bool,
-        userDictionary: [DictionaryEntry]
+        correctionBackendOptions: [BridgeSettingOption]
     ) {
-        self.enabledRecognitionSources = enabledRecognitionSources
+        self.editableSnapshot = editableSnapshot
         self.recognitionSourceOptions = recognitionSourceOptions
-        self.asrModelIDsByRecognitionSource = asrModelIDsByRecognitionSource
         self.asrModelOptionsByRecognitionSource = asrModelOptionsByRecognitionSource
-        self.languageIDs = languageIDs
         self.supportedLanguages = supportedLanguages
         self.supportedLanguagesByRecognitionSource = supportedLanguagesByRecognitionSource
-        self.asrTimeoutSecByRecognitionSource = asrTimeoutSecByRecognitionSource
-        self.correctionBackend = correctionBackend
         self.correctionBackendOptions = correctionBackendOptions
-        self.correctionTimeoutMs = correctionTimeoutMs
-        self.correctionColdTimeoutMs = correctionColdTimeoutMs
-        self.externalLLMBaseURL = externalLLMBaseURL
-        self.externalLLMModel = externalLLMModel
-        self.livePreviewSource = livePreviewSource
-        self.correctionMode = correctionMode
-        self.numberOutputPreference = numberOutputPreference
-        self.punctuationPreference = punctuationPreference
-        self.autoCommit = autoCommit
-        self.debugMode = debugMode
-        self.userDictionary = userDictionary
     }
 
     init(_ payload: BridgeSettingsPayload) {
         self.init(
-            enabledRecognitionSources: payload.enabledRecognitionSources,
+            editableSnapshot: payload.editableSnapshot,
             recognitionSourceOptions: payload.recognitionSourceOptions,
-            asrModelIDsByRecognitionSource: payload.asrModelIDsByRecognitionSource,
             asrModelOptionsByRecognitionSource: payload.asrModelOptionsByRecognitionSource,
-            languageIDs: payload.languageIDs,
             supportedLanguages: payload.supportedLanguages,
             supportedLanguagesByRecognitionSource: payload.supportedLanguagesByRecognitionSource,
-            asrTimeoutSecByRecognitionSource: payload.asrTimeoutSecByRecognitionSource,
-            correctionBackend: payload.correctionBackend,
-            correctionBackendOptions: payload.correctionBackendOptions,
-            correctionTimeoutMs: payload.correctionTimeoutMs,
-            correctionColdTimeoutMs: payload.correctionColdTimeoutMs,
-            externalLLMBaseURL: payload.externalLLMBaseURL,
-            externalLLMModel: payload.externalLLMModel,
-            livePreviewSource: payload.livePreviewSource,
-            correctionMode: payload.correctionMode,
-            numberOutputPreference: payload.numberOutputPreference,
-            punctuationPreference: payload.punctuationPreference,
-            autoCommit: payload.autoCommit,
-            debugMode: payload.debugMode,
-            userDictionary: payload.userDictionary
+            correctionBackendOptions: payload.correctionBackendOptions
         )
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(editableSnapshot.enabledRecognitionSources, forKey: .enabledRecognitionSources)
+        try container.encode(recognitionSourceOptions, forKey: .recognitionSourceOptions)
+        try container.encode(editableSnapshot.asrModelIDsByRecognitionSource, forKey: .asrModelIDsByRecognitionSource)
+        try container.encode(asrModelOptionsByRecognitionSource, forKey: .asrModelOptionsByRecognitionSource)
+        try container.encode(editableSnapshot.languageIDs, forKey: .languageIDs)
+        try container.encode(supportedLanguages, forKey: .supportedLanguages)
+        try container.encode(supportedLanguagesByRecognitionSource, forKey: .supportedLanguagesByRecognitionSource)
+        try container.encode(editableSnapshot.asrTimeoutSecByRecognitionSource, forKey: .asrTimeoutSecByRecognitionSource)
+        try container.encode(editableSnapshot.correctionBackend, forKey: .correctionBackend)
+        try container.encode(correctionBackendOptions, forKey: .correctionBackendOptions)
+        try container.encode(editableSnapshot.correctionTimeoutMs, forKey: .correctionTimeoutMs)
+        try container.encode(editableSnapshot.correctionColdTimeoutMs, forKey: .correctionColdTimeoutMs)
+        try container.encodeIfPresent(editableSnapshot.externalLLMBaseURL, forKey: .externalLLMBaseURL)
+        try container.encodeIfPresent(editableSnapshot.externalLLMModel, forKey: .externalLLMModel)
+        try container.encode(editableSnapshot.livePreviewSource, forKey: .livePreviewSource)
+        try container.encode(editableSnapshot.correctionMode, forKey: .correctionMode)
+        try container.encode(editableSnapshot.numberOutputPreference, forKey: .numberOutputPreference)
+        try container.encode(editableSnapshot.punctuationPreference, forKey: .punctuationPreference)
+        try container.encode(editableSnapshot.autoCommit, forKey: .autoCommit)
+        try container.encode(editableSnapshot.userDictionary, forKey: .userDictionary)
     }
 }
 

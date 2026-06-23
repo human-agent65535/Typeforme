@@ -23,6 +23,17 @@ struct BridgeSettingsRevisionTests {
         #expect(BridgeSettingsPayload.settingsRevision(for: payload) == revision)
     }
 
+    @Test func revisionIgnoresDerivedAndServerLocalFields() {
+        var payload = BridgeSettingsPayload.current()
+        let revision = BridgeSettingsPayload.settingsRevision(for: payload)
+
+        payload.settingsRevision = "server-sent-revision"
+        payload.rimeUserPhrases = ["derived phrase"]
+        payload.debugMode.toggle()
+
+        #expect(BridgeSettingsPayload.settingsRevision(for: payload) == revision)
+    }
+
     @Test func revisionChangesWhenConfigChanges() {
         var payload = BridgeSettingsPayload.current()
         let revision = BridgeSettingsPayload.settingsRevision(for: payload)

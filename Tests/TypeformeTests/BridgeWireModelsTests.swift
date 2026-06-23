@@ -60,7 +60,7 @@ struct BridgeWireModelsTests {
 
     @Test func settingsUpdateRequestEncodesSharedBridgeKeys() throws {
         let entryID = UUID(uuidString: "00000000-0000-0000-0000-000000000123")!
-        let request = BridgeSettingsUpdateRequest(
+        let snapshot = BridgeSettingsEditableSnapshot(
             enabledRecognitionSources: [RecognitionSource.qwen.rawValue],
             asrModelIDsByRecognitionSource: [RecognitionSource.qwen.rawValue: QwenASRModelCatalog.defaultID],
             languageIDs: ["en-US"],
@@ -75,11 +75,11 @@ struct BridgeWireModelsTests {
             numberOutputPreference: NumberOutputPreference.automatic.rawValue,
             punctuationPreference: PunctuationOutputPreference.normal.rawValue,
             autoCommit: true,
-            debugMode: false,
             userDictionary: [
                 DictionaryEntry(id: entryID, type: "person", surface: " Alice "),
             ]
         )
+        let request = BridgeSettingsUpdateRequest(editableSnapshot: snapshot)
 
         let object = try encodedJSONObject(request)
         #expect(object["enabled_recognition_sources"] as? [String] == [RecognitionSource.qwen.rawValue])
@@ -96,21 +96,50 @@ struct BridgeWireModelsTests {
         #expect(object["number_output_preference"] as? String == NumberOutputPreference.automatic.rawValue)
         #expect(object["punctuation_preference"] as? String == PunctuationOutputPreference.normal.rawValue)
         #expect(object["auto_commit"] as? Bool == true)
-        #expect(object["debug_mode"] as? Bool == false)
+        #expect(object["debug_mode"] == nil)
         let entries = try #require(object["user_dictionary"] as? [[String: Any]])
         #expect(entries.first?["surface"] as? String == "Alice")
     }
 
     @Test func settingsUpdateRequestDecodesPartialWrites() throws {
-        let data = Data(#"{"correction_timeout_ms":2000,"auto_commit":false}"#.utf8)
+        let data = Data(#"{"correction_timeout_ms":2000,"auto_commit":false,"debug_mode":true}"#.utf8)
 
         let request = try JSONDecoder().decode(BridgeSettingsUpdateRequest.self, from: data)
 
         #expect(request.enabledRecognitionSources == nil)
         #expect(request.correctionTimeoutMs == 2000)
         #expect(request.autoCommit == false)
-        #expect(request.debugMode == nil)
         #expect(request.userDictionary == nil)
+    }
+
+    @Test func editableSnapshotNormalizesUserDictionaryForComparison() {
+        let entryID = UUID(uuidString: "00000000-0000-0000-0000-000000000123")!
+
+        let snapshot = BridgeSettingsEditableSnapshot(
+            enabledRecognitionSources: [RecognitionSource.qwen.rawValue],
+            asrModelIDsByRecognitionSource: [:],
+            languageIDs: ["en-US"],
+            asrTimeoutSecByRecognitionSource: [:],
+            correctionBackend: CorrectionBackendKind.qwen35_2B.rawValue,
+            correctionTimeoutMs: 1500,
+            correctionColdTimeoutMs: 8000,
+            externalLLMBaseURL: nil,
+            externalLLMModel: nil,
+            livePreviewSource: VoiceLivePreviewSource.off.rawValue,
+            correctionMode: CorrectionMode.polish.rawValue,
+            numberOutputPreference: NumberOutputPreference.automatic.rawValue,
+            punctuationPreference: PunctuationOutputPreference.normal.rawValue,
+            autoCommit: true,
+            userDictionary: [
+                DictionaryEntry(id: entryID, type: " Person ", surface: "  Alice\tSmith  "),
+                DictionaryEntry(id: entryID, type: "other", surface: "duplicate"),
+                DictionaryEntry(type: "phrase", surface: " "),
+            ]
+        )
+
+        #expect(snapshot.userDictionary == [
+            DictionaryEntry(id: entryID, type: "person", surface: "Alice Smith"),
+        ])
     }
 
     @Test func dictateResponseKeepsClientCompatibleOptionalFields() throws {

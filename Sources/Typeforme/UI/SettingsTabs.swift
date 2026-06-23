@@ -528,8 +528,6 @@ struct ClientServerSettingsView: View {
                         }
                     }
                     .pickerStyle(.menu)
-
-                    Toggle("Server debug capture", isOn: debugModeBinding)
                 }
 
                 Section {
@@ -564,7 +562,7 @@ struct ClientServerSettingsView: View {
                         }
                         .disabled(!clientConfig.isConfigured)
                     }
-                    Text("After pulling, this page shows the active Server ASR, language, refine engine, default mode, auto-commit, and debug settings returned by /v1/settings.")
+                    Text("After pulling, this page shows the active Server ASR, language, refine engine, default mode, and auto-commit settings returned by /v1/settings.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -609,14 +607,6 @@ struct ClientServerSettingsView: View {
         } set: { value in
             draft?.punctuationPreference = value
             normalizeDraft()
-        }
-    }
-
-    private var debugModeBinding: Binding<Bool> {
-        Binding {
-            draft?.debugMode ?? false
-        } set: { value in
-            draft?.debugMode = value
         }
     }
 

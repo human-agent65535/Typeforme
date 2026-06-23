@@ -102,24 +102,7 @@ struct RemoteBridgeClient {
         _ settings: BridgeSettingsPayload,
         timeout: TimeInterval = 15
     ) async throws -> BridgeSettingsPayload {
-        let payload = BridgeSettingsUpdateRequest(
-            enabledRecognitionSources: settings.enabledRecognitionSources,
-            asrModelIDsByRecognitionSource: settings.asrModelIDsByRecognitionSource,
-            languageIDs: settings.languageIDs,
-            asrTimeoutSecByRecognitionSource: settings.asrTimeoutSecByRecognitionSource,
-            correctionBackend: settings.correctionBackend,
-            correctionTimeoutMs: settings.correctionTimeoutMs,
-            correctionColdTimeoutMs: settings.correctionColdTimeoutMs,
-            externalLLMBaseURL: settings.externalLLMBaseURL,
-            externalLLMModel: settings.externalLLMModel,
-            livePreviewSource: settings.livePreviewSource,
-            correctionMode: settings.correctionMode,
-            numberOutputPreference: settings.numberOutputPreference,
-            punctuationPreference: settings.punctuationPreference,
-            autoCommit: settings.autoCommit,
-            debugMode: settings.debugMode,
-            userDictionary: settings.userDictionary
-        )
+        let payload = BridgeSettingsUpdateRequest(editableSnapshot: settings.editableSnapshot)
         let endpoint = BridgeAPIEndpoint.settingsWrite
         var response: BridgeSettingsPayload = try await request(
             path: endpoint.path,

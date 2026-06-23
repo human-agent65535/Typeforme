@@ -501,6 +501,26 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
         source.isEnabled(forRecognitionSources: enabledSources)
     }
 
+    var editableSnapshot: BridgeSettingsEditableSnapshot {
+        BridgeSettingsEditableSnapshot(
+            enabledRecognitionSources: enabledRecognitionSources,
+            asrModelIDsByRecognitionSource: asrModelIDsByRecognitionSource,
+            languageIDs: languageIDs,
+            asrTimeoutSecByRecognitionSource: asrTimeoutSecByRecognitionSource,
+            correctionBackend: correctionBackend,
+            correctionTimeoutMs: correctionTimeoutMs,
+            correctionColdTimeoutMs: correctionColdTimeoutMs,
+            externalLLMBaseURL: externalLLMBaseURL,
+            externalLLMModel: externalLLMModel,
+            livePreviewSource: livePreviewSource,
+            correctionMode: correctionMode.rawValue,
+            numberOutputPreference: numberOutputPreference.rawValue,
+            punctuationPreference: punctuationPreference.rawValue,
+            autoCommit: autoCommit,
+            userDictionary: userDictionary
+        )
+    }
+
     enum CodingKeys: String, CodingKey {
         case enabledRecognitionSources = "enabled_recognition_sources"
         case recognitionSourceOptions = "recognition_source_options"
@@ -667,21 +687,7 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
         var right = other
         left.normalize()
         right.normalize()
-        return left.enabledRecognitionSources == right.enabledRecognitionSources
-            && left.asrModelIDsByRecognitionSource == right.asrModelIDsByRecognitionSource
-            && left.languageIDs == right.languageIDs
-            && left.asrTimeoutSecByRecognitionSource == right.asrTimeoutSecByRecognitionSource
-            && left.correctionBackend == right.correctionBackend
-            && left.correctionTimeoutMs == right.correctionTimeoutMs
-            && left.correctionColdTimeoutMs == right.correctionColdTimeoutMs
-            && left.externalLLMBaseURL == right.externalLLMBaseURL
-            && left.externalLLMModel == right.externalLLMModel
-            && left.livePreviewSource == right.livePreviewSource
-            && left.correctionMode == right.correctionMode
-            && left.numberOutputPreference == right.numberOutputPreference
-            && left.punctuationPreference == right.punctuationPreference
-            && left.autoCommit == right.autoCommit
-            && left.userDictionary == right.userDictionary
+        return left.editableSnapshot == right.editableSnapshot
     }
 
     private func normalizedLivePreviewSource(rawValue: String) -> MacLivePreviewSource {
