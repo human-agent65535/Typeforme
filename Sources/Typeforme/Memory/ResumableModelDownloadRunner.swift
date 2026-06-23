@@ -27,7 +27,7 @@ final class ResumableModelDownloadRunner: NSObject, URLSessionDownloadDelegate {
 
     private let destination: URL
     private let label: String
-    private let expectedSHA256: String?
+    private let checksumPolicy: ModelDownloadChecksumPolicy
     private let expectedBytes: Int64?
     private let onProgress: (@Sendable (Int64, Int64) -> Void)?
     private let onCompletion: (@Sendable (ModelDownloadCompletion) -> Void)?
@@ -37,14 +37,14 @@ final class ResumableModelDownloadRunner: NSObject, URLSessionDownloadDelegate {
     init(
         destination: URL,
         label: String? = nil,
-        expectedSHA256: String?,
+        checksumPolicy: ModelDownloadChecksumPolicy,
         expectedBytes: Int64?,
         onProgress: (@Sendable (Int64, Int64) -> Void)? = nil,
         onCompletion: (@Sendable (ModelDownloadCompletion) -> Void)? = nil
     ) {
         self.destination = destination
         self.label = label ?? destination.lastPathComponent
-        self.expectedSHA256 = expectedSHA256
+        self.checksumPolicy = checksumPolicy
         self.expectedBytes = expectedBytes
         self.onProgress = onProgress
         self.onCompletion = onCompletion
@@ -157,7 +157,7 @@ final class ResumableModelDownloadRunner: NSObject, URLSessionDownloadDelegate {
             )
             try ModelDownloadIntegrity.validateFile(
                 at: location,
-                expectedSHA256: expectedSHA256,
+                checksumPolicy: checksumPolicy,
                 expectedBytes: expectedBytes,
                 label: label
             )

@@ -4,6 +4,7 @@ import Foundation
 enum ModelDownloadIntegrityError: LocalizedError {
     case checksumMismatch(label: String, expected: String, actual: String)
     case sizeMismatch(label: String, expected: Int64, actual: Int64)
+    case missingChecksum(label: String, url: String)
 
     var errorDescription: String? {
         switch self {
@@ -11,8 +12,15 @@ enum ModelDownloadIntegrityError: LocalizedError {
             return "\(label) checksum mismatch. Expected \(expected), got \(actual)."
         case .sizeMismatch(let label, let expected, let actual):
             return "\(label) size mismatch. Expected \(ByteCountFormatter.string(fromByteCount: expected, countStyle: .file)), got \(ByteCountFormatter.string(fromByteCount: actual, countStyle: .file))."
+        case .missingChecksum(let label, let url):
+            return "\(label) download has no trusted checksum for \(url). Use a canonical Typeforme model URL or download the file manually after verifying it."
         }
     }
+}
+
+enum ModelDownloadChecksumPolicy: Equatable, Sendable {
+    case verifySHA256(String)
+    case allowMissingChecksum
 }
 
 enum ModelDownloadIntegrity {
@@ -36,9 +44,26 @@ enum ModelDownloadIntegrity {
         expectedSHA256ByCanonicalURL[canonicalURLString(url)]
     }
 
+    static func checksumPolicy(
+        for url: URL,
+        label: String,
+        allowMissingChecksum: Bool = false
+    ) throws -> ModelDownloadChecksumPolicy {
+        if let expectedSHA256 = expectedSHA256(for: url) {
+            return .verifySHA256(expectedSHA256)
+        }
+        if allowMissingChecksum {
+            return .allowMissingChecksum
+        }
+        throw ModelDownloadIntegrityError.missingChecksum(
+            label: label,
+            url: canonicalURLString(url)
+        )
+    }
+
     static func validateFile(
         at url: URL,
-        expectedSHA256: String? = nil,
+        checksumPolicy: ModelDownloadChecksumPolicy = .allowMissingChecksum,
         expectedBytes: Int64? = nil,
         label: String
     ) throws {
@@ -53,7 +78,7 @@ enum ModelDownloadIntegrity {
             }
         }
 
-        if let expectedSHA256 {
+        if case .verifySHA256(let expectedSHA256) = checksumPolicy {
             let actual = try sha256Hex(of: url)
             guard actual.caseInsensitiveCompare(expectedSHA256) == .orderedSame else {
                 throw ModelDownloadIntegrityError.checksumMismatch(

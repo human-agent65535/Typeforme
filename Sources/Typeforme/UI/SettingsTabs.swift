@@ -1802,12 +1802,20 @@ private struct QwenASRModelRow: View {
             modelDownloader.start(
                 from: modelDownloadURL,
                 to: URL(fileURLWithPath: effectiveModelPath),
-                expectedSHA256: ModelDownloadIntegrity.expectedSHA256(for: modelDownloadURL)
+                checksumPolicy: (try? ModelDownloadIntegrity.checksumPolicy(
+                    for: modelDownloadURL,
+                    label: "Qwen3-ASR model",
+                    allowMissingChecksum: true
+                )) ?? .allowMissingChecksum
             )
             mmprojDownloader.start(
                 from: mmprojDownloadURL,
                 to: URL(fileURLWithPath: effectiveMMProjPath),
-                expectedSHA256: ModelDownloadIntegrity.expectedSHA256(for: mmprojDownloadURL)
+                checksumPolicy: (try? ModelDownloadIntegrity.checksumPolicy(
+                    for: mmprojDownloadURL,
+                    label: "Qwen3-ASR mmproj",
+                    allowMissingChecksum: true
+                )) ?? .allowMissingChecksum
             )
         }
     }
@@ -2081,7 +2089,11 @@ private struct NvidiaNemotronASRModelRow: View {
         downloader.start(
             from: downloadURL,
             to: URL(fileURLWithPath: path),
-            expectedSHA256: ModelDownloadIntegrity.expectedSHA256(for: downloadURL),
+            checksumPolicy: (try? ModelDownloadIntegrity.checksumPolicy(
+                for: downloadURL,
+                label: file.label,
+                allowMissingChecksum: true
+            )) ?? .allowMissingChecksum,
             expectedBytes: file.expectedBytes
         )
     }
@@ -2771,7 +2783,11 @@ private struct ModelDownloadRow: View {
             downloader.start(
                 from: u,
                 to: dest,
-                expectedSHA256: ModelDownloadIntegrity.expectedSHA256(for: u)
+                checksumPolicy: (try? ModelDownloadIntegrity.checksumPolicy(
+                    for: u,
+                    label: spec.label,
+                    allowMissingChecksum: true
+                )) ?? .allowMissingChecksum
             )
         }
     }

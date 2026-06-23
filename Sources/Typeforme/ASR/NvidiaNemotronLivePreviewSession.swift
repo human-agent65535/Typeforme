@@ -42,6 +42,12 @@ final class NvidiaNemotronLivePreviewSession: @unchecked Sendable {
     private var stdoutEventCount = 0
     private var firstStdoutEventLogged = false
 
+    private struct SessionLogSnapshot {
+        let logID: String
+        let inputAudioMS: Int
+        let startedAt: Date
+    }
+
     static func start(
         languageIDs: [String],
         diagnosticID: String = UUID().uuidString,
@@ -89,8 +95,9 @@ final class NvidiaNemotronLivePreviewSession: @unchecked Sendable {
         )
         do {
             try process.run()
+            let snapshot = session.sessionLogSnapshot()
             Log.asr.notice(
-                "Nemotron live preview process started session=\(session.logID, privacy: .public) languages=\(supportedLanguageIDs.joined(separator: ","), privacy: .public)"
+                "Nemotron live preview process started session=\(snapshot.logID, privacy: .public) languages=\(supportedLanguageIDs.joined(separator: ","), privacy: .public)"
             )
             return session
         } catch {
@@ -159,6 +166,9 @@ final class NvidiaNemotronLivePreviewSession: @unchecked Sendable {
         diagnosticID: String,
         onTranscript: @escaping (String) -> Void
     ) {
+        audioQueue.sync {
+            resetConverterOnAudioQueue()
+        }
         lock.lock()
         self.diagnosticID = diagnosticID
         self.onTranscript = onTranscript
@@ -169,8 +179,6 @@ final class NvidiaNemotronLivePreviewSession: @unchecked Sendable {
         finalEventReceived = false
         resetEventReceived = false
         lastTranscript = nil
-        converter = nil
-        converterInputSampleRate = 0
         inputSampleCount = 0
         nextInputLogSampleCount = 16_000
         firstInputWriteLogged = false
@@ -181,15 +189,20 @@ final class NvidiaNemotronLivePreviewSession: @unchecked Sendable {
 
     func prepareForIdle(diagnosticID: String) {
         lock.lock()
+        inputClosed = true
+        lock.unlock()
+
+        audioQueue.sync {
+            resetConverterOnAudioQueue()
+        }
+
+        lock.lock()
         self.diagnosticID = diagnosticID
         self.onTranscript = { _ in }
         startedAt = Date()
-        inputClosed = true
         finalEventReceived = false
         resetEventReceived = false
         lastTranscript = nil
-        converter = nil
-        converterInputSampleRate = 0
         inputSampleCount = 0
         nextInputLogSampleCount = 16_000
         firstInputWriteLogged = false
@@ -234,8 +247,9 @@ final class NvidiaNemotronLivePreviewSession: @unchecked Sendable {
     func finishInput() {
         audioQueue.async {
             guard self.markInputClosed() else { return }
+            let snapshot = self.sessionLogSnapshot()
             Log.asr.notice(
-                "Nemotron live preview finish requested session=\(self.logID, privacy: .public) input_audio_ms=\(self.inputAudioMS, privacy: .public) elapsed_ms=\(Self.elapsedMS(since: self.startedAt), privacy: .public)"
+                "Nemotron live preview finish requested session=\(snapshot.logID, privacy: .public) input_audio_ms=\(snapshot.inputAudioMS, privacy: .public) elapsed_ms=\(Self.elapsedMS(since: snapshot.startedAt), privacy: .public)"
             )
             self.writeControlMarker(Self.finishMarkerBits)
         }
@@ -259,8 +273,9 @@ final class NvidiaNemotronLivePreviewSession: @unchecked Sendable {
     func cancelInputAndWaitForReset(timeout: TimeInterval) async -> Bool {
         audioQueue.async {
             guard self.markInputClosed() else { return }
+            let snapshot = self.sessionLogSnapshot()
             Log.asr.notice(
-                "Nemotron live preview reset requested session=\(self.logID, privacy: .public) input_audio_ms=\(self.inputAudioMS, privacy: .public) elapsed_ms=\(Self.elapsedMS(since: self.startedAt), privacy: .public)"
+                "Nemotron live preview reset requested session=\(snapshot.logID, privacy: .public) input_audio_ms=\(snapshot.inputAudioMS, privacy: .public) elapsed_ms=\(Self.elapsedMS(since: snapshot.startedAt), privacy: .public)"
             )
             self.writeControlMarker(Self.cancelMarkerBits)
         }
@@ -268,8 +283,9 @@ final class NvidiaNemotronLivePreviewSession: @unchecked Sendable {
     }
 
     func terminate(reason: String = "terminate") {
+        let snapshot = sessionLogSnapshot()
         Log.asr.notice(
-            "Nemotron live preview terminate session=\(self.logID, privacy: .public) reason=\(reason, privacy: .public) input_audio_ms=\(self.inputAudioMS, privacy: .public) elapsed_ms=\(Self.elapsedMS(since: self.startedAt), privacy: .public)"
+            "Nemotron live preview terminate session=\(snapshot.logID, privacy: .public) reason=\(reason, privacy: .public) input_audio_ms=\(snapshot.inputAudioMS, privacy: .public) elapsed_ms=\(Self.elapsedMS(since: snapshot.startedAt), privacy: .public)"
         )
         closeInputImmediately()
         if process.isRunning {
@@ -310,19 +326,26 @@ final class NvidiaNemotronLivePreviewSession: @unchecked Sendable {
     }
 
     private func recordInputWrite(byteCount: Int, sampleCount: Int, writeMS: Int) {
+        let log: (snapshot: SessionLogSnapshot, isFirst: Bool)?
+        lock.lock()
         inputSampleCount += sampleCount
         let shouldLog = !firstInputWriteLogged
             || inputSampleCount >= nextInputLogSampleCount
             || writeMS >= 100
-        guard shouldLog else { return }
-
-        let isFirst = !firstInputWriteLogged
-        firstInputWriteLogged = true
-        while inputSampleCount >= nextInputLogSampleCount {
-            nextInputLogSampleCount += 16_000
+        if shouldLog {
+            let isFirst = !firstInputWriteLogged
+            firstInputWriteLogged = true
+            while inputSampleCount >= nextInputLogSampleCount {
+                nextInputLogSampleCount += 16_000
+            }
+            log = (currentSessionLogSnapshotLocked(), isFirst)
+        } else {
+            log = nil
         }
+        lock.unlock()
+        guard let log else { return }
         Log.asr.debug(
-            "Nemotron live preview stdin write session=\(self.logID, privacy: .public) first=\(isFirst, privacy: .public) bytes=\(byteCount, privacy: .public) input_audio_ms=\(self.inputAudioMS, privacy: .public) write_ms=\(writeMS, privacy: .public) elapsed_ms=\(Self.elapsedMS(since: self.startedAt), privacy: .public)"
+            "Nemotron live preview stdin write session=\(log.snapshot.logID, privacy: .public) first=\(log.isFirst, privacy: .public) bytes=\(byteCount, privacy: .public) input_audio_ms=\(log.snapshot.inputAudioMS, privacy: .public) write_ms=\(writeMS, privacy: .public) elapsed_ms=\(Self.elapsedMS(since: log.snapshot.startedAt), privacy: .public)"
         )
     }
 
@@ -412,11 +435,18 @@ final class NvidiaNemotronLivePreviewSession: @unchecked Sendable {
         let lines = appendAndExtractLines(data, into: &stdoutBuffer)
         for line in lines {
             guard let payload = Self.parseTranscriptEvent(line) else { continue }
+            let snapshot: SessionLogSnapshot
+            let eventCount: Int
+            let isFirst: Bool
+            lock.lock()
             stdoutEventCount += 1
-            let isFirst = !firstStdoutEventLogged
+            eventCount = stdoutEventCount
+            isFirst = !firstStdoutEventLogged
             firstStdoutEventLogged = true
+            snapshot = currentSessionLogSnapshotLocked()
+            lock.unlock()
             Log.asr.debug(
-                "Nemotron live preview stdout session=\(self.logID, privacy: .public) event=\(payload.event ?? "unknown", privacy: .public) first=\(isFirst, privacy: .public) event_count=\(self.stdoutEventCount, privacy: .public) text_chars=\(payload.text?.count ?? 0, privacy: .public) input_audio_ms=\(self.inputAudioMS, privacy: .public) elapsed_ms=\(Self.elapsedMS(since: self.startedAt), privacy: .public)"
+                "Nemotron live preview stdout session=\(snapshot.logID, privacy: .public) event=\(payload.event ?? "unknown", privacy: .public) first=\(isFirst, privacy: .public) event_count=\(eventCount, privacy: .public) text_chars=\(payload.text?.count ?? 0, privacy: .public) input_audio_ms=\(snapshot.inputAudioMS, privacy: .public) elapsed_ms=\(Self.elapsedMS(since: snapshot.startedAt), privacy: .public)"
             )
             if let text = payload.text, !text.isEmpty {
                 recordTranscript(text)
@@ -565,8 +595,9 @@ final class NvidiaNemotronLivePreviewSession: @unchecked Sendable {
     }
 
     private func handleProcessTermination() {
+        let snapshot = sessionLogSnapshot()
         Log.asr.notice(
-            "Nemotron live preview process terminated session=\(self.logID, privacy: .public) input_audio_ms=\(self.inputAudioMS, privacy: .public) elapsed_ms=\(Self.elapsedMS(since: self.startedAt), privacy: .public)"
+            "Nemotron live preview process terminated session=\(snapshot.logID, privacy: .public) input_audio_ms=\(snapshot.inputAudioMS, privacy: .public) elapsed_ms=\(Self.elapsedMS(since: snapshot.startedAt), privacy: .public)"
         )
         drainRemainingOutput()
         resumeFinalWaiters(success: false)
@@ -745,12 +776,23 @@ final class NvidiaNemotronLivePreviewSession: @unchecked Sendable {
         return data
     }
 
-    private var logID: String {
-        String(diagnosticID.prefix(8))
+    private func resetConverterOnAudioQueue() {
+        converter = nil
+        converterInputSampleRate = 0
     }
 
-    private var inputAudioMS: Int {
-        inputSampleCount * 1_000 / 16_000
+    private func sessionLogSnapshot() -> SessionLogSnapshot {
+        lock.lock()
+        defer { lock.unlock() }
+        return currentSessionLogSnapshotLocked()
+    }
+
+    private func currentSessionLogSnapshotLocked() -> SessionLogSnapshot {
+        SessionLogSnapshot(
+            logID: String(diagnosticID.prefix(8)),
+            inputAudioMS: inputSampleCount * 1_000 / 16_000,
+            startedAt: startedAt
+        )
     }
 
     private static func elapsedMS(since date: Date) -> Int {

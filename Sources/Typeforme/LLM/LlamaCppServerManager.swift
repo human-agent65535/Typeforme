@@ -100,15 +100,19 @@ actor LlamaCppServerManager {
     func stop() async {
         if let p = process, p.isRunning {
             let pidToKill = p.processIdentifier
+            let expectedBinary = binaryURL
             p.terminate()
             // Escalate to SIGKILL after 2s in case the helper hangs.
-            let killer = DispatchWorkItem {
-                if kill(pidToKill, 0) == 0 {
-                    Log.llm.notice("llama-server didn't exit on SIGTERM; SIGKILL")
-                    _ = kill(pidToKill, SIGKILL)
+            let killer = Task.detached(priority: .utility) {
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                guard !Task.isCancelled, kill(pidToKill, 0) == 0 else { return }
+                guard await Self.pidMatches(pidToKill, expectedBinary: expectedBinary) else {
+                    Log.llm.notice("llama-server pid \(pidToKill) was reused before SIGKILL; skipping kill")
+                    return
                 }
+                Log.llm.notice("llama-server didn't exit on SIGTERM; SIGKILL")
+                _ = kill(pidToKill, SIGKILL)
             }
-            DispatchQueue.global().asyncAfter(deadline: .now() + 2.0, execute: killer)
             await Task.detached(priority: .utility) {
                 p.waitUntilExit()
             }.value

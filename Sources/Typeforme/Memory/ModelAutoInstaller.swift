@@ -51,10 +51,21 @@ actor ModelAutoInstaller {
         label: String,
         expectedBytes: Int64? = nil
     ) async throws {
+        let trimmedURL = downloadURLString.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedURL.isEmpty else {
+            throw ModelAutoInstallError.emptyURL(label: label)
+        }
+        guard let url = URL(string: trimmedURL) else {
+            throw ModelAutoInstallError.invalidURL(trimmedURL)
+        }
+        let existingFileChecksumPolicy = ModelDownloadIntegrity.expectedSHA256(for: url)
+            .map(ModelDownloadChecksumPolicy.verifySHA256) ?? .allowMissingChecksum
+
         if FileManager.default.fileExists(atPath: path) {
             do {
                 try ModelDownloadIntegrity.validateFile(
                     at: URL(fileURLWithPath: path),
+                    checksumPolicy: existingFileChecksumPolicy,
                     expectedBytes: expectedBytes,
                     label: label
                 )
@@ -62,14 +73,6 @@ actor ModelAutoInstaller {
             } catch {
                 try? FileManager.default.removeItem(atPath: path)
             }
-        }
-
-        let trimmedURL = downloadURLString.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedURL.isEmpty else {
-            throw ModelAutoInstallError.emptyURL(label: label)
-        }
-        guard let url = URL(string: trimmedURL) else {
-            throw ModelAutoInstallError.invalidURL(trimmedURL)
         }
 
         let key = "\(path)|\(url.absoluteString)"
@@ -80,7 +83,14 @@ actor ModelAutoInstaller {
 
         let destination = URL(fileURLWithPath: path)
         let task = Task {
-            try await Self.download(from: url, to: destination, label: label, expectedBytes: expectedBytes)
+            let checksumPolicy = try ModelDownloadIntegrity.checksumPolicy(for: url, label: label)
+            try await Self.download(
+                from: url,
+                to: destination,
+                label: label,
+                checksumPolicy: checksumPolicy,
+                expectedBytes: expectedBytes
+            )
         }
         tasks[key] = task
         defer { tasks[key] = nil }
@@ -91,6 +101,7 @@ actor ModelAutoInstaller {
         from url: URL,
         to destination: URL,
         label: String,
+        checksumPolicy: ModelDownloadChecksumPolicy,
         expectedBytes: Int64?
     ) async throws {
         Log.store.notice("auto-installing model: \(label, privacy: .public)")
@@ -100,7 +111,7 @@ actor ModelAutoInstaller {
         let runner = ResumableModelDownloadRunner(
             destination: destination,
             label: label,
-            expectedSHA256: ModelDownloadIntegrity.expectedSHA256(for: url),
+            checksumPolicy: checksumPolicy,
             expectedBytes: expectedBytes
         )
         try await runner.download(from: url)

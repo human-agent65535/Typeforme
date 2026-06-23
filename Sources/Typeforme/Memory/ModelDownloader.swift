@@ -25,7 +25,7 @@ final class ModelDownloader: ObservableObject {
     func start(
         from url: URL,
         to destination: URL,
-        expectedSHA256: String? = nil,
+        checksumPolicy: ModelDownloadChecksumPolicy,
         expectedBytes: Int64? = nil
     ) {
         if task != nil {
@@ -40,7 +40,7 @@ final class ModelDownloader: ObservableObject {
         let runner = ResumableModelDownloadRunner(
             destination: destination,
             label: destination.lastPathComponent,
-            expectedSHA256: expectedSHA256,
+            checksumPolicy: checksumPolicy,
             expectedBytes: expectedBytes,
             onProgress: { [weak self] received, total in
                 Task { @MainActor in
