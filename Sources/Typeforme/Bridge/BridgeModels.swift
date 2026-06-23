@@ -671,31 +671,7 @@ struct BridgeLANAdapter: Codable, Sendable, Identifiable, Hashable {
     }
 }
 
-struct BridgePairingPayload: Codable, Sendable {
-    let lanBridgeURL: String?
-    let lanBridgeURLs: [String]?
-    let publicBridgeURL: String?
-    let token: String
-
-    enum CodingKeys: String, CodingKey {
-        case lanBridgeURL = "lan_bridge_url"
-        case lanBridgeURLs = "lan_bridge_urls"
-        case publicBridgeURL = "public_bridge_url"
-        case token
-    }
-
-    init(
-        lanBridgeURL: String?,
-        lanBridgeURLs: [String]? = nil,
-        publicBridgeURL: String?,
-        token: String
-    ) {
-        self.lanBridgeURL = lanBridgeURL
-        self.lanBridgeURLs = lanBridgeURLs?.isEmpty == false ? lanBridgeURLs : nil
-        self.publicBridgeURL = publicBridgeURL
-        self.token = token
-    }
-
+extension BridgePairingPayload {
     static func current() -> BridgePairingPayload {
         let port = AppSettings.bridgePort
         let lanURLs = AppSettings.bridgeLANEnabled ? lanBridgeURLs(port: port) : []

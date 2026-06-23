@@ -118,62 +118,20 @@ struct UserPreferences: Codable, Equatable {
     }
 }
 
-struct PairingPayload: Decodable, Equatable {
-    let lanBridgeURL: String
-    let lanBridgeURLs: [String]
-    let publicBridgeURL: String
-    let token: String
+typealias PairingPayload = BridgePairingPayload
 
-    enum CodingKeys: String, CodingKey {
-        case lanBridgeURL = "lan_bridge_url"
-        case lanBridgeURLs = "lan_bridge_urls"
-        case publicBridgeURL = "public_bridge_url"
-        case token
-    }
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        let decodedLANBridgeURL = try container.decodeIfPresent(String.self, forKey: .lanBridgeURL) ?? ""
-        let decodedLANBridgeURLs = try container.decodeIfPresent([String].self, forKey: .lanBridgeURLs) ?? []
-        let localCandidates = PairingConfig.uniqueBridgeURLs([decodedLANBridgeURL] + decodedLANBridgeURLs)
-        let normalizedPublicBridgeURL = PairingConfig.normalizedBaseURL(
-            try container.decodeIfPresent(String.self, forKey: .publicBridgeURL) ?? ""
-        )
-        let decodedToken = try container.decode(String.self, forKey: .token)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-
-        guard !decodedToken.isEmpty else {
-            throw DecodingError.dataCorruptedError(
-                forKey: .token,
-                in: container,
-                debugDescription: "Pairing token cannot be empty"
-            )
-        }
-        guard !localCandidates.isEmpty || !normalizedPublicBridgeURL.isEmpty else {
-            throw DecodingError.dataCorruptedError(
-                forKey: .lanBridgeURL,
-                in: container,
-                debugDescription: "Pairing payload must include at least one bridge URL"
-            )
-        }
-
-        lanBridgeURL = localCandidates.first ?? ""
-        lanBridgeURLs = localCandidates
-        publicBridgeURL = normalizedPublicBridgeURL
-        token = decodedToken
-    }
-
+extension BridgePairingPayload {
     func config(
         languageIDs: [String] = ["zh-CN", "en-US"],
         supportedLanguages: [PairingLanguageOption] = PairingLanguageOption.allLanguages,
         correctionMode: CorrectionModeID = .polish
     ) -> PairingConfig {
-        let localCandidates = PairingConfig.uniqueBridgeURLs([lanBridgeURL] + lanBridgeURLs)
-        let primaryLocalURL = lanBridgeURL.isEmpty ? (localCandidates.first ?? "") : lanBridgeURL
+        let localCandidates = localBridgeURLCandidates
+        let primaryLocalURL = localCandidates.first ?? ""
         return PairingConfig(
             lanBridgeURL: primaryLocalURL,
             lanBridgeURLs: localCandidates,
-            publicBridgeURL: publicBridgeURL,
+            publicBridgeURL: normalizedPublicBridgeURL,
             token: token,
             languageIDs: languageIDs,
             supportedLanguages: supportedLanguages,

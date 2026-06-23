@@ -52,12 +52,9 @@ struct ClientBridgeConfiguration: Sendable, Equatable {
     }
 
     static func fromPairingPayload(_ payload: BridgePairingPayload) -> ClientBridgeConfiguration {
-        let localCandidates = uniqueBridgeURLs(
-            [payload.lanBridgeURL].compactMap { $0 } + (payload.lanBridgeURLs ?? [])
-        )
         return ClientBridgeConfiguration(
-            localBridgeURLs: localCandidates,
-            cloudBridgeURL: normalizedBaseURL(payload.publicBridgeURL ?? ""),
+            localBridgeURLs: payload.localBridgeURLCandidates,
+            cloudBridgeURL: payload.normalizedPublicBridgeURL,
             token: payload.token
         )
     }
