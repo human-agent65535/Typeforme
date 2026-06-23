@@ -572,10 +572,7 @@ enum KeyboardBridgeCommandAction: String, Codable {
     case restyleText = "restyle_text"
 }
 
-enum KeyboardTextEditIntent: String, Codable {
-    case repairSelection = "repair_selection"
-    case command = "command"
-}
+typealias KeyboardTextEditIntent = TextEditIntent
 
 struct KeyboardTextEditContext: Codable, Equatable {
     let intent: KeyboardTextEditIntent

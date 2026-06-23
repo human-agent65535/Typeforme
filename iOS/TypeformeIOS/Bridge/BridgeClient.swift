@@ -30,6 +30,9 @@ enum BridgeClientError: LocalizedError {
 }
 
 struct BridgeClient: Sendable {
+    private static let clientAppName = "iOS"
+    private static let clientAppCategory = AppCategory.chat
+
     let baseURL: URL
     let token: String
 
@@ -142,8 +145,8 @@ struct BridgeClient: Sendable {
         let payload = BridgeLivePreviewStartRequest(
             clientJobID: clientJobID,
             languageIDs: languageIDs,
-            appName: "iOS",
-            appCategory: "chat"
+            appName: Self.clientAppName,
+            appCategory: Self.clientAppCategory.rawValue
         )
         let endpoint = BridgeAPIEndpoint.livePreviewStart
         return try await request(path: endpoint.path, method: endpoint.method, json: payload, timeout: timeout)
@@ -222,8 +225,8 @@ struct BridgeClient: Sendable {
                 clientJobID: normalizedJobID,
                 languageIDs: languageIDs,
                 correctionMode: correctionMode.rawValue,
-                appName: "iOS",
-                appCategory: "chat"
+                appName: Self.clientAppName,
+                appCategory: Self.clientAppCategory.rawValue
             )
             let endpoint = BridgeAPIEndpoint.restyle
             return try await request(path: endpoint.path, method: endpoint.method, json: payload, timeout: 20)
@@ -248,8 +251,8 @@ struct BridgeClient: Sendable {
                 contextAfter: contextAfter,
                 spokenInstruction: spokenInstruction,
                 languageIDs: languageIDs,
-                appName: "iOS",
-                appCategory: "chat",
+                appName: Self.clientAppName,
+                appCategory: Self.clientAppCategory.rawValue,
                 clientJobID: normalizedJobID
             )
             let endpoint = BridgeAPIEndpoint.editText
@@ -435,8 +438,8 @@ struct BridgeClient: Sendable {
             audioExtension: audioExtension,
             languageIDs: languageIDs,
             correctionMode: correctionMode,
-            appName: "iOS",
-            appCategory: "chat",
+            appName: Self.clientAppName,
+            appCategory: Self.clientAppCategory.rawValue,
             contextBefore: contextBefore,
             contextAfter: contextAfter,
             includeRawTranscript: includeRawTranscript,

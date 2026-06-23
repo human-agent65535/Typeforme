@@ -1,14 +1,5 @@
 import Foundation
 
-enum TextEditIntent: String, Codable, Sendable {
-    case repairSelection = "repair_selection"
-    case command = "command"
-}
-
-enum TextEditAction: String, Codable, Sendable {
-    case replaceTarget = "replace_target"
-}
-
 struct TextEditRequest: Sendable {
     var intent: TextEditIntent
     var contextBefore: String
