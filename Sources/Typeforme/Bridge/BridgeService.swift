@@ -1171,7 +1171,7 @@ final class BridgeService {
         guard let session = livePreviewSessions[sessionID] else { return }
         session.lastTranscript = text
         session.updatedAt = Date()
-        Log.bridge.notice(
+        Log.bridge.debug(
             "Bridge live preview transcript session=\(Self.logID(sessionID), privacy: .public) text_chars=\(text.count, privacy: .public) elapsed_ms=\(self.elapsedMs(since: session.createdAt), privacy: .public)"
         )
         publishLivePreviewEvent(session: session, text: text, isFinal: false)

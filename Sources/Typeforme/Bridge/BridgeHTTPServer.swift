@@ -44,7 +44,7 @@ private actor BridgeLivePreviewWebSocketWriter {
             throw BridgeServiceError.invalidRequest("Could not encode live preview WebSocket event")
         }
         try await outbound.write(.text(json))
-        Log.bridge.notice(
+        Log.bridge.debug(
             "Bridge live preview socket send session=\(String(event.sessionID.prefix(8)), privacy: .public) final=\(event.isFinal, privacy: .public) text_chars=\(event.text?.count ?? 0, privacy: .public)"
         )
     }
@@ -650,7 +650,7 @@ final class BridgeHTTPServer: @unchecked Sendable {
                                 while receivedSamples >= nextAudioLogSampleCount {
                                     nextAudioLogSampleCount += 16_000
                                 }
-                                Log.bridge.notice(
+                                Log.bridge.debug(
                                     "Bridge live preview socket audio session=\(socketLogID, privacy: .public) first=\(isFirst, privacy: .public) bytes=\(data.count, privacy: .public) received_audio_ms=\(receivedSamples * 1_000 / 16_000, privacy: .public) elapsed_ms=\(Self.elapsedMS(since: socketOpenedAt), privacy: .public)"
                                 )
                             }

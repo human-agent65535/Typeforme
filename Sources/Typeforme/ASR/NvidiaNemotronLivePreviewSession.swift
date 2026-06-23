@@ -321,7 +321,7 @@ final class NvidiaNemotronLivePreviewSession: @unchecked Sendable {
         while inputSampleCount >= nextInputLogSampleCount {
             nextInputLogSampleCount += 16_000
         }
-        Log.asr.notice(
+        Log.asr.debug(
             "Nemotron live preview stdin write session=\(self.logID, privacy: .public) first=\(isFirst, privacy: .public) bytes=\(byteCount, privacy: .public) input_audio_ms=\(self.inputAudioMS, privacy: .public) write_ms=\(writeMS, privacy: .public) elapsed_ms=\(Self.elapsedMS(since: self.startedAt), privacy: .public)"
         )
     }
@@ -415,7 +415,7 @@ final class NvidiaNemotronLivePreviewSession: @unchecked Sendable {
             stdoutEventCount += 1
             let isFirst = !firstStdoutEventLogged
             firstStdoutEventLogged = true
-            Log.asr.notice(
+            Log.asr.debug(
                 "Nemotron live preview stdout session=\(self.logID, privacy: .public) event=\(payload.event ?? "unknown", privacy: .public) first=\(isFirst, privacy: .public) event_count=\(self.stdoutEventCount, privacy: .public) text_chars=\(payload.text?.count ?? 0, privacy: .public) input_audio_ms=\(self.inputAudioMS, privacy: .public) elapsed_ms=\(Self.elapsedMS(since: self.startedAt), privacy: .public)"
             )
             if let text = payload.text, !text.isEmpty {

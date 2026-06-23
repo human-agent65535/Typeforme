@@ -1397,7 +1397,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let leftSamples = Int(decision.leftSamples.rounded())
         let rightSamples = Int(decision.rightSamples.rounded())
         let marginPercent = Int((decision.margin * 100).rounded())
-        kbLog.info("touch gap pick side=\(decision.side.rawValue, privacy: .public) leftSamples=\(leftSamples, privacy: .public) rightSamples=\(rightSamples, privacy: .public) marginPct=\(marginPercent, privacy: .public)")
+        kbLog.debug("touch gap pick side=\(decision.side.rawValue, privacy: .public) leftSamples=\(leftSamples, privacy: .public) rightSamples=\(rightSamples, privacy: .public) marginPct=\(marginPercent, privacy: .public)")
         switch decision.side {
         case .left:
             return buttons[left].button
@@ -1431,7 +1431,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let leftSamples = Int(decision.leftSamples.rounded())
         let rightSamples = Int(decision.rightSamples.rounded())
         let marginPercent = Int((decision.margin * 100).rounded())
-        kbLog.info("touch gaussian pick side=\(decision.side.rawValue, privacy: .public) leftSamples=\(leftSamples, privacy: .public) rightSamples=\(rightSamples, privacy: .public) marginPct=\(marginPercent, privacy: .public)")
+        kbLog.debug("touch gaussian pick side=\(decision.side.rawValue, privacy: .public) leftSamples=\(leftSamples, privacy: .public) rightSamples=\(rightSamples, privacy: .public) marginPct=\(marginPercent, privacy: .public)")
         switch decision.side {
         case .left:
             return buttons[left].button
@@ -1507,7 +1507,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 } else {
                     let distance = Int(proximity.distance.rounded())
                     let threshold = Int(proximity.threshold.rounded())
-                    kbLog.info("touch gaussian learn skipped reason=center distance=\(distance, privacy: .public) threshold=\(threshold, privacy: .public)")
+                    kbLog.debug("touch gaussian learn skipped reason=center distance=\(distance, privacy: .public) threshold=\(threshold, privacy: .public)")
                 }
             }
             pendingTextTouchCorrection = nil
@@ -1659,7 +1659,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 self.refreshDynamicAppearance()
             }
         }
-        kbLog.notice("viewDidLoad complete; voiceButton enabled=\(self.voiceButton.isEnabled, privacy: .public), fullAccess=\(self.hasFullAccess, privacy: .public)")
+        kbLog.debug("viewDidLoad complete; voiceButton enabled=\(self.voiceButton.isEnabled, privacy: .public), fullAccess=\(self.hasFullAccess, privacy: .public)")
     }
 
     /// Re-applies layer-level (CGColor) properties that don't follow trait
@@ -2165,7 +2165,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
         guard gate.logKey != lastPresentationGateLogKey else { return }
         lastPresentationGateLogKey = gate.logKey
-        kbLog.notice("keyboard presentation geometry unsettled: \(gate.reason, privacy: .public)")
+        kbLog.debug("keyboard presentation geometry unsettled: \(gate.reason, privacy: .public)")
     }
 
     private func keyboardPresentationGateState() -> (isStable: Bool, logKey: String, reason: String) {
@@ -3177,6 +3177,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     private func logKeyboardPresentationLayout(_ event: String, force: Bool = false) {
         guard isViewLoaded else { return }
+        guard defaults.bool(forKey: keyboardTouchTraceEnabledKey) else { return }
 
         let surfaceFrame = view.bounds
         let viewFrame = view.frame
@@ -4805,7 +4806,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     @objc private func voicePressDown() {
-        kbLog.notice("voicePressDown fired (bounds=\(NSCoder.string(for: self.voiceButton.bounds), privacy: .public))")
+        kbLog.debug("voicePressDown fired (bounds=\(NSCoder.string(for: self.voiceButton.bounds), privacy: .public))")
         guard !isVoicePressActive else { return }
         isVoicePressActive = true
         voicePressBeganAt = Date().timeIntervalSince1970
@@ -4822,7 +4823,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     @objc private func voicePressUp() {
-        kbLog.notice("voicePressUp fired")
+        kbLog.debug("voicePressUp fired")
         UIView.animate(withDuration: 0.32, delay: 0, usingSpringWithDamping: 0.55, initialSpringVelocity: 0.5, options: [.allowUserInteraction, .beginFromCurrentState]) {
             self.voiceButton.transform = .identity
             self.voiceButton.alpha = 1
@@ -4839,7 +4840,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         // Fires for touchUpOutside / touchCancel — user released off-orb or
         // the system interrupted us. Treat the same as `voicePressUp` for
         // hold mode (drag-out no longer cancels; recording always commits).
-        kbLog.notice("voicePressCancelled fired")
+        kbLog.debug("voicePressCancelled fired")
         let wasActive = isVoicePressActive
         UIView.animate(withDuration: 0.18, delay: 0, options: [.allowUserInteraction, .beginFromCurrentState]) {
             self.voiceButton.transform = .identity
@@ -4977,7 +4978,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func beginDictationPress() {
-        kbLog.notice("beginDictationPress: fullAccess=\(self.hasFullAccess, privacy: .public), bridgeState=\(self.currentBridgeStatus?.state.rawValue ?? "nil", privacy: .public), awake=\(self.isBridgeAwake, privacy: .public)")
+        kbLog.debug("beginDictationPress: fullAccess=\(self.hasFullAccess, privacy: .public), bridgeState=\(self.currentBridgeStatus?.state.rawValue ?? "nil", privacy: .public), awake=\(self.isBridgeAwake, privacy: .public)")
         lightHaptic()
         guard hasFullAccess else {
             kbLog.notice("beginDictationPress: no full access")
@@ -4986,12 +4987,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             return
         }
         guard currentBridgeStatus?.state != .sending else {
-            kbLog.notice("beginDictationPress: sending in flight, ignore")
+            kbLog.debug("beginDictationPress: sending in flight, ignore")
             isVoicePressActive = false
             return
         }
         guard currentBridgeStatus?.state != .recording else {
-            kbLog.notice("beginDictationPress: already recording; release will stop")
+            kbLog.debug("beginDictationPress: already recording; release will stop")
             return
         }
         cancelScheduledStop()
@@ -5015,7 +5016,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
         let elapsed = Date().timeIntervalSince1970 - voicePressBeganAt
         guard elapsed >= minimumIntentReleaseDuration else {
-            kbLog.notice("endDictationPress: cancelling early release after \(elapsed, privacy: .public)s")
+            kbLog.debug("endDictationPress: cancelling early release after \(elapsed, privacy: .public)s")
             isVoicePressActive = false
             cancelActiveHoldRecording()
             return
@@ -5031,20 +5032,20 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func handleTapModePress() {
-        kbLog.notice("handleTapModePress: fullAccess=\(self.hasFullAccess, privacy: .public), bridgeState=\(self.currentBridgeStatus?.state.rawValue ?? "nil", privacy: .public), awake=\(self.isBridgeAwake, privacy: .public)")
+        kbLog.debug("handleTapModePress: fullAccess=\(self.hasFullAccess, privacy: .public), bridgeState=\(self.currentBridgeStatus?.state.rawValue ?? "nil", privacy: .public), awake=\(self.isBridgeAwake, privacy: .public)")
         lightHaptic()
         guard hasFullAccess else {
             openHostForFullAccessSetup()
             return
         }
         if isStartRequestInFlight {
-            kbLog.notice("handleTapModePress: start already in flight; ignoring")
+            kbLog.debug("handleTapModePress: start already in flight; ignoring")
             return
         }
         if tapRecordingActive || currentBridgeStatus?.state == .recording {
             cancelScheduledStop()
             tapRecordingActive = false
-            kbLog.notice("handleTapModePress: sending .stop command")
+            kbLog.debug("handleTapModePress: sending .stop command")
             sendBridgeCommand(.stop)
             return
         }
@@ -5178,7 +5179,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         target: TextRewriteTarget?,
         continuesAfterRelease: Bool
     ) {
-        kbLog.notice("probeBridgeThenBeginDictation: checking local keyboard server")
+        kbLog.debug("probeBridgeThenBeginDictation: checking local keyboard server")
         isStartRequestInFlight = true
         shouldStopWhenStartCompletes = false
         shouldCancelWhenStartCompletes = false
@@ -5358,7 +5359,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             showTextKeyboardNotice(NSLocalizedString("Opening Typeforme…", comment: "Inline status while opening the host app"))
         }
         openHostApp(url, allowBundleFallback: allowBundleFallback) { [weak self] success in
-            kbLog.notice("openHostAppForKeyboardAction: open success=\(success, privacy: .public)")
+            kbLog.debug("openHostAppForKeyboardAction: open success=\(success, privacy: .public)")
             guard !success else { return }
             Task { @MainActor [weak self] in
                 guard let self else { return }
@@ -5420,7 +5421,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         openingHostUntil = Date().timeIntervalSince1970 + 8
         updateUI()
         openHostApp(url) { [weak self] success in
-            kbLog.notice("openHostForFullAccessSetup: open success=\(success, privacy: .public)")
+            kbLog.debug("openHostForFullAccessSetup: open success=\(success, privacy: .public)")
             guard !success else { return }
             Task { @MainActor [weak self] in
                 guard let self else { return }
@@ -5442,14 +5443,14 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         completion: @escaping @Sendable (Bool) -> Void
     ) {
         if let extensionContext {
-            kbLog.notice("openHostApp: opening URL via extension context")
+            kbLog.debug("openHostApp: opening URL via extension context")
             extensionContext.open(url) { [weak self] success in
                 DispatchQueue.main.async {
                     guard let self else {
                         completion(success)
                         return
                     }
-                    kbLog.notice("openHostApp: extension context open success=\(success, privacy: .public)")
+                    kbLog.debug("openHostApp: extension context open success=\(success, privacy: .public)")
                     if success {
                         completion(true)
                         return
@@ -5516,7 +5517,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             return false
         }
 
-        kbLog.notice("openHostAppViaApplicationWorkspace: opening URL via openSensitiveURL")
+        kbLog.debug("openHostAppViaApplicationWorkspace: opening URL via openSensitiveURL")
         typealias OpenSensitiveURL = @convention(c) (AnyObject, Selector, NSURL, NSDictionary) -> Void
         let openSensitiveURL = unsafeBitCast(imp, to: OpenSensitiveURL.self)
         openSensitiveURL(workspace, openSensitiveSelector, url as NSURL, NSDictionary())
@@ -5549,7 +5550,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             openSelector,
             Self.containingAppBundleIdentifier as NSString
         )
-        kbLog.notice("openHostAppViaBundleIdentifier: result=\(didOpen, privacy: .public)")
+        kbLog.debug("openHostAppViaBundleIdentifier: result=\(didOpen, privacy: .public)")
         return didOpen
     }
 
@@ -5873,14 +5874,14 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             return
         }
 
-        kbLog.notice("stopDictationAfterMinimumHoldIfNeeded: delaying stop by \(delay, privacy: .public)s")
+        kbLog.debug("stopDictationAfterMinimumHoldIfNeeded: delaying stop by \(delay, privacy: .public)s")
         scheduledStopTask = Task { [weak self] in
             let nanos = UInt64(delay * 1_000_000_000)
             try? await Task.sleep(nanoseconds: nanos)
             await MainActor.run {
                 guard let self, self.currentBridgeStatus?.state == .recording else { return }
                 self.scheduledStopTask = nil
-                kbLog.notice("stopDictationAfterMinimumHoldIfNeeded: delayed .stop command")
+                kbLog.debug("stopDictationAfterMinimumHoldIfNeeded: delayed .stop command")
                 self.sendBridgeCommand(.stop)
             }
         }
@@ -6230,7 +6231,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
 
         if let recentSelection = recentSelectionTargetIfFresh() {
-            kbLog.notice("using cached selection target for command")
+            kbLog.debug("using cached selection target for command")
             return recentSelection
         }
 
@@ -6245,7 +6246,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         guard let undo = freshRestyleUndoState(),
               let target = textRewriteTarget(matching: undo.current)
         else { return nil }
-        kbLog.notice("using active restyle undo target for chained rewrite")
+        kbLog.debug("using active restyle undo target for chained rewrite")
         return target
     }
 
@@ -6303,7 +6304,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
         let before = expandedContextBefore(startingWith: initialBefore)
         let after = expandedContextAfter(startingWith: initialAfter)
-        kbLog.notice("context rewrite target captured: initialBeforeLen=\(initialBefore.count, privacy: .public), initialAfterLen=\(initialAfter.count, privacy: .public), beforeLen=\(before.count, privacy: .public), afterLen=\(after.count, privacy: .public)")
+        kbLog.debug("context rewrite target captured: initialBeforeLen=\(initialBefore.count, privacy: .public), initialAfterLen=\(initialAfter.count, privacy: .public), beforeLen=\(before.count, privacy: .public), afterLen=\(after.count, privacy: .public)")
         return .context(before: before, after: after)
     }
 
@@ -6381,7 +6382,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
 
         if let recentSelection = recentSelectionTargetIfFresh() {
-            kbLog.notice("using cached selection target for repair")
+            kbLog.debug("using cached selection target for repair")
             return recentSelection
         }
         return nil
@@ -6902,7 +6903,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             completion: { _ in
                 snapshot?.removeFromSuperview()
                 let elapsedMS = Date().timeIntervalSince(animationStartedAt) * 1000
-                kbLog.notice("Keyboard focus \(focusName, privacy: .public) animation completed in \(elapsedMS, privacy: .public) ms")
+                kbLog.debug("Keyboard focus \(focusName, privacy: .public) animation completed in \(elapsedMS, privacy: .public) ms")
             }
         )
     }
@@ -6957,7 +6958,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         // the same press's other contact. Ignore it so "a + shift" can't both
         // fire. A deliberate shift tap comes well after the last commit.
         if CACurrentMediaTime() - lastTextKeyCommitAt < Self.adjacentKeyGuardWindow {
-            kbLog.notice("ignored shift toggle adjacent to recent text-key commit")
+            kbLog.debug("ignored shift toggle adjacent to recent text-key commit")
             return
         }
         let now = CACurrentMediaTime()
@@ -10165,7 +10166,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 let now = Date().timeIntervalSince1970
                 if now - lastMissingAudioLevelLogAt > 2 {
                     lastMissingAudioLevelLogAt = now
-                    kbLog.notice("recording status has no audioLevel; using local voiceprint animation")
+                    kbLog.debug("recording status has no audioLevel; using local voiceprint animation")
                 }
             } else {
                 lastMissingAudioLevelLogAt = 0

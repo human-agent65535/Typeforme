@@ -362,7 +362,7 @@ final class BridgeLivePreviewStreamer: @unchecked Sendable {
     private func handleLivePreviewEventOnAudioQueue(_ event: BridgeLivePreviewEvent) {
         guard event.sessionID == sessionID else { return }
         eventCount += 1
-        bridgeLivePreviewLog.notice(
+        bridgeLivePreviewLog.debug(
             "server live preview event session=\(self.logSessionID, privacy: .public) final=\(event.isFinal, privacy: .public) event_count=\(self.eventCount, privacy: .public) text_chars=\(event.text?.count ?? 0, privacy: .public) sent_audio_ms=\(self.sentAudioMS, privacy: .public) server_age_ms=\(Self.serverAgeMS(event.updatedAt), privacy: .public) elapsed_ms=\(self.elapsedMS, privacy: .public)"
         )
         if let text = event.text?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -457,7 +457,7 @@ final class BridgeLivePreviewStreamer: @unchecked Sendable {
         while queuedSampleCount >= nextQueueLogSampleCount {
             nextQueueLogSampleCount += 16_000
         }
-        bridgeLivePreviewLog.notice(
+        bridgeLivePreviewLog.debug(
             "server live preview audio queued session=\(self.logSessionID, privacy: .public) first=\(isFirst, privacy: .public) frames=\(frameCount, privacy: .public) source_hz=\(Int(sourceSampleRate.rounded()), privacy: .public) queued_audio_ms=\(self.queuedAudioMS, privacy: .public) pending_bytes=\(self.pendingData.count, privacy: .public) elapsed_ms=\(self.elapsedMS, privacy: .public)"
         )
     }
@@ -470,7 +470,7 @@ final class BridgeLivePreviewStreamer: @unchecked Sendable {
         while sentSampleCount >= nextSendLogSampleCount {
             nextSendLogSampleCount += 16_000
         }
-        bridgeLivePreviewLog.notice(
+        bridgeLivePreviewLog.debug(
             "server live preview audio sent session=\(self.logSessionID, privacy: .public) first=\(isFirst, privacy: .public) bytes=\(byteCount, privacy: .public) sent_audio_ms=\(self.sentAudioMS, privacy: .public) send_ms=\(sendMS, privacy: .public) elapsed_ms=\(self.elapsedMS, privacy: .public)"
         )
     }

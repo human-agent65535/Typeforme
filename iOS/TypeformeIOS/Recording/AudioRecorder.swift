@@ -224,7 +224,7 @@ final class AudioTapFileWriter: @unchecked Sendable {
             try? FileManager.default.removeItem(at: url)
             return nil
         }
-        recordingLog.notice(
+        recordingLog.debug(
             "keyboard audio finish: m4a written duration=\(duration, privacy: .public) frames=\(frames, privacy: .public) fileBytes=\(fileBytes, privacy: .public) sampleRate=\(sampleRate, privacy: .public)"
         )
         return url

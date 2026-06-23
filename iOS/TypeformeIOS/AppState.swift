@@ -2200,7 +2200,7 @@ final class AppState {
         let generation = nextLivePreviewGeneration()
 
         guard keyboardLivePreviewEnabled else {
-            appLog.notice("live preview skipped: disabled")
+            appLog.debug("live preview skipped: disabled")
             return false
         }
         switch keyboardLivePreviewSource {
@@ -2269,7 +2269,7 @@ final class AppState {
                     if !text.isEmpty {
                         let timing = trace.recordPartial()
                         if timing.isFirst {
-                            appLog.notice(
+                            appLog.debug(
                                 "live preview first partial: startToPartialMs=\(timing.startToPartialMS, privacy: .public), firstPCMToPartialMs=\(timing.firstPCMToPartialMS ?? -1, privacy: .public), pcmBuffers=\(timing.pcmBufferCount, privacy: .public), chars=\(text.count, privacy: .public)"
                             )
                         }
@@ -2288,7 +2288,7 @@ final class AppState {
             requestSink.append(buffer)
             let timing = trace.recordPCM()
             if timing.isFirst {
-                appLog.notice(
+                appLog.debug(
                     "live preview first pcm: startToPCMms=\(timing.startToPCMMS, privacy: .public), buffers=\(timing.count, privacy: .public), sampleRate=\(buffer.format.sampleRate, privacy: .public), frames=\(buffer.frameLength, privacy: .public)"
                 )
             }
@@ -2299,15 +2299,15 @@ final class AppState {
     @discardableResult
     private func startServerNemotronLivePreviewIfAvailable(generation: UInt64) -> Bool {
         guard isKeyboardLivePreviewSourceEnabled(.serverNemotron) else {
-            appLog.notice("server live preview skipped: Nemotron ASR source disabled")
+            appLog.debug("server live preview skipped: Nemotron ASR source disabled")
             return false
         }
         guard macSettings?.supportsServerNemotronPreview == true else {
-            appLog.notice("server live preview skipped: Mac Nemotron source is not enabled")
+            appLog.debug("server live preview skipped: Mac Nemotron source is not enabled")
             return false
         }
         guard let baseURL = routeStatus.activeURL else {
-            appLog.notice("server live preview skipped: no active bridge route")
+            appLog.debug("server live preview skipped: no active bridge route")
             return false
         }
 
@@ -2325,7 +2325,7 @@ final class AppState {
                     guard !cleaned.isEmpty else { return }
                     let timing = trace.recordPartial()
                     if timing.isFirst {
-                        appLog.notice(
+                        appLog.debug(
                             "server live preview first partial: startToPartialMs=\(timing.startToPartialMS, privacy: .public), firstPCMToPartialMs=\(timing.firstPCMToPartialMS ?? -1, privacy: .public), pcmBuffers=\(timing.pcmBufferCount, privacy: .public), chars=\(cleaned.count, privacy: .public)"
                         )
                     }
@@ -2353,7 +2353,7 @@ final class AppState {
             streamer.append(buffer)
             let timing = trace.recordPCM()
             if timing.isFirst {
-                appLog.notice(
+                appLog.debug(
                     "server live preview first pcm: startToPCMms=\(timing.startToPCMMS, privacy: .public), buffers=\(timing.count, privacy: .public), sampleRate=\(buffer.format.sampleRate, privacy: .public), frames=\(buffer.frameLength, privacy: .public)"
                 )
             }
