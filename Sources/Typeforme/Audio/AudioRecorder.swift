@@ -223,11 +223,14 @@ private final class LevelUpdateThrottler: @unchecked Sendable {
 }
 
 private final class MonoM4ABufferWriter: @unchecked Sendable {
+    private static let minimumRecordingDuration: TimeInterval = 0.35
+
     private let lock = NSLock()
     private var url: URL?
     private var file: AVAudioFile?
     private var writeFormat: AVAudioFormat?
-    private var frameCount: Int = 0
+    private var frameCount: AVAudioFramePosition = 0
+    private var currentSampleRate: Double = 0
     private var writeError: Error?
 
     func begin(url: URL, sampleRate: Double) throws {
@@ -259,91 +262,83 @@ private final class MonoM4ABufferWriter: @unchecked Sendable {
         self.file = file
         self.writeFormat = format
         self.frameCount = 0
+        self.currentSampleRate = rate
         self.writeError = nil
         lock.unlock()
     }
 
     func write(_ buffer: AVAudioPCMBuffer) {
-        let frames = Int(buffer.frameLength)
-        let channels = max(1, Int(buffer.format.channelCount))
-        guard frames > 0 else { return }
+        let frameLength = Int(buffer.frameLength)
+        guard frameLength > 0 else { return }
 
         lock.lock()
-        guard let file, let writeFormat, url != nil, writeError == nil else {
-            lock.unlock()
-            return
-        }
+        let recordingURL = url
+        let format = writeFormat
+        let hasPreviousError = writeError != nil
         lock.unlock()
-
-        guard let mono = AVAudioPCMBuffer(
-            pcmFormat: writeFormat,
-            frameCapacity: AVAudioFrameCount(frames)
-        ), let destination = mono.floatChannelData?[0] else { return }
-        mono.frameLength = AVAudioFrameCount(frames)
-
-        if let data = buffer.floatChannelData {
-            let interleaved = buffer.format.isInterleaved
-            for frame in 0..<frames {
-                var sum: Float = 0
-                for channel in 0..<channels {
-                    sum += interleaved ? data[0][frame * channels + channel] : data[channel][frame]
-                }
-                destination[frame] = sum / Float(channels)
-            }
-        } else if let data = buffer.int16ChannelData {
-            let interleaved = buffer.format.isInterleaved
-            for frame in 0..<frames {
-                var sum = 0
-                for channel in 0..<channels {
-                    let sample = interleaved ? data[0][frame * channels + channel] : data[channel][frame]
-                    sum += Int(sample)
-                }
-                let averaged = Float(sum) / Float(channels) / Float(Int16.max)
-                destination[frame] = max(-1, min(1, averaged))
-            }
-        } else {
+        guard recordingURL != nil, let format, !hasPreviousError,
+              let writeBuffer = Self.makeWriteBuffer(from: buffer, format: format)
+        else {
             return
         }
 
         lock.lock()
+        defer { lock.unlock() }
         do {
-            if url != nil, writeError == nil {
-                try file.write(from: mono)
-                frameCount += frames
-            }
+            guard url == recordingURL, let file, writeError == nil else { return }
+            try file.write(from: writeBuffer)
+            frameCount += AVAudioFramePosition(buffer.frameLength)
         } catch {
             writeError = error
         }
-        lock.unlock()
     }
 
     func finish() throws {
         lock.lock()
         let outputURL = url
-        let frames = frameCount
+        let sampleRate = currentSampleRate
+        let frames = Int(frameCount)
+        let duration = sampleRate > 0 ? Double(frameCount) / sampleRate : 0
         let error = writeError
         url = nil
         file = nil
         writeFormat = nil
         frameCount = 0
+        currentSampleRate = 0
         writeError = nil
         lock.unlock()
 
         guard let outputURL else {
+            Log.audio.notice("Mac recorder finish: no active file")
             throw AudioRecorderError.fileSetupFailed("No recording file")
         }
         if let error {
+            Log.audio.error("Mac recorder finish failed: \(error.localizedDescription, privacy: .public)")
             throw AudioRecorderError.fileSetupFailed(error.localizedDescription)
         }
         guard frames > 0 else {
+            Log.audio.error(
+                "Mac recorder finish: empty m4a duration=\(duration, privacy: .public) frames=\(frames, privacy: .public) sampleRate=\(sampleRate, privacy: .public)"
+            )
             throw AudioRecorderError.fileSetupFailed("Recorded M4A contains no audio data")
+        }
+        guard duration >= Self.minimumRecordingDuration else {
+            Log.audio.notice(
+                "Mac recorder finish: too short duration=\(duration, privacy: .public) frames=\(frames, privacy: .public) sampleRate=\(sampleRate, privacy: .public)"
+            )
+            throw AudioRecorderError.fileSetupFailed("Recorded M4A is too short")
         }
 
-        let attributes = try FileManager.default.attributesOfItem(atPath: outputURL.path)
-        let byteCount = attributes[.size] as? NSNumber
-        guard (byteCount?.intValue ?? 0) > 0 else {
+        let fileBytes = (try? FileManager.default.attributesOfItem(atPath: outputURL.path)[.size] as? NSNumber)?.intValue ?? 0
+        guard fileBytes > 0 else {
+            Log.audio.error(
+                "Mac recorder finish: empty m4a duration=\(duration, privacy: .public) frames=\(frames, privacy: .public) sampleRate=\(sampleRate, privacy: .public)"
+            )
             throw AudioRecorderError.fileSetupFailed("Recorded M4A contains no audio data")
         }
+        Log.audio.debug(
+            "Mac recorder finish: m4a written duration=\(duration, privacy: .public) frames=\(frames, privacy: .public) fileBytes=\(fileBytes, privacy: .public) sampleRate=\(sampleRate, privacy: .public)"
+        )
     }
 
     func cancel() {
@@ -353,11 +348,59 @@ private final class MonoM4ABufferWriter: @unchecked Sendable {
         file = nil
         writeFormat = nil
         frameCount = 0
+        currentSampleRate = 0
         writeError = nil
         lock.unlock()
         if let outputURL {
             try? FileManager.default.removeItem(at: outputURL)
         }
+    }
+
+    /// Converts arbitrary input buffers to the mono float32 writer format.
+    /// Multi-channel input is averaged so USB and monitor-array devices produce
+    /// the same Bridge-ready M4A shape as the iOS keyboard path.
+    private static func makeWriteBuffer(
+        from buffer: AVAudioPCMBuffer,
+        format: AVAudioFormat
+    ) -> AVAudioPCMBuffer? {
+        if buffer.format.isEqual(format) {
+            return buffer
+        }
+
+        let frameLength = Int(buffer.frameLength)
+        let channelCount = max(1, Int(buffer.format.channelCount))
+        let interleaved = buffer.format.isInterleaved
+        guard let output = AVAudioPCMBuffer(
+            pcmFormat: format,
+            frameCapacity: AVAudioFrameCount(frameLength)
+        ), let destination = output.floatChannelData?[0] else {
+            return nil
+        }
+        output.frameLength = AVAudioFrameCount(frameLength)
+
+        if let data = buffer.floatChannelData {
+            for frame in 0..<frameLength {
+                var sum: Float = 0
+                for channel in 0..<channelCount {
+                    sum += interleaved ? data[0][frame * channelCount + channel] : data[channel][frame]
+                }
+                destination[frame] = sum / Float(channelCount)
+            }
+            return output
+        }
+        if let data = buffer.int16ChannelData {
+            let scale = Float(Int16.max)
+            for frame in 0..<frameLength {
+                var sum: Float = 0
+                for channel in 0..<channelCount {
+                    let sample = interleaved ? data[0][frame * channelCount + channel] : data[channel][frame]
+                    sum += Float(sample) / scale
+                }
+                destination[frame] = max(-1, min(1, sum / Float(channelCount)))
+            }
+            return output
+        }
+        return nil
     }
 }
 
