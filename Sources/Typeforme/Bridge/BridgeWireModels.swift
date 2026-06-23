@@ -66,6 +66,80 @@ struct BridgeHealthResponse: Codable, Sendable {
     }
 }
 
+struct BridgeSettingsUpdateRequest: Codable, Sendable {
+    var enabledRecognitionSources: [String]?
+    var asrModelIDsByRecognitionSource: [String: String]?
+    var languageIDs: [String]?
+    var asrTimeoutSecByRecognitionSource: [String: Double]?
+    var correctionBackend: String?
+    var correctionTimeoutMs: Int?
+    var correctionColdTimeoutMs: Int?
+    var externalLLMBaseURL: String?
+    var externalLLMModel: String?
+    var livePreviewSource: String?
+    var correctionMode: String?
+    var numberOutputPreference: String?
+    var punctuationPreference: String?
+    var autoCommit: Bool?
+    var debugMode: Bool?
+    var userDictionary: [DictionaryEntry]?
+
+    enum CodingKeys: String, CodingKey {
+        case enabledRecognitionSources = "enabled_recognition_sources"
+        case asrModelIDsByRecognitionSource = "asr_model_ids_by_recognition_source"
+        case languageIDs = "language_ids"
+        case asrTimeoutSecByRecognitionSource = "asr_timeout_sec_by_recognition_source"
+        case correctionBackend = "correction_backend"
+        case correctionTimeoutMs = "correction_timeout_ms"
+        case correctionColdTimeoutMs = "correction_cold_timeout_ms"
+        case externalLLMBaseURL = "external_llm_base_url"
+        case externalLLMModel = "external_llm_model"
+        case livePreviewSource = "live_preview_source"
+        case correctionMode = "correction_mode"
+        case numberOutputPreference = "number_output_preference"
+        case punctuationPreference = "punctuation_preference"
+        case autoCommit = "auto_commit"
+        case debugMode = "debug_mode"
+        case userDictionary = "user_dictionary"
+    }
+
+    init(
+        enabledRecognitionSources: [String]? = nil,
+        asrModelIDsByRecognitionSource: [String: String]? = nil,
+        languageIDs: [String]? = nil,
+        asrTimeoutSecByRecognitionSource: [String: Double]? = nil,
+        correctionBackend: String? = nil,
+        correctionTimeoutMs: Int? = nil,
+        correctionColdTimeoutMs: Int? = nil,
+        externalLLMBaseURL: String? = nil,
+        externalLLMModel: String? = nil,
+        livePreviewSource: String? = nil,
+        correctionMode: String? = nil,
+        numberOutputPreference: String? = nil,
+        punctuationPreference: String? = nil,
+        autoCommit: Bool? = nil,
+        debugMode: Bool? = nil,
+        userDictionary: [DictionaryEntry]? = nil
+    ) {
+        self.enabledRecognitionSources = enabledRecognitionSources
+        self.asrModelIDsByRecognitionSource = asrModelIDsByRecognitionSource
+        self.languageIDs = languageIDs
+        self.asrTimeoutSecByRecognitionSource = asrTimeoutSecByRecognitionSource
+        self.correctionBackend = correctionBackend
+        self.correctionTimeoutMs = correctionTimeoutMs
+        self.correctionColdTimeoutMs = correctionColdTimeoutMs
+        self.externalLLMBaseURL = externalLLMBaseURL
+        self.externalLLMModel = externalLLMModel
+        self.livePreviewSource = livePreviewSource
+        self.correctionMode = correctionMode
+        self.numberOutputPreference = numberOutputPreference
+        self.punctuationPreference = punctuationPreference
+        self.autoCommit = autoCommit
+        self.debugMode = debugMode
+        self.userDictionary = userDictionary
+    }
+}
+
 struct BridgeRestyleRequest: Codable, Sendable {
     var sessionID: String?
     var rawTranscript: String?

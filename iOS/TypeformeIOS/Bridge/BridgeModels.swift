@@ -735,39 +735,3 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
         BridgeSettingsNormalization.rimeUserPhrases(from: entries.map(\.surface))
     }
 }
-
-struct BridgeSettingsUpdateRequest: Encodable {
-    let enabledRecognitionSources: [String]
-    let asrModelIDsByRecognitionSource: [String: String]
-    let languageIDs: [String]
-    let asrTimeoutSecByRecognitionSource: [String: Double]
-    let correctionBackend: String
-    let correctionTimeoutMs: Int
-    let correctionColdTimeoutMs: Int
-    let externalLLMBaseURL: String?
-    let externalLLMModel: String?
-    let livePreviewSource: String
-    let correctionMode: String
-    let numberOutputPreference: String
-    let punctuationPreference: String
-    let autoCommit: Bool
-    let userDictionary: [BridgeUserDictionaryEntry]
-
-    enum CodingKeys: String, CodingKey {
-        case enabledRecognitionSources = "enabled_recognition_sources"
-        case asrModelIDsByRecognitionSource = "asr_model_ids_by_recognition_source"
-        case languageIDs = "language_ids"
-        case asrTimeoutSecByRecognitionSource = "asr_timeout_sec_by_recognition_source"
-        case correctionBackend = "correction_backend"
-        case correctionTimeoutMs = "correction_timeout_ms"
-        case correctionColdTimeoutMs = "correction_cold_timeout_ms"
-        case externalLLMBaseURL = "external_llm_base_url"
-        case externalLLMModel = "external_llm_model"
-        case livePreviewSource = "live_preview_source"
-        case correctionMode = "correction_mode"
-        case numberOutputPreference = "number_output_preference"
-        case punctuationPreference = "punctuation_preference"
-        case autoCommit = "auto_commit"
-        case userDictionary = "user_dictionary"
-    }
-}

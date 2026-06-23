@@ -692,44 +692,6 @@ private struct BridgeSettingsRevisionPayload: Encodable {
     }
 }
 
-struct BridgeSettingsUpdateRequest: Decodable {
-    var enabledRecognitionSources: [String]?
-    var asrModelIDsByRecognitionSource: [String: String]?
-    var languageIDs: [String]?
-    var asrTimeoutSecByRecognitionSource: [String: Double]?
-    var correctionBackend: String?
-    var correctionTimeoutMs: Int?
-    var correctionColdTimeoutMs: Int?
-    var externalLLMBaseURL: String?
-    var externalLLMModel: String?
-    var livePreviewSource: String?
-    var correctionMode: String?
-    var numberOutputPreference: String?
-    var punctuationPreference: String?
-    var autoCommit: Bool?
-    var debugMode: Bool?
-    var userDictionary: [DictionaryEntry]?
-
-    enum CodingKeys: String, CodingKey {
-        case enabledRecognitionSources = "enabled_recognition_sources"
-        case asrModelIDsByRecognitionSource = "asr_model_ids_by_recognition_source"
-        case languageIDs = "language_ids"
-        case asrTimeoutSecByRecognitionSource = "asr_timeout_sec_by_recognition_source"
-        case correctionBackend = "correction_backend"
-        case correctionTimeoutMs = "correction_timeout_ms"
-        case correctionColdTimeoutMs = "correction_cold_timeout_ms"
-        case externalLLMBaseURL = "external_llm_base_url"
-        case externalLLMModel = "external_llm_model"
-        case livePreviewSource = "live_preview_source"
-        case correctionMode = "correction_mode"
-        case numberOutputPreference = "number_output_preference"
-        case punctuationPreference = "punctuation_preference"
-        case autoCommit = "auto_commit"
-        case debugMode = "debug_mode"
-        case userDictionary = "user_dictionary"
-    }
-}
-
 struct BridgeLANAdapter: Codable, Sendable, Identifiable, Hashable {
     let id: String
     let ip: String
