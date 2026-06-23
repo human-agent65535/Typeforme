@@ -40,6 +40,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var lastComboHotkeyPressAt: Date?
     private var lastCommandTextEditHotkeyPressAt: Date?
     private static let hotkeyBounceWindow: TimeInterval = 0.35
+    private nonisolated static let escapeKeyCode: UInt16 = 53
+    private nonisolated static let returnKeyCodes: Set<UInt16> = [36, 76]
 
     override init() {
         AppSettings.registerDefaults()
@@ -76,6 +78,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Double-tap modifier → hold-to-talk
         holdMonitor.onHoldStart = { [weak self] in self?.handleHoldStart() }
         holdMonitor.onHoldEnd   = { [weak self] in self?.handleHoldEnd() }
+        holdMonitor.onModifierTap = { [weak self] in self?.handleHoldModifierTap() }
         holdMonitor.install(modifier: AppSettings.holdModifier)
 
         coordinator.$state
@@ -312,36 +315,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    // MARK: - Esc cancel
+    private func handleHoldModifierTap() {
+        Task { @MainActor in
+            guard coordinator.isRecordingCommandTextEdit else { return }
+            await coordinator.stopDictation()
+        }
+    }
+
+    // MARK: - Key command monitor
 
     private func installEscMonitor() {
         guard escMonitor == nil, localEscMonitor == nil else { return }
         escMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard event.keyCode == 53 else { return }  // kVK_Escape
+            let keyCode = event.keyCode
+            guard Self.isMonitoredKeyCode(keyCode) else { return }
             guard let self else { return }
             Task { @MainActor in
-                if self.coordinator.state != .idle {
-                    Log.app.debug("Esc — cancelling dictation")
-                    await self.coordinator.cancelDictation()
-                } else if self.coordinator.canCollapseVoicePreviewHUD {
-                    Log.app.debug("Esc — collapsing voice preview HUD")
-                    self.coordinator.collapseVoicePreviewHUD()
-                }
+                await self.handleMonitoredKeyDown(keyCode)
             }
         }
         localEscMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard event.keyCode == 53 else { return event }  // kVK_Escape
+            let keyCode = event.keyCode
+            guard Self.isMonitoredKeyCode(keyCode) else { return event }
             guard let self else { return event }
             Task { @MainActor in
-                if self.coordinator.state != .idle {
-                    Log.app.debug("Esc — cancelling dictation")
-                    await self.coordinator.cancelDictation()
-                } else if self.coordinator.canCollapseVoicePreviewHUD {
-                    Log.app.debug("Esc — collapsing voice preview HUD")
-                    self.coordinator.collapseVoicePreviewHUD()
-                }
+                await self.handleMonitoredKeyDown(keyCode)
             }
             return event
+        }
+    }
+
+    private nonisolated static func isMonitoredKeyCode(_ keyCode: UInt16) -> Bool {
+        keyCode == escapeKeyCode || returnKeyCodes.contains(keyCode)
+    }
+
+    private func handleMonitoredKeyDown(_ keyCode: UInt16) async {
+        if keyCode == Self.escapeKeyCode {
+            if coordinator.state != .idle {
+                Log.app.debug("Esc — cancelling dictation")
+                await coordinator.cancelDictation()
+            } else if coordinator.canCollapseVoicePreviewHUD {
+                Log.app.debug("Esc — collapsing voice preview HUD")
+                coordinator.collapseVoicePreviewHUD()
+            }
+        } else if Self.returnKeyCodes.contains(keyCode) {
+            Log.app.debug("Return — dismissing voice preview HUD if expanded")
+            coordinator.dismissVoicePreviewHUDFromKeyboard()
         }
     }
 

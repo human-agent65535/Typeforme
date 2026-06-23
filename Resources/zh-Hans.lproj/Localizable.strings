@@ -5,6 +5,8 @@
 "Recording" = "录音中";
 "Transcribing…" = "识别中…";
 "Refining…" = "优化中…";
+"Understanding" = "理解中";
+"Editing" = "编辑中";
 "Preview" = "预览";
 "Inserting…" = "插入中…";
 "Done" = "完成";
@@ -63,3 +65,5 @@
 "Left ⌥" = "左 ⌥";
 "Fn" = "Fn";
 "double-tap %@" = "双击 %@";
+"Tap %@ to complete" = "轻按 %@ 完成";
+"Click ✓ to complete" = "点击 ✓ 完成";

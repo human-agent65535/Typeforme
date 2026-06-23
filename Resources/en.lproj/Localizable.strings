@@ -7,6 +7,8 @@
 "Recording" = "Recording";
 "Transcribing…" = "Transcribing…";
 "Refining…" = "Refining…";
+"Understanding" = "Understanding";
+"Editing" = "Editing";
 "Preview" = "Preview";
 "Inserting…" = "Inserting…";
 "Done" = "Done";
@@ -65,3 +67,5 @@
 "Left ⌥" = "Left ⌥";
 "Fn" = "Fn";
 "double-tap %@" = "double-tap %@";
+"Tap %@ to complete" = "Tap %@ to complete";
+"Click ✓ to complete" = "Click ✓ to complete";

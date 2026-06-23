@@ -253,8 +253,14 @@ struct HUDView: View {
         case .idle:
             return String(format: NSLocalizedString("Ready · %@", comment: "HUD idle status with hotkey hint"), hotkeyDescription)
         case .recording:    return NSLocalizedString("Recording", comment: "HUD status")
-        case .transcribing: return NSLocalizedString("Transcribing…", comment: "HUD status")
+        case .transcribing:
+            return coordinator.isProcessingCommandTextEdit
+                ? NSLocalizedString("Understanding", comment: "HUD status while understanding a voice command")
+                : NSLocalizedString("Transcribing…", comment: "HUD status")
         case .correcting:
+            if coordinator.isProcessingCommandTextEdit {
+                return NSLocalizedString("Editing", comment: "HUD status while applying a voice command")
+            }
             // Re-correct: keep the prior text on screen so the HUD doesn't
             // flash to "Refining…" mid-edit. First refine has no prior
             // text, so we still show the spinner copy.
@@ -446,6 +452,23 @@ private struct VoicePreviewActionBar: View {
 
             Spacer(minLength: 4)
 
+            if coordinator.isRecordingCommandTextEdit {
+                Divider()
+                    .frame(height: 18)
+
+                Button {
+                    Task { await coordinator.stopDictation() }
+                } label: {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 10, weight: .bold))
+                        .frame(width: 26, height: 26)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Color.green)
+                .help("Finish recording")
+            }
+
             Divider()
                 .frame(height: 18)
 
@@ -510,6 +533,34 @@ private struct VoicePreviewActionBar: View {
                 startedAt: coordinator.recordingStartedAt ?? Date(),
                 maxDuration: AppSettings.maxRecordingDuration
             )
+            if coordinator.isRecordingCommandTextEdit {
+                Text(commandCompletionHint)
+                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .fixedSize()
+            }
+        }
+    }
+
+    private var commandCompletionHint: String {
+        let hold = AppSettings.holdModifier
+        guard hold != .none else {
+            return NSLocalizedString("Click ✓ to complete", comment: "HUD command recording completion hint")
+        }
+        let format = NSLocalizedString("Tap %@ to complete", comment: "HUD command recording completion hint")
+        return String(format: format, shortHoldName(hold))
+    }
+
+    private func shortHoldName(_ hold: HoldModifier) -> String {
+        switch hold {
+        case .none:         return ""
+        case .rightOption:  return NSLocalizedString("Right ⌥", comment: "Hold modifier")
+        case .rightCommand: return NSLocalizedString("Right ⌘", comment: "Hold modifier")
+        case .rightShift:   return NSLocalizedString("Right ⇧", comment: "Hold modifier")
+        case .rightControl: return NSLocalizedString("Right ⌃", comment: "Hold modifier")
+        case .leftOption:   return NSLocalizedString("Left ⌥", comment: "Hold modifier")
+        case .fn:           return NSLocalizedString("Fn", comment: "Hold modifier")
         }
     }
 
@@ -520,12 +571,21 @@ private struct VoicePreviewActionBar: View {
                 tint: coordinator.state == .correcting ? .purple : .blue
             )
             .padding(.leading, 4)
-            Text(coordinator.state == .correcting
-                 ? NSLocalizedString("Refining…", comment: "HUD status")
-                 : NSLocalizedString("Transcribing…", comment: "HUD status"))
+            Text(processingStatusText)
                 .font(.system(size: 11, weight: .semibold, design: .rounded))
                 .foregroundStyle(.secondary)
         }
+    }
+
+    private var processingStatusText: String {
+        if coordinator.isProcessingCommandTextEdit {
+            return coordinator.state == .correcting
+                ? NSLocalizedString("Editing", comment: "HUD status while applying a voice command")
+                : NSLocalizedString("Understanding", comment: "HUD status while understanding a voice command")
+        }
+        return coordinator.state == .correcting
+            ? NSLocalizedString("Refining…", comment: "HUD status")
+            : NSLocalizedString("Transcribing…", comment: "HUD status")
     }
 }
 
@@ -587,4 +647,3 @@ private struct VoicePreviewBarLabel: View {
         .contentShape(Rectangle())
     }
 }
-

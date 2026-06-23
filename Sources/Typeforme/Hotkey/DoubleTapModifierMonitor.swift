@@ -77,6 +77,7 @@ final class DoubleTapModifierMonitor {
 
     var onHoldStart: (() -> Void)?
     var onHoldEnd:   (() -> Void)?
+    var onModifierTap: (() -> Void)?
 
     func install(modifier: HoldModifier) {
         guard modifier != self.modifier || globalMonitor == nil || localMonitor == nil else { return }
@@ -172,6 +173,7 @@ final class DoubleTapModifierMonitor {
                 onHoldEnd?()
             } else {
                 lastReleaseAt = Date()
+                onModifierTap?()
             }
         }
         wasPressed = pressedNow

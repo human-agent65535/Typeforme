@@ -221,8 +221,30 @@ final class DictationCoordinator: ObservableObject {
         voicePreviewHUDExpanded = false
     }
 
+    func dismissVoicePreviewHUDFromKeyboard() {
+        switch state {
+        case .idle:
+            guard voicePreviewHUDExpanded else { return }
+            collapseVoicePreviewHUD()
+        case .success:
+            resetTask?.cancel()
+            resetTask = nil
+            reset(keepVoicePreviewExpanded: false)
+        default:
+            return
+        }
+    }
+
     var canCollapseVoicePreviewHUD: Bool {
         state == .idle && voicePreviewHUDExpanded
+    }
+
+    var isRecordingCommandTextEdit: Bool {
+        state == .recording && activeTextEditIntent == .command
+    }
+
+    var isProcessingCommandTextEdit: Bool {
+        activeTextEditIntent == .command && (state == .transcribing || state == .correcting)
     }
 
     private var canRestyleFocusedInputFromHUD: Bool {
@@ -568,7 +590,7 @@ final class DictationCoordinator: ObservableObject {
         state = .error
     }
 
-    func reset() {
+    func reset(keepVoicePreviewExpanded: Bool = false) {
         autoStopTask?.cancel()
         autoStopTask = nil
         resetTask?.cancel()
@@ -585,6 +607,7 @@ final class DictationCoordinator: ObservableObject {
         lastTranscript = ""
         lastCorrected = ""
         clearPreviewState()
+        voicePreviewHUDExpanded = keepVoicePreviewExpanded
         frontmostSnapshot = nil
         clearTextEditRequest()
         clearDictationContext()
@@ -747,9 +770,7 @@ final class DictationCoordinator: ObservableObject {
                 }
             }
             nvidiaLivePreviewSession = session
-            return { [weak session] buffer in
-                session?.append(buffer)
-            }
+            return makeNvidiaLivePreviewPCMHandler(session: session)
         } catch {
             Log.asr.notice("Nemotron live preview unavailable: \(error.localizedDescription, privacy: .public)")
             return nil
@@ -810,9 +831,7 @@ final class DictationCoordinator: ObservableObject {
             }
         }
 
-        return { [weak request] buffer in
-            request?.append(buffer)
-        }
+        return makeAppleSpeechLivePreviewPCMHandler(request: request)
     }
 
     private func applyLivePartialPreview(_ rawText: String, displaysLivePartial: Bool) {
@@ -1105,7 +1124,10 @@ final class DictationCoordinator: ObservableObject {
             let warning = Self.successWarning(from: lastWarning)
             lastWarning = warning
             transition(to: .success)
-            scheduleAutoReset(after: warning == nil ? 0.8 : Self.degradedSuccessResetDelay)
+            scheduleAutoReset(
+                after: warning == nil ? 0.8 : Self.degradedSuccessResetDelay,
+                keepVoicePreviewExpanded: true
+            )
         } catch is CancellationError {
             transition(to: .idle)
         } catch TextCommitterError.cancelled {
@@ -1133,7 +1155,10 @@ final class DictationCoordinator: ObservableObject {
             let warning = Self.successWarning(from: lastWarning)
             lastWarning = warning
             transition(to: .success)
-            scheduleAutoReset(after: warning == nil ? 0.8 : Self.degradedSuccessResetDelay)
+            scheduleAutoReset(
+                after: warning == nil ? 0.8 : Self.degradedSuccessResetDelay,
+                keepVoicePreviewExpanded: true
+            )
         } catch is CancellationError {
             transition(to: .idle)
         } catch TextCommitterError.cancelled {
@@ -1175,7 +1200,10 @@ final class DictationCoordinator: ObservableObject {
             let warning = Self.successWarning(from: lastWarning)
             lastWarning = warning
             transition(to: .success)
-            scheduleAutoReset(after: warning == nil ? 0.8 : Self.degradedSuccessResetDelay)
+            scheduleAutoReset(
+                after: warning == nil ? 0.8 : Self.degradedSuccessResetDelay,
+                keepVoicePreviewExpanded: true
+            )
         } catch is CancellationError {
             transition(to: .idle)
         } catch TextCommitterError.cancelled {
@@ -1197,12 +1225,12 @@ final class DictationCoordinator: ObservableObject {
         }
     }
 
-    private func scheduleAutoReset(after seconds: TimeInterval) {
+    private func scheduleAutoReset(after seconds: TimeInterval, keepVoicePreviewExpanded: Bool = false) {
         resetTask?.cancel()
         resetTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
             guard !Task.isCancelled else { return }
-            self?.reset()
+            self?.reset(keepVoicePreviewExpanded: keepVoicePreviewExpanded)
         }
     }
 
@@ -1219,5 +1247,21 @@ final class DictationCoordinator: ObservableObject {
 
     private func elapsedMs(since date: Date) -> Int {
         Int(Date().timeIntervalSince(date) * 1000)
+    }
+}
+
+private func makeNvidiaLivePreviewPCMHandler(
+    session: NvidiaNemotronLivePreviewSession
+) -> (AVAudioPCMBuffer) -> Void {
+    { [weak session] buffer in
+        session?.append(buffer)
+    }
+}
+
+private func makeAppleSpeechLivePreviewPCMHandler(
+    request: SFSpeechAudioBufferRecognitionRequest
+) -> (AVAudioPCMBuffer) -> Void {
+    { [weak request] buffer in
+        request?.append(buffer)
     }
 }

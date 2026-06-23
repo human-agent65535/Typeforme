@@ -61,8 +61,14 @@ struct MenuBarMenu: View {
             }
             return String(format: NSLocalizedString("Ready · %@", comment: "Menu status"), mode)
         case .recording:    return NSLocalizedString("Recording…", comment: "Menu status")
-        case .transcribing: return NSLocalizedString("Transcribing…", comment: "Menu status")
-        case .correcting:   return NSLocalizedString("Refining…", comment: "Menu status")
+        case .transcribing:
+            return coordinator.isProcessingCommandTextEdit
+                ? NSLocalizedString("Understanding", comment: "Menu status while understanding a voice command")
+                : NSLocalizedString("Transcribing…", comment: "Menu status")
+        case .correcting:
+            return coordinator.isProcessingCommandTextEdit
+                ? NSLocalizedString("Editing", comment: "Menu status while applying a voice command")
+                : NSLocalizedString("Refining…", comment: "Menu status")
         case .inserting:    return NSLocalizedString("Inserting…", comment: "Menu status")
         case .success:      return NSLocalizedString("Inserted", comment: "Menu status")
         case .error:        return coordinator.lastError ?? NSLocalizedString("Error", comment: "Menu status")
