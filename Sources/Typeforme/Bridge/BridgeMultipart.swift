@@ -458,10 +458,7 @@ enum BridgeMultipart {
     }
 
     static func mimeType(forExtension ext: String) -> String {
-        switch ext.lowercased() {
-        case "m4a", "aac": return "audio/mp4"
-        default: return "application/octet-stream"
-        }
+        BridgeAudioFormat.mimeType(forExtension: ext)
     }
 
     private static func boundary(from contentType: String) -> String? {
@@ -616,9 +613,9 @@ enum BridgeMultipart {
         let ext = (
             explicitExtension?.isEmpty == false
                 ? explicitExtension!
-                : (audioURL.pathExtension.isEmpty ? "m4a" : audioURL.pathExtension)
+                : (audioURL.pathExtension.isEmpty ? BridgeAudioFormat.defaultExtension : audioURL.pathExtension)
         ).lowercased()
-        guard ["m4a", "aac"].contains(ext) else {
+        guard BridgeAudioFormat.isAllowedExtension(ext) else {
             throw BridgeMultipartError.invalidRequest("Unsupported audio extension: \(ext)")
         }
         return ext

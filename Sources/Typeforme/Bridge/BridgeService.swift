@@ -956,15 +956,14 @@ final class BridgeService {
     }
 
     private static func validatedClientAudioExtension(_ extensionHint: String?) throws -> String {
-        let defaultExtension = "m4a"
-        guard let extensionHint else { return defaultExtension }
+        guard let extensionHint else { return BridgeAudioFormat.defaultExtension }
         let allowed = extensionHint
             .lowercased()
             .filter { $0.isLetter || $0.isNumber }
         guard !allowed.isEmpty, allowed.count <= 8 else {
             throw BridgeServiceError.invalidRequest("Unsupported audio extension")
         }
-        guard ["m4a", "aac"].contains(allowed) else {
+        guard BridgeAudioFormat.isAllowedExtension(allowed) else {
             throw BridgeServiceError.invalidRequest("Unsupported audio extension: \(allowed)")
         }
         return allowed

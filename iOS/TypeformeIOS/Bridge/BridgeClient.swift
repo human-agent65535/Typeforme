@@ -120,7 +120,7 @@ struct BridgeClient: Sendable {
         onJobEvent: (@Sendable (BridgeJobStatusEvent) async -> Void)? = nil
     ) async throws -> BridgeDictateResponse {
         let ext = (audioURL.pathExtension.isEmpty ? audioExtension : audioURL.pathExtension).lowercased()
-        guard ["m4a", "aac"].contains(ext) else {
+        guard BridgeAudioFormat.isAllowedExtension(ext) else {
             throw BridgeClientError.unsupportedAudioFormat(ext.isEmpty ? "missing extension" : ext)
         }
         return try await performWithJobEvents(clientJobID: clientJobID, onJobEvent: onJobEvent) { normalizedJobID in

@@ -74,7 +74,7 @@ enum ASRAudioSupport {
 
     static func bridgeUploadAudioURL(for url: URL) throws -> URL {
         let ext = url.pathExtension.lowercased()
-        guard ["m4a", "aac"].contains(ext) else {
+        guard BridgeAudioFormat.isAllowedExtension(ext) else {
             throw ASRAudioSupportError.unsupportedBridgeAudioExtension(ext.isEmpty ? "missing extension" : ext)
         }
         return url
