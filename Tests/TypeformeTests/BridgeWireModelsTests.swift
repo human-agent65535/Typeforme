@@ -14,6 +14,13 @@ struct BridgeWireModelsTests {
         #expect(BridgeRequestEndpoint.livePreviewSocket.methodAndPath == "WS /v1/live-preview/:sessionID/socket")
     }
 
+    @Test func bridgeClientIdentityHeadersUseSharedNames() {
+        #expect(BridgeClientIdentityHeaders.id == "X-Typeforme-Client-ID")
+        #expect(BridgeClientIdentityHeaders.name == "X-Typeforme-Client-Name")
+        #expect(BridgeClientIdentityHeaders.platform == "X-Typeforme-Client-Platform")
+        #expect(BridgeClientIdentityHeaders.bundleID == "X-Typeforme-Client-Bundle-ID")
+    }
+
     @Test func healthResponseUsesSharedBridgeKeys() throws {
         let response = BridgeHealthResponse(
             ok: true,

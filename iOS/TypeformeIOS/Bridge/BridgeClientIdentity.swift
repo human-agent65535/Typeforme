@@ -1,13 +1,6 @@
 import Foundation
 import os.lock
 
-enum BridgeClientIdentityHeaders {
-    static let id = "X-Typeforme-Client-ID"
-    static let name = "X-Typeforme-Client-Name"
-    static let platform = "X-Typeforme-Client-Platform"
-    static let bundleID = "X-Typeforme-Client-Bundle-ID"
-}
-
 enum BridgeClientIdentity {
     private static let identityKey = "bridge.clientIdentityID.v1"
     private static let cachedIdentityID = OSAllocatedUnfairLock<String?>(initialState: nil)

@@ -9,6 +9,13 @@ struct BridgeAPIRoute: Equatable, Sendable {
     }
 }
 
+enum BridgeClientIdentityHeaders {
+    static let id = "X-Typeforme-Client-ID"
+    static let name = "X-Typeforme-Client-Name"
+    static let platform = "X-Typeforme-Client-Platform"
+    static let bundleID = "X-Typeforme-Client-Bundle-ID"
+}
+
 enum BridgeAPIEndpoint {
     static let health = BridgeAPIRoute(method: "GET", path: "/v1/health")
     static let pairing = BridgeAPIRoute(method: "GET", path: "/v1/pairing")
