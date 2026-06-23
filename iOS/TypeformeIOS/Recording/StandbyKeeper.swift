@@ -45,12 +45,10 @@ final class StandbyKeeper {
             try setupAndPlay(format: format, configureSession: configureSession)
             isActive = true
         } catch {
-            // Audio session conflicts, hardware unavailable, etc. — log
-            // and move on rather than spamming the UI. The local bridge
-            // still works while the app is in the foreground; iOS will
-            // suspend after backgrounding but the next keyboard standby
-            // URL open will retry.
-            NSLog("StandbyKeeper.start failed: \(error)")
+            // Audio session conflicts, hardware unavailable, etc. should not
+            // surface to the user. The local bridge still works in foreground;
+            // after background suspension, the next keyboard standby URL open
+            // retries.
             isActive = false
         }
     }

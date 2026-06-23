@@ -92,11 +92,6 @@ final class NvidiaNemotronLivePreviewSession: @unchecked Sendable {
             Log.asr.notice(
                 "Nemotron live preview process started session=\(session.logID, privacy: .public) languages=\(supportedLanguageIDs.joined(separator: ","), privacy: .public)"
             )
-            LivePreviewFileTrace.record(
-                "mac_nemotron_process_started",
-                sessionID: diagnosticID,
-                fields: ["languages": supportedLanguageIDs.joined(separator: ",")]
-            )
             return session
         } catch {
             session.terminate(reason: "start_failed")
@@ -242,15 +237,7 @@ final class NvidiaNemotronLivePreviewSession: @unchecked Sendable {
             Log.asr.notice(
                 "Nemotron live preview finish requested session=\(self.logID, privacy: .public) input_audio_ms=\(self.inputAudioMS, privacy: .public) elapsed_ms=\(Self.elapsedMS(since: self.startedAt), privacy: .public)"
             )
-            LivePreviewFileTrace.record(
-                "mac_nemotron_finish_requested",
-                sessionID: self.diagnosticID,
-                fields: [
-                    "elapsed_ms": Self.elapsedMS(since: self.startedAt),
-                    "input_audio_ms": self.inputAudioMS,
-                ]
-            )
-            self.writeControlMarker(Self.finishMarkerBits, label: "finish")
+            self.writeControlMarker(Self.finishMarkerBits)
         }
     }
 
@@ -275,15 +262,7 @@ final class NvidiaNemotronLivePreviewSession: @unchecked Sendable {
             Log.asr.notice(
                 "Nemotron live preview reset requested session=\(self.logID, privacy: .public) input_audio_ms=\(self.inputAudioMS, privacy: .public) elapsed_ms=\(Self.elapsedMS(since: self.startedAt), privacy: .public)"
             )
-            LivePreviewFileTrace.record(
-                "mac_nemotron_reset_requested",
-                sessionID: self.diagnosticID,
-                fields: [
-                    "elapsed_ms": Self.elapsedMS(since: self.startedAt),
-                    "input_audio_ms": self.inputAudioMS,
-                ]
-            )
-            self.writeControlMarker(Self.cancelMarkerBits, label: "cancel")
+            self.writeControlMarker(Self.cancelMarkerBits)
         }
         return await waitForReset(timeout: timeout)
     }
@@ -291,15 +270,6 @@ final class NvidiaNemotronLivePreviewSession: @unchecked Sendable {
     func terminate(reason: String = "terminate") {
         Log.asr.notice(
             "Nemotron live preview terminate session=\(self.logID, privacy: .public) reason=\(reason, privacy: .public) input_audio_ms=\(self.inputAudioMS, privacy: .public) elapsed_ms=\(Self.elapsedMS(since: self.startedAt), privacy: .public)"
-        )
-        LivePreviewFileTrace.record(
-            "mac_nemotron_terminate",
-            sessionID: diagnosticID,
-            fields: [
-                "elapsed_ms": Self.elapsedMS(since: startedAt),
-                "input_audio_ms": inputAudioMS,
-                "reason": reason,
-            ]
         )
         closeInputImmediately()
         if process.isRunning {
@@ -336,11 +306,6 @@ final class NvidiaNemotronLivePreviewSession: @unchecked Sendable {
         } catch {
             closeInputImmediately()
             Log.asr.notice("Nemotron live preview stdin write failed: \(error.localizedDescription, privacy: .public)")
-            LivePreviewFileTrace.record(
-                "mac_nemotron_stdin_write_failed",
-                sessionID: diagnosticID,
-                fields: ["message_chars": error.localizedDescription.count]
-            )
         }
     }
 
@@ -358,17 +323,6 @@ final class NvidiaNemotronLivePreviewSession: @unchecked Sendable {
         }
         Log.asr.notice(
             "Nemotron live preview stdin write session=\(self.logID, privacy: .public) first=\(isFirst, privacy: .public) bytes=\(byteCount, privacy: .public) input_audio_ms=\(self.inputAudioMS, privacy: .public) write_ms=\(writeMS, privacy: .public) elapsed_ms=\(Self.elapsedMS(since: self.startedAt), privacy: .public)"
-        )
-        LivePreviewFileTrace.record(
-            "mac_nemotron_stdin_write",
-            sessionID: diagnosticID,
-            fields: [
-                "bytes": byteCount,
-                "elapsed_ms": Self.elapsedMS(since: startedAt),
-                "first": isFirst,
-                "input_audio_ms": inputAudioMS,
-                "write_ms": writeMS,
-            ]
         )
     }
 
@@ -399,32 +353,14 @@ final class NvidiaNemotronLivePreviewSession: @unchecked Sendable {
         }
     }
 
-    private func writeControlMarker(_ bits: UInt32, label: String) {
+    private func writeControlMarker(_ bits: UInt32) {
         var littleEndian = bits.littleEndian
         let data = Data(bytes: &littleEndian, count: MemoryLayout<UInt32>.size)
-        let writeStartedAt = Date()
         do {
             try stdinPipe.fileHandleForWriting.write(contentsOf: data)
-            LivePreviewFileTrace.record(
-                "mac_nemotron_control_marker",
-                sessionID: diagnosticID,
-                fields: [
-                    "elapsed_ms": Self.elapsedMS(since: startedAt),
-                    "label": label,
-                    "write_ms": Self.elapsedMS(since: writeStartedAt),
-                ]
-            )
         } catch {
             closeInputImmediately()
             Log.asr.notice("Nemotron live preview control write failed: \(error.localizedDescription, privacy: .public)")
-            LivePreviewFileTrace.record(
-                "mac_nemotron_control_write_failed",
-                sessionID: diagnosticID,
-                fields: [
-                    "label": label,
-                    "message_chars": error.localizedDescription.count,
-                ]
-            )
         }
     }
 
@@ -482,18 +418,6 @@ final class NvidiaNemotronLivePreviewSession: @unchecked Sendable {
             Log.asr.notice(
                 "Nemotron live preview stdout session=\(self.logID, privacy: .public) event=\(payload.event ?? "unknown", privacy: .public) first=\(isFirst, privacy: .public) event_count=\(self.stdoutEventCount, privacy: .public) text_chars=\(payload.text?.count ?? 0, privacy: .public) input_audio_ms=\(self.inputAudioMS, privacy: .public) elapsed_ms=\(Self.elapsedMS(since: self.startedAt), privacy: .public)"
             )
-            LivePreviewFileTrace.record(
-                "mac_nemotron_stdout",
-                sessionID: diagnosticID,
-                fields: [
-                    "elapsed_ms": Self.elapsedMS(since: startedAt),
-                    "event": payload.event ?? "unknown",
-                    "event_count": stdoutEventCount,
-                    "first": isFirst,
-                    "input_audio_ms": inputAudioMS,
-                    "text_chars": payload.text?.count ?? 0,
-                ]
-            )
             if let text = payload.text, !text.isEmpty {
                 recordTranscript(text)
                 transcriptHandler()(text)
@@ -522,11 +446,6 @@ final class NvidiaNemotronLivePreviewSession: @unchecked Sendable {
                 ready = true
                 lock.unlock()
             }
-            LivePreviewFileTrace.record(
-                "mac_nemotron_stderr",
-                sessionID: diagnosticID,
-                fields: ["message": message]
-            )
         }
     }
 
@@ -648,14 +567,6 @@ final class NvidiaNemotronLivePreviewSession: @unchecked Sendable {
     private func handleProcessTermination() {
         Log.asr.notice(
             "Nemotron live preview process terminated session=\(self.logID, privacy: .public) input_audio_ms=\(self.inputAudioMS, privacy: .public) elapsed_ms=\(Self.elapsedMS(since: self.startedAt), privacy: .public)"
-        )
-        LivePreviewFileTrace.record(
-            "mac_nemotron_process_terminated",
-            sessionID: diagnosticID,
-            fields: [
-                "elapsed_ms": Self.elapsedMS(since: startedAt),
-                "input_audio_ms": inputAudioMS,
-            ]
         )
         drainRemainingOutput()
         resumeFinalWaiters(success: false)

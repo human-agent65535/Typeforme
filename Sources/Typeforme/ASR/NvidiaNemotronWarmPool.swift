@@ -59,24 +59,8 @@ final class NvidiaNemotronWarmPool {
             Log.asr.info(
                 "NVIDIA Nemotron warm helper started languages=\(languageIDs.joined(separator: ","), privacy: .public)"
             )
-            LivePreviewFileTrace.record(
-                "mac_nemotron_warm_started",
-                sessionID: diagnosticID,
-                fields: [
-                    "key": key,
-                    "languages": languageIDs.joined(separator: ","),
-                ]
-            )
         } catch {
             Log.asr.error("NVIDIA Nemotron warm helper failed: \(error.localizedDescription, privacy: .public)")
-            LivePreviewFileTrace.record(
-                "mac_nemotron_warm_failed",
-                sessionID: "warm",
-                fields: [
-                    "key": key,
-                    "message_chars": error.localizedDescription.count,
-                ]
-            )
         }
     }
 
@@ -97,15 +81,6 @@ final class NvidiaNemotronWarmPool {
             self.idle = nil
             if idle.key == key, idle.session.isRunning {
                 idle.session.prepareForUse(diagnosticID: diagnosticID, onTranscript: onTranscript)
-                LivePreviewFileTrace.record(
-                    "mac_nemotron_warm_taken",
-                    sessionID: diagnosticID,
-                    fields: [
-                        "age_ms": max(0, Int(Date().timeIntervalSince(idle.createdAt) * 1_000)),
-                        "key": key,
-                        "ready": idle.session.isReady,
-                    ]
-                )
                 return idle.session
             }
             idle.session.terminate(reason: "key_changed_on_take")
@@ -115,11 +90,6 @@ final class NvidiaNemotronWarmPool {
             languageIDs: languageIDs,
             diagnosticID: diagnosticID,
             onTranscript: onTranscript
-        )
-        LivePreviewFileTrace.record(
-            "mac_nemotron_warm_miss",
-            sessionID: diagnosticID,
-            fields: ["key": key]
         )
         return session
     }
@@ -153,29 +123,12 @@ final class NvidiaNemotronWarmPool {
             session: session,
             createdAt: Date()
         )
-        LivePreviewFileTrace.record(
-            "mac_nemotron_warm_returned",
-            sessionID: diagnosticID,
-            fields: [
-                "key": key,
-                "languages": languageIDs.joined(separator: ","),
-                "reason": reason,
-            ]
-        )
     }
 
     func terminateIdle(reason: String) {
         guard let idle else { return }
         self.idle = nil
         idle.session.terminate(reason: reason)
-        LivePreviewFileTrace.record(
-            "mac_nemotron_warm_terminated",
-            sessionID: "warm",
-            fields: [
-                "key": idle.key,
-                "reason": reason,
-            ]
-        )
     }
 
     private static func key(for languageIDs: [String]) -> String {

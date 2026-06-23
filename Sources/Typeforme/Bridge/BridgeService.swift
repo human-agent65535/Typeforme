@@ -273,11 +273,6 @@ final class BridgeService {
         Log.bridge.notice(
             "Bridge live preview start session=\(Self.logID(id), privacy: .public) languages=\(languageIDs.joined(separator: ","), privacy: .public)"
         )
-        LivePreviewFileTrace.record(
-            "mac_bridge_start",
-            sessionID: id,
-            fields: ["languages": languageIDs.joined(separator: ",")]
-        )
         let process = try NvidiaNemotronWarmPool.shared.takeOrStart(languageIDs: languageIDs, diagnosticID: id) { [weak self] text in
             Task { @MainActor [weak self] in
                 self?.recordLivePreviewTranscript(sessionID: id, text: text)
@@ -294,11 +289,6 @@ final class BridgeService {
         )
         Log.bridge.notice(
             "Bridge live preview started session=\(Self.logID(id), privacy: .public) elapsed_ms=\(self.elapsedMs(since: createdAt), privacy: .public)"
-        )
-        LivePreviewFileTrace.record(
-            "mac_bridge_started",
-            sessionID: id,
-            fields: ["elapsed_ms": self.elapsedMs(since: createdAt)]
         )
         return BridgeLivePreviewStartResponse(
             sessionID: id,
@@ -330,11 +320,6 @@ final class BridgeService {
         Log.bridge.notice(
             "Bridge live preview finish session=\(Self.logID(sessionID), privacy: .public) elapsed_ms=\(self.elapsedMs(since: session.createdAt), privacy: .public)"
         )
-        LivePreviewFileTrace.record(
-            "mac_bridge_finish",
-            sessionID: sessionID,
-            fields: ["elapsed_ms": self.elapsedMs(since: session.createdAt)]
-        )
         let completed = await session.process.finishInputAndWaitForFinal(
             timeout: Self.livePreviewFinishTimeout
         )
@@ -356,15 +341,6 @@ final class BridgeService {
         let finishedAt = Date()
         Log.bridge.notice(
             "Bridge live preview finished session=\(Self.logID(sessionID), privacy: .public) completed=\(completed, privacy: .public) text_chars=\(transcript?.count ?? 0, privacy: .public) elapsed_ms=\(self.elapsedMs(since: session.createdAt), privacy: .public)"
-        )
-        LivePreviewFileTrace.record(
-            "mac_bridge_finished",
-            sessionID: sessionID,
-            fields: [
-                "completed": completed,
-                "elapsed_ms": self.elapsedMs(since: session.createdAt),
-                "text_chars": transcript?.count ?? 0,
-            ]
         )
         return BridgeLivePreviewFinishResponse(
             sessionID: session.id,
@@ -1198,14 +1174,6 @@ final class BridgeService {
         Log.bridge.notice(
             "Bridge live preview transcript session=\(Self.logID(sessionID), privacy: .public) text_chars=\(text.count, privacy: .public) elapsed_ms=\(self.elapsedMs(since: session.createdAt), privacy: .public)"
         )
-        LivePreviewFileTrace.record(
-            "mac_bridge_transcript",
-            sessionID: sessionID,
-            fields: [
-                "elapsed_ms": self.elapsedMs(since: session.createdAt),
-                "text_chars": text.count,
-            ]
-        )
         publishLivePreviewEvent(session: session, text: text, isFinal: false)
     }
 
@@ -1226,14 +1194,6 @@ final class BridgeService {
         }
         Log.bridge.notice(
             "Bridge live preview removed session=\(Self.logID(id), privacy: .public) text_chars=\(session.lastTranscript?.count ?? 0, privacy: .public) elapsed_ms=\(self.elapsedMs(since: session.createdAt), privacy: .public)"
-        )
-        LivePreviewFileTrace.record(
-            "mac_bridge_removed",
-            sessionID: id,
-            fields: [
-                "elapsed_ms": self.elapsedMs(since: session.createdAt),
-                "text_chars": session.lastTranscript?.count ?? 0,
-            ]
         )
         publishLivePreviewEvent(session: session, text: session.lastTranscript, isFinal: true)
     }

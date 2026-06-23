@@ -44,11 +44,6 @@ final class ReturnTracker {
         }
     }
 
-    func log(_ message: String) {
-        guard isEnabled else { return }
-        NSLog("Typeforme return-to-keyboard: \(message)")
-    }
-
     private var traceURL: URL? {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?
             .appendingPathComponent(logName)

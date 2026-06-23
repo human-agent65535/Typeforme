@@ -74,17 +74,11 @@ struct PairingTokenStore {
 
         query[kSecValueData as String] = data
         query[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
-        let addStatus = SecItemAdd(query as CFDictionary, nil)
-        if addStatus != errSecSuccess && addStatus != errSecDuplicateItem {
-            NSLog("Typeforme PairingTokenStore save failed: \(addStatus)")
-        }
+        _ = SecItemAdd(query as CFDictionary, nil)
     }
 
     func delete() {
-        let status = SecItemDelete(baseQuery(service: service) as CFDictionary)
-        if status != errSecSuccess && status != errSecItemNotFound {
-            NSLog("Typeforme PairingTokenStore delete failed: \(status)")
-        }
+        _ = SecItemDelete(baseQuery(service: service) as CFDictionary)
     }
 
     private func baseQuery(service: String) -> [String: Any] {

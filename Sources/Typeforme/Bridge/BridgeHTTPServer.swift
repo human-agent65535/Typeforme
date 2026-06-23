@@ -47,14 +47,6 @@ private actor BridgeLivePreviewWebSocketWriter {
         Log.bridge.notice(
             "Bridge live preview socket send session=\(String(event.sessionID.prefix(8)), privacy: .public) final=\(event.isFinal, privacy: .public) text_chars=\(event.text?.count ?? 0, privacy: .public)"
         )
-        LivePreviewFileTrace.record(
-            "mac_socket_send_event",
-            sessionID: event.sessionID,
-            fields: [
-                "final": event.isFinal,
-                "text_chars": event.text?.count ?? 0,
-            ]
-        )
     }
 
     func sendFinal(
@@ -629,7 +621,6 @@ final class BridgeHTTPServer: @unchecked Sendable {
         let socketOpenedAt = Date()
         let socketLogID = String(sessionID.prefix(8))
         Log.bridge.notice("Bridge live preview socket opened session=\(socketLogID, privacy: .public)")
-        LivePreviewFileTrace.record("mac_socket_opened", sessionID: sessionID)
 
         try await withThrowingTaskGroup(of: Void.self) { group in
             group.addTask {
@@ -662,16 +653,6 @@ final class BridgeHTTPServer: @unchecked Sendable {
                                 Log.bridge.notice(
                                     "Bridge live preview socket audio session=\(socketLogID, privacy: .public) first=\(isFirst, privacy: .public) bytes=\(data.count, privacy: .public) received_audio_ms=\(receivedSamples * 1_000 / 16_000, privacy: .public) elapsed_ms=\(Self.elapsedMS(since: socketOpenedAt), privacy: .public)"
                                 )
-                                LivePreviewFileTrace.record(
-                                    "mac_socket_audio",
-                                    sessionID: sessionID,
-                                    fields: [
-                                        "bytes": data.count,
-                                        "elapsed_ms": Self.elapsedMS(since: socketOpenedAt),
-                                        "first": isFirst,
-                                        "received_audio_ms": receivedSamples * 1_000 / 16_000,
-                                    ]
-                                )
                             }
                             process.appendPCM16kMonoFloat32Data(data)
                             await service.touchLivePreviewSession(sessionID: sessionID)
@@ -683,15 +664,6 @@ final class BridgeHTTPServer: @unchecked Sendable {
                             )
                             Log.bridge.notice(
                                 "Bridge live preview socket control session=\(socketLogID, privacy: .public) type=\(control.type.rawValue, privacy: .public) received_audio_ms=\(receivedSamples * 1_000 / 16_000, privacy: .public) elapsed_ms=\(Self.elapsedMS(since: socketOpenedAt), privacy: .public)"
-                            )
-                            LivePreviewFileTrace.record(
-                                "mac_socket_control",
-                                sessionID: sessionID,
-                                fields: [
-                                    "elapsed_ms": Self.elapsedMS(since: socketOpenedAt),
-                                    "received_audio_ms": receivedSamples * 1_000 / 16_000,
-                                    "type": control.type.rawValue,
-                                ]
                             )
                             switch control.type {
                             case .finish:
@@ -707,27 +679,10 @@ final class BridgeHTTPServer: @unchecked Sendable {
                     Log.bridge.notice(
                         "Bridge live preview socket closed by peer session=\(socketLogID, privacy: .public) received_audio_ms=\(receivedSamples * 1_000 / 16_000, privacy: .public) elapsed_ms=\(Self.elapsedMS(since: socketOpenedAt), privacy: .public)"
                     )
-                    LivePreviewFileTrace.record(
-                        "mac_socket_closed_by_peer",
-                        sessionID: sessionID,
-                        fields: [
-                            "elapsed_ms": Self.elapsedMS(since: socketOpenedAt),
-                            "received_audio_ms": receivedSamples * 1_000 / 16_000,
-                        ]
-                    )
                     await service.cancelLivePreview(sessionID: sessionID)
                 } catch {
                     Log.bridge.notice(
                         "Bridge live preview socket error session=\(socketLogID, privacy: .public) received_audio_ms=\(receivedSamples * 1_000 / 16_000, privacy: .public) elapsed_ms=\(Self.elapsedMS(since: socketOpenedAt), privacy: .public) error=\(error.localizedDescription, privacy: .public)"
-                    )
-                    LivePreviewFileTrace.record(
-                        "mac_socket_error",
-                        sessionID: sessionID,
-                        fields: [
-                            "elapsed_ms": Self.elapsedMS(since: socketOpenedAt),
-                            "message_chars": error.localizedDescription.count,
-                            "received_audio_ms": receivedSamples * 1_000 / 16_000,
-                        ]
                     )
                     await service.cancelLivePreview(sessionID: sessionID)
                     throw error

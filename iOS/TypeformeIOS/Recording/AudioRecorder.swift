@@ -45,11 +45,7 @@ enum IOSRecordingAudioSession {
 
     static func configureActiveSessionCategoryEventually(purpose: Purpose) {
         Task.detached(priority: .userInitiated) {
-            do {
-                try configureActiveSessionCategory(purpose: purpose)
-            } catch {
-                NSLog("typeforme audio session category async configure failed purpose=\(purpose) error=\(error.localizedDescription)")
-            }
+            try? configureActiveSessionCategory(purpose: purpose)
         }
     }
 
@@ -115,7 +111,6 @@ final class AudioTapFileWriter: @unchecked Sendable {
     private var recordedFrameCount: AVAudioFramePosition = 0
     private var currentSampleRate: Double = 0
     private var writeError: Error?
-    private var loggedFirstWrite = false
 
     var isRecording: Bool {
         lock.lock()
@@ -159,9 +154,7 @@ final class AudioTapFileWriter: @unchecked Sendable {
         recordedFrameCount = 0
         currentSampleRate = sampleRate
         writeError = nil
-        loggedFirstWrite = false
         lock.unlock()
-        NSLog("typeforme keyboard audio begin sampleRate=\(format.sampleRate) channels=\(format.channelCount)")
         return url
     }
 
@@ -180,7 +173,6 @@ final class AudioTapFileWriter: @unchecked Sendable {
             return
         }
 
-        var shouldLogFirstWrite = false
         do {
             lock.lock()
             defer { lock.unlock() }
@@ -190,16 +182,9 @@ final class AudioTapFileWriter: @unchecked Sendable {
             do {
                 try file.write(from: writeBuffer)
                 recordedFrameCount += AVAudioFramePosition(buffer.frameLength)
-                if !loggedFirstWrite {
-                    loggedFirstWrite = true
-                    shouldLogFirstWrite = true
-                }
             } catch {
                 writeError = error
             }
-        }
-        if shouldLogFirstWrite {
-            NSLog("typeforme keyboard audio first pcm frames=\(buffer.frameLength) sampleRate=\(buffer.format.sampleRate) channels=\(buffer.format.channelCount)")
         }
     }
 
@@ -216,21 +201,17 @@ final class AudioTapFileWriter: @unchecked Sendable {
         recordedFrameCount = 0
         currentSampleRate = 0
         writeError = nil
-        loggedFirstWrite = false
         lock.unlock()
         guard let url else {
-            NSLog("typeforme keyboard audio finish no_active_file")
             recordingLog.notice("keyboard audio finish: no active file")
             return nil
         }
         if let error {
-            NSLog("typeforme keyboard audio finish failed error=\(error.localizedDescription)")
             recordingLog.error("keyboard audio finish failed: \(error.localizedDescription, privacy: .public)")
             try? FileManager.default.removeItem(at: url)
             return nil
         }
         if duration < 0.35 {
-            NSLog("typeforme keyboard audio finish too_short duration=\(duration) frames=\(frames) sampleRate=\(sampleRate)")
             recordingLog.notice(
                 "keyboard audio finish: too short duration=\(duration, privacy: .public) frames=\(frames, privacy: .public) sampleRate=\(sampleRate, privacy: .public)"
             )
@@ -239,12 +220,10 @@ final class AudioTapFileWriter: @unchecked Sendable {
         }
         let fileBytes = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.intValue ?? 0
         guard fileBytes > 0 else {
-            NSLog("typeforme keyboard audio finish m4a_empty duration=\(duration) frames=\(frames) sampleRate=\(sampleRate)")
             recordingLog.error("keyboard audio finish: empty m4a duration=\(duration, privacy: .public) frames=\(frames, privacy: .public) sampleRate=\(sampleRate, privacy: .public)")
             try? FileManager.default.removeItem(at: url)
             return nil
         }
-        NSLog("typeforme keyboard audio finish m4a_written duration=\(duration) frames=\(frames) fileBytes=\(fileBytes) sampleRate=\(sampleRate)")
         recordingLog.notice(
             "keyboard audio finish: m4a written duration=\(duration, privacy: .public) frames=\(frames, privacy: .public) fileBytes=\(fileBytes, privacy: .public) sampleRate=\(sampleRate, privacy: .public)"
         )
@@ -268,7 +247,6 @@ final class AudioTapFileWriter: @unchecked Sendable {
         recordedFrameCount = 0
         currentSampleRate = 0
         writeError = nil
-        loggedFirstWrite = false
         lock.unlock()
         if let url {
             try? FileManager.default.removeItem(at: url)
@@ -940,7 +918,6 @@ final class StandbyAudioSession: ObservableObject {
         }
         level = 0
         let format = currentFormat ?? engine.inputNode.outputFormat(forBus: 0)
-        NSLog("typeforme keyboard audio beginRecording engineRunning=\(engine.isRunning) hasTap=\(hasInstalledTap) needsRestart=\(needsEngineRestart) sampleRate=\(format.sampleRate)")
         return try fileWriter.begin(format: format)
     }
 

@@ -1380,7 +1380,6 @@ final class AppState {
             || (isKeyboardCapture && !isHostStandbyCapture)
         let pendingKeyboardTextEditContext = shouldPublishKeyboardProgress ? activeKeyboardTextEditContext : nil
         let recognitionStageLabels = Self.recognitionStageLabels(for: pendingKeyboardTextEditContext)
-        NSLog("typeforme keyboard recording stop requested commandID=\(effectiveKeyboardCommandID ?? "nil") keyboardCapture=\(isKeyboardCapture) recorder=\(recorder.isRecording) publish=\(shouldPublishKeyboardProgress)")
         defer {
             if shouldPublishKeyboardProgress || isKeyboardCapture {
                 activeKeyboardRecordingCommandID = nil
@@ -1423,7 +1422,6 @@ final class AppState {
         activeKeyboardDictationContext = nil
         releaseIdleTimer()
         guard let fileURL else {
-            NSLog("typeforme keyboard recording stop no_file commandID=\(effectiveKeyboardCommandID ?? "nil")")
             setPhase(.idle)
             if let effectiveKeyboardCommandID {
                 publishKeyboardStatus(.standby, commandID: effectiveKeyboardCommandID, message: "Nothing recorded")
@@ -2203,10 +2201,6 @@ final class AppState {
 
         guard keyboardLivePreviewEnabled else {
             appLog.notice("live preview skipped: disabled")
-            BridgeLivePreviewFileTrace.record(
-                "ios_preview_skipped",
-                fields: ["reason": "disabled"]
-            )
             return false
         }
         switch keyboardLivePreviewSource {
@@ -2223,26 +2217,11 @@ final class AppState {
         let capability = AppleSpeechPreviewSupport.capability(languageID: primaryID)
         guard keyboardLivePreviewRecognitionMode.canUse(capability) else {
             appLog.notice("live preview skipped: unsupported locale=\(primaryID, privacy: .public) mode=\(self.keyboardLivePreviewRecognitionMode.rawValue, privacy: .public)")
-            BridgeLivePreviewFileTrace.record(
-                "ios_apple_preview_skipped",
-                fields: [
-                    "locale": primaryID,
-                    "mode": keyboardLivePreviewRecognitionMode.rawValue,
-                    "reason": "unsupported_locale",
-                ]
-            )
             return false
         }
         let locale = Locale(identifier: primaryID)
         guard let recognizer = SFSpeechRecognizer(locale: locale), recognizer.isAvailable else {
             appLog.notice("live preview skipped: recognizer unavailable locale=\(primaryID, privacy: .public)")
-            BridgeLivePreviewFileTrace.record(
-                "ios_apple_preview_skipped",
-                fields: [
-                    "locale": primaryID,
-                    "reason": "recognizer_unavailable",
-                ]
-            )
             return false
         }
 
@@ -2256,24 +2235,12 @@ final class AppState {
             // recordings benefit if the user grants.
             SFSpeechRecognizer.requestAuthorization { _ in }
             appLog.notice("live preview skipped: speech permission not determined")
-            BridgeLivePreviewFileTrace.record(
-                "ios_apple_preview_skipped",
-                fields: ["reason": "speech_permission_not_determined"]
-            )
             return false
         case .denied, .restricted:
             appLog.notice("live preview skipped: speech permission denied or restricted")
-            BridgeLivePreviewFileTrace.record(
-                "ios_apple_preview_skipped",
-                fields: ["reason": "speech_permission_denied"]
-            )
             return false
         @unknown default:
             appLog.notice("live preview skipped: unknown speech permission")
-            BridgeLivePreviewFileTrace.record(
-                "ios_apple_preview_skipped",
-                fields: ["reason": "speech_permission_unknown"]
-            )
             return false
         }
 
@@ -2290,14 +2257,6 @@ final class AppState {
         let trace = LivePreviewTrace()
         livePreviewTrace = trace
         appLog.notice("live preview started: locale=\(primaryID, privacy: .public), mode=\(self.keyboardLivePreviewRecognitionMode.rawValue, privacy: .public), onDevice=\(request.requiresOnDeviceRecognition, privacy: .public)")
-        BridgeLivePreviewFileTrace.record(
-            "ios_apple_preview_started",
-            fields: [
-                "locale": primaryID,
-                "mode": keyboardLivePreviewRecognitionMode.rawValue,
-                "on_device": request.requiresOnDeviceRecognition,
-            ]
-        )
         liveSpeechTask = recognizer.recognitionTask(with: request) { [weak self, trace] result, error in
             // The task callback runs off the main actor — hop back before
             // touching state.
@@ -2313,15 +2272,6 @@ final class AppState {
                             appLog.notice(
                                 "live preview first partial: startToPartialMs=\(timing.startToPartialMS, privacy: .public), firstPCMToPartialMs=\(timing.firstPCMToPartialMS ?? -1, privacy: .public), pcmBuffers=\(timing.pcmBufferCount, privacy: .public), chars=\(text.count, privacy: .public)"
                             )
-                            BridgeLivePreviewFileTrace.record(
-                                "ios_apple_first_partial",
-                                fields: [
-                                    "chars": text.count,
-                                    "first_pcm_to_partial_ms": timing.firstPCMToPartialMS ?? -1,
-                                    "pcm_buffers": timing.pcmBufferCount,
-                                    "start_to_partial_ms": timing.startToPartialMS,
-                                ]
-                            )
                         }
                         self.livePartialTranscript = text
                         self.publishLivePartialTranscriptToKeyboard()
@@ -2329,10 +2279,6 @@ final class AppState {
                 }
                 if error != nil {
                     appLog.notice("live preview stopped: error=\(error?.localizedDescription ?? "unknown", privacy: .public)")
-                    BridgeLivePreviewFileTrace.record(
-                        "ios_apple_preview_stopped",
-                        fields: ["error_chars": error?.localizedDescription.count ?? 0]
-                    )
                     self.teardownLivePartialPreview(clearText: false)
                 }
             }
@@ -2345,15 +2291,6 @@ final class AppState {
                 appLog.notice(
                     "live preview first pcm: startToPCMms=\(timing.startToPCMMS, privacy: .public), buffers=\(timing.count, privacy: .public), sampleRate=\(buffer.format.sampleRate, privacy: .public), frames=\(buffer.frameLength, privacy: .public)"
                 )
-                BridgeLivePreviewFileTrace.record(
-                    "ios_apple_first_pcm",
-                    fields: [
-                        "buffers": timing.count,
-                        "frames": Int(buffer.frameLength),
-                        "sample_rate": Int(buffer.format.sampleRate.rounded()),
-                        "start_to_pcm_ms": timing.startToPCMMS,
-                    ]
-                )
             }
         }
         return true
@@ -2363,26 +2300,14 @@ final class AppState {
     private func startServerNemotronLivePreviewIfAvailable(generation: UInt64) -> Bool {
         guard isKeyboardLivePreviewSourceEnabled(.serverNemotron) else {
             appLog.notice("server live preview skipped: Nemotron ASR source disabled")
-            BridgeLivePreviewFileTrace.record(
-                "ios_server_preview_skipped",
-                fields: ["reason": "nemotron_source_disabled"]
-            )
             return false
         }
         guard macSettings?.supportsServerNemotronPreview == true else {
             appLog.notice("server live preview skipped: Mac Nemotron source is not enabled")
-            BridgeLivePreviewFileTrace.record(
-                "ios_server_preview_skipped",
-                fields: ["reason": "mac_nemotron_not_enabled"]
-            )
             return false
         }
         guard let baseURL = routeStatus.activeURL else {
             appLog.notice("server live preview skipped: no active bridge route")
-            BridgeLivePreviewFileTrace.record(
-                "ios_server_preview_skipped",
-                fields: ["reason": "no_active_bridge_route"]
-            )
             return false
         }
 
@@ -2399,20 +2324,11 @@ final class AppState {
                     let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
                     guard !cleaned.isEmpty else { return }
                     let timing = trace.recordPartial()
-                        if timing.isFirst {
-                            appLog.notice(
-                                "server live preview first partial: startToPartialMs=\(timing.startToPartialMS, privacy: .public), firstPCMToPartialMs=\(timing.firstPCMToPartialMS ?? -1, privacy: .public), pcmBuffers=\(timing.pcmBufferCount, privacy: .public), chars=\(cleaned.count, privacy: .public)"
-                            )
-                            BridgeLivePreviewFileTrace.record(
-                                "ios_server_first_partial",
-                                fields: [
-                                    "chars": cleaned.count,
-                                    "first_pcm_to_partial_ms": timing.firstPCMToPartialMS ?? -1,
-                                    "pcm_buffers": timing.pcmBufferCount,
-                                    "start_to_partial_ms": timing.startToPartialMS,
-                                ]
-                            )
-                        }
+                    if timing.isFirst {
+                        appLog.notice(
+                            "server live preview first partial: startToPartialMs=\(timing.startToPartialMS, privacy: .public), firstPCMToPartialMs=\(timing.firstPCMToPartialMS ?? -1, privacy: .public), pcmBuffers=\(timing.pcmBufferCount, privacy: .public), chars=\(cleaned.count, privacy: .public)"
+                        )
+                    }
                     self.livePartialTranscript = cleaned
                     self.publishLivePartialTranscriptToKeyboard()
                 }
@@ -2422,10 +2338,6 @@ final class AppState {
                     guard let self else { return }
                     guard self.livePreviewGeneration == generation else { return }
                     appLog.notice("server live preview failed: \(message, privacy: .public)")
-                    BridgeLivePreviewFileTrace.record(
-                        "ios_server_preview_failed",
-                        fields: ["message_chars": message.count]
-                    )
                     if self.serverLivePreviewStreamer != nil {
                         self.serverLivePreviewStreamer = nil
                     }
@@ -2437,28 +2349,12 @@ final class AppState {
         )
         serverLivePreviewStreamer = streamer
         appLog.notice("server live preview started")
-        BridgeLivePreviewFileTrace.record(
-            "ios_server_preview_started",
-            fields: [
-                "languages": activeLanguageIDs.joined(separator: ","),
-                "route_host_chars": baseURL.host?.count ?? 0,
-            ]
-        )
         keyboardAudioSession.onPCMBuffer = { [streamer, trace] buffer in
             streamer.append(buffer)
             let timing = trace.recordPCM()
             if timing.isFirst {
                 appLog.notice(
                     "server live preview first pcm: startToPCMms=\(timing.startToPCMMS, privacy: .public), buffers=\(timing.count, privacy: .public), sampleRate=\(buffer.format.sampleRate, privacy: .public), frames=\(buffer.frameLength, privacy: .public)"
-                )
-                BridgeLivePreviewFileTrace.record(
-                    "ios_server_first_pcm",
-                    fields: [
-                        "buffers": timing.count,
-                        "frames": Int(buffer.frameLength),
-                        "sample_rate": Int(buffer.format.sampleRate.rounded()),
-                        "start_to_pcm_ms": timing.startToPCMMS,
-                    ]
                 )
             }
         }
@@ -2620,11 +2516,9 @@ final class AppState {
             guard let bundleID = resolvedBundleID else { continue }
             appendReturnTrace("return attempt=\(index + 1) bundle=\(bundleID)")
             appLog.notice("returnToPreviousAppSoon: attempt \(index + 1, privacy: .public), bundle=\(bundleID, privacy: .private)")
-            logReturnTrace("attempt \(index + 1), bundleID=\(bundleID)")
             if openApplication(bundleID: bundleID) {
                 appLog.notice("returnToPreviousAppSoon: returned via LSApplicationWorkspace bundle")
                 appendReturnTrace("return success LSApplicationWorkspace attempt=\(index + 1) bundle=\(bundleID)")
-                logReturnTrace("returned via LSApplicationWorkspace bundle")
                 clearReturnTarget()
                 return
             }
@@ -2671,18 +2565,15 @@ final class AppState {
         let trimmed = bundleID.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, trimmed != Bundle.main.bundleIdentifier else {
             appendReturnTrace("openApplication invalid bundle=\(trimmed)")
-            logReturnTrace("invalid return bundle \(trimmed)")
             return false
         }
         guard let workspaceClass = objc_getClass("LSApplicationWorkspace") as? AnyObject else {
             appendReturnTrace("openApplication LSApplicationWorkspace unavailable bundle=\(trimmed)")
-            logReturnTrace("LSApplicationWorkspace unavailable")
             return false
         }
         let defaultSelector = NSSelectorFromString("defaultWorkspace")
         guard let workspace = workspaceClass.perform(defaultSelector)?.takeUnretainedValue() as? NSObject else {
             appendReturnTrace("openApplication defaultWorkspace unavailable bundle=\(trimmed)")
-            logReturnTrace("defaultWorkspace unavailable")
             return false
         }
         let openSelector = NSSelectorFromString("openApplicationWithBundleID:")
@@ -2690,7 +2581,6 @@ final class AppState {
               let imp = workspace.method(for: openSelector)
         else {
             appendReturnTrace("openApplication openApplicationWithBundleID unavailable bundle=\(trimmed)")
-            logReturnTrace("openApplicationWithBundleID unavailable")
             return false
         }
         typealias OpenApplication = @convention(c) (AnyObject, Selector, NSString) -> Bool
@@ -2698,7 +2588,6 @@ final class AppState {
         let didOpen = openApplication(workspace, openSelector, trimmed as NSString)
         appLog.notice("openApplication: bundle=\(trimmed, privacy: .private), result=\(didOpen, privacy: .public)")
         appendReturnTrace("openApplication bundle=\(trimmed) result=\(didOpen)")
-        logReturnTrace("openApplicationWithBundleID \(trimmed) result=\(didOpen)")
         return didOpen
     }
 
@@ -3042,7 +2931,6 @@ final class AppState {
         if let commandID {
             activeKeyboardRecordingCommandID = commandID
         }
-        NSLog("typeforme keyboard recording start requested commandID=\(commandID ?? "nil") active=\(keyboardAudioSession.isActive) recording=\(keyboardAudioSession.isRecording)")
         if keyboardAudioSession.isRecording {
             keyboardCaptureStartedFromKeyboard = true
             publishKeyboardStatus(.recording, commandID: commandID, message: "Recording")
@@ -3569,10 +3457,6 @@ final class AppState {
 
     private func appendReturnTrace(_ message: String) {
         returnTracker.append(message)
-    }
-
-    private func logReturnTrace(_ message: String) {
-        returnTracker.log(message)
     }
 
     // MARK: - Idle timer
