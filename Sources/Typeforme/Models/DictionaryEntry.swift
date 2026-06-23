@@ -19,6 +19,12 @@ struct DictionaryEntry: Codable, Hashable, Sendable, Identifiable {
     var type: String
     var surface: String
 
+    enum CodingKeys: String, CodingKey {
+        case id
+        case type
+        case surface
+    }
+
     init(
         id: UUID = UUID(),
         type: String = "other",
@@ -26,7 +32,16 @@ struct DictionaryEntry: Codable, Hashable, Sendable, Identifiable {
     ) {
         self.id = id
         self.type = DictionaryEntry.normalizedType(type)
-        self.surface = surface.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.surface = DictionaryEntry.cleanedSurface(surface)
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            id: try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID(),
+            type: try container.decodeIfPresent(String.self, forKey: .type) ?? "other",
+            surface: try container.decodeIfPresent(String.self, forKey: .surface) ?? ""
+        )
     }
 
     var isValid: Bool {
@@ -41,7 +56,13 @@ struct DictionaryEntry: Codable, Hashable, Sendable, Identifiable {
         DictionaryEntry.cleanedList([surface])
     }
 
-    private static func normalizedType(_ value: String) -> String {
+    static func cleanedSurface(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    static func normalizedType(_ value: String) -> String {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return "other" }
         return trimmed
@@ -57,12 +78,31 @@ struct DictionaryEntry: Codable, Hashable, Sendable, Identifiable {
         var seen = Set<String>()
         var output: [String] = []
         for value in values {
-            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            let trimmed = cleanedSurface(value)
             guard !trimmed.isEmpty else { continue }
             let key = trimmed.lowercased()
             guard seen.insert(key).inserted else { continue }
             output.append(trimmed)
         }
         return output
+    }
+
+    static func normalizedEntries(_ entries: [DictionaryEntry]) -> [DictionaryEntry] {
+        var seenIDs = Set<UUID>()
+        return entries.compactMap { incoming in
+            let entry = DictionaryEntry(
+                id: incoming.id,
+                type: incoming.type,
+                surface: incoming.surface
+            )
+            guard entry.isValid else { return nil }
+            guard seenIDs.insert(entry.id).inserted else { return nil }
+            return entry
+        }
+        .sorted {
+            if $0.type != $1.type { return $0.type < $1.type }
+            if $0.surface != $1.surface { return $0.surface < $1.surface }
+            return $0.id.uuidString < $1.id.uuidString
+        }
     }
 }

@@ -18,8 +18,9 @@ final class UserDictionaryStore: ObservableObject {
             return
         }
         do {
-            entries = try BridgeJSON.decode([DictionaryEntry].self, from: data)
-                .filter(\.isValid)
+            entries = try DictionaryEntry.normalizedEntries(
+                BridgeJSON.decode([DictionaryEntry].self, from: data)
+            )
             save()
         } catch {
             Log.store.error("user dictionary decode failed: \(error.localizedDescription)")
@@ -66,17 +67,7 @@ final class UserDictionaryStore: ObservableObject {
     }
 
     func replaceEntries(_ incomingEntries: [DictionaryEntry]) {
-        var seenIDs = Set<UUID>()
-        entries = incomingEntries.compactMap { incoming in
-            let entry = DictionaryEntry(
-                id: incoming.id,
-                type: incoming.type,
-                surface: incoming.surface
-            )
-            guard entry.isValid else { return nil }
-            guard seenIDs.insert(entry.id).inserted else { return nil }
-            return entry
-        }
+        entries = DictionaryEntry.normalizedEntries(incomingEntries)
         save()
     }
 
