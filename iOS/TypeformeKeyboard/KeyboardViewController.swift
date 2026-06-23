@@ -519,6 +519,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private static let toolbarIconVerticalOffset: CGFloat = -2
     private static let textKeyboardTopProtectionInset: CGFloat = 2
     private static let textKeyboardToolbarKeyGap: CGFloat = 10
+    /// Text mode has a 2pt protection inset above its toolbar; voice mode needs
+    /// the same content offset so the two top bars share the same visual center.
+    private static let voiceTopRowContentVerticalOffset: CGFloat = 2
+    /// Matches the idle toolbar clearance in `textCharacterTouchBandFrame`, so
+    /// the text toolbar surface overlaps the key-band surface instead of leaving
+    /// a visible unmasked seam.
+    private static let textToolbarIdleBottomSurfaceExpansion: CGFloat = 2
     private static let candidateInlineMinimumCellWidth: CGFloat = 41
     private static let candidateInlineCellHorizontalPadding: CGFloat = 20
     /// Inline candidate strip renders in windows of this many cells. Rime can
@@ -2360,7 +2367,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         didAddRect = appendTopAnchoredSurfaceView(
             textToolbar,
             to: path,
-            bottomExpansion: textCandidateGridButton.isHidden ? 0 : Self.candidateStripTouchOverflowY,
+            bottomExpansion: textCandidateGridButton.isHidden
+                ? Self.textToolbarIdleBottomSurfaceExpansion
+                : Self.candidateStripTouchOverflowY,
             extendTrailingToViewEdge: !textCandidateGridButton.isHidden
         ) || didAddRect
         return didAddRect
@@ -2369,16 +2378,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     @discardableResult
     private func appendVoiceKeyboardSurfaceRects(to path: UIBezierPath) -> Bool {
         var didAddRect = false
-        let topHitViews: [UIView] = [
-            statusGroup,
-            voiceTitleLabel,
-            topRowVoicePrint,
-            keyboardFocusButton,
-            settingsButton,
-        ]
-        for view in topHitViews {
-            didAddRect = appendSurfaceView(view, to: path, horizontalExpansion: 4, verticalExpansion: 4, cornerRadius: 4) || didAddRect
-        }
+        didAddRect = appendTopAnchoredSurfaceView(
+            topRow,
+            to: path,
+            bottomExpansion: Self.stackSpacing
+        ) || didAddRect
         didAddRect = appendSurfaceView(orbContainer, to: path, horizontalExpansion: 6, verticalExpansion: 2, cornerRadius: 10) || didAddRect
         didAddRect = appendSurfaceView(utilityRow, to: path, horizontalExpansion: 4, verticalExpansion: 4, cornerRadius: 8) || didAddRect
         return didAddRect
@@ -2737,16 +2741,16 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
         NSLayoutConstraint.activate([
             statusGroup.leadingAnchor.constraint(equalTo: topRow.leadingAnchor, constant: 6),
-            statusGroup.centerYAnchor.constraint(equalTo: topRow.centerYAnchor),
+            statusGroup.centerYAnchor.constraint(equalTo: topRow.centerYAnchor, constant: Self.voiceTopRowContentVerticalOffset),
             statusGroup.trailingAnchor.constraint(lessThanOrEqualTo: voiceTitleLabel.leadingAnchor, constant: -8),
 
             voiceTitleLabel.centerXAnchor.constraint(equalTo: topRow.centerXAnchor),
-            voiceTitleLabel.centerYAnchor.constraint(equalTo: topRow.centerYAnchor),
+            voiceTitleLabel.centerYAnchor.constraint(equalTo: topRow.centerYAnchor, constant: Self.voiceTopRowContentVerticalOffset),
             voiceTitleLabel.leadingAnchor.constraint(greaterThanOrEqualTo: topRow.leadingAnchor, constant: 88),
             voiceTitleLabel.trailingAnchor.constraint(lessThanOrEqualTo: keyboardFocusButton.leadingAnchor, constant: -8),
 
             topRowVoicePrint.centerXAnchor.constraint(equalTo: topRow.centerXAnchor),
-            topRowVoicePrint.centerYAnchor.constraint(equalTo: topRow.centerYAnchor),
+            topRowVoicePrint.centerYAnchor.constraint(equalTo: topRow.centerYAnchor, constant: Self.voiceTopRowContentVerticalOffset),
             topRowVoicePrint.widthAnchor.constraint(equalToConstant: 160),
             topRowVoicePrint.heightAnchor.constraint(equalToConstant: 24),
 
@@ -2755,10 +2759,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             // text-mode toolbar so the keyboard-switch and settings icons
             // land in the same X positions across modes.
             keyboardFocusButton.trailingAnchor.constraint(equalTo: settingsButton.leadingAnchor, constant: -4),
-            keyboardFocusButton.centerYAnchor.constraint(equalTo: topRow.centerYAnchor),
+            keyboardFocusButton.centerYAnchor.constraint(equalTo: topRow.centerYAnchor, constant: Self.voiceTopRowContentVerticalOffset),
 
             settingsButton.trailingAnchor.constraint(equalTo: topRow.trailingAnchor),
-            settingsButton.centerYAnchor.constraint(equalTo: topRow.centerYAnchor),
+            settingsButton.centerYAnchor.constraint(equalTo: topRow.centerYAnchor, constant: Self.voiceTopRowContentVerticalOffset),
         ])
     }
 
