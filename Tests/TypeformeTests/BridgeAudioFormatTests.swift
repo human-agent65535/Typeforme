@@ -16,4 +16,10 @@ struct BridgeAudioFormatTests {
         #expect(BridgeAudioFormat.mimeType(forExtension: "aac") == "audio/mp4")
         #expect(BridgeAudioFormat.mimeType(forExtension: "wav") == "application/octet-stream")
     }
+
+    @Test func recordingContractMatchesCurrentBridgeUploadBehavior() {
+        #expect(BridgeAudioRecordingContract.minimumDurationSeconds == 0.35)
+        #expect(BridgeAudioRecordingContract.stopTailBufferNanoseconds == 200_000_000)
+        #expect(BridgeAudioRecordingContract.aacBitRate == 64_000)
+    }
 }

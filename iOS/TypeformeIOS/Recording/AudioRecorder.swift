@@ -137,7 +137,7 @@ final class AudioTapFileWriter: @unchecked Sendable {
             AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
             AVSampleRateKey: sampleRate,
             AVNumberOfChannelsKey: 1,
-            AVEncoderBitRateKey: 64_000,
+            AVEncoderBitRateKey: BridgeAudioRecordingContract.aacBitRate,
             AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue,
         ]
         let file = try AVAudioFile(
@@ -214,7 +214,7 @@ final class AudioTapFileWriter: @unchecked Sendable {
             try? FileManager.default.removeItem(at: url)
             return nil
         }
-        if duration < 0.35 {
+        if duration < BridgeAudioRecordingContract.minimumDurationSeconds {
             recordingLog.notice(
                 "keyboard audio finish: too short duration=\(duration, privacy: .public) frames=\(frames, privacy: .public) sampleRate=\(sampleRate, privacy: .public)"
             )
@@ -373,7 +373,7 @@ final class AudioRecorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
             AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
             AVSampleRateKey: sampleRate,
             AVNumberOfChannelsKey: 1,
-            AVEncoderBitRateKey: 64_000,
+            AVEncoderBitRateKey: BridgeAudioRecordingContract.aacBitRate,
             AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue,
         ]
         guard let recorder = try? AVAudioRecorder(url: url, settings: settings) else {
@@ -435,7 +435,7 @@ final class AudioRecorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
             AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
             AVSampleRateKey: sampleRate,
             AVNumberOfChannelsKey: 1,
-            AVEncoderBitRateKey: 64_000,
+            AVEncoderBitRateKey: BridgeAudioRecordingContract.aacBitRate,
             AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue,
         ]
         let recorder = try AVAudioRecorder(url: url, settings: settings)

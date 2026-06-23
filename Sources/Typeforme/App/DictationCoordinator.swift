@@ -53,7 +53,6 @@ final class DictationCoordinator: ObservableObject {
     private static let errorResetDelay: TimeInterval = 8.0
     private static let degradedSuccessResetDelay: TimeInterval = 1.8
     private static let minimumToggleStopInterval: TimeInterval = 0.6
-    private static let recordingTailBufferNanoseconds: UInt64 = 200_000_000
     private static let nvidiaLivePreviewFinishTimeout: TimeInterval = 4
     private static let nvidiaLivePreviewResetTimeout: TimeInterval = 2
     private static let previewWithoutRefineMessage = "Preview without refine"
@@ -271,7 +270,7 @@ final class DictationCoordinator: ObservableObject {
         // syllable is not cut off. SFSpeech is ended after the tail so the
         // preview can include the same audio that goes to the Mac ASR.
         transition(to: .transcribing)
-        try? await Task.sleep(nanoseconds: Self.recordingTailBufferNanoseconds)
+        try? await Task.sleep(nanoseconds: BridgeAudioRecordingContract.stopTailBufferNanoseconds)
         guard await isActive(sessionID: sessionID, token: cancelToken) else {
             if let stoppedURL = recorder.stop() {
                 try? FileManager.default.removeItem(at: stoppedURL)

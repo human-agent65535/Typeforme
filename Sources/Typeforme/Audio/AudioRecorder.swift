@@ -223,8 +223,6 @@ private final class LevelUpdateThrottler: @unchecked Sendable {
 }
 
 private final class MonoM4ABufferWriter: @unchecked Sendable {
-    private static let minimumRecordingDuration: TimeInterval = 0.35
-
     private let lock = NSLock()
     private var url: URL?
     private var file: AVAudioFile?
@@ -247,7 +245,7 @@ private final class MonoM4ABufferWriter: @unchecked Sendable {
             AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
             AVSampleRateKey: rate,
             AVNumberOfChannelsKey: 1,
-            AVEncoderBitRateKey: 64_000,
+            AVEncoderBitRateKey: BridgeAudioRecordingContract.aacBitRate,
             AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue,
         ]
         let file = try AVAudioFile(
@@ -322,7 +320,7 @@ private final class MonoM4ABufferWriter: @unchecked Sendable {
             )
             throw AudioRecorderError.fileSetupFailed("Recorded M4A contains no audio data")
         }
-        guard duration >= Self.minimumRecordingDuration else {
+        guard duration >= BridgeAudioRecordingContract.minimumDurationSeconds else {
             Log.audio.notice(
                 "Mac recorder finish: too short duration=\(duration, privacy: .public) frames=\(frames, privacy: .public) sampleRate=\(sampleRate, privacy: .public)"
             )

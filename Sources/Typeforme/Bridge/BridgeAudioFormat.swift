@@ -10,3 +10,9 @@ enum BridgeAudioFormat {
         isAllowedExtension(ext) ? "audio/mp4" : "application/octet-stream"
     }
 }
+
+enum BridgeAudioRecordingContract {
+    static let minimumDurationSeconds = 0.35
+    static let stopTailBufferNanoseconds: UInt64 = 200_000_000
+    static let aacBitRate = 64_000
+}

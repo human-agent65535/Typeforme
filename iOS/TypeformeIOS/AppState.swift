@@ -393,7 +393,6 @@ final class AppState {
     private static let keyboardEverContactedKey = "keyboard.everContacted"
     private static let keyboardFullAccessRequiredKey = "keyboard.fullAccessRequired"
     private static let serverRimeUserPhrasesKey = "server.rimeUserPhrases"
-    private static let recordingTailBufferNanoseconds: UInt64 = 200_000_000
     private var hostHoldReleasePending = false
     private var hostRecordingUsesKeyboardAudioSession = false
     private var keyboardCaptureStartedFromKeyboard = false
@@ -1404,7 +1403,7 @@ final class AppState {
             )
         }
         KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.dictationStopped)
-        try? await Task.sleep(nanoseconds: Self.recordingTailBufferNanoseconds)
+        try? await Task.sleep(nanoseconds: BridgeAudioRecordingContract.stopTailBufferNanoseconds)
         let fileURL = isKeyboardCapture
             ? keyboardAudioSession.finishRecording()
             : recorder.stop(deactivateSession: true)
@@ -3751,7 +3750,7 @@ private struct RecordingFileInfo {
 
     var isTooShort: Bool {
         if let durationSeconds {
-            return durationSeconds < 0.35
+            return durationSeconds < BridgeAudioRecordingContract.minimumDurationSeconds
         }
         return byteCount <= 44
     }
