@@ -43,6 +43,52 @@ struct ProtectedSpanPostProcessorTests {
         #expect(output == "联程航班可以中间出来吗？")
     }
 
+    @Test func allowsVocabularyAnchoredShortCrossScriptRepair() {
+        let output = ProtectedSpanPostProcessor.apply(
+            "codex",
+            rawTranscript: "扣带可",
+            vocabularyCandidates: [
+                VocabularyCandidatePayload(
+                    type: "product",
+                    surface: "codex",
+                    speechHint: "codex",
+                    pronunciations: ["kou dai ke"],
+                    matchedSpan: "扣带可",
+                    matchSource: "raw_transcript",
+                    matchedStart: 0,
+                    matchedEnd: 3,
+                    matchKind: "cross_script_phonetic",
+                    confidence: 0.88,
+                    evidenceSource: "transcript"
+                ),
+            ]
+        )
+        #expect(output == "codex")
+    }
+
+    @Test func rejectsUnanchoredSurroundingTranslationAroundVocabularyRepair() {
+        let output = ProtectedSpanPostProcessor.apply(
+            "Open codex",
+            rawTranscript: "打开扣带可",
+            vocabularyCandidates: [
+                VocabularyCandidatePayload(
+                    type: "product",
+                    surface: "codex",
+                    speechHint: "codex",
+                    pronunciations: ["kou dai ke"],
+                    matchedSpan: "扣带可",
+                    matchSource: "raw_transcript",
+                    matchedStart: 2,
+                    matchedEnd: 5,
+                    matchKind: "cross_script_phonetic",
+                    confidence: 0.88,
+                    evidenceSource: "transcript"
+                ),
+            ]
+        )
+        #expect(output == "打开扣带可")
+    }
+
     @Test func rejectsTranslationCommandTextTranslatedToEnglish() {
         let output = ProtectedSpanPostProcessor.apply(
             "Translate to English.",

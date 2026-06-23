@@ -152,6 +152,10 @@ struct PromptBuilderTests {
         #expect(prompt.contains("\"matched_end\":11"))
         #expect(prompt.contains("\"match_kind\":\"same_pinyin\""))
         #expect(prompt.contains("\"evidence_source\":\"transcript\""))
+        #expect(prompt.contains("\"raw_transcript\":\"我刚和伯雨确认了预算\""))
+        #expect(prompt.contains("\"asr_hypotheses\":[\"我刚和伯雨确认了预算\",\"我刚和沉于确认了预算\"]"))
+        #expect(prompt.contains("\"match_source\":\"alternate_transcript\""))
+        #expect(prompt.contains("\"text\":\"我刚和陈屿确认了预算。\""))
     }
 
     @Test func userPromptCarriesSamePinyinChinesePersonCandidate() {
@@ -177,7 +181,7 @@ struct PromptBuilderTests {
         #expect(prompt.contains("\"matched_end\":2"))
         #expect(prompt.contains("\"match_kind\":\"same_pinyin\""))
         #expect(prompt.contains("\"pronunciations\":[\"guo ji\"]"))
-        #expect(BuiltInPrompts.baseSystem.contains("same match_source plus matched_start/matched_end"))
+        #expect(BuiltInPrompts.baseSystem.contains("matched_span at match_source/matched_start/matched_end"))
     }
 
     @Test func userPromptEscapesEmbeddedClosingInputJSONTag() {
@@ -220,11 +224,16 @@ struct PromptBuilderTests {
         #expect(base.contains("Polish+"))
         #expect(base.contains("hold to speak"))
         #expect(base.contains("Do not translate between selected languages"))
-        #expect(base.contains("Use vocabulary_candidates only as ASR hints"))
-        #expect(base.contains("never globally replace ordinary homophones"))
-        #expect(base.contains("Vocabulary candidate match evidence is automatic and local"))
-        #expect(base.contains("matched_span, match_source, matched_start, matched_end"))
-        #expect(base.contains("Pick the candidate whose type and context best fit"))
+        #expect(base.contains("vocabulary_candidates is a user-dictionary lexical bias list"))
+        #expect(base.contains("Each item proposes a surface spelling"))
+        #expect(base.contains("prefer surface for names"))
+        #expect(base.contains("over ordinary homophones or near-phonetic ASR words"))
+        #expect(base.contains("anchored in another ASR hypothesis"))
+        #expect(base.contains("same local span"))
+        #expect(base.contains("Apply a candidate only to the entire anchored matched_span"))
+        #expect(base.contains("Never leave unmatched fragments"))
+        #expect(base.contains("globally replace ordinary words"))
+        #expect(base.contains("choose by type, pronunciation, confidence, and context"))
         #expect(base.contains("A 不对/不是/改成/应该是 B"))
         #expect(base.contains("A should be B"))
         #expect(base.contains("A 一个改两个"))
@@ -331,6 +340,51 @@ struct PromptBuilderTests {
         #expect(!prompt.contains("\"priority\""))
         #expect(!prompt.contains("\"surface\":\"Apollo\""))
         #expect(!prompt.contains("\"user_dictionary\""))
+    }
+
+    @Test func userPromptIncludesVocabularyCandidateDecisionExample() {
+        let request = CorrectionRequest(
+            correctionMode: .clean,
+            frontmostAppName: "Notes",
+            frontmostBundleID: "com.apple.Notes",
+            appCategory: .document,
+            languageIDs: ["zh-CN"],
+            rawTranscript: "我刚和样例佳确认了这个 bug",
+            userDictionary: [
+                DictionaryEntry(type: "person", surface: "样例甲"),
+            ]
+        )
+
+        let prompt = PromptBuilder.userPrompt(for: request)
+
+        #expect(prompt.contains("\"raw_transcript\":\"我刚和沉雨确认了预算\""))
+        #expect(prompt.contains("\"vocabulary_candidates\""))
+        #expect(prompt.contains("\"surface\":\"陈屿\""))
+        #expect(prompt.contains("\"matched_span\":\"沉雨\""))
+        #expect(prompt.contains("\"text\":\"我刚和陈屿确认了预算。\""))
+    }
+
+    @Test func userPromptIncludesCrossScriptVocabularyDecisionExample() {
+        let request = CorrectionRequest(
+            correctionMode: .polish,
+            frontmostAppName: "Notes",
+            frontmostBundleID: "com.apple.Notes",
+            appCategory: .document,
+            languageIDs: ["zh-CN", "en-US"],
+            rawTranscript: "打开扣带可看一下",
+            userDictionary: [
+                DictionaryEntry(type: "product", surface: "codex"),
+            ]
+        )
+
+        let prompt = PromptBuilder.userPrompt(for: request)
+
+        #expect(prompt.contains("\"surface\":\"codex\""))
+        #expect(prompt.contains("\"matched_span\":\"扣带可\""))
+        #expect(prompt.contains("\"match_kind\":\"cross_script_phonetic\""))
+        #expect(prompt.contains("\"raw_transcript\":\"打开扣带可看一下\""))
+        #expect(prompt.contains("\"text\":\"打开 codex 看一下。\""))
+        #expect(!prompt.contains("\"text\":\"我刚和陈屿确认了预算。\""))
     }
 
     @Test func userPromptCarriesReadOnlyDictationContext() {

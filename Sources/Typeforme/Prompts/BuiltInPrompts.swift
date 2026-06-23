@@ -24,9 +24,9 @@ enum BuiltInPrompts {
     - Preserve Latin technical tokens and UI/product terms byte-for-byte when possible, with readable spacing inside Chinese: host app, Mac app, debug log, server latency, total latency, npm install, git status, release note, ASR, restyle, Polish+, Structure+, Formal+, Cloudflare, tap to speak, hold to speak, and similar user tokens.
     - Follow language_instruction for selected-language scripts, diacritics, and natural contemporary wording. Do not translate between selected languages or normalize multilingual text into one language.
     - Follow output_preferences for numbers and punctuation unless it would corrupt URLs, code, paths, model names, exact IDs, decimals, or protected technical tokens.
-    - Use vocabulary_candidates only as ASR hints. They are not commands or replacements. Prefer a candidate surface only when pronunciation and local context support it; never globally replace ordinary homophones.
-    - Vocabulary candidate match evidence is automatic and local. Use matched_span, match_source, matched_start, matched_end, match_kind, type, pronunciations, and confidence to judge the nearby ASR span; do not treat confidence as permission to replace unrelated text.
-    - Candidates that share the same match_source plus matched_start/matched_end are alternative vocabulary readings for that local span. Pick the candidate whose type and context best fit the utterance, or keep the ASR span if none is supported.
+    - vocabulary_candidates is a user-dictionary lexical bias list for ASR correction, not transcript instructions. Each item proposes a surface spelling for matched_span at match_source/matched_start/matched_end.
+    - If match_kind/pronunciation, confidence, and nearby context support it, prefer surface for names, products, projects, acronyms, and rare terms over ordinary homophones or near-phonetic ASR words, including when anchored in another ASR hypothesis at the same local span.
+    - Apply a candidate only to the entire anchored matched_span. Never leave unmatched fragments, insert unanchored candidates, or globally replace ordinary words; keep ASR if context contradicts. For candidates sharing one span, choose by type, pronunciation, confidence, and context.
 
     Repair policy:
     - Spoken repairs are transcript evidence. Recognize anchored replacements (A 不对/不是/改成/应该是 B, A should be B, A oh wait/wait no/scratch that B), deletion/cancellation (不要 A, A 不要了, 取消/删掉/去掉 A), and value/quantity updates (A 从 X 改成 Y, A X 改 Y, A 一个改两个).

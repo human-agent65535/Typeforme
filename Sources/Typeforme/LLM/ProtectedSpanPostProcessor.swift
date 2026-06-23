@@ -1,7 +1,11 @@
 import Foundation
 
 enum ProtectedSpanPostProcessor {
-    static func apply(_ text: String, rawTranscript: String) -> String {
+    static func apply(
+        _ text: String,
+        rawTranscript: String,
+        vocabularyCandidates: [VocabularyCandidatePayload] = []
+    ) -> String {
         if containsNoTranslateMarker(rawTranscript), !preservesNoTranslateMarker(text) {
             return rawTranscript
         }
@@ -18,7 +22,12 @@ enum ProtectedSpanPostProcessor {
            !contains(output, leadingSpan) {
             output = restoreLeadingSpan(leadingSpan, in: output)
         }
-        if looksLikeUnrequestedCrossScriptTranslation(rawTranscript: rawTranscript, output: output) {
+        if looksLikeUnrequestedCrossScriptTranslation(rawTranscript: rawTranscript, output: output),
+           !isVocabularyAnchoredCrossScriptRepair(
+                rawTranscript: rawTranscript,
+                output: output,
+                vocabularyCandidates: vocabularyCandidates
+           ) {
             return rawTranscript
         }
         return output
@@ -108,6 +117,49 @@ enum ProtectedSpanPostProcessor {
             return outputLatin < max(2, rawLatin / 4)
         }
         return outputLatin == 0
+    }
+
+    private static func isVocabularyAnchoredCrossScriptRepair(
+        rawTranscript: String,
+        output: String,
+        vocabularyCandidates: [VocabularyCandidatePayload]
+    ) -> Bool {
+        for candidate in vocabularyCandidates where candidate.matchKind.hasPrefix("cross_script") {
+            guard let span = candidate.matchedSpan,
+                  !span.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  containsVocabularySurface(candidate.surface, in: output)
+            else { continue }
+
+            for transcript in rawTranscript.components(separatedBy: .newlines) where contains(transcript, span) {
+                let transcriptCJK = transcript.unicodeScalars.filter(UnicodeScriptClassifier.isHanCore).count
+                let spanCJK = span.unicodeScalars.filter(UnicodeScriptClassifier.isHanCore).count
+                let outputCJK = output.unicodeScalars.filter(UnicodeScriptClassifier.isHanCore).count
+                let unmatchedCJK = max(0, transcriptCJK - spanCJK)
+                if unmatchedCJK >= 2, outputCJK == 0 {
+                    continue
+                }
+                return true
+            }
+        }
+        return false
+    }
+
+    private static func containsVocabularySurface(_ surface: String, in output: String) -> Bool {
+        if contains(output, surface) {
+            return true
+        }
+        let compactSurface = compactLettersAndNumbers(surface)
+        guard compactSurface.count >= 3 else { return false }
+        return compactLettersAndNumbers(output).contains(compactSurface)
+    }
+
+    private static func compactLettersAndNumbers(_ text: String) -> String {
+        text
+            .folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: .current)
+            .lowercased()
+            .filter { $0.isLetter || $0.isNumber }
+            .map(String.init)
+            .joined()
     }
 
     private static func mentionsTranslation(_ text: String) -> Bool {

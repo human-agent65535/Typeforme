@@ -91,6 +91,73 @@ struct VocabularyCandidateSelectorTests {
         #expect(result.first?.surface == "Grafana")
     }
 
+    @Test func selectsEnglishVocabularyFromChineseASRPhonetics() {
+        let entries = [
+            DictionaryEntry(type: "product", surface: "codex"),
+            DictionaryEntry(type: "product", surface: "Cursor"),
+            DictionaryEntry(type: "product", surface: "Claude"),
+        ]
+
+        let payload = VocabularyCandidateSelector.promptPayload(
+            from: entries,
+            rawText: "打开扣带可看一下"
+        )
+
+        #expect(payload.first?.surface == "codex")
+        #expect(payload.first?.matchedSpan == "扣带可")
+        #expect(payload.first?.matchedStart == 2)
+        #expect(payload.first?.matchedEnd == 5)
+        #expect(payload.first?.matchKind == "cross_script_phonetic")
+        #expect(payload.first?.pronunciations.contains("kou dai ke") == true)
+    }
+
+    @Test func selectsCursorFromChineseASRPhonetics() {
+        let entries = [
+            DictionaryEntry(type: "product", surface: "Cursor"),
+        ]
+
+        let payload = VocabularyCandidateSelector.promptPayload(
+            from: entries,
+            rawText: "课色今天又更新了"
+        )
+
+        #expect(payload.count == 1)
+        #expect(payload[0].surface == "Cursor")
+        #expect(payload[0].matchedSpan == "课色")
+        #expect(payload[0].matchKind == "cross_script_phonetic")
+    }
+
+    @Test func selectsEnglishPhraseFromChineseASRPhoneticsUsingPronunciationLexicon() {
+        let entries = [
+            DictionaryEntry(type: "product", surface: "Sleep Cycle"),
+        ]
+
+        let payload = VocabularyCandidateSelector.promptPayload(
+            from: entries,
+            rawText: "打开斯利普赛扣看一下"
+        )
+
+        #expect(payload.count == 1)
+        #expect(payload[0].surface == "Sleep Cycle")
+        #expect(payload[0].matchedSpan == "斯利普赛扣")
+        #expect(payload[0].matchKind == "cross_script_phonetic")
+        #expect(payload[0].pronunciations.contains("si li pu sai kou"))
+    }
+
+    @Test func doesNotSelectUnrelatedEnglishVocabularyFromChineseTranscript() {
+        let entries = [
+            DictionaryEntry(type: "product", surface: "codex"),
+            DictionaryEntry(type: "product", surface: "Cursor"),
+        ]
+
+        let payload = VocabularyCandidateSelector.promptPayload(
+            from: entries,
+            rawText: "今天开会讨论项目进度"
+        )
+
+        #expect(payload.isEmpty)
+    }
+
     @Test func textContextReranksMatchedCandidatesButDoesNotSummonUnmatchedTerms() {
         let ambiguous = [
             DictionaryEntry(type: "person", surface: "Apollo"),

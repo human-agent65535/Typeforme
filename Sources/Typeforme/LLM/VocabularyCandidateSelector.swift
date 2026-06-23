@@ -144,6 +144,22 @@ enum VocabularyCandidateSelector {
         let compact: String
     }
 
+    private struct PinyinApproximation: Hashable {
+        let syllables: [String]
+
+        var key: String {
+            syllables.joined()
+        }
+
+        var looseKey: String {
+            loosenPinyin(key)
+        }
+
+        var spoken: String {
+            syllables.joined(separator: " ")
+        }
+    }
+
     static func select(
         from entries: [DictionaryEntry],
         rawText: String,
@@ -257,10 +273,7 @@ enum VocabularyCandidateSelector {
         for term in entry.searchTerms {
             for evidenceText in evidenceTexts {
                 guard let evidence = bestEvidence(for: term, in: evidenceText) else { continue }
-                if best == nil || evidence.score > best!.score ||
-                    (evidence.score == best!.score && evidence.confidence > best!.confidence) {
-                    best = evidence
-                }
+                best = bestEvidence(best, evidence)
             }
         }
 
@@ -280,10 +293,7 @@ enum VocabularyCandidateSelector {
 
         func consider(_ evidence: CandidateEvidence?) {
             guard let evidence else { return }
-            if best == nil || evidence.score > best!.score ||
-                (evidence.score == best!.score && evidence.confidence > best!.confidence) {
-                best = evidence
-            }
+            best = bestEvidence(best, evidence)
         }
 
         consider(exactSurfaceEvidence(for: term, in: evidenceText))
@@ -293,6 +303,7 @@ enum VocabularyCandidateSelector {
         if evidenceText.source.isTranscript {
             consider(chinesePhoneticEvidence(for: term, in: evidenceText))
             consider(englishPhoneticEvidence(for: term, in: evidenceText))
+            consider(crossScriptEnglishPhoneticEvidence(for: term, in: evidenceText))
         }
 
         return best
@@ -493,6 +504,52 @@ enum VocabularyCandidateSelector {
         return best
     }
 
+    private static func crossScriptEnglishPhoneticEvidence(for term: String, in evidenceText: EvidenceText) -> CandidateEvidence? {
+        guard UnicodeScriptClassifier.containsASCIILatinLetter(term),
+              UnicodeScriptClassifier.containsHanBMP(evidenceText.text)
+        else { return nil }
+
+        let approximations = englishPinyinApproximations(for: term)
+        guard !approximations.isEmpty else { return nil }
+
+        let maxSyllables = min(6, max(2, approximations.map(\.syllables.count).max() ?? 2) + 1)
+        var best: CandidateEvidence?
+        for window in cjkWindows(in: evidenceText.text, minLength: 2, maxLength: maxSyllables) {
+            for approximation in approximations {
+                if window.phonetic == approximation.key || window.loosePhonetic == approximation.looseKey {
+                    let candidate = candidateEvidence(
+                        score: 88 + evidenceText.source.sourceScore,
+                        matchedSpan: window.text,
+                        matchKind: "cross_script_phonetic",
+                        confidence: 0.88,
+                        evidenceText: evidenceText,
+                        matchedStart: window.startChar,
+                        matchedEnd: window.endChar
+                    )
+                    best = bestEvidence(best, candidate)
+                    continue
+                }
+
+                guard approximation.key.count >= 5,
+                      window.phonetic.count >= 5,
+                      let match = phoneticMatcher.score(window.phonetic, against: approximation.key),
+                      match.score >= 0.82
+                else { continue }
+                let candidate = candidateEvidence(
+                    score: Int((68.0 + match.score * 14.0).rounded()) + evidenceText.source.sourceScore,
+                    matchedSpan: window.text,
+                    matchKind: "cross_script_near_phonetic",
+                    confidence: roundedConfidence(min(0.82, match.score)),
+                    evidenceText: evidenceText,
+                    matchedStart: window.startChar,
+                    matchedEnd: window.endChar
+                )
+                best = bestEvidence(best, candidate)
+            }
+        }
+        return best
+    }
+
     private static func candidateEvidence(
         score: Int,
         matchedSpan: String?,
@@ -519,7 +576,15 @@ enum VocabularyCandidateSelector {
         if right.score != left.score {
             return right.score > left.score ? right : left
         }
-        return right.confidence > left.confidence ? right : left
+        if right.confidence != left.confidence {
+            return right.confidence > left.confidence ? right : left
+        }
+        let leftLength = left.matchedSpan?.count ?? 0
+        let rightLength = right.matchedSpan?.count ?? 0
+        if rightLength != leftLength {
+            return rightLength > leftLength ? right : left
+        }
+        return left
     }
 
     private static func evidenceTexts(
@@ -759,8 +824,195 @@ enum VocabularyCandidateSelector {
             hints.append(normalize(splitCamelCase(surface)))
             hints.append(compactNormalized(surface))
             hints.append(contentsOf: acronymSpokenVariants(for: surface).map(\.spoken))
+            hints.append(contentsOf: englishPinyinApproximations(for: surface).map(\.spoken))
         }
         return DictionaryEntry.cleanedList(hints)
+    }
+
+    private static func englishPinyinApproximations(for term: String) -> [PinyinApproximation] {
+        var approximations = Set<PinyinApproximation>()
+        let components = englishComponents(in: term)
+
+        for component in components {
+            for syllables in englishPinyinSyllables(for: component) {
+                insertPinyinApproximation(syllables, into: &approximations)
+            }
+        }
+
+        let phraseComponents = englishPhraseComponents(in: term)
+        if phraseComponents.count > 1 {
+            let perComponent = phraseComponents.map { component in
+                englishPinyinSyllables(for: component).prefix(3)
+            }
+            var combined: [[String]] = [[]]
+            for componentOptions in perComponent {
+                guard !componentOptions.isEmpty else { continue }
+                combined = combined.flatMap { prefix in
+                    componentOptions.map { prefix + $0 }
+                }
+                if combined.count > 12 {
+                    combined = Array(combined.prefix(12))
+                }
+            }
+            for syllables in combined {
+                insertPinyinApproximation(syllables, into: &approximations)
+            }
+        }
+
+        return approximations
+            .sorted {
+                if $0.syllables.count != $1.syllables.count {
+                    return $0.syllables.count > $1.syllables.count
+                }
+                return $0.key < $1.key
+            }
+    }
+
+    private static func insertPinyinApproximation(
+        _ syllables: [String],
+        into approximations: inout Set<PinyinApproximation>
+    ) {
+        let cleaned = syllables
+            .map { compactNormalized($0) }
+            .filter { !$0.isEmpty }
+        guard cleaned.count >= 2, cleaned.count <= 6 else { return }
+        let approximation = PinyinApproximation(syllables: cleaned)
+        guard approximation.key.count >= 4 else { return }
+        approximations.insert(approximation)
+    }
+
+    private static func englishComponents(in term: String) -> [String] {
+        var seen = Set<String>()
+        var output: [String] = []
+
+        func append(_ component: String) {
+            let normalized = compactNormalized(component)
+            guard normalized.count >= 2, seen.insert(normalized).inserted else { return }
+            output.append(component)
+        }
+
+        for run in uppercaseRuns(in: term) {
+            append(run.text)
+        }
+        for token in latinTokens(in: term) {
+            append(token)
+        }
+        for component in englishPhraseComponents(in: term) {
+            append(component)
+        }
+        let compact = compactNormalized(term)
+        append(compact)
+        return output
+    }
+
+    private static func englishPhraseComponents(in term: String) -> [String] {
+        latinTokens(in: splitCamelCase(term))
+    }
+
+    private static func englishPinyinSyllables(for component: String) -> [[String]] {
+        let key = compactNormalized(component)
+        guard key.count >= 2 else { return [] }
+
+        var output = englishPinyinOverrides[key] ?? []
+        output.append(contentsOf: EnglishPronunciationLexicon.pinyinSyllableLists(for: key))
+        if isLikelyAcronymComponent(component) {
+            output.append(contentsOf: acronymPinyinSyllables(for: key))
+        }
+
+        if key.hasSuffix("ex"), key.count > 2 {
+            let prefix = String(key.dropLast(2))
+            for prefixSyllables in englishPinyinOverrides[prefix] ?? [] {
+                output.append(prefixSyllables + ["ke"])
+                output.append(prefixSyllables + ["ke", "si"])
+            }
+        }
+
+        if key.hasSuffix("x"), key.count > 1 {
+            let prefix = String(key.dropLast())
+            for prefixSyllables in englishPinyinOverrides[prefix] ?? [] {
+                output.append(prefixSyllables + ["ke"])
+                output.append(prefixSyllables + ["ke", "si"])
+            }
+        }
+
+        return cleanedPinyinLists(output)
+    }
+
+    private static func cleanedPinyinLists(_ values: [[String]]) -> [[String]] {
+        var seen = Set<String>()
+        var output: [[String]] = []
+        for value in values {
+            let cleaned = value
+                .map { compactNormalized($0) }
+                .filter { !$0.isEmpty }
+            guard !cleaned.isEmpty else { continue }
+            let key = cleaned.joined(separator: " ")
+            guard seen.insert(key).inserted else { continue }
+            output.append(cleaned)
+        }
+        return output
+    }
+
+    private static func isLikelyAcronymComponent(_ component: String) -> Bool {
+        let letters = component.filter { $0.isLetter }
+        guard letters.count >= 2, letters.count <= 5 else { return false }
+        return letters.allSatisfy(isASCIIUppercase) || letters.count <= 2
+    }
+
+    private static func acronymPinyinSyllables(for component: String) -> [[String]] {
+        var variants: [[String]] = [[]]
+        for character in component.lowercased() {
+            let options = letterPinyinSequences(for: character)
+            variants = variants.flatMap { prefix in
+                options.map { prefix + $0 }
+            }
+            if variants.count > 16 {
+                variants = Array(variants.prefix(16))
+            }
+        }
+        return variants
+    }
+
+    private static func letterPinyinSequences(for character: Character) -> [[String]] {
+        switch character {
+        case "a": return [["ei"]]
+        case "b": return [["bi"]]
+        case "c": return [["xi"], ["si"]]
+        case "d": return [["di"]]
+        case "e": return [["yi"]]
+        case "f": return [["ai", "fu"], ["fu"]]
+        case "g": return [["ji"]]
+        case "h": return [["ai", "chi"], ["chi"]]
+        case "i": return [["ai"]]
+        case "j": return [["jie"]]
+        case "k": return [["kei"]]
+        case "l": return [["ai", "er"], ["er"]]
+        case "m": return [["ai", "mu"], ["mu"]]
+        case "n": return [["en"]]
+        case "o": return [["ou"]]
+        case "p": return [["pi"]]
+        case "q": return [["qiu"]]
+        case "r": return [["a", "er"], ["er"]]
+        case "s": return [["ai", "si"], ["si"]]
+        case "t": return [["ti"]]
+        case "u": return [["you"]]
+        case "v": return [["wei"]]
+        case "w": return [["da", "bu", "liu"]]
+        case "x": return [["ai", "ke", "si"], ["ke", "si"]]
+        case "y": return [["wai"]]
+        case "z": return [["zi"]]
+        case "0": return [["ling"]]
+        case "1": return [["wan"]]
+        case "2": return [["tu"]]
+        case "3": return [["si", "rui"]]
+        case "4": return [["fo"]]
+        case "5": return [["fai", "fu"], ["fu"]]
+        case "6": return [["si", "ke", "si"]]
+        case "7": return [["sai", "wen"]]
+        case "8": return [["ei", "te"]]
+        case "9": return [["nai"]]
+        default: return [[String(character)]]
+        }
     }
 
     private static func splitCamelCase(_ text: String) -> String {
@@ -1018,6 +1270,25 @@ enum VocabularyCandidateSelector {
             )
         )
     )
+
+    private static let englishPinyinOverrides: [String: [[String]]] = [
+        "apollo": [["a", "bo", "luo"], ["a", "po", "luo"]],
+        "claude": [["ke", "lao", "de"], ["ke", "lao"]],
+        "code": [["kou", "dai"], ["kou", "de"]],
+        "codex": [["kou", "dai", "ke"], ["kou", "de", "ke"], ["kou", "de", "ke", "si"]],
+        "cursor": [["ke", "se"], ["ke", "suo"]],
+        "docker": [["dao", "ke"], ["duo", "ke"]],
+        "figma": [["fei", "ge", "ma"], ["fei", "ma"]],
+        "github": [["ji", "te", "ha", "bu"], ["ji", "ha", "bu"]],
+        "grafana": [["ge", "la", "fa", "na"], ["ge", "la", "fu", "na"]],
+        "linear": [["li", "ni", "er"], ["lin", "er"]],
+        "notion": [["nou", "shen"], ["luo", "shen"]],
+        "open": [["ou", "pen"], ["ao", "pen"]],
+        "openai": [["ou", "pen", "ei", "ai"], ["ao", "pen", "ei", "ai"], ["ou", "pen"]],
+        "slack": [["si", "lai", "ke"], ["shi", "lai", "ke"]],
+        "swift": [["si", "wei", "fu", "te"], ["si", "wei", "te"]],
+        "xcode": [["ai", "ke", "si", "kou", "de"], ["cha", "kou", "de"], ["kou", "de"]],
+    ]
 
     private static let selectionCache = OSAllocatedUnfairLock(initialState: [CacheKey: [ScoredCandidate]]())
     private static let maxCachedSelections = 64

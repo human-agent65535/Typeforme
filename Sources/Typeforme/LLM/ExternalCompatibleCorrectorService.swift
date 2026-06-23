@@ -49,7 +49,12 @@ final class ExternalCompatibleCorrectorService: CorrectorService {
         let content = try await complete(system: system, user: user, timeoutMs: timeoutMs)
         do {
             var result = try CorrectionValidator.parseAndValidate(rawOutput: content, for: request)
-            result.text = ProtectedSpanPostProcessor.apply(result.text, rawTranscript: request.transcriptEvidenceText)
+            let vocabularyCandidates = PromptBuilder.vocabularyCandidates(for: request)
+            result.text = ProtectedSpanPostProcessor.apply(
+                result.text,
+                rawTranscript: request.transcriptEvidenceText,
+                vocabularyCandidates: vocabularyCandidates
+            )
             result.text = TranscriptPostProcessor.clean(
                 result.text,
                 languageIDs: request.languageIDs,

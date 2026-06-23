@@ -35,6 +35,9 @@ let package = Package(
                 .product(name: "FuzzyMatch",        package: "FuzzyMatch"),
             ],
             path: "Sources/Typeforme",
+            resources: [
+                .process("Resources"),
+            ],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
         .testTarget(
