@@ -98,21 +98,7 @@ enum BridgeSettingsNormalization {
     }
 
     static func rimeUserPhrases(from surfaces: [String]) -> [String] {
-        var seen = Set<String>()
-        var output: [String] = []
-        for surface in surfaces {
-            let cleaned = surface
-                .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !cleaned.isEmpty else { continue }
-            let key = cleaned.folding(
-                options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
-                locale: .current
-            )
-            guard seen.insert(key).inserted else { continue }
-            output.append(cleaned)
-        }
-        return output.sorted()
+        RimeUserPhraseNormalizer.normalized(surfaces)
     }
 
     private static func secondsRange(for range: ClosedRange<Int>) -> ClosedRange<Double> {

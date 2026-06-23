@@ -293,44 +293,10 @@ extension RecognitionSource {
     }
 }
 
-enum MacLivePreviewSource: String, CaseIterable, Identifiable, Equatable {
-    case off
-    case nvidiaNemotron = "nvidia-nemotron"
-    case appleSpeech = "apple-speech"
+typealias MacLivePreviewSource = VoiceLivePreviewSource
 
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .off:
-            return "Off"
-        case .nvidiaNemotron:
-            return "NVIDIA Nemotron 3.5"
-        case .appleSpeech:
-            return "Apple Speech"
-        }
-    }
-
-    static let pickerOptions: [MacLivePreviewSource] = [
-        .off,
-        .nvidiaNemotron,
-        .appleSpeech,
-    ]
-
-    static func options(forRecognitionSources sources: [RecognitionSource]) -> [MacLivePreviewSource] {
-        var options: [MacLivePreviewSource] = [.off]
-        if sources.contains(.nvidiaNemotron) {
-            options.append(.nvidiaNemotron)
-        }
-        if sources.contains(.appleSpeech) {
-            options.append(.appleSpeech)
-        }
-        return options
-    }
-
-    func isEnabled(forRecognitionSources sources: [RecognitionSource]) -> Bool {
-        Self.options(forRecognitionSources: sources).contains(self)
-    }
+extension VoiceLivePreviewSource {
+    var title: String { displayName }
 }
 
 struct BridgeMacSettingsPayload: Codable, Equatable {

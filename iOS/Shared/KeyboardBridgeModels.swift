@@ -395,32 +395,11 @@ struct KeyboardDefaultsPayload: Codable, Equatable {
     }
 
     private static func normalizedRimeUserPhrases(_ phrases: [String]) -> [String] {
-        var seen = Set<String>()
-        var output: [String] = []
-        for phrase in phrases {
-            let cleaned = phrase
-                .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !cleaned.isEmpty else { continue }
-            let key = cleaned.folding(
-                options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
-                locale: .current
-            )
-            guard seen.insert(key).inserted else { continue }
-            output.append(cleaned)
-        }
-        return output.sorted()
+        RimeUserPhraseNormalizer.normalized(phrases)
     }
 
     private static func rimeUserPhrasesRevision(_ phrases: [String]) -> String {
-        let data: Data
-        do {
-            data = try JSONSerialization.data(withJSONObject: phrases, options: [.sortedKeys])
-        } catch {
-            preconditionFailure("Could not encode Rime user phrases revision: \(error)")
-        }
-        let digest = SHA256.hash(data: data)
-        return digest.map { String(format: "%02x", $0) }.joined()
+        RimeUserPhraseNormalizer.revision(forNormalized: phrases)
     }
 }
 

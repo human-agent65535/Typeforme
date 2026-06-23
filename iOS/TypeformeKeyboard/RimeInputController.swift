@@ -992,21 +992,7 @@ final class RimeInputController: @unchecked Sendable {
     }
 
     private static func normalizedUserPhrases(_ phrases: [String]) -> [String] {
-        var seen = Set<String>()
-        var output: [String] = []
-        for phrase in phrases {
-            let cleaned = phrase
-                .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !cleaned.isEmpty else { continue }
-            let key = cleaned.folding(
-                options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
-                locale: .current
-            )
-            guard seen.insert(key).inserted else { continue }
-            output.append(cleaned)
-        }
-        return output
+        RimeUserPhraseNormalizer.normalized(phrases, sortsOutput: false)
     }
 
     private static func customPhraseCodes(for phrase: String) -> [String] {
