@@ -56,18 +56,20 @@ struct BridgeClient: Sendable {
     }
 
     func healthResponse(timeout: TimeInterval = 2.5) async throws -> BridgeHealthResponse {
-        try await request(
-            path: "/v1/health",
-            method: "GET",
+        let endpoint = BridgeAPIEndpoint.health
+        return try await request(
+            path: endpoint.path,
+            method: endpoint.method,
             body: Optional<Data>.none,
             timeout: timeout
         )
     }
 
     func pairing(timeout: TimeInterval = 10) async throws -> PairingConfig {
+        let endpoint = BridgeAPIEndpoint.pairing
         let payload: PairingPayload = try await request(
-            path: "/v1/pairing",
-            method: "GET",
+            path: endpoint.path,
+            method: endpoint.method,
             body: Optional<Data>.none,
             timeout: timeout
         )
@@ -75,9 +77,10 @@ struct BridgeClient: Sendable {
     }
 
     func macSettings(timeout: TimeInterval = 10) async throws -> BridgeMacSettingsPayload {
-        try await request(
-            path: "/v1/settings",
-            method: "GET",
+        let endpoint = BridgeAPIEndpoint.settingsRead
+        return try await request(
+            path: endpoint.path,
+            method: endpoint.method,
             body: Optional<Data>.none,
             timeout: timeout
         )
@@ -104,7 +107,8 @@ struct BridgeClient: Sendable {
             autoCommit: settings.autoCommit,
             userDictionary: settings.userDictionary
         )
-        return try await request(path: "/v1/settings", method: "POST", json: payload, timeout: timeout)
+        let endpoint = BridgeAPIEndpoint.settingsWrite
+        return try await request(path: endpoint.path, method: endpoint.method, json: payload, timeout: timeout)
     }
 
     func dictate(
@@ -135,9 +139,10 @@ struct BridgeClient: Sendable {
                 clientJobID: normalizedJobID,
                 alternateTranscript: alternateTranscript
             )
+            let endpoint = BridgeAPIEndpoint.dictate
             return try await request(
-                path: "/v1/dictate",
-                method: "POST",
+                path: endpoint.path,
+                method: endpoint.method,
                 body: multipart.body,
                 contentType: multipart.contentType,
                 timeout: 45
@@ -156,7 +161,8 @@ struct BridgeClient: Sendable {
             appName: "iOS",
             appCategory: "chat"
         )
-        return try await request(path: "/v1/live-preview/start", method: "POST", json: payload, timeout: timeout)
+        let endpoint = BridgeAPIEndpoint.livePreviewStart
+        return try await request(path: endpoint.path, method: endpoint.method, json: payload, timeout: timeout)
     }
 
     func livePreviewWebSocketTask(
@@ -168,9 +174,10 @@ struct BridgeClient: Sendable {
         }
         var request: URLRequest
         do {
+            let endpoint = BridgeAPIEndpoint.livePreviewSocket(sessionID: encodedSessionID)
             request = try http.makeRequest(
-                path: "/v1/live-preview/\(encodedSessionID)/socket",
-                method: "GET",
+                path: endpoint.path,
+                method: endpoint.method,
                 timeout: timeout,
                 accept: "application/json",
                 acceptEncoding: nil
@@ -207,9 +214,10 @@ struct BridgeClient: Sendable {
         guard let encodedSessionID = sessionID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) else {
             throw BridgeClientError.invalidURL
         }
+        let endpoint = BridgeAPIEndpoint.livePreviewFinish(sessionID: encodedSessionID)
         return try await request(
-            path: "/v1/live-preview/\(encodedSessionID)/finish",
-            method: "POST",
+            path: endpoint.path,
+            method: endpoint.method,
             body: Optional<Data>.none,
             timeout: timeout
         )
@@ -233,7 +241,8 @@ struct BridgeClient: Sendable {
                 appName: "iOS",
                 appCategory: "chat"
             )
-            return try await request(path: "/v1/restyle", method: "POST", json: payload, timeout: 20)
+            let endpoint = BridgeAPIEndpoint.restyle
+            return try await request(path: endpoint.path, method: endpoint.method, json: payload, timeout: 20)
         }
     }
 
@@ -255,11 +264,12 @@ struct BridgeClient: Sendable {
                 contextAfter: contextAfter,
                 spokenInstruction: spokenInstruction,
                 languageIDs: languageIDs,
-                clientJobID: normalizedJobID,
                 appName: "iOS",
-                appCategory: "chat"
+                appCategory: "chat",
+                clientJobID: normalizedJobID
             )
-            return try await request(path: "/v1/edit-text", method: "POST", json: payload, timeout: 30)
+            let endpoint = BridgeAPIEndpoint.editText
+            return try await request(path: endpoint.path, method: endpoint.method, json: payload, timeout: 30)
         }
     }
 
@@ -316,9 +326,10 @@ struct BridgeClient: Sendable {
         }
         let request: URLRequest
         do {
+            let endpoint = BridgeAPIEndpoint.jobEvents(jobID: encodedJobID)
             request = try http.makeRequest(
-                path: "/v1/jobs/\(encodedJobID)/events",
-                method: "GET",
+                path: endpoint.path,
+                method: endpoint.method,
                 timeout: 60,
                 accept: "text/event-stream",
                 acceptEncoding: nil

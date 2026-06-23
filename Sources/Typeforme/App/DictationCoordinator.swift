@@ -1001,7 +1001,7 @@ final class DictationCoordinator: ObservableObject {
                 debugLog,
                 mode: selectedCorrectionMode,
                 text: result.text,
-                status: response.correctionStatus,
+                status: response.correctionStatus ?? "remote_unknown",
                 error: response.correctionError,
                 latencyMs: response.correctionLatencyMs ?? response.latencyMs,
                 timeoutMs: AppSettings.correctionTimeoutMs

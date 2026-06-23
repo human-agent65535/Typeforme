@@ -32,17 +32,17 @@ enum BridgeRequestEndpoint: String, CaseIterable, Hashable, Sendable {
 
     var methodAndPath: String {
         switch self {
-        case .health: return "GET /v1/health"
-        case .pairing: return "GET /v1/pairing"
-        case .settingsRead: return "GET /v1/settings"
-        case .settingsWrite: return "POST /v1/settings"
-        case .dictate: return "POST /v1/dictate"
-        case .jobEvents: return "GET /v1/jobs/:jobID/events"
-        case .livePreviewStart: return "POST /v1/live-preview/start"
-        case .livePreviewSocket: return "WS /v1/live-preview/:sessionID/socket"
-        case .livePreviewFinish: return "POST /v1/live-preview/:sessionID/finish"
-        case .restyle: return "POST /v1/restyle"
-        case .editText: return "POST /v1/edit-text"
+        case .health: return BridgeAPIEndpoint.health.methodAndPath
+        case .pairing: return BridgeAPIEndpoint.pairing.methodAndPath
+        case .settingsRead: return BridgeAPIEndpoint.settingsRead.methodAndPath
+        case .settingsWrite: return BridgeAPIEndpoint.settingsWrite.methodAndPath
+        case .dictate: return BridgeAPIEndpoint.dictate.methodAndPath
+        case .jobEvents: return BridgeAPIEndpoint.jobEventsTemplate.methodAndPath
+        case .livePreviewStart: return BridgeAPIEndpoint.livePreviewStart.methodAndPath
+        case .livePreviewSocket: return BridgeAPIEndpoint.livePreviewSocketTemplate.methodAndPath
+        case .livePreviewFinish: return BridgeAPIEndpoint.livePreviewFinishTemplate.methodAndPath
+        case .restyle: return BridgeAPIEndpoint.restyle.methodAndPath
+        case .editText: return BridgeAPIEndpoint.editText.methodAndPath
         }
     }
 }

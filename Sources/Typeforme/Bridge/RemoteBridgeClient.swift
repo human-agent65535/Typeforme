@@ -41,54 +41,6 @@ enum RemoteBridgeClientError: LocalizedError {
     }
 }
 
-private struct RemoteBridgeRestyleRequest: Encodable {
-    let sessionID: String?
-    let rawTranscript: String?
-    let languageIDs: [String]
-    let correctionMode: String
-    let appName: String?
-    let bundleID: String?
-    let appCategory: String
-    let contextBefore: String?
-    let contextAfter: String?
-
-    enum CodingKeys: String, CodingKey {
-        case sessionID = "session_id"
-        case rawTranscript = "raw_transcript"
-        case languageIDs = "language_ids"
-        case correctionMode = "correction_mode"
-        case appName = "app_name"
-        case bundleID = "bundle_id"
-        case appCategory = "app_category"
-        case contextBefore = "context_before"
-        case contextAfter = "context_after"
-    }
-}
-
-private struct RemoteBridgeTextEditRequest: Encodable {
-    let intent: String
-    let contextBefore: String
-    let targetText: String
-    let contextAfter: String
-    let spokenInstruction: String
-    let languageIDs: [String]
-    let appName: String?
-    let bundleID: String?
-    let appCategory: String
-
-    enum CodingKeys: String, CodingKey {
-        case intent
-        case contextBefore = "context_before"
-        case targetText = "target_text"
-        case contextAfter = "context_after"
-        case spokenInstruction = "spoken_instruction"
-        case languageIDs = "language_ids"
-        case appName = "app_name"
-        case bundleID = "bundle_id"
-        case appCategory = "app_category"
-    }
-}
-
 private struct RemoteBridgeSettingsUpdateRequest: Encodable {
     let enabledRecognitionSources: [String]
     let asrModelIDsByRecognitionSource: [String: String]
@@ -168,13 +120,15 @@ struct RemoteBridgeClient {
     }
 
     func health(timeout: TimeInterval = 4) async throws -> BridgeHealthResponse {
-        try await request(path: "/v1/health", method: "GET", body: Optional<Data>.none, timeout: timeout)
+        let endpoint = BridgeAPIEndpoint.health
+        return try await request(path: endpoint.path, method: endpoint.method, body: Optional<Data>.none, timeout: timeout)
     }
 
     func settings(timeout: TimeInterval = 10) async throws -> BridgeSettingsPayload {
+        let endpoint = BridgeAPIEndpoint.settingsRead
         var response: BridgeSettingsPayload = try await request(
-            path: "/v1/settings",
-            method: "GET",
+            path: endpoint.path,
+            method: endpoint.method,
             body: Optional<Data>.none,
             timeout: timeout
         )
@@ -204,9 +158,10 @@ struct RemoteBridgeClient {
             debugMode: settings.debugMode,
             userDictionary: settings.userDictionary
         )
+        let endpoint = BridgeAPIEndpoint.settingsWrite
         var response: BridgeSettingsPayload = try await request(
-            path: "/v1/settings",
-            method: "POST",
+            path: endpoint.path,
+            method: endpoint.method,
             json: payload,
             timeout: timeout
         )
@@ -239,9 +194,10 @@ struct RemoteBridgeClient {
             alternateTranscript: alternateTranscript
         )
         defer { try? FileManager.default.removeItem(at: multipart.fileURL) }
+        let endpoint = BridgeAPIEndpoint.dictate
         let response: BridgeDictateResponse = try await request(
-            path: "/v1/dictate",
-            method: "POST",
+            path: endpoint.path,
+            method: endpoint.method,
             bodyFileURL: multipart.fileURL,
             contentLength: multipart.contentLength,
             contentType: multipart.contentType,
@@ -261,7 +217,7 @@ struct RemoteBridgeClient {
         contextBefore: String = "",
         contextAfter: String = ""
     ) async throws -> BridgeRestyleResponse {
-        let payload = RemoteBridgeRestyleRequest(
+        let payload = BridgeRestyleRequest(
             sessionID: sessionID,
             rawTranscript: rawTranscript,
             languageIDs: languageIDs,
@@ -272,9 +228,10 @@ struct RemoteBridgeClient {
             contextBefore: contextBefore,
             contextAfter: contextAfter
         )
+        let endpoint = BridgeAPIEndpoint.restyle
         let response: BridgeRestyleResponse = try await request(
-            path: "/v1/restyle",
-            method: "POST",
+            path: endpoint.path,
+            method: endpoint.method,
             json: payload,
             timeout: 45
         )
@@ -292,7 +249,7 @@ struct RemoteBridgeClient {
         appSnapshot: FrontmostAppSnapshot?,
         appCategory: AppCategory
     ) async throws -> BridgeTextEditResponse {
-        let payload = RemoteBridgeTextEditRequest(
+        let payload = BridgeTextEditRequest(
             intent: intent.rawValue,
             contextBefore: contextBefore,
             targetText: targetText,
@@ -303,9 +260,10 @@ struct RemoteBridgeClient {
             bundleID: appSnapshot?.bundleID,
             appCategory: appCategory.rawValue
         )
+        let endpoint = BridgeAPIEndpoint.editText
         let response: BridgeTextEditResponse = try await request(
-            path: "/v1/edit-text",
-            method: "POST",
+            path: endpoint.path,
+            method: endpoint.method,
             json: payload,
             timeout: 45
         )
@@ -337,7 +295,7 @@ struct RemoteBridgeClient {
         )
     }
 
-    private func validateTextResponse(text: String, status: String, error: String?) throws {
+    private func validateTextResponse(text: String, status: String?, error: String?) throws {
         if status == "error" {
             throw RemoteBridgeClientError.correctionFailed(error ?? "")
         }
