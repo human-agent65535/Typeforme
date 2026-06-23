@@ -30,6 +30,28 @@ struct VocabularyCandidateSelectorTests {
         #expect(result.first?.surface == "样例甲")
     }
 
+    @Test func selectsChinesePersonNameBySamePinyinAndSharedSurname() {
+        let entries = [
+            DictionaryEntry(type: "person", surface: "郭霁"),
+            DictionaryEntry(type: "product", surface: "Sleep Cycle"),
+        ]
+
+        let payload = VocabularyCandidateSelector.promptPayload(
+            from: entries,
+            rawText: "郭基，你昨天作业写得怎么样？",
+            alternateTranscripts: ["国基里昨天作业写的怎么样"]
+        )
+
+        #expect(payload.first?.surface == "郭霁")
+        #expect(payload.first?.matchedSpan == "郭基")
+        #expect(payload.first?.matchSource == "raw_transcript")
+        #expect(payload.first?.matchedStart == 0)
+        #expect(payload.first?.matchedEnd == 2)
+        #expect(payload.first?.matchKind == "same_pinyin")
+        #expect(payload.first?.pronunciations == ["guo ji"])
+        #expect(!payload.contains { $0.surface == "Sleep Cycle" })
+    }
+
     @Test func selectsChineseNearPhoneticCandidate() {
         let entries = [
             DictionaryEntry(type: "person", surface: "样例山"),
@@ -110,12 +132,18 @@ struct VocabularyCandidateSelectorTests {
         #expect(payload[0].speechHint == "yanglijia")
         #expect(payload[0].pronunciations == ["yang li jia"])
         #expect(payload[0].matchedSpan == "样例佳")
+        #expect(payload[0].matchSource == "raw_transcript")
+        #expect(payload[0].matchedStart == 1)
+        #expect(payload[0].matchedEnd == 4)
         #expect(payload[0].matchKind == "same_pinyin")
         #expect(payload[0].confidence >= 0.9)
         #expect(payload[0].evidenceSource == "transcript")
         let json = PromptPayloadEncoder.jsonString(payload) ?? ""
         #expect(json.contains("\"speech_hint\":\"yanglijia\""))
         #expect(json.contains("\"matched_span\":\"样例佳\""))
+        #expect(json.contains("\"match_source\":\"raw_transcript\""))
+        #expect(json.contains("\"matched_start\":1"))
+        #expect(json.contains("\"matched_end\":4"))
         #expect(json.contains("\"match_kind\":\"same_pinyin\""))
         #expect(json.contains("\"evidence_source\":\"transcript\""))
         #expect(json.contains("\"pronunciations\":[\"yang li jia\"]"))
@@ -139,6 +167,9 @@ struct VocabularyCandidateSelectorTests {
         #expect(payload.count == 1)
         #expect(payload[0].surface == "样例甲")
         #expect(payload[0].matchedSpan == "样例佳")
+        #expect(payload[0].matchSource == "alternate_transcript")
+        #expect(payload[0].matchedStart == 8)
+        #expect(payload[0].matchedEnd == 11)
         #expect(payload[0].evidenceSource == "transcript")
     }
 
@@ -156,6 +187,8 @@ struct VocabularyCandidateSelectorTests {
         #expect(payload[0].surface == "Grafana")
         #expect(payload[0].pronunciations.contains("grafana"))
         #expect(payload[0].matchedSpan == "graphana")
+        #expect(payload[0].matchedStart == 10)
+        #expect(payload[0].matchedEnd == 18)
         #expect(["english_soundex", "english_fuzzy"].contains(payload[0].matchKind))
         #expect(payload[0].confidence >= 0.68)
     }

@@ -147,8 +147,37 @@ struct PromptBuilderTests {
 
         #expect(prompt.contains("\"surface\":\"样例甲\""))
         #expect(prompt.contains("\"matched_span\":\"样例佳\""))
+        #expect(prompt.contains("\"match_source\":\"alternate_transcript\""))
+        #expect(prompt.contains("\"matched_start\":8"))
+        #expect(prompt.contains("\"matched_end\":11"))
         #expect(prompt.contains("\"match_kind\":\"same_pinyin\""))
         #expect(prompt.contains("\"evidence_source\":\"transcript\""))
+    }
+
+    @Test func userPromptCarriesSamePinyinChinesePersonCandidate() {
+        let request = CorrectionRequest(
+            correctionMode: .polish,
+            frontmostAppName: "iOS",
+            frontmostBundleID: nil,
+            appCategory: .chat,
+            languageIDs: ["zh-CN"],
+            rawTranscript: "郭吉，你吃饭了吗？",
+            userDictionary: [
+                DictionaryEntry(type: "person", surface: "郭霁"),
+            ],
+            alternateTranscripts: ["我急你吃饭了吗?"]
+        )
+
+        let prompt = PromptBuilder.userPrompt(for: request)
+
+        #expect(prompt.contains("\"surface\":\"郭霁\""))
+        #expect(prompt.contains("\"matched_span\":\"郭吉\""))
+        #expect(prompt.contains("\"match_source\":\"raw_transcript\""))
+        #expect(prompt.contains("\"matched_start\":0"))
+        #expect(prompt.contains("\"matched_end\":2"))
+        #expect(prompt.contains("\"match_kind\":\"same_pinyin\""))
+        #expect(prompt.contains("\"pronunciations\":[\"guo ji\"]"))
+        #expect(BuiltInPrompts.baseSystem.contains("same match_source plus matched_start/matched_end"))
     }
 
     @Test func userPromptEscapesEmbeddedClosingInputJSONTag() {
@@ -194,7 +223,8 @@ struct PromptBuilderTests {
         #expect(base.contains("Use vocabulary_candidates only as ASR hints"))
         #expect(base.contains("never globally replace ordinary homophones"))
         #expect(base.contains("Vocabulary candidate match evidence is automatic and local"))
-        #expect(base.contains("matched_span, match_kind, pronunciations, and confidence"))
+        #expect(base.contains("matched_span, match_source, matched_start, matched_end"))
+        #expect(base.contains("Pick the candidate whose type and context best fit"))
         #expect(base.contains("A 不对/不是/改成/应该是 B"))
         #expect(base.contains("A should be B"))
         #expect(base.contains("A 一个改两个"))

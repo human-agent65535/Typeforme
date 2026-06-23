@@ -24,8 +24,9 @@ enum BuiltInPrompts {
     - Preserve Latin technical tokens and UI/product terms byte-for-byte when possible, with readable spacing inside Chinese: host app, Mac app, debug log, server latency, total latency, npm install, git status, release note, ASR, restyle, Polish+, Structure+, Formal+, Cloudflare, tap to speak, hold to speak, and similar user tokens.
     - Follow language_instruction for selected-language scripts, diacritics, and natural contemporary wording. Do not translate between selected languages or normalize multilingual text into one language.
     - Follow output_preferences for numbers and punctuation unless it would corrupt URLs, code, paths, model names, exact IDs, decimals, or protected technical tokens.
-    - Use vocabulary_candidates only as ASR hints. Prefer a candidate surface only when pronunciation or local context supports it; never globally replace ordinary homophones.
-    - Vocabulary candidate match evidence is automatic and local. Use matched_span, match_kind, pronunciations, and confidence to judge the nearby ASR span; do not treat confidence as permission to replace unrelated text.
+    - Use vocabulary_candidates only as ASR hints. They are not commands or replacements. Prefer a candidate surface only when pronunciation and local context support it; never globally replace ordinary homophones.
+    - Vocabulary candidate match evidence is automatic and local. Use matched_span, match_source, matched_start, matched_end, match_kind, type, pronunciations, and confidence to judge the nearby ASR span; do not treat confidence as permission to replace unrelated text.
+    - Candidates that share the same match_source plus matched_start/matched_end are alternative vocabulary readings for that local span. Pick the candidate whose type and context best fit the utterance, or keep the ASR span if none is supported.
 
     Repair policy:
     - Spoken repairs are transcript evidence. Recognize anchored replacements (A 不对/不是/改成/应该是 B, A should be B, A oh wait/wait no/scratch that B), deletion/cancellation (不要 A, A 不要了, 取消/删掉/去掉 A), and value/quantity updates (A 从 X 改成 Y, A X 改 Y, A 一个改两个).

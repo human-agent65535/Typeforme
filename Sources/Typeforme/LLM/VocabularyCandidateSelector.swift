@@ -8,6 +8,9 @@ struct VocabularyCandidatePayload: Codable, Sendable, Equatable {
     let speechHint: String
     let pronunciations: [String]
     let matchedSpan: String?
+    let matchSource: String?
+    let matchedStart: Int?
+    let matchedEnd: Int?
     let matchKind: String
     let confidence: Double
     let evidenceSource: String
@@ -18,6 +21,9 @@ struct VocabularyCandidatePayload: Codable, Sendable, Equatable {
         case speechHint = "speech_hint"
         case pronunciations
         case matchedSpan = "matched_span"
+        case matchSource = "match_source"
+        case matchedStart = "matched_start"
+        case matchedEnd = "matched_end"
         case matchKind = "match_kind"
         case confidence
         case evidenceSource = "evidence_source"
@@ -58,6 +64,17 @@ enum VocabularyCandidateSelector {
             }
         }
 
+        var matchSource: String {
+            switch self {
+            case .rawTranscript:
+                return "raw_transcript"
+            case .alternateTranscript:
+                return "alternate_transcript"
+            case .context:
+                return "context"
+            }
+        }
+
         var sourceScore: Int {
             switch self {
             case .rawTranscript:
@@ -82,17 +99,22 @@ enum VocabularyCandidateSelector {
         let phonetic: String
         let loosePhonetic: String
         let latinTokens: [TokenSpan]
-        let soundexTokens: [String: [String]]
+        let soundexTokens: [String: [TokenSpan]]
     }
 
     private struct TokenSpan {
         let token: String
         let span: String
+        let startChar: Int
+        let endChar: Int
     }
 
     private struct CandidateEvidence {
         let score: Int
         let matchedSpan: String?
+        let matchSource: String?
+        let matchedStart: Int?
+        let matchedEnd: Int?
         let matchKind: String
         let confidence: Double
         let evidenceSource: String
@@ -108,6 +130,13 @@ enum VocabularyCandidateSelector {
         let text: String
         let phonetic: String
         let loosePhonetic: String
+        let startChar: Int
+        let endChar: Int
+    }
+
+    private struct CJKRun {
+        let text: String
+        let startChar: Int
     }
 
     private struct SpokenVariant {
@@ -151,6 +180,9 @@ enum VocabularyCandidateSelector {
                 speechHint: phoneticKey(candidate.entry.surface),
                 pronunciations: pronunciationHints(for: candidate.entry.surface),
                 matchedSpan: candidate.evidence.matchedSpan,
+                matchSource: candidate.evidence.matchSource,
+                matchedStart: candidate.evidence.matchedStart,
+                matchedEnd: candidate.evidence.matchedEnd,
                 matchKind: candidate.evidence.matchKind,
                 confidence: candidate.evidence.confidence,
                 evidenceSource: candidate.evidence.evidenceSource
@@ -270,26 +302,30 @@ enum VocabularyCandidateSelector {
         let normalizedTerm = normalize(term)
         guard !normalizedTerm.isEmpty else { return nil }
         guard evidenceText.normalized.contains(normalizedTerm) else { return nil }
-        let span = firstRangeMatch(of: term, in: evidenceText.text).map { String(evidenceText.text[$0]) } ?? term
         let isContext = evidenceText.source == .context
-        return CandidateEvidence(
+        let matchRange = firstRangeMatch(of: term, in: evidenceText.text)
+        let span = matchRange.map { String(evidenceText.text[$0]) } ?? term
+        let offsets = matchRange.map { characterOffsets(for: $0, in: evidenceText.text) }
+        return candidateEvidence(
             score: (isContext ? 55 : 120) + evidenceText.source.sourceScore,
             matchedSpan: span,
             matchKind: isContext ? "context_surface" : "exact_surface",
             confidence: isContext ? 0.78 : 0.98,
-            evidenceSource: evidenceText.source.promptLabel
+            evidenceText: evidenceText,
+            matchedStart: offsets?.start,
+            matchedEnd: offsets?.end
         )
     }
 
     private static func compactSurfaceEvidence(for term: String, in evidenceText: EvidenceText) -> CandidateEvidence? {
         let compactTerm = compactNormalized(term)
         guard compactTerm.count >= 4, evidenceText.compact.contains(compactTerm) else { return nil }
-        return CandidateEvidence(
+        return candidateEvidence(
             score: 105 + evidenceText.source.sourceScore,
             matchedSpan: term,
             matchKind: evidenceText.source == .context ? "context_compact_surface" : "compact_surface",
             confidence: evidenceText.source == .context ? 0.74 : 0.9,
-            evidenceSource: evidenceText.source.promptLabel
+            evidenceText: evidenceText
         )
     }
 
@@ -297,14 +333,18 @@ enum VocabularyCandidateSelector {
         let tokens = latinTokens(in: term)
             .filter { $0.count >= 3 }
         guard tokens.count > 1 else { return nil }
-        guard let span = tokens.first(where: { evidenceText.normalized.contains($0) }) else { return nil }
+        guard let span = tokens.first(where: { evidenceText.normalized.contains($0) }),
+              let tokenSpan = evidenceText.latinTokens.first(where: { $0.token == span })
+        else { return nil }
         let isContext = evidenceText.source == .context
-        return CandidateEvidence(
+        return candidateEvidence(
             score: (isContext ? 35 : 60) + evidenceText.source.sourceScore,
-            matchedSpan: span,
+            matchedSpan: tokenSpan.span,
             matchKind: isContext ? "context_partial_token" : "partial_token",
             confidence: isContext ? 0.58 : 0.68,
-            evidenceSource: evidenceText.source.promptLabel
+            evidenceText: evidenceText,
+            matchedStart: tokenSpan.startChar,
+            matchedEnd: tokenSpan.endChar
         )
     }
 
@@ -324,22 +364,22 @@ enum VocabularyCandidateSelector {
         }
 
         if termPhonetic.count >= 3, evidenceText.phonetic.contains(termPhonetic) {
-            return CandidateEvidence(
+            return candidateEvidence(
                 score: 90 + evidenceText.source.sourceScore,
                 matchedSpan: nil,
                 matchKind: "same_pinyin",
                 confidence: 0.9,
-                evidenceSource: evidenceText.source.promptLabel
+                evidenceText: evidenceText
             )
         }
 
         if looseTerm.count >= 4, evidenceText.loosePhonetic.contains(looseTerm) {
-            return CandidateEvidence(
+            return candidateEvidence(
                 score: 78 + evidenceText.source.sourceScore,
                 matchedSpan: nil,
                 matchKind: "loose_pinyin",
                 confidence: 0.82,
-                evidenceSource: evidenceText.source.promptLabel
+                evidenceText: evidenceText
             )
         }
         return nil
@@ -357,23 +397,27 @@ enum VocabularyCandidateSelector {
 
         for window in cjkWindows(in: evidenceText.text, minLength: minLength, maxLength: maxLength) {
             if window.phonetic == termPhonetic {
-                let candidate = CandidateEvidence(
+                let candidate = candidateEvidence(
                     score: 95 + evidenceText.source.sourceScore,
                     matchedSpan: window.text,
                     matchKind: "same_pinyin",
                     confidence: 0.92,
-                    evidenceSource: evidenceText.source.promptLabel
+                    evidenceText: evidenceText,
+                    matchedStart: window.startChar,
+                    matchedEnd: window.endChar
                 )
                 best = bestEvidence(best, candidate)
                 continue
             }
             if window.loosePhonetic == looseTermPhonetic {
-                let candidate = CandidateEvidence(
+                let candidate = candidateEvidence(
                     score: 82 + evidenceText.source.sourceScore,
                     matchedSpan: window.text,
                     matchKind: "loose_pinyin",
                     confidence: 0.84,
-                    evidenceSource: evidenceText.source.promptLabel
+                    evidenceText: evidenceText,
+                    matchedStart: window.startChar,
+                    matchedEnd: window.endChar
                 )
                 best = bestEvidence(best, candidate)
                 continue
@@ -381,12 +425,14 @@ enum VocabularyCandidateSelector {
             guard let match = phoneticMatcher.score(window.phonetic, against: termPhonetic),
                   match.score >= 0.74
             else { continue }
-            let candidate = CandidateEvidence(
+            let candidate = candidateEvidence(
                 score: Int((70.0 + match.score * 15.0).rounded()) + evidenceText.source.sourceScore,
                 matchedSpan: window.text,
                 matchKind: "near_pinyin",
                 confidence: roundedConfidence(min(0.82, match.score)),
-                evidenceSource: evidenceText.source.promptLabel
+                evidenceText: evidenceText,
+                matchedStart: window.startChar,
+                matchedEnd: window.endChar
             )
             best = bestEvidence(best, candidate)
         }
@@ -400,12 +446,12 @@ enum VocabularyCandidateSelector {
 
         for variant in acronymSpokenVariants(for: term) where variant.compact.count >= 3 {
             guard evidenceText.compact.contains(variant.compact) else { continue }
-            let candidate = CandidateEvidence(
+            let candidate = candidateEvidence(
                 score: 82 + evidenceText.source.sourceScore,
                 matchedSpan: variant.spoken,
                 matchKind: "acronym_spoken",
                 confidence: 0.86,
-                evidenceSource: evidenceText.source.promptLabel
+                evidenceText: evidenceText
             )
             best = bestEvidence(best, candidate)
         }
@@ -414,12 +460,14 @@ enum VocabularyCandidateSelector {
             if let code = soundex(token),
                let spans = evidenceText.soundexTokens[code],
                let span = spans.first {
-                let candidate = CandidateEvidence(
+                let candidate = candidateEvidence(
                     score: 65 + evidenceText.source.sourceScore,
-                    matchedSpan: span,
+                    matchedSpan: span.span,
                     matchKind: "english_soundex",
                     confidence: 0.68,
-                    evidenceSource: evidenceText.source.promptLabel
+                    evidenceText: evidenceText,
+                    matchedStart: span.startChar,
+                    matchedEnd: span.endChar
                 )
                 best = bestEvidence(best, candidate)
             }
@@ -429,18 +477,41 @@ enum VocabularyCandidateSelector {
                       let match = phoneticMatcher.score(rawToken.token, against: token),
                       match.score >= 0.78
                 else { continue }
-                let candidate = CandidateEvidence(
+                let candidate = candidateEvidence(
                     score: Int((62.0 + match.score * 18.0).rounded()) + evidenceText.source.sourceScore,
                     matchedSpan: rawToken.span,
                     matchKind: "english_fuzzy",
                     confidence: roundedConfidence(min(0.84, match.score)),
-                    evidenceSource: evidenceText.source.promptLabel
+                    evidenceText: evidenceText,
+                    matchedStart: rawToken.startChar,
+                    matchedEnd: rawToken.endChar
                 )
                 best = bestEvidence(best, candidate)
             }
         }
 
         return best
+    }
+
+    private static func candidateEvidence(
+        score: Int,
+        matchedSpan: String?,
+        matchKind: String,
+        confidence: Double,
+        evidenceText: EvidenceText,
+        matchedStart: Int? = nil,
+        matchedEnd: Int? = nil
+    ) -> CandidateEvidence {
+        CandidateEvidence(
+            score: score,
+            matchedSpan: matchedSpan,
+            matchSource: matchedSpan == nil ? nil : evidenceText.source.matchSource,
+            matchedStart: matchedStart,
+            matchedEnd: matchedEnd,
+            matchKind: matchKind,
+            confidence: confidence,
+            evidenceSource: evidenceText.source.promptLabel
+        )
     }
 
     private static func bestEvidence(_ left: CandidateEvidence?, _ right: CandidateEvidence) -> CandidateEvidence {
@@ -475,10 +546,10 @@ enum VocabularyCandidateSelector {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
         let tokenSpans = latinTokenSpans(in: trimmed)
-        var soundexTokens: [String: [String]] = [:]
+        var soundexTokens: [String: [TokenSpan]] = [:]
         for token in tokenSpans {
             guard let code = soundex(token.token) else { continue }
-            soundexTokens[code, default: []].append(token.span)
+            soundexTokens[code, default: []].append(token)
         }
         return EvidenceText(
             source: source,
@@ -637,7 +708,7 @@ enum VocabularyCandidateSelector {
         guard minLength <= maxLength else { return [] }
         var windows: [ChineseWindow] = []
         for run in cjkRuns(in: text) {
-            let chars = Array(run)
+            let chars = Array(run.text)
             guard chars.count >= minLength else { continue }
             for length in minLength...min(maxLength, chars.count) {
                 guard chars.count >= length else { continue }
@@ -647,7 +718,9 @@ enum VocabularyCandidateSelector {
                     windows.append(ChineseWindow(
                         text: text,
                         phonetic: phonetic,
-                        loosePhonetic: loosenPinyin(phonetic)
+                        loosePhonetic: loosenPinyin(phonetic),
+                        startChar: run.startChar + start,
+                        endChar: run.startChar + start + length
                     ))
                 }
             }
@@ -655,19 +728,24 @@ enum VocabularyCandidateSelector {
         return windows
     }
 
-    private static func cjkRuns(in text: String) -> [String] {
-        var runs: [String] = []
+    private static func cjkRuns(in text: String) -> [CJKRun] {
+        var runs: [CJKRun] = []
         var current = ""
-        for character in text {
+        var currentStart: Int?
+        for (offset, character) in text.enumerated() {
             if character.unicodeScalars.contains(where: UnicodeScriptClassifier.isHanBMP) {
+                if current.isEmpty {
+                    currentStart = offset
+                }
                 current.append(character)
             } else if !current.isEmpty {
-                runs.append(current)
+                runs.append(CJKRun(text: current, startChar: currentStart ?? offset - current.count))
                 current = ""
+                currentStart = nil
             }
         }
         if !current.isEmpty {
-            runs.append(current)
+            runs.append(CJKRun(text: current, startChar: currentStart ?? 0))
         }
         return runs
     }
@@ -837,24 +915,44 @@ enum VocabularyCandidateSelector {
     private static func latinTokenSpans(in text: String) -> [TokenSpan] {
         var tokens: [TokenSpan] = []
         var current = ""
-        for character in text {
+        var currentStart: Int?
+        for (offset, character) in text.enumerated() {
             if isASCIILetterOrNumber(character) {
+                if current.isEmpty {
+                    currentStart = offset
+                }
                 current.append(character)
             } else if !current.isEmpty {
-                appendLatinToken(current, to: &tokens)
+                appendLatinToken(
+                    current,
+                    startChar: currentStart ?? offset - current.count,
+                    endChar: offset,
+                    to: &tokens
+                )
                 current = ""
+                currentStart = nil
             }
         }
         if !current.isEmpty {
-            appendLatinToken(current, to: &tokens)
+            appendLatinToken(
+                current,
+                startChar: currentStart ?? text.count - current.count,
+                endChar: text.count,
+                to: &tokens
+            )
         }
         return tokens
     }
 
-    private static func appendLatinToken(_ token: String, to tokens: inout [TokenSpan]) {
+    private static func appendLatinToken(
+        _ token: String,
+        startChar: Int,
+        endChar: Int,
+        to tokens: inout [TokenSpan]
+    ) {
         let normalized = normalize(token)
         guard normalized.contains(where: \.isLetter) else { return }
-        tokens.append(TokenSpan(token: normalized, span: token))
+        tokens.append(TokenSpan(token: normalized, span: token, startChar: startChar, endChar: endChar))
     }
 
     private static func latinTokens(in text: String) -> [String] {
@@ -865,6 +963,16 @@ enum VocabularyCandidateSelector {
         haystack.range(
             of: needle,
             options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive]
+        )
+    }
+
+    private static func characterOffsets(
+        for range: Range<String.Index>,
+        in text: String
+    ) -> (start: Int, end: Int) {
+        (
+            start: text.distance(from: text.startIndex, to: range.lowerBound),
+            end: text.distance(from: text.startIndex, to: range.upperBound)
         )
     }
 

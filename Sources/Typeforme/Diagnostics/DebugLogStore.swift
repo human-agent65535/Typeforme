@@ -178,6 +178,7 @@ private struct DebugLogCorrectionInput: Codable, Sendable {
     var numberOutputPreference: String
     var punctuationPreference: String
     var userDictionaryCount: Int
+    var vocabularyCandidates: [VocabularyCandidatePayload]?
     var asrHypotheses: [String]
     var rawTranscriptChars: Int
     var asrHypothesisCount: Int
@@ -195,6 +196,7 @@ private struct DebugLogCorrectionInput: Codable, Sendable {
         case numberOutputPreference = "number_output_preference"
         case punctuationPreference = "punctuation_preference"
         case userDictionaryCount = "user_dictionary_count"
+        case vocabularyCandidates = "vocabulary_candidates"
         case asrHypotheses = "asr_hypotheses"
         case rawTranscriptChars = "raw_transcript_chars"
         case asrHypothesisCount = "asr_hypothesis_count"
@@ -242,6 +244,7 @@ private struct DebugLogTextEditInput: Codable, Sendable {
     var numberOutputPreference: String
     var punctuationPreference: String
     var userDictionaryCount: Int
+    var vocabularyCandidates: [VocabularyCandidatePayload]?
     var contextBeforeChars: Int
     var targetTextChars: Int
     var contextAfterChars: Int
@@ -260,6 +263,7 @@ private struct DebugLogTextEditInput: Codable, Sendable {
         case numberOutputPreference = "number_output_preference"
         case punctuationPreference = "punctuation_preference"
         case userDictionaryCount = "user_dictionary_count"
+        case vocabularyCandidates = "vocabulary_candidates"
         case contextBeforeChars = "context_before_chars"
         case targetTextChars = "target_text_chars"
         case contextAfterChars = "context_after_chars"
@@ -518,6 +522,7 @@ enum DebugLogStore {
             numberOutputPreference: request.numberOutputPreference.rawValue,
             punctuationPreference: request.punctuationPreference.rawValue,
             userDictionaryCount: request.userDictionary.count,
+            vocabularyCandidates: correctionVocabularyCandidates(for: request),
             asrHypotheses: request.asrHypotheses,
             rawTranscriptChars: request.rawTranscript.count,
             asrHypothesisCount: request.asrHypotheses.count,
@@ -540,10 +545,43 @@ enum DebugLogStore {
             numberOutputPreference: request.numberOutputPreference.rawValue,
             punctuationPreference: request.punctuationPreference.rawValue,
             userDictionaryCount: request.userDictionary.count,
+            vocabularyCandidates: textEditVocabularyCandidates(for: request),
             contextBeforeChars: request.contextBefore.count,
             targetTextChars: request.targetText.count,
             contextAfterChars: request.contextAfter.count,
             spokenInstructionChars: request.spokenInstruction.count
+        )
+    }
+
+    private static func correctionVocabularyCandidates(for request: CorrectionRequest) -> [VocabularyCandidatePayload] {
+        VocabularyCandidateSelector.promptPayload(
+            from: request.userDictionary,
+            rawText: request.rawTranscript,
+            alternateTranscripts: request.asrHypotheses,
+            extraContext: [
+                request.frontmostAppName ?? "",
+                request.frontmostBundleID ?? "",
+                request.appCategory.rawValue,
+                request.contextBefore,
+                request.contextAfter,
+            ]
+        )
+    }
+
+    private static func textEditVocabularyCandidates(for request: TextEditRequest) -> [VocabularyCandidatePayload] {
+        VocabularyCandidateSelector.promptPayload(
+            from: request.userDictionary,
+            rawText: [
+                request.contextBefore,
+                request.targetText,
+                request.contextAfter,
+                request.spokenInstruction,
+            ].joined(separator: " "),
+            extraContext: [
+                request.frontmostAppName ?? "",
+                request.frontmostBundleID ?? "",
+                request.appCategory.rawValue,
+            ]
         )
     }
 
