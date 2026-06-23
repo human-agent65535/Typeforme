@@ -531,6 +531,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     /// candidates reduce the row count and get wider cells.
     private static let candidateGridRowHeight: CGFloat = 45
     private static let candidateGridPreferredCellWidth: CGFloat = 66
+    private static let candidateGridMaximumColumnCount = 6
+    private static let candidateGridColumnSpanTolerance: CGFloat = 4
     private static let candidateGridMinimumCellWidth: CGFloat = 59
     private static let candidateGridTwoCharacterMinimumCellWidth: CGFloat = 64
     /// Tightened (was 6 / 24) once the strip itself grew to 34pt: the chevron
@@ -8119,28 +8121,30 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         // single-line labels. The list starts from the first candidate so the
         // selection index sent to Rime matches displayed absolute index.
         let availableWidth = candidateGridContentWidth()
-        let maxColumnCount = candidateGridColumnCount(for: availableWidth)
+        let columnCount = candidateGridColumnCount(for: availableWidth)
+        let columnWidth = availableWidth / CGFloat(columnCount)
         var currentRow: UIStackView?
-        var currentRowButtons: [UIButton] = []
-        var currentRowWidths: [CGFloat] = []
-        var usedWidth: CGFloat = 0
+        var usedColumns = 0
         var didAddRow = false
 
         func finishCurrentRow() {
             guard let row = currentRow else { return }
-            equalizeCandidateGridRowIfNeeded(row, buttons: currentRowButtons, naturalWidths: currentRowWidths, availableWidth: availableWidth)
-            addCandidateGridTrailingSpacer(to: row)
+            if usedColumns < columnCount {
+                addCandidateGridTrailingSpacer(to: row)
+            }
             currentRow = nil
-            currentRowButtons.removeAll()
-            currentRowWidths.removeAll()
-            usedWidth = 0
+            usedColumns = 0
         }
 
         for index in state.candidates.indices {
             let candidate = state.candidates[index]
-            let cellWidth = min(candidateGridNaturalCellWidth(for: candidate), availableWidth)
+            let columnSpan = candidateGridColumnSpan(
+                for: candidateGridNaturalCellWidth(for: candidate),
+                columnWidth: columnWidth,
+                columnCount: columnCount
+            )
             if currentRow != nil,
-               currentRowButtons.count >= maxColumnCount || usedWidth + cellWidth > availableWidth + 0.5 {
+               usedColumns + columnSpan > columnCount {
                 finishCurrentRow()
             }
             if currentRow == nil {
@@ -8159,16 +8163,17 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             let button = makeCandidateGridButton(
                 candidate: candidate,
                 selectionIndex: candidate.selectionIndex,
-                width: cellWidth
+                width: columnWidth * CGFloat(columnSpan)
             )
             currentRow?.addArrangedSubview(button)
-            currentRowButtons.append(button)
-            currentRowWidths.append(cellWidth)
-            usedWidth += cellWidth
+            usedColumns += columnSpan
+            if usedColumns >= columnCount {
+                finishCurrentRow()
+            }
         }
 
-        // Trailing spacer keeps each row left-aligned instead of stretching
-        // the final cells to fill remaining width.
+        // Partial final rows stay left-aligned; full rows already occupy all
+        // grid columns exactly.
         finishCurrentRow()
         candidateGridScrollView.setContentOffset(.zero, animated: false)
     }
@@ -8177,14 +8182,30 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let fullWidth = candidateGridScrollView.bounds.width > 0
             ? candidateGridScrollView.bounds.width
             : view.bounds.width - Self.rootHorizontalInset * 2
-        let nativeActionLeft = view.bounds.width > 0
-            ? view.bounds.width - Self.candidateExpandButtonWidth - Self.rootHorizontalInset
-            : fullWidth - Self.candidateExpandButtonWidth
-        return min(fullWidth, max(140, nativeActionLeft))
+        let gridMinX = candidateGridScrollView.bounds.width > 0
+            ? candidateGridScrollView.convert(candidateGridScrollView.bounds, to: view).minX
+            : Self.rootHorizontalInset
+        let actionLeft = view.bounds.width > 0
+            ? view.bounds.maxX - Self.rootHorizontalInset - Self.candidateExpandButtonWidth - Self.candidateActionColumnGap
+            : gridMinX + fullWidth
+        return min(fullWidth, max(140, actionLeft - gridMinX))
     }
 
     private func candidateGridColumnCount(for available: CGFloat) -> Int {
-        max(1, Int((available / Self.candidateGridPreferredCellWidth).rounded()))
+        min(
+            Self.candidateGridMaximumColumnCount,
+            max(1, Int((available / Self.candidateGridPreferredCellWidth).rounded()))
+        )
+    }
+
+    private func candidateGridColumnSpan(
+        for naturalWidth: CGFloat,
+        columnWidth: CGFloat,
+        columnCount: Int
+    ) -> Int {
+        guard columnWidth > 0 else { return 1 }
+        let adjustedWidth = max(0, naturalWidth - Self.candidateGridColumnSpanTolerance)
+        return min(columnCount, max(1, Int(ceil(adjustedWidth / columnWidth))))
     }
 
     private func candidateGridNaturalCellWidth(for candidate: RimeKeyboardCandidate) -> CGFloat {
@@ -8195,23 +8216,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             ? Self.candidateGridTwoCharacterMinimumCellWidth
             : Self.candidateGridMinimumCellWidth
         return max(minimumWidth, textWidth + Self.candidateInlineCellHorizontalPadding)
-    }
-
-    private func equalizeCandidateGridRowIfNeeded(
-        _ row: UIStackView,
-        buttons: [UIButton],
-        naturalWidths: [CGFloat],
-        availableWidth: CGFloat
-    ) {
-        guard !buttons.isEmpty else { return }
-        let evenWidth = availableWidth / CGFloat(buttons.count)
-        if naturalWidths.allSatisfy({ $0 <= evenWidth + 0.5 }) {
-            for button in buttons {
-                button.constraints
-                    .filter { $0.firstAttribute == .width && $0.firstItem === button }
-                    .forEach { $0.constant = evenWidth }
-            }
-        }
     }
 
     private func addCandidateGridTrailingSpacer(to row: UIStackView) {
