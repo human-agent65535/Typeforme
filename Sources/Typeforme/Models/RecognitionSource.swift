@@ -2,24 +2,7 @@ import Foundation
 import os.lock
 @preconcurrency import Speech
 
-enum RecognitionSource: String, CaseIterable, Codable, Identifiable, Sendable {
-    case qwen = "qwen3-asr-llama"
-    case nvidiaNemotron = "nvidia-nemotron-asr"
-    case appleSpeech = "apple-speech"
-
-    var id: String { rawValue }
-
-    var displayName: String {
-        switch self {
-        case .qwen:
-            return "Qwen3-ASR"
-        case .nvidiaNemotron:
-            return "NVIDIA Nemotron 3.5 ASR"
-        case .appleSpeech:
-            return "Apple Speech"
-        }
-    }
-
+extension RecognitionSource {
     var detail: String {
         switch self {
         case .qwen:
@@ -29,39 +12,6 @@ enum RecognitionSource: String, CaseIterable, Codable, Identifiable, Sendable {
         case .appleSpeech:
             return "Uses Apple's on-device recognizer on this Mac and contributes one transcript when the selected language is supported."
         }
-    }
-
-    var hasModelConfiguration: Bool {
-        switch self {
-        case .qwen, .nvidiaNemotron:
-            return true
-        case .appleSpeech:
-            return false
-        }
-    }
-
-    var supportsLivePreview: Bool {
-        switch self {
-        case .nvidiaNemotron, .appleSpeech:
-            return true
-        case .qwen:
-            return false
-        }
-    }
-
-    static let defaultEnabled: [RecognitionSource] = [.qwen]
-
-    static func normalizedSources(_ raw: [String]) -> [RecognitionSource] {
-        var seen = Set<RecognitionSource>()
-        let values = raw.compactMap { value -> RecognitionSource? in
-            RecognitionSource(rawValue: value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
-        }
-        let result = values.filter { seen.insert($0).inserted }
-        return result.isEmpty ? defaultEnabled : result
-    }
-
-    static func rawValue(for sources: [RecognitionSource]) -> String {
-        sources.map(\.rawValue).joined(separator: ",")
     }
 
     func supportedLanguages() -> [ASRLanguageOption] {

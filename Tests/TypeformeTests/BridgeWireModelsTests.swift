@@ -21,6 +21,33 @@ struct BridgeWireModelsTests {
         #expect(BridgeClientIdentityHeaders.bundleID == "X-Typeforme-Client-Bundle-ID")
     }
 
+    @Test func recognitionSourceContractNormalizesSharedMetadata() {
+        #expect(RecognitionSource.allCases.map(\.rawValue) == [
+            "qwen3-asr-llama",
+            "nvidia-nemotron-asr",
+            "apple-speech",
+        ])
+        #expect(RecognitionSource.qwen.displayName == "Qwen3-ASR")
+        #expect(RecognitionSource.nvidiaNemotron.displayName == "NVIDIA Nemotron 3.5 ASR")
+        #expect(RecognitionSource.appleSpeech.displayName == "Apple Speech")
+        #expect(RecognitionSource.defaultEnabled == [.qwen])
+        #expect(
+            RecognitionSource.normalizedSources([
+                " NVIDIA-NEMOTRON-ASR ",
+                "qwen3-asr-llama",
+                "nvidia-nemotron-asr",
+                "unknown",
+            ]) == [.nvidiaNemotron, .qwen]
+        )
+        #expect(RecognitionSource.normalizedSources([]) == [.qwen])
+        #expect(RecognitionSource.rawValue(for: [.qwen, .appleSpeech]) == "qwen3-asr-llama,apple-speech")
+        #expect(RecognitionSource.qwen.hasModelConfiguration)
+        #expect(!RecognitionSource.appleSpeech.hasModelConfiguration)
+        #expect(!RecognitionSource.qwen.supportsLivePreview)
+        #expect(RecognitionSource.nvidiaNemotron.supportsLivePreview)
+        #expect(RecognitionSource.appleSpeech.supportsLivePreview)
+    }
+
     @Test func healthResponseUsesSharedBridgeKeys() throws {
         let response = BridgeHealthResponse(
             ok: true,

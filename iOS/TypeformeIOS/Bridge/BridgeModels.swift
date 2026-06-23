@@ -313,33 +313,7 @@ struct PairingLanguageOption: Codable, Equatable, Identifiable, BridgeLanguageOp
 
 typealias BridgeUserDictionaryEntry = DictionaryEntry
 
-enum RecognitionSource: String, CaseIterable, Codable, Identifiable, Equatable {
-    case qwen = "qwen3-asr-llama"
-    case nvidiaNemotron = "nvidia-nemotron-asr"
-    case appleSpeech = "apple-speech"
-
-    var id: String { rawValue }
-
-    var displayName: String {
-        switch self {
-        case .qwen:
-            return "Qwen3-ASR"
-        case .nvidiaNemotron:
-            return "NVIDIA Nemotron 3.5 ASR"
-        case .appleSpeech:
-            return "Apple Speech"
-        }
-    }
-
-    var hasModelConfiguration: Bool {
-        switch self {
-        case .qwen, .nvidiaNemotron:
-            return true
-        case .appleSpeech:
-            return false
-        }
-    }
-
+extension RecognitionSource {
     func supportedLanguages() -> [ASRLanguageOption] {
         switch self {
         case .qwen:
@@ -349,17 +323,6 @@ enum RecognitionSource: String, CaseIterable, Codable, Identifiable, Equatable {
         case .appleSpeech:
             return ASRLanguageSelection.all
         }
-    }
-
-    static let defaultEnabled: [RecognitionSource] = [.qwen]
-
-    static func normalizedSources(_ raw: [String]) -> [RecognitionSource] {
-        var seen = Set<RecognitionSource>()
-        let values = raw.compactMap {
-            RecognitionSource(rawValue: $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
-        }
-        let result = values.filter { seen.insert($0).inserted }
-        return result.isEmpty ? defaultEnabled : result
     }
 }
 

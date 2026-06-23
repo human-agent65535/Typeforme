@@ -16,6 +16,58 @@ enum BridgeClientIdentityHeaders {
     static let bundleID = "X-Typeforme-Client-Bundle-ID"
 }
 
+enum RecognitionSource: String, CaseIterable, Codable, Identifiable, Sendable {
+    case qwen = "qwen3-asr-llama"
+    case nvidiaNemotron = "nvidia-nemotron-asr"
+    case appleSpeech = "apple-speech"
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .qwen:
+            return "Qwen3-ASR"
+        case .nvidiaNemotron:
+            return "NVIDIA Nemotron 3.5 ASR"
+        case .appleSpeech:
+            return "Apple Speech"
+        }
+    }
+
+    var hasModelConfiguration: Bool {
+        switch self {
+        case .qwen, .nvidiaNemotron:
+            return true
+        case .appleSpeech:
+            return false
+        }
+    }
+
+    var supportsLivePreview: Bool {
+        switch self {
+        case .nvidiaNemotron, .appleSpeech:
+            return true
+        case .qwen:
+            return false
+        }
+    }
+
+    static let defaultEnabled: [RecognitionSource] = [.qwen]
+
+    static func normalizedSources(_ raw: [String]) -> [RecognitionSource] {
+        var seen = Set<RecognitionSource>()
+        let values = raw.compactMap { value -> RecognitionSource? in
+            RecognitionSource(rawValue: value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+        }
+        let result = values.filter { seen.insert($0).inserted }
+        return result.isEmpty ? defaultEnabled : result
+    }
+
+    static func rawValue(for sources: [RecognitionSource]) -> String {
+        sources.map(\.rawValue).joined(separator: ",")
+    }
+}
+
 enum BridgeAPIEndpoint {
     static let health = BridgeAPIRoute(method: "GET", path: "/v1/health")
     static let pairing = BridgeAPIRoute(method: "GET", path: "/v1/pairing")
