@@ -120,7 +120,7 @@ You can also open `iOS/TypeformeIOS.xcodeproj` in Xcode and build there; the pro
 4. In the iOS host app, scan the QR code or paste the Pairing JSON, then save.
 5. Enable the Typeforme keyboard in iOS Settings and turn on Full Access.
 
-Pairing JSON contains the token plus enabled client URLs: `lan_bridge_url` / `lan_bridge_urls` when LAN access is on, and `public_bridge_url` when Public Bridge URL is on.
+Pairing JSON contains the token plus enabled client URLs: `lan_bridge_urls` when LAN access is on, and `public_bridge_url` when Public Bridge URL is on.
 
 For internet access, prefer placing the Bridge behind Cloudflare Tunnel and paste the tunnel's HTTPS URL as the Public Bridge URL. Avoid exposing the Bridge port directly to the public internet.
 

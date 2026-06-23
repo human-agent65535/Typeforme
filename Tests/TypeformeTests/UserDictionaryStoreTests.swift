@@ -31,17 +31,33 @@ struct UserDictionaryStoreTests {
         #expect(added.type == "project_name")
     }
 
-    @Test func dictionaryEntryDecodesMissingFieldsAndCleansSurface() throws {
+    @Test func dictionaryEntryDecodesCompletePayloadAndCleansSurface() throws {
+        let id = UUID(uuidString: "00000000-0000-0000-0000-000000000123")!
         let data = try #require(#"""
         {
+          "id": "00000000-0000-0000-0000-000000000123",
+          "type": " Project Name ",
           "surface": "  Alpha\t\tBeta\nGamma  "
         }
         """#.data(using: .utf8))
 
         let entry = try BridgeJSON.decode(DictionaryEntry.self, from: data)
 
-        #expect(entry.type == "other")
+        #expect(entry.id == id)
+        #expect(entry.type == "project_name")
         #expect(entry.surface == "Alpha Beta Gamma")
+    }
+
+    @Test func dictionaryEntryRejectsMissingFields() throws {
+        let data = try #require(#"""
+        {
+          "surface": "Alpha"
+        }
+        """#.data(using: .utf8))
+
+        #expect(throws: (any Error).self) {
+            try BridgeJSON.decode(DictionaryEntry.self, from: data)
+        }
     }
 
     @Test func normalizedEntriesDropsInvalidAndDuplicateIDsThenSorts() {

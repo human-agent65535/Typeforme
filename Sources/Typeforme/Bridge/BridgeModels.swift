@@ -678,7 +678,6 @@ extension BridgePairingPayload {
         let publicURL = AppSettings.bridgePublicEnabled ? publicBridgeURL() : nil
 
         return BridgePairingPayload(
-            lanBridgeURL: lanURLs.first,
             lanBridgeURLs: lanURLs.isEmpty ? nil : lanURLs,
             publicBridgeURL: publicURL,
             token: AppSettings.ensureBridgeAuthToken()
@@ -743,10 +742,6 @@ extension BridgePairingPayload {
             ? adapters
             : adapters.filter { $0.id == adapterID }
         return selected.map { "http://\($0.ip):\(port)" }
-    }
-
-    static func lanBridgeURL(port: Int) -> String? {
-        lanBridgeURLs(port: port).first
     }
 
     static func publicBridgeURL() -> String? {

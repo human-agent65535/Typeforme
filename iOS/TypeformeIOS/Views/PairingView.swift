@@ -9,7 +9,7 @@ struct PairingView: View {
     @State private var parsedSuccessfully = false
     @State private var parsedSource = ""
     @State private var isPulling = false
-    @State private var routeStatus: BridgeRouteStatus
+    @State private var routeStatus: BridgeRouteResolutionStatus
     @State private var tokenVisible = false
     @State private var showingQRScanner = false
     @State private var pairingParseTask: Task<Void, Never>?
@@ -19,7 +19,7 @@ struct PairingView: View {
 
     init(
         config: PairingConfig,
-        routeStatus: BridgeRouteStatus,
+        routeStatus: BridgeRouteResolutionStatus,
         onSave: @escaping (PairingConfig) -> Void,
         onUnpair: @escaping () -> Void
     ) {
@@ -151,7 +151,7 @@ struct PairingView: View {
                             pairingJSON = ""
                             parseError = nil
                             parsedSuccessfully = false
-                            routeStatus = BridgeRouteStatus()
+                            routeStatus = BridgeRouteResolutionStatus()
                             onUnpair()
                             dismiss()
                         } label: {
@@ -251,10 +251,9 @@ struct PairingView: View {
 
     private var localURLBinding: Binding<String> {
         Binding {
-            config.lanBridgeURL
+            config.primaryLANBridgeURL
         } set: { newValue in
-            config.lanBridgeURL = newValue
-            config.lanBridgeURLs = PairingConfig.uniqueBridgeURLs([newValue])
+            config.primaryLANBridgeURL = newValue
         }
     }
 
@@ -321,7 +320,7 @@ struct PairingView: View {
             return
         }
         do {
-            let payload = try JSONDecoder().decode(PairingPayload.self, from: data)
+            let payload = try JSONDecoder().decode(BridgePairingPayload.self, from: data)
             var decoded = payload.config(
                 languageIDs: config.languageIDs,
                 supportedLanguages: config.supportedLanguages,

@@ -54,29 +54,23 @@ enum BridgeBaseURLNormalizer {
 }
 
 struct BridgePairingPayload: Codable, Sendable, Equatable {
-    let lanBridgeURL: String?
     let lanBridgeURLs: [String]?
     let publicBridgeURL: String?
     let token: String
 
     enum CodingKeys: String, CodingKey {
-        case lanBridgeURL = "lan_bridge_url"
         case lanBridgeURLs = "lan_bridge_urls"
         case publicBridgeURL = "public_bridge_url"
         case token
     }
 
     init(
-        lanBridgeURL: String?,
         lanBridgeURLs: [String]? = nil,
         publicBridgeURL: String?,
         token: String
     ) {
-        let localCandidates = BridgeBaseURLNormalizer.uniqueBridgeURLs(
-            [lanBridgeURL].compactMap { $0 } + (lanBridgeURLs ?? [])
-        )
+        let localCandidates = BridgeBaseURLNormalizer.uniqueBridgeURLs(lanBridgeURLs ?? [])
         let publicURL = BridgeBaseURLNormalizer.normalizedBaseURL(publicBridgeURL ?? "")
-        self.lanBridgeURL = localCandidates.first
         self.lanBridgeURLs = localCandidates.isEmpty ? nil : localCandidates
         self.publicBridgeURL = publicURL.isEmpty ? nil : publicURL
         self.token = token.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -86,12 +80,10 @@ struct BridgePairingPayload: Codable, Sendable, Equatable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let decodedToken = try container.decode(String.self, forKey: .token)
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        let decodedLANBridgeURL = try container.decodeIfPresent(String.self, forKey: .lanBridgeURL)
         let decodedLANBridgeURLs = try container.decodeIfPresent([String].self, forKey: .lanBridgeURLs)
         let decodedPublicBridgeURL = try container.decodeIfPresent(String.self, forKey: .publicBridgeURL)
 
         self.init(
-            lanBridgeURL: decodedLANBridgeURL,
             lanBridgeURLs: decodedLANBridgeURLs,
             publicBridgeURL: decodedPublicBridgeURL,
             token: decodedToken
@@ -106,7 +98,7 @@ struct BridgePairingPayload: Codable, Sendable, Equatable {
         }
         guard !localBridgeURLCandidates.isEmpty || publicBridgeURL != nil else {
             throw DecodingError.dataCorruptedError(
-                forKey: .lanBridgeURL,
+                forKey: .lanBridgeURLs,
                 in: container,
                 debugDescription: "Pairing payload must include at least one bridge URL"
             )
@@ -114,9 +106,7 @@ struct BridgePairingPayload: Codable, Sendable, Equatable {
     }
 
     var localBridgeURLCandidates: [String] {
-        BridgeBaseURLNormalizer.uniqueBridgeURLs(
-            [lanBridgeURL].compactMap { $0 } + (lanBridgeURLs ?? [])
-        )
+        BridgeBaseURLNormalizer.uniqueBridgeURLs(lanBridgeURLs ?? [])
     }
 
     var normalizedPublicBridgeURL: String {

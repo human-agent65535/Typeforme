@@ -817,7 +817,7 @@ private struct ModeChipsRow: View {
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                ForEach(CorrectionModeID.allCases) { mode in
+                ForEach(CorrectionMode.allCases) { mode in
                     ModeChip(
                         mode: mode,
                         isSelected: state.correctionMode == mode,
@@ -845,7 +845,7 @@ private struct ModeChipsRow: View {
 }
 
 private struct ModeChip: View {
-    let mode: CorrectionModeID
+    let mode: CorrectionMode
     let isSelected: Bool
     let isDisabled: Bool
     let action: () -> Void
@@ -1735,21 +1735,21 @@ private struct MacSettingsView: View {
                     )
 
                     Picker("Mode", selection: correctionModeBinding) {
-                        ForEach(CorrectionModeID.allCases) { mode in
+                        ForEach(CorrectionMode.allCases) { mode in
                             Text(mode.title).tag(mode)
                         }
                     }
                     .pickerStyle(.menu)
 
                     Picker("Numbers", selection: numberOutputPreferenceBinding) {
-                        ForEach(NumberOutputPreferenceID.allCases) { preference in
+                        ForEach(NumberOutputPreference.allCases) { preference in
                             Text(preference.title).tag(preference)
                         }
                     }
                     .pickerStyle(.menu)
 
                     Picker("Punctuation", selection: punctuationPreferenceBinding) {
-                        ForEach(PunctuationPreferenceID.allCases) { preference in
+                        ForEach(PunctuationOutputPreference.allCases) { preference in
                             Text(preference.title).tag(preference)
                         }
                     }
@@ -1935,10 +1935,10 @@ private struct MacSettingsView: View {
 
     private var macLivePreviewSourceBinding: Binding<String> {
         Binding {
-            draft?.livePreviewSource ?? MacLivePreviewSource.off.rawValue
+            draft?.livePreviewSource ?? VoiceLivePreviewSource.off.rawValue
         } set: { value in
             updateDraft(normalize: true) { draft in
-                guard let source = MacLivePreviewSource(rawValue: value),
+                guard let source = VoiceLivePreviewSource(rawValue: value),
                       draft.isLivePreviewSourceEnabled(source)
                 else { return }
                 draft.livePreviewSource = value
@@ -1947,7 +1947,7 @@ private struct MacSettingsView: View {
     }
 
     private func macLivePreviewSourceTitle(
-        _ source: MacLivePreviewSource,
+        _ source: VoiceLivePreviewSource,
         draft: BridgeMacSettingsPayload
     ) -> String {
         draft.isLivePreviewSourceEnabled(source)
@@ -2019,7 +2019,7 @@ private struct MacSettingsView: View {
         }
     }
 
-    private var correctionModeBinding: Binding<CorrectionModeID> {
+    private var correctionModeBinding: Binding<CorrectionMode> {
         Binding {
             draft?.correctionMode ?? .polish
         } set: { value in
@@ -2029,7 +2029,7 @@ private struct MacSettingsView: View {
         }
     }
 
-    private var numberOutputPreferenceBinding: Binding<NumberOutputPreferenceID> {
+    private var numberOutputPreferenceBinding: Binding<NumberOutputPreference> {
         Binding {
             draft?.numberOutputPreference ?? .automatic
         } set: { value in
@@ -2039,7 +2039,7 @@ private struct MacSettingsView: View {
         }
     }
 
-    private var punctuationPreferenceBinding: Binding<PunctuationPreferenceID> {
+    private var punctuationPreferenceBinding: Binding<PunctuationOutputPreference> {
         Binding {
             draft?.punctuationPreference ?? .normal
         } set: { value in
@@ -2062,7 +2062,7 @@ private struct MacSettingsView: View {
         }
     }
 
-    private var userDictionaryBinding: Binding<[BridgeUserDictionaryEntry]> {
+    private var userDictionaryBinding: Binding<[DictionaryEntry]> {
         Binding {
             draft?.userDictionary ?? []
         } set: { value in
@@ -2112,7 +2112,7 @@ private struct MacSettingsView: View {
         isSaving = false
     }
 
-    private func vocabularySummary(for entries: [BridgeUserDictionaryEntry]) -> String {
+    private func vocabularySummary(for entries: [DictionaryEntry]) -> String {
         entries.count == 1 ? "1 entry" : "\(entries.count) entries"
     }
 }
@@ -2167,7 +2167,7 @@ private struct ModelStatusRow: View {
 }
 
 private struct ServerVocabularyView: View {
-    @Binding var entries: [BridgeUserDictionaryEntry]
+    @Binding var entries: [DictionaryEntry]
     @State private var newSurface = ""
     @State private var selectedType = "person"
     @State private var customType = ""
@@ -2184,8 +2184,8 @@ private struct ServerVocabularyView: View {
 
                     HStack(spacing: 10) {
                         Picker("Type", selection: $selectedType) {
-                            ForEach(BridgeUserDictionaryEntry.suggestedTypes, id: \.self) { type in
-                                Text(BridgeUserDictionaryEntry.displayType(for: type)).tag(type)
+                            ForEach(DictionaryEntry.suggestedTypes, id: \.self) { type in
+                                Text(DictionaryEntry.displayType(for: type)).tag(type)
                             }
                             Text("custom").tag("custom")
                         }
@@ -2241,7 +2241,7 @@ private struct ServerVocabularyView: View {
             }
         }
         .onChange(of: entries) { _, value in
-            let normalized = BridgeUserDictionaryEntry.normalizedEntries(value)
+            let normalized = DictionaryEntry.normalizedEntries(value)
             if normalized != value {
                 entries = normalized
             }
@@ -2257,18 +2257,18 @@ private struct ServerVocabularyView: View {
     }
 
     private var canAddEntry: Bool {
-        !BridgeUserDictionaryEntry.cleanedSurface(newSurface).isEmpty &&
+        !DictionaryEntry.cleanedSurface(newSurface).isEmpty &&
             (selectedType != "custom" || !customType.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
     }
 
     private func addEntry() {
-        let surface = BridgeUserDictionaryEntry.cleanedSurface(newSurface)
+        let surface = DictionaryEntry.cleanedSurface(newSurface)
         guard !surface.isEmpty else { return }
-        let entry = BridgeUserDictionaryEntry(
+        let entry = DictionaryEntry(
             type: resolvedType,
             surface: surface
         )
-        entries = BridgeUserDictionaryEntry.normalizedEntries(entries + [entry])
+        entries = DictionaryEntry.normalizedEntries(entries + [entry])
         newSurface = ""
         isNewSurfaceFocused = true
     }
@@ -2277,17 +2277,17 @@ private struct ServerVocabularyView: View {
         entries.remove(atOffsets: offsets)
     }
 
-    private func updateEntry(_ updated: BridgeUserDictionaryEntry) {
+    private func updateEntry(_ updated: DictionaryEntry) {
         guard let index = entries.firstIndex(where: { $0.id == updated.id }) else { return }
         entries[index] = updated
-        entries = BridgeUserDictionaryEntry.normalizedEntries(entries)
+        entries = DictionaryEntry.normalizedEntries(entries)
     }
 }
 
 private struct ServerVocabularyEntryEditorView: View {
     @Environment(\.dismiss) private var dismiss
-    let entry: BridgeUserDictionaryEntry
-    let onSave: (BridgeUserDictionaryEntry) -> Void
+    let entry: DictionaryEntry
+    let onSave: (DictionaryEntry) -> Void
     @State private var surface = ""
     @State private var selectedType = "other"
     @State private var customType = ""
@@ -2302,8 +2302,8 @@ private struct ServerVocabularyEntryEditorView: View {
 
             Section("Type") {
                 Picker("Type", selection: typeSelectionBinding) {
-                    ForEach(BridgeUserDictionaryEntry.suggestedTypes, id: \.self) { type in
-                        Text(BridgeUserDictionaryEntry.displayType(for: type)).tag(type)
+                    ForEach(DictionaryEntry.suggestedTypes, id: \.self) { type in
+                        Text(DictionaryEntry.displayType(for: type)).tag(type)
                     }
                     Text("custom").tag("custom")
                 }
@@ -2355,13 +2355,13 @@ private struct ServerVocabularyEntryEditorView: View {
     }
 
     private var canSave: Bool {
-        !BridgeUserDictionaryEntry.cleanedSurface(surface).isEmpty &&
+        !DictionaryEntry.cleanedSurface(surface).isEmpty &&
             (selectedType != "custom" || !customType.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
     }
 
     private func syncTypeState() {
         surface = entry.surface
-        if BridgeUserDictionaryEntry.suggestedTypes.contains(entry.type) {
+        if DictionaryEntry.suggestedTypes.contains(entry.type) {
             selectedType = entry.type
             customType = ""
         } else {
@@ -2372,7 +2372,7 @@ private struct ServerVocabularyEntryEditorView: View {
 
     private func save() {
         guard canSave else { return }
-        onSave(BridgeUserDictionaryEntry(
+        onSave(DictionaryEntry(
             id: entry.id,
             type: resolvedType,
             surface: surface

@@ -1,8 +1,5 @@
 import Foundation
 
-typealias ClientBridgeRouteKind = BridgeRouteResolutionKind
-typealias ClientBridgeRouteStatus = BridgeRouteResolutionStatus
-
 struct ClientBridgeConfiguration: Sendable, Equatable {
     var localBridgeURLs: [String]
     var cloudBridgeURL: String
@@ -49,7 +46,7 @@ struct ClientBridgeRouteResolver {
     func resolve(
         config: ClientBridgeConfiguration = .current,
         probeAllEndpoints: Bool = false
-    ) async -> ClientBridgeRouteStatus {
+    ) async -> BridgeRouteResolutionStatus {
         await BridgeRouteResolutionCore(
             policy: .macClient,
             healthProbe: probe

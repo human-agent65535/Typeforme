@@ -318,37 +318,36 @@ struct KeyboardDefaultsPayload: Codable, Equatable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        let phrases = try container.decodeIfPresent([String].self, forKey: .rimeUserPhrases) ?? []
+        let phrases = try container.decode([String].self, forKey: .rimeUserPhrases)
         let normalizedPhrases = Self.normalizedRimeUserPhrases(phrases)
-        version = try container.decodeIfPresent(Int.self, forKey: .version) ?? Self.currentVersion
+        version = try container.decode(Int.self, forKey: .version)
         bridgeToken = try container.decode(String.self, forKey: .bridgeToken)
         correctionMode = try container.decode(CorrectionMode.self, forKey: .correctionMode)
-        autoCapitalizationEnabled = try container.decodeIfPresent(Bool.self, forKey: .autoCapitalizationEnabled) ?? true
-        characterPreviewEnabled = try container.decodeIfPresent(Bool.self, forKey: .characterPreviewEnabled) ?? true
-        keySoundEnabled = try container.decodeIfPresent(Bool.self, forKey: .keySoundEnabled) ?? true
-        keyHapticsEnabled = try container.decodeIfPresent(Bool.self, forKey: .keyHapticsEnabled) ?? true
-        chineseInputEnabled = try container.decodeIfPresent(Bool.self, forKey: .chineseInputEnabled) ?? true
-        chinesePunctuationStyle = try container.decodeIfPresent(
+        autoCapitalizationEnabled = try container.decode(Bool.self, forKey: .autoCapitalizationEnabled)
+        characterPreviewEnabled = try container.decode(Bool.self, forKey: .characterPreviewEnabled)
+        keySoundEnabled = try container.decode(Bool.self, forKey: .keySoundEnabled)
+        keyHapticsEnabled = try container.decode(Bool.self, forKey: .keyHapticsEnabled)
+        chineseInputEnabled = try container.decode(Bool.self, forKey: .chineseInputEnabled)
+        chinesePunctuationStyle = try container.decode(
             KeyboardChinesePunctuationStyle.self,
             forKey: .chinesePunctuationStyle
-        ) ?? .chinese
-        rimeDictionaryTier = try container.decodeIfPresent(
+        )
+        rimeDictionaryTier = try container.decode(
             KeyboardRimeDictionaryTier.self,
             forKey: .rimeDictionaryTier
-        ) ?? .standard
-        rimeLearningEnabled = try container.decodeIfPresent(Bool.self, forKey: .rimeLearningEnabled) ?? true
-        rimeCorrectionEnabled = try container.decodeIfPresent(Bool.self, forKey: .rimeCorrectionEnabled) ?? false
-        touchLearningEnabled = try container.decodeIfPresent(Bool.self, forKey: .touchLearningEnabled) ?? true
+        )
+        rimeLearningEnabled = try container.decode(Bool.self, forKey: .rimeLearningEnabled)
+        rimeCorrectionEnabled = try container.decode(Bool.self, forKey: .rimeCorrectionEnabled)
+        touchLearningEnabled = try container.decode(Bool.self, forKey: .touchLearningEnabled)
         rimeUserPhrases = normalizedPhrases
-        rimeUserPhrasesRevision = try container.decodeIfPresent(String.self, forKey: .rimeUserPhrasesRevision)
-            ?? Self.rimeUserPhrasesRevision(normalizedPhrases)
-        defaultTextInputLanguage = try container.decodeIfPresent(
+        rimeUserPhrasesRevision = try container.decode(String.self, forKey: .rimeUserPhrasesRevision)
+        defaultTextInputLanguage = try container.decode(
             KeyboardDefaultTextInputLanguage.self,
             forKey: .defaultTextInputLanguage
-        ) ?? .lastUsed
-        rimeLearningResetGeneration = try container.decodeIfPresent(Int.self, forKey: .rimeLearningResetGeneration) ?? 0
-        touchLearningResetGeneration = try container.decodeIfPresent(Int.self, forKey: .touchLearningResetGeneration) ?? 0
-        updatedAt = try container.decodeIfPresent(TimeInterval.self, forKey: .updatedAt) ?? Date().timeIntervalSince1970
+        )
+        rimeLearningResetGeneration = try container.decode(Int.self, forKey: .rimeLearningResetGeneration)
+        touchLearningResetGeneration = try container.decode(Int.self, forKey: .touchLearningResetGeneration)
+        updatedAt = try container.decode(TimeInterval.self, forKey: .updatedAt)
     }
 
     enum CodingKeys: String, CodingKey {
@@ -572,10 +571,8 @@ enum KeyboardBridgeCommandAction: String, Codable {
     case refineText = "refine_text"
 }
 
-typealias KeyboardTextEditIntent = TextEditIntent
-
 struct KeyboardTextEditContext: Codable, Equatable {
-    let intent: KeyboardTextEditIntent
+    let intent: TextEditIntent
     let contextBefore: String
     let targetText: String
     let contextAfter: String

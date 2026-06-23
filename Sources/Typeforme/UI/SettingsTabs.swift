@@ -334,7 +334,7 @@ struct ClientServerSettingsView: View {
     @State private var statusIsError = false
     @State private var showAllClientLanguages = false
     @State private var showAllServerLanguages = false
-    @State private var routeStatus = ClientBridgeRouteStatus()
+    @State private var routeStatus = BridgeRouteResolutionStatus()
 
     var body: some View {
         Form {
@@ -906,7 +906,7 @@ struct ClientServerSettingsView: View {
         clientCloudBridgeURL = ""
         clientBridgeToken = ""
         draft = nil
-        routeStatus = ClientBridgeRouteStatus()
+        routeStatus = BridgeRouteResolutionStatus()
         statusMessage = "Unpaired"
         statusIsError = false
     }
@@ -3281,7 +3281,7 @@ struct BridgeSettingsView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-                Text("Mac stores this token in local app settings to avoid Keychain permission prompts during local development builds. Other clients cannot read it automatically, so pair by copying the token or JSON into the client. Pairing JSON contains the token plus enabled client URLs: lan_bridge_url and lan_bridge_urls when LAN access is on, and public_bridge_url when Public Bridge URL is on. Clients pull languages and defaults from the server settings endpoint.")
+                Text("Mac stores this token in local app settings to avoid Keychain permission prompts during local development builds. Other clients cannot read it automatically, so pair by copying the token or JSON into the client. Pairing JSON contains the token plus enabled client URLs: lan_bridge_urls when LAN access is on, and public_bridge_url when Public Bridge URL is on. Clients pull languages and defaults from the server settings endpoint.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }

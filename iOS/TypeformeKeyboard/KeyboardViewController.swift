@@ -6,8 +6,6 @@ import QuartzCore
 
 private let kbLog = Logger(subsystem: TypeformeBundleConfiguration.keyboardBundleIdentifier, category: "ui")
 
-private typealias CorrectionModePreset = CorrectionMode
-
 fileprivate enum KeyboardTouchTarget {
     case textKey(UIButton)
     case candidateAction(UIButton)
@@ -24,7 +22,7 @@ fileprivate enum KeyboardTouchTarget {
 
 }
 
-private extension CorrectionModePreset {
+private extension CorrectionMode {
     var title: String {
         switch self {
         case .clean:         return NSLocalizedString("Clean", comment: "Correction mode")
@@ -267,8 +265,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private let keyboardTouchTraceEnabledKey = "keyboard.touchTraceEnabled"
     private let keyPressOverlayTag = 0x74797065
 
-    private var correctionMode: CorrectionModePreset = .polish
-    private var pendingDefaultCorrectionMode: CorrectionModePreset?
+    private var correctionMode: CorrectionMode = .polish
+    private var pendingDefaultCorrectionMode: CorrectionMode?
     private var inputMode: VoiceInputMode = .hold
     private var keyboardFocus: KeyboardFocus = .voice
     private var textInputLanguage: TextInputLanguage = .chinese
@@ -367,7 +365,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private var isCommandPressActive = false
     private var activeRecordingCommandID: String?
     private var activeRecordingTextTarget: PendingRecordingTextTarget?
-    private var activeRecordingTextEditIntent: KeyboardTextEditIntent?
+    private var activeRecordingTextEditIntent: TextEditIntent?
     private var committedLivePartialPreview: CommittedLivePartialPreview?
     private var pendingStopCommandID: String?
     private var recentSelectionTarget: TextRewriteTarget?
@@ -453,7 +451,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     /// popover — tap-to-dismiss. Sized to fill `view` so any tap outside
     /// the popover closes it.
     private let correctionPopoverDismissOverlay = UIControl()
-    private var correctionModeButtons: [(preset: CorrectionModePreset, button: UIButton)] = []
+    private var correctionModeButtons: [(preset: CorrectionMode, button: UIButton)] = []
     private var isCorrectionPopoverVisible = false
 
     /// Circular orb (`voiceButton`) sits centered in `orbContainer`. Pulse
@@ -1928,7 +1926,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     private func applyDefaultCorrectionModeFromHost(_ rawValue: String?) {
         guard let rawValue,
-              let defaultMode = CorrectionModePreset(rawValue: rawValue)
+              let defaultMode = CorrectionMode(rawValue: rawValue)
         else { return }
         if pendingDefaultCorrectionMode == defaultMode {
             pendingDefaultCorrectionMode = nil
@@ -1940,11 +1938,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         lastCorrectionModeButtonSignature = ""
     }
 
-    private func currentDefaultCorrectionMode() -> CorrectionModePreset {
+    private func currentDefaultCorrectionMode() -> CorrectionMode {
         pendingDefaultCorrectionMode ?? defaultCorrectionModeFromHost() ?? .polish
     }
 
-    private func defaultCorrectionModeFromHost() -> CorrectionModePreset? {
+    private func defaultCorrectionModeFromHost() -> CorrectionMode? {
         hostKeyboardDefaultsPayload()?.correctionMode
     }
 
@@ -3049,7 +3047,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         correctionPopoverDismissOverlay.isHidden = true
         correctionPopoverDismissOverlay.addTarget(self, action: #selector(hideCorrectionPopover), for: .touchUpInside)
 
-        for preset in CorrectionModePreset.allCases {
+        for preset in CorrectionMode.allCases {
             let button = UIButton(type: .system)
             configureCorrectionModeButton(button, preset: preset)
             button.addTarget(self, action: #selector(selectCorrectionModeButton(_:)), for: .touchUpInside)
@@ -3060,7 +3058,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         updateCorrectionModeButtons()
     }
 
-    private func configureCorrectionModeButton(_ button: UIButton, preset: CorrectionModePreset) {
+    private func configureCorrectionModeButton(_ button: UIButton, preset: CorrectionMode) {
         var configuration = UIButton.Configuration.filled()
         configuration.title = preset.title
         configuration.cornerStyle = .capsule
@@ -6128,7 +6126,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         correctionModeTrigger.accessibilityHint = NSLocalizedString("Double tap to choose another mode", comment: "Accessibility hint for mode trigger")
     }
 
-    private func rewriteCurrentInputOrPasteboard(using preset: CorrectionModePreset) {
+    private func rewriteCurrentInputOrPasteboard(using preset: CorrectionMode) {
         guard hasFullAccess else {
             openHostForFullAccessSetup()
             return
@@ -6190,7 +6188,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
     }
 
-    private func saveCorrectionModeForNextRecording(using preset: CorrectionModePreset) {
+    private func saveCorrectionModeForNextRecording(using preset: CorrectionMode) {
         let command = KeyboardBridgeCommand(action: .configure, correctionMode: preset.rawValue)
         showTextKeyboardNotice(NSLocalizedString("Style saved", comment: "Inline status after choosing a style without rewrite text"))
 
@@ -6419,7 +6417,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func keyboardTextEditContext(
-        intent: KeyboardTextEditIntent,
+        intent: TextEditIntent,
         target: TextRewriteTarget
     ) -> KeyboardTextEditContext {
         switch target {

@@ -307,7 +307,7 @@ struct ServerTimingSummary: Equatable {
 @Observable
 final class AppState {
     var config: PairingConfig
-    var correctionMode: CorrectionModeID
+    var correctionMode: CorrectionMode
     var inputMode: VoiceInputMode
     var selectedLanguageIDs: Set<String>
     var resultText = ""
@@ -315,7 +315,7 @@ final class AppState {
     var sessionID: String?
     var phase: AppPhase = .idle
     var errorMessage: String?
-    var routeStatus = BridgeRouteStatus()
+    var routeStatus = BridgeRouteResolutionStatus()
     private(set) var isRefreshingRoute = false
     var keyboardStandbyEnabled = true
     var hostAudioSessionLength: HostAudioSessionLength
@@ -662,7 +662,7 @@ final class AppState {
         correctionMode = empty.correctionMode
         selectedLanguageIDs = Set(empty.validatedLanguageIDs)
         store.delete()
-        routeStatus = BridgeRouteStatus()
+        routeStatus = BridgeRouteResolutionStatus()
         routeFetchedAt = nil
         macSettings = nil
         macSettingsFetchedAt = nil
@@ -952,7 +952,7 @@ final class AppState {
 
     private func shouldRefreshPairingEndpointsAfterRouteRefresh(
         force: Bool,
-        status: BridgeRouteStatus
+        status: BridgeRouteResolutionStatus
     ) -> Bool {
         guard status.activeURL != nil else { return false }
         return force || status.activeKind == .cloud || (status.localChecked && !status.localOK)
@@ -960,7 +960,7 @@ final class AppState {
 
     @discardableResult
     private func refreshPairingEndpointsFromActiveRoute(
-        status: BridgeRouteStatus,
+        status: BridgeRouteResolutionStatus,
         timeout: TimeInterval = 4
     ) async -> Bool {
         guard let activeURL = status.activeURL else { return false }
@@ -1053,7 +1053,7 @@ final class AppState {
         correctionMode = config.correctionMode
     }
 
-    private func applyKeyboardDefaultCorrectionMode(_ mode: CorrectionModeID) {
+    private func applyKeyboardDefaultCorrectionMode(_ mode: CorrectionMode) {
         let configChanged = config.correctionMode != mode
         let visibleChanged = correctionMode != mode
         guard configChanged || visibleChanged else { return }
@@ -1096,7 +1096,7 @@ final class AppState {
         return []
     }
 
-    private func persistActiveLocalRouteIfNeeded(_ status: BridgeRouteStatus) {
+    private func persistActiveLocalRouteIfNeeded(_ status: BridgeRouteResolutionStatus) {
         guard status.activeKind == .local,
               let activeURL = status.activeURL?.absoluteString
         else { return }
@@ -1147,7 +1147,7 @@ final class AppState {
         audioURL: URL,
         audioExtension: String,
         languageIDs: [String],
-        correctionMode: CorrectionModeID,
+        correctionMode: CorrectionMode,
         contextBefore: String,
         contextAfter: String,
         includeRawTranscript: Bool,
@@ -1677,7 +1677,7 @@ final class AppState {
         await resumeKeyboardStandbyAfterCommand()
     }
 
-    func applyCorrectionMode(_ newMode: CorrectionModeID) async {
+    func applyCorrectionMode(_ newMode: CorrectionMode) async {
         // Block mode changes while a request is mid-flight to avoid a stale
         // result coming back in the old mode while the UI shows the new one.
         guard !isBusy else { return }
@@ -1848,7 +1848,7 @@ final class AppState {
         sourceApplication: String?
     ) async {
         var shouldReturnToKeyboard = handoff.shouldReturnToKeyboard
-        if let nextMode = CorrectionModeID(rawValue: handoff.correctionMode) {
+        if let nextMode = CorrectionMode(rawValue: handoff.correctionMode) {
             correctionMode = nextMode
         }
 
@@ -2088,7 +2088,7 @@ final class AppState {
             case "correction_mode":
                 if allowCorrectionMode,
                    let value = item.value,
-                   let nextMode = CorrectionModeID(rawValue: value) {
+                   let nextMode = CorrectionMode(rawValue: value) {
                     correctionMode = nextMode
                 }
             case "languages":
@@ -2754,7 +2754,7 @@ final class AppState {
                 KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.dictationStopped)
                 return keyboardBridgeStatus
             }
-            if let requestedMode = CorrectionModeID(rawValue: command.correctionMode) {
+            if let requestedMode = CorrectionMode(rawValue: command.correctionMode) {
                 applyKeyboardDefaultCorrectionMode(requestedMode)
             }
             activeKeyboardTextEditContext = command.textEditContext
@@ -2775,7 +2775,7 @@ final class AppState {
             )
             resetCorrectionModeToDefault()
         case .configure:
-            if let requestedMode = CorrectionModeID(rawValue: command.correctionMode) {
+            if let requestedMode = CorrectionMode(rawValue: command.correctionMode) {
                 applyKeyboardDefaultCorrectionMode(requestedMode)
             } else {
                 resetCorrectionModeToDefault()
@@ -2830,7 +2830,7 @@ final class AppState {
             publishKeyboardStatus(.error, commandID: command.id, message: "Typeforme is busy")
             return
         }
-        let requestedCorrectionMode = CorrectionModeID(rawValue: command.correctionMode) ?? config.correctionMode
+        let requestedCorrectionMode = CorrectionMode(rawValue: command.correctionMode) ?? config.correctionMode
         guard let source = command.text?.trimmingCharacters(in: .whitespacesAndNewlines),
               !source.isEmpty
         else {
@@ -3620,7 +3620,7 @@ final class AppState {
                 guard signatureChanged || shouldRefreshSameSignature else { return }
                 if signatureChanged {
                     self.networkPathSignature = signature
-                    self.routeStatus = BridgeRouteStatus()
+                    self.routeStatus = BridgeRouteResolutionStatus()
                 }
                 self.lastNetworkPathRefreshAt = now
                 self.routeFetchedAt = nil

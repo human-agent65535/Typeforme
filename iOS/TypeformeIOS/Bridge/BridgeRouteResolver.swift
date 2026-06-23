@@ -1,10 +1,7 @@
 import Foundation
 
-typealias BridgeRouteKind = BridgeRouteResolutionKind
-typealias BridgeRouteStatus = BridgeRouteResolutionStatus
-
 struct BridgeRouteResolver {
-    func resolve(config: PairingConfig, probeAllEndpoints: Bool = false) async -> BridgeRouteStatus {
+    func resolve(config: PairingConfig, probeAllEndpoints: Bool = false) async -> BridgeRouteResolutionStatus {
         await BridgeRouteResolutionCore(
             policy: .iOSClient,
             healthProbe: probe

@@ -1,9 +1,5 @@
 import Foundation
 
-typealias CorrectionModeID = CorrectionMode
-typealias NumberOutputPreferenceID = NumberOutputPreference
-typealias PunctuationPreferenceID = PunctuationOutputPreference
-
 extension CorrectionMode {
     var title: String {
         displayName
@@ -23,40 +19,33 @@ extension PunctuationOutputPreference {
 }
 
 struct BridgeEndpoints: Codable, Equatable {
-    var lanBridgeURL: String
     var lanBridgeURLs: [String]
     var publicBridgeURL: String
     var token: String
 
     enum CodingKeys: String, CodingKey {
-        case lanBridgeURL = "lan_bridge_url"
         case lanBridgeURLs = "lan_bridge_urls"
         case publicBridgeURL = "public_bridge_url"
         case token
     }
 
     init(
-        lanBridgeURL: String,
         lanBridgeURLs: [String] = [],
         publicBridgeURL: String,
         token: String
     ) {
-        let localCandidates = PairingConfig.uniqueBridgeURLs([lanBridgeURL] + lanBridgeURLs)
-        self.lanBridgeURL = localCandidates.first ?? ""
-        self.lanBridgeURLs = localCandidates
+        self.lanBridgeURLs = PairingConfig.uniqueBridgeURLs(lanBridgeURLs)
         self.publicBridgeURL = PairingConfig.normalizedBaseURL(publicBridgeURL)
         self.token = token.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        let decodedLANBridgeURL = try container.decodeIfPresent(String.self, forKey: .lanBridgeURL) ?? ""
-        let decodedLANBridgeURLs = try container.decodeIfPresent([String].self, forKey: .lanBridgeURLs) ?? []
-        let localCandidates = PairingConfig.uniqueBridgeURLs([decodedLANBridgeURL] + decodedLANBridgeURLs)
-        self.lanBridgeURL = localCandidates.first ?? ""
-        self.lanBridgeURLs = localCandidates
+        self.lanBridgeURLs = PairingConfig.uniqueBridgeURLs(
+            try container.decode([String].self, forKey: .lanBridgeURLs)
+        )
         self.publicBridgeURL = PairingConfig.normalizedBaseURL(
-            try container.decodeIfPresent(String.self, forKey: .publicBridgeURL) ?? ""
+            try container.decode(String.self, forKey: .publicBridgeURL)
         )
         self.token = try container.decode(String.self, forKey: .token)
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -68,7 +57,7 @@ struct BridgeEndpoints: Codable, Equatable {
     }
 
     var localBridgeURLCandidates: [String] {
-        PairingConfig.uniqueBridgeURLs([lanBridgeURL] + lanBridgeURLs)
+        PairingConfig.uniqueBridgeURLs(lanBridgeURLs)
     }
 
     mutating func promoteLocalBridgeURL(_ rawValue: String) {
@@ -76,14 +65,13 @@ struct BridgeEndpoints: Codable, Equatable {
         guard !candidate.isEmpty, URL(string: candidate) != nil else { return }
         let existing = localBridgeURLCandidates
         lanBridgeURLs = PairingConfig.uniqueBridgeURLs([candidate] + existing)
-        lanBridgeURL = lanBridgeURLs.first ?? candidate
     }
 }
 
 struct UserPreferences: Codable, Equatable {
     var languageIDs: [String]
-    var supportedLanguages: [PairingLanguageOption]
-    var correctionMode: CorrectionModeID
+    var supportedLanguages: [BridgeLanguageOption]
+    var correctionMode: CorrectionMode
 
     enum CodingKeys: String, CodingKey {
         case languageIDs = "language_ids"
@@ -93,43 +81,37 @@ struct UserPreferences: Codable, Equatable {
 
     init(
         languageIDs: [String] = ["zh-CN", "en-US"],
-        supportedLanguages: [PairingLanguageOption] = PairingLanguageOption.allLanguages,
-        correctionMode: CorrectionModeID = .polish
+        supportedLanguages: [BridgeLanguageOption] = BridgeLanguageOption.allLanguages,
+        correctionMode: CorrectionMode = .polish
     ) {
         self.supportedLanguages = supportedLanguages
         self.languageIDs = ASRLanguageSelection.validatedIDs(
             languageIDs,
-            supportedOptions: PairingLanguageOption.asASROptions(supportedLanguages)
+            supportedOptions: BridgeLanguageOption.asASROptions(supportedLanguages)
         )
         self.correctionMode = correctionMode
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        let supportedLanguages = try container.decodeIfPresent([PairingLanguageOption].self, forKey: .supportedLanguages)
-            ?? PairingLanguageOption.allLanguages
-        let languageIDs = try container.decodeIfPresent([String].self, forKey: .languageIDs)
-            ?? ["zh-CN", "en-US"]
+        let supportedLanguages = try container.decode([BridgeLanguageOption].self, forKey: .supportedLanguages)
+        let languageIDs = try container.decode([String].self, forKey: .languageIDs)
         self.init(
             languageIDs: languageIDs,
             supportedLanguages: supportedLanguages,
-            correctionMode: try container.decodeIfPresent(CorrectionModeID.self, forKey: .correctionMode) ?? .polish
+            correctionMode: try container.decode(CorrectionMode.self, forKey: .correctionMode)
         )
     }
 }
 
-typealias PairingPayload = BridgePairingPayload
-
 extension BridgePairingPayload {
     func config(
         languageIDs: [String] = ["zh-CN", "en-US"],
-        supportedLanguages: [PairingLanguageOption] = PairingLanguageOption.allLanguages,
-        correctionMode: CorrectionModeID = .polish
+        supportedLanguages: [BridgeLanguageOption] = BridgeLanguageOption.allLanguages,
+        correctionMode: CorrectionMode = .polish
     ) -> PairingConfig {
         let localCandidates = localBridgeURLCandidates
-        let primaryLocalURL = localCandidates.first ?? ""
         return PairingConfig(
-            lanBridgeURL: primaryLocalURL,
             lanBridgeURLs: localCandidates,
             publicBridgeURL: normalizedPublicBridgeURL,
             token: token,
@@ -144,9 +126,9 @@ struct PairingConfig: Codable, Equatable {
     var bridgeEndpoints: BridgeEndpoints
     var userPreferences: UserPreferences
 
-    var lanBridgeURL: String {
-        get { bridgeEndpoints.lanBridgeURL }
-        set { bridgeEndpoints.lanBridgeURL = newValue }
+    var primaryLANBridgeURL: String {
+        get { bridgeEndpoints.lanBridgeURLs.first ?? "" }
+        set { bridgeEndpoints.lanBridgeURLs = PairingConfig.uniqueBridgeURLs([newValue]) }
     }
 
     var lanBridgeURLs: [String] {
@@ -169,23 +151,22 @@ struct PairingConfig: Codable, Equatable {
         set { userPreferences.languageIDs = newValue }
     }
 
-    var supportedLanguages: [PairingLanguageOption] {
+    var supportedLanguages: [BridgeLanguageOption] {
         get { userPreferences.supportedLanguages }
         set { userPreferences.supportedLanguages = newValue }
     }
 
-    var correctionMode: CorrectionModeID {
+    var correctionMode: CorrectionMode {
         get { userPreferences.correctionMode }
         set { userPreferences.correctionMode = newValue }
     }
 
     static let empty = PairingConfig(
-        lanBridgeURL: "",
         lanBridgeURLs: [],
         publicBridgeURL: "",
         token: "",
         languageIDs: ["zh-CN", "en-US"],
-        supportedLanguages: PairingLanguageOption.allLanguages,
+        supportedLanguages: BridgeLanguageOption.allLanguages,
         correctionMode: .polish
     )
 
@@ -195,16 +176,14 @@ struct PairingConfig: Codable, Equatable {
     }
 
     init(
-        lanBridgeURL: String,
         lanBridgeURLs: [String] = [],
         publicBridgeURL: String,
         token: String,
         languageIDs: [String],
-        supportedLanguages: [PairingLanguageOption] = PairingLanguageOption.allLanguages,
-        correctionMode: CorrectionModeID
+        supportedLanguages: [BridgeLanguageOption] = BridgeLanguageOption.allLanguages,
+        correctionMode: CorrectionMode
     ) {
         self.bridgeEndpoints = BridgeEndpoints(
-            lanBridgeURL: lanBridgeURL,
             lanBridgeURLs: lanBridgeURLs,
             publicBridgeURL: publicBridgeURL,
             token: token
@@ -238,7 +217,7 @@ struct PairingConfig: Codable, Equatable {
     }
 
     var supportedLanguageOptions: [ASRLanguageOption] {
-        PairingLanguageOption.asASROptions(supportedLanguages)
+        BridgeLanguageOption.asASROptions(supportedLanguages)
     }
 
     var validatedLanguageIDs: [String] {
@@ -252,7 +231,6 @@ struct PairingConfig: Codable, Equatable {
 
     mutating func normalizeBridgeEndpoints() {
         bridgeEndpoints = BridgeEndpoints(
-            lanBridgeURL: lanBridgeURL,
             lanBridgeURLs: lanBridgeURLs,
             publicBridgeURL: publicBridgeURL,
             token: token
@@ -276,10 +254,6 @@ struct PairingConfig: Codable, Equatable {
     }
 }
 
-typealias PairingLanguageOption = BridgeLanguageOption
-
-typealias BridgeUserDictionaryEntry = DictionaryEntry
-
 extension RecognitionSource {
     func supportedLanguages() -> [ASRLanguageOption] {
         switch self {
@@ -293,8 +267,6 @@ extension RecognitionSource {
     }
 }
 
-typealias MacLivePreviewSource = VoiceLivePreviewSource
-
 extension VoiceLivePreviewSource {
     var title: String { displayName }
 }
@@ -305,8 +277,8 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
     var asrModelIDsByRecognitionSource: [String: String]
     var asrModelOptionsByRecognitionSource: [String: [BridgeSettingOption]]
     var languageIDs: [String]
-    var supportedLanguages: [PairingLanguageOption]
-    var supportedLanguagesByRecognitionSource: [String: [PairingLanguageOption]]
+    var supportedLanguages: [BridgeLanguageOption]
+    var supportedLanguagesByRecognitionSource: [String: [BridgeLanguageOption]]
     var asrTimeoutSecByRecognitionSource: [String: Double]
     var correctionBackend: String
     var correctionBackendOptions: [BridgeSettingOption]
@@ -315,11 +287,11 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
     var externalLLMBaseURL: String
     var externalLLMModel: String
     var livePreviewSource: String
-    var correctionMode: CorrectionModeID
-    var numberOutputPreference: NumberOutputPreferenceID
-    var punctuationPreference: PunctuationPreferenceID
+    var correctionMode: CorrectionMode
+    var numberOutputPreference: NumberOutputPreference
+    var punctuationPreference: PunctuationOutputPreference
     var autoCommit: Bool
-    var userDictionary: [BridgeUserDictionaryEntry]
+    var userDictionary: [DictionaryEntry]
     var modelStatuses: [BridgeModelStatus]
     var settingsRevision: String?
 
@@ -343,15 +315,15 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
         isRecognitionSourceEnabled(.nvidiaNemotron)
     }
 
-    var livePreviewSourceOptions: [MacLivePreviewSource] {
-        MacLivePreviewSource.options(forRecognitionSources: enabledSources)
+    var livePreviewSourceOptions: [VoiceLivePreviewSource] {
+        VoiceLivePreviewSource.options(forRecognitionSources: enabledSources)
     }
 
-    var livePreviewPickerOptions: [MacLivePreviewSource] {
-        MacLivePreviewSource.pickerOptions
+    var livePreviewPickerOptions: [VoiceLivePreviewSource] {
+        VoiceLivePreviewSource.pickerOptions
     }
 
-    func isLivePreviewSourceEnabled(_ source: MacLivePreviewSource) -> Bool {
+    func isLivePreviewSourceEnabled(_ source: VoiceLivePreviewSource) -> Bool {
         source.isEnabled(forRecognitionSources: enabledSources)
     }
 
@@ -438,8 +410,8 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
         asrModelIDsByRecognitionSource: [String: String] = [:],
         asrModelOptionsByRecognitionSource: [String: [BridgeSettingOption]] = [:],
         languageIDs: [String],
-        supportedLanguages: [PairingLanguageOption],
-        supportedLanguagesByRecognitionSource: [String: [PairingLanguageOption]],
+        supportedLanguages: [BridgeLanguageOption],
+        supportedLanguagesByRecognitionSource: [String: [BridgeLanguageOption]],
         asrTimeoutSecByRecognitionSource: [String: Double] = [:],
         correctionBackend: String,
         correctionBackendOptions: [BridgeSettingOption],
@@ -447,12 +419,12 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
         correctionColdTimeoutMs: Int = 8000,
         externalLLMBaseURL: String = "",
         externalLLMModel: String = "",
-        livePreviewSource: String = MacLivePreviewSource.off.rawValue,
-        correctionMode: CorrectionModeID,
-        numberOutputPreference: NumberOutputPreferenceID = .automatic,
-        punctuationPreference: PunctuationPreferenceID = .normal,
+        livePreviewSource: String = VoiceLivePreviewSource.off.rawValue,
+        correctionMode: CorrectionMode,
+        numberOutputPreference: NumberOutputPreference = .automatic,
+        punctuationPreference: PunctuationOutputPreference = .normal,
         autoCommit: Bool,
-        userDictionary: [BridgeUserDictionaryEntry] = [],
+        userDictionary: [DictionaryEntry] = [],
         modelStatuses: [BridgeModelStatus] = [],
         settingsRevision: String? = nil
     ) {
@@ -475,7 +447,7 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
         self.numberOutputPreference = numberOutputPreference
         self.punctuationPreference = punctuationPreference
         self.autoCommit = autoCommit
-        self.userDictionary = BridgeUserDictionaryEntry.normalizedEntries(userDictionary)
+        self.userDictionary = DictionaryEntry.normalizedEntries(userDictionary)
         self.modelStatuses = modelStatuses
         self.settingsRevision = settingsRevision
         normalize()
@@ -493,25 +465,25 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
             [String: [BridgeSettingOption]].self,
             forKey: .asrModelOptionsByRecognitionSource
         )
-        self.supportedLanguages = try container.decode([PairingLanguageOption].self, forKey: .supportedLanguages)
-        self.supportedLanguagesByRecognitionSource = try container.decode([String: [PairingLanguageOption]].self, forKey: .supportedLanguagesByRecognitionSource)
+        self.supportedLanguages = try container.decode([BridgeLanguageOption].self, forKey: .supportedLanguages)
+        self.supportedLanguagesByRecognitionSource = try container.decode([String: [BridgeLanguageOption]].self, forKey: .supportedLanguagesByRecognitionSource)
         self.languageIDs = try container.decode([String].self, forKey: .languageIDs)
         self.asrTimeoutSecByRecognitionSource = try container.decode([String: Double].self, forKey: .asrTimeoutSecByRecognitionSource)
         self.correctionBackend = try container.decode(String.self, forKey: .correctionBackend)
         self.correctionBackendOptions = try container.decode([BridgeSettingOption].self, forKey: .correctionBackendOptions)
         self.correctionTimeoutMs = try container.decode(Int.self, forKey: .correctionTimeoutMs)
         self.correctionColdTimeoutMs = try container.decode(Int.self, forKey: .correctionColdTimeoutMs)
-        self.externalLLMBaseURL = try container.decodeIfPresent(String.self, forKey: .externalLLMBaseURL) ?? ""
-        self.externalLLMModel = try container.decodeIfPresent(String.self, forKey: .externalLLMModel) ?? ""
+        self.externalLLMBaseURL = try container.decode(String.self, forKey: .externalLLMBaseURL)
+        self.externalLLMModel = try container.decode(String.self, forKey: .externalLLMModel)
         self.livePreviewSource = try container.decode(String.self, forKey: .livePreviewSource)
-        self.correctionMode = try container.decode(CorrectionModeID.self, forKey: .correctionMode)
-        self.numberOutputPreference = try container.decode(NumberOutputPreferenceID.self, forKey: .numberOutputPreference)
-        self.punctuationPreference = try container.decode(PunctuationPreferenceID.self, forKey: .punctuationPreference)
+        self.correctionMode = try container.decode(CorrectionMode.self, forKey: .correctionMode)
+        self.numberOutputPreference = try container.decode(NumberOutputPreference.self, forKey: .numberOutputPreference)
+        self.punctuationPreference = try container.decode(PunctuationOutputPreference.self, forKey: .punctuationPreference)
         self.autoCommit = try container.decode(Bool.self, forKey: .autoCommit)
-        self.userDictionary = BridgeUserDictionaryEntry.normalizedEntries(
-            try container.decodeIfPresent([BridgeUserDictionaryEntry].self, forKey: .userDictionary) ?? []
+        self.userDictionary = DictionaryEntry.normalizedEntries(
+            try container.decode([DictionaryEntry].self, forKey: .userDictionary)
         )
-        self.modelStatuses = try container.decodeIfPresent([BridgeModelStatus].self, forKey: .modelStatuses) ?? []
+        self.modelStatuses = try container.decode([BridgeModelStatus].self, forKey: .modelStatuses)
         self.settingsRevision = try container.decodeIfPresent(String.self, forKey: .settingsRevision)
         normalize()
     }
@@ -533,7 +505,7 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
         externalLLMBaseURL = externalLLMBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         externalLLMModel = externalLLMModel.trimmingCharacters(in: .whitespacesAndNewlines)
         livePreviewSource = normalizedLivePreviewSource(rawValue: livePreviewSource).rawValue
-        userDictionary = BridgeUserDictionaryEntry.normalizedEntries(userDictionary)
+        userDictionary = DictionaryEntry.normalizedEntries(userDictionary)
     }
 
     func hasSameEditableSettings(as other: BridgeMacSettingsPayload) -> Bool {
@@ -544,14 +516,14 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
         return left.editableSnapshot == right.editableSnapshot
     }
 
-    private func normalizedLivePreviewSource(rawValue: String) -> MacLivePreviewSource {
-        let source = MacLivePreviewSource(rawValue: rawValue.trimmingCharacters(in: .whitespacesAndNewlines)) ?? .off
+    private func normalizedLivePreviewSource(rawValue: String) -> VoiceLivePreviewSource {
+        let source = VoiceLivePreviewSource(rawValue: rawValue.trimmingCharacters(in: .whitespacesAndNewlines)) ?? .off
         return livePreviewSourceOptions.contains(source) ? source : .off
     }
 
     func supportedLanguageOptions(for sourceID: String) -> [ASRLanguageOption] {
         let options = supportedLanguagesByRecognitionSource[sourceID] ?? supportedLanguages
-        return PairingLanguageOption.asASROptions(options)
+        return BridgeLanguageOption.asASROptions(options)
     }
 
     func supportedLanguageOptionsForEnabledSources() -> [ASRLanguageOption] {
@@ -559,10 +531,10 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
             supportedLanguagesByRecognitionSource[source.rawValue] ?? []
         }
         let options = Self.orderedUniqueLanguageOptions(sourceOptions)
-        return PairingLanguageOption.asASROptions(options.isEmpty ? supportedLanguages : options)
+        return BridgeLanguageOption.asASROptions(options.isEmpty ? supportedLanguages : options)
     }
 
-    private static func orderedUniqueLanguageOptions(_ options: [PairingLanguageOption]) -> [PairingLanguageOption] {
+    private static func orderedUniqueLanguageOptions(_ options: [BridgeLanguageOption]) -> [BridgeLanguageOption] {
         BridgeSettingsNormalization.orderedUniqueLanguageOptions(options)
     }
 
@@ -591,7 +563,7 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
         normalize()
     }
 
-    private static func rimeUserPhrases(from entries: [BridgeUserDictionaryEntry]) -> [String] {
+    private static func rimeUserPhrases(from entries: [DictionaryEntry]) -> [String] {
         BridgeSettingsNormalization.rimeUserPhrases(from: entries.map(\.surface))
     }
 }

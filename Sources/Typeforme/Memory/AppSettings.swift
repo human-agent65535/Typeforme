@@ -184,12 +184,6 @@ enum AppSettings {
         }
         UserDefaults.standard.register(defaults: registeredDefaults)
 
-        repairInvalidRawSetting(forKey: Keys.correctionBackend, default: CorrectionBackendKind.qwen35_2B)
-        repairInvalidRawSetting(forKey: Keys.correctionMode, default: CorrectionMode.polish)
-        repairInvalidRawSetting(forKey: Keys.numberOutputPreference, default: NumberOutputPreference.automatic)
-        repairInvalidRawSetting(forKey: Keys.punctuationPreference, default: PunctuationOutputPreference.normal)
-        repairInvalidRawSetting(forKey: Keys.processingMode, default: ProcessingMode.client)
-        repairInvalidRawSetting(forKey: Keys.voiceLivePreviewSource, default: VoiceLivePreviewSource.appleSpeech)
         _ = ensureBridgeAuthToken()
     }
 
@@ -219,16 +213,6 @@ enum AppSettings {
               let value = Value(rawValue: raw)
         else { return fallback }
         return value
-    }
-
-    private static func repairInvalidRawSetting<Value>(
-        forKey key: String,
-        default fallback: Value
-    ) where Value: RawRepresentable, Value.RawValue == String {
-        guard let raw = UserDefaults.standard.string(forKey: key),
-              Value(rawValue: raw) == nil
-        else { return }
-        UserDefaults.standard.set(fallback.rawValue, forKey: key)
     }
 
     static let serverScopedSettingKeys: [String] = [

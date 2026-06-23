@@ -14,7 +14,7 @@ final class KeyboardCoordinator {
     }
 
     func publishDefaults(
-        correctionMode: CorrectionModeID,
+        correctionMode: CorrectionMode,
         autoCapitalizationEnabled: Bool,
         characterPreviewEnabled: Bool,
         keySoundEnabled: Bool,

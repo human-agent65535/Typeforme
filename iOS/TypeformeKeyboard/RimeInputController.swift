@@ -86,10 +86,8 @@ enum RimeProbeValidity {
     case unknown
 }
 
-typealias RimeKeyboardDictionaryTier = KeyboardRimeDictionaryTier
-
 struct RimeKeyboardProfile: Equatable {
-    var dictionaryTier: RimeKeyboardDictionaryTier = .standard
+    var dictionaryTier: KeyboardRimeDictionaryTier = .standard
     var learningEnabled: Bool = true
     var correctionEnabled: Bool = false
 

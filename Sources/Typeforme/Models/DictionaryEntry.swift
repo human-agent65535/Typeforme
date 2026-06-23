@@ -38,9 +38,9 @@ struct DictionaryEntry: Codable, Hashable, Sendable, Identifiable {
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.init(
-            id: try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID(),
-            type: try container.decodeIfPresent(String.self, forKey: .type) ?? "other",
-            surface: try container.decodeIfPresent(String.self, forKey: .surface) ?? ""
+            id: try container.decode(UUID.self, forKey: .id),
+            type: try container.decode(String.self, forKey: .type),
+            surface: try container.decode(String.self, forKey: .surface)
         )
     }
 

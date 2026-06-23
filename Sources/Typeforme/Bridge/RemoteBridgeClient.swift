@@ -61,7 +61,7 @@ struct RemoteBridgeClient {
 
     static func resolvedFromSettings(
         probeAllEndpoints: Bool = false
-    ) async throws -> (client: RemoteBridgeClient, routeStatus: ClientBridgeRouteStatus) {
+    ) async throws -> (client: RemoteBridgeClient, routeStatus: BridgeRouteResolutionStatus) {
         let config = ClientBridgeConfiguration.current
         guard config.hasAnyBridgeURL else { throw RemoteBridgeClientError.missingURL }
         guard !config.token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {

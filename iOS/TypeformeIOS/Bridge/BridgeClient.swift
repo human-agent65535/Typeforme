@@ -4,7 +4,6 @@ enum BridgeClientError: LocalizedError {
     case invalidURL
     case unauthorizedOrUnavailable
     case invalidResponse
-    case macAppUpdateRequired
     case server(String)
     case unsupportedAudioFormat(String)
 
@@ -16,11 +15,6 @@ enum BridgeClientError: LocalizedError {
             return "Bridge unavailable or token rejected"
         case .invalidResponse:
             return "Bridge returned an invalid response"
-        case .macAppUpdateRequired:
-            return NSLocalizedString(
-                "Update Typeforme on the paired Mac, then try again.",
-                comment: "Bridge settings decode failed because paired Mac app is too old"
-            )
         case .server(let message):
             return message
         case .unsupportedAudioFormat(let detail):
@@ -70,7 +64,7 @@ struct BridgeClient: Sendable {
 
     func pairing(timeout: TimeInterval = 10) async throws -> PairingConfig {
         let endpoint = BridgeAPIEndpoint.pairing
-        let payload: PairingPayload = try await request(
+        let payload: BridgePairingPayload = try await request(
             path: endpoint.path,
             method: endpoint.method,
             body: Optional<Data>.none,
@@ -102,7 +96,7 @@ struct BridgeClient: Sendable {
         audioURL: URL,
         audioExtension: String,
         languageIDs: [String],
-        correctionMode: CorrectionModeID,
+        correctionMode: CorrectionMode,
         contextBefore: String = "",
         contextAfter: String = "",
         includeRawTranscript: Bool,
@@ -214,7 +208,7 @@ struct BridgeClient: Sendable {
         sessionID: String?,
         rawTranscript: String?,
         languageIDs: [String],
-        correctionMode: CorrectionModeID,
+        correctionMode: CorrectionMode,
         clientJobID: String? = nil,
         onJobEvent: (@Sendable (BridgeJobStatusEvent) async -> Void)? = nil
     ) async throws -> BridgeRefineResponse {
@@ -410,10 +404,7 @@ struct BridgeClient: Sendable {
             return BridgeClientError.invalidURL
         case .invalidResponse:
             return BridgeClientError.invalidResponse
-        case .decodingFailed(let detail):
-            if detail.contains("live_preview_source") || detail.contains("livePreviewSource") {
-                return BridgeClientError.macAppUpdateRequired
-            }
+        case .decodingFailed:
             return BridgeClientError.invalidResponse
         case .unauthorized, .forbidden, .notFound:
             return BridgeClientError.unauthorizedOrUnavailable
