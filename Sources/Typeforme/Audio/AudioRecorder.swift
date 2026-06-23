@@ -22,12 +22,14 @@ enum AudioRecorderError: LocalizedError {
 /// the interruption to the coordinator.
 /// Main-actor isolated because recording lifecycle state is driven by the
 /// coordinator and UI permission flow. The audio tap writes through captured,
-/// lock-protected helpers and hops back to the main actor for published state.
+/// nonisolated, lock-protected helpers and hops back to the main actor for
+/// published state.
 @MainActor
 final class AudioRecorder {
     private let engine = AVAudioEngine()
     private let fileWriter = MonoM4ABufferWriter()
     private let levelThrottler = LevelUpdateThrottler(interval: 1.0 / 20.0)
+    private let runningState = AudioRecorderRunningState()
     private var currentURL: URL?
     private var configChangeObserver: NSObjectProtocol?
     private var isRunning = false
@@ -52,26 +54,20 @@ final class AudioRecorder {
         let levelHandler = onLevel
         let levelThrottler = levelThrottler
         levelThrottler.reset()
+        runningState.setRunning(false)
+        let tapHandler = makeAudioRecorderTapHandler(
+            writer: writer,
+            pcmHandler: pcmHandler,
+            levelHandler: levelHandler,
+            levelThrottler: levelThrottler,
+            runningState: runningState
+        )
         input.installTap(
             onBus: 0,
             bufferSize: 1024,
-            format: format
-        ) { [writer, pcmHandler, levelHandler, levelThrottler, weak self] buffer, _ in
-            // Tap closure runs on the audio thread; it only touches its own
-            // buffer writer and snapshotted handlers.
-            writer.write(buffer)
-            // Fan the same buffer out to any live-preview consumer (e.g.
-            // SFSpeechRecognizer). Snapshotted at install-time so a late
-            // attach is intentionally a no-op for the current recording.
-            pcmHandler?(buffer)
-            if let levelHandler, levelThrottler.shouldPublish() {
-                let rms = Self.rms(buffer)
-                Task { @MainActor [weak self] in
-                    guard self?.isRunning == true else { return }
-                    levelHandler(rms)
-                }
-            }
-        }
+            format: format,
+            block: tapHandler
+        )
 
         configChangeObserver = NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange,
@@ -90,11 +86,13 @@ final class AudioRecorder {
         }
 
         do {
+            runningState.setRunning(true)
             try engine.start()
         } catch {
             // Clean up everything we set up before throwing — otherwise the
             // tap stays installed, the observer stays registered, and the
             // temp file leaks into NSTemporaryDirectory().
+            runningState.setRunning(false)
             engine.inputNode.removeTap(onBus: 0)
             engine.stop()
             removeObserver()
@@ -112,6 +110,7 @@ final class AudioRecorder {
     func stop() -> URL? {
         guard isRunning else { return nil }
         isRunning = false
+        runningState.setRunning(false)
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
         removeObserver()
@@ -135,20 +134,6 @@ final class AudioRecorder {
         }
     }
 
-    private static func rms(_ buffer: AVAudioPCMBuffer) -> Float {
-        guard let chans = buffer.floatChannelData else { return 0 }
-        let frames = Int(buffer.frameLength)
-        let channel = chans[0]
-        var sumSq: Float = 0
-        for i in 0..<frames {
-            let s = channel[i]
-            sumSq += s * s
-        }
-        let rms = sqrt(sumSq / Float(max(1, frames)))
-        // Square-root compression + scale; clamps loud speech to ~1.0.
-        return min(1, sqrt(rms) * 2.5)
-    }
-
     private static func ensureMicrophonePermission() async -> Bool {
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .authorized:    return true
@@ -157,6 +142,60 @@ final class AudioRecorder {
         }
     }
 
+}
+
+private func makeAudioRecorderTapHandler(
+    writer: MonoM4ABufferWriter,
+    pcmHandler: ((AVAudioPCMBuffer) -> Void)?,
+    levelHandler: (@MainActor (Float) -> Void)?,
+    levelThrottler: LevelUpdateThrottler,
+    runningState: AudioRecorderRunningState
+) -> AVAudioNodeTapBlock {
+    { buffer, _ in
+        writer.write(buffer)
+        // Fan the same buffer out to any live-preview consumer. The handler is
+        // snapshotted at install-time so a late attach is a no-op for the
+        // current recording.
+        pcmHandler?(buffer)
+        if let levelHandler, levelThrottler.shouldPublish() {
+            let rms = normalizedAudioRMS(buffer)
+            Task { @MainActor in
+                guard runningState.isRunning else { return }
+                levelHandler(rms)
+            }
+        }
+    }
+}
+
+private func normalizedAudioRMS(_ buffer: AVAudioPCMBuffer) -> Float {
+    guard let chans = buffer.floatChannelData else { return 0 }
+    let frames = Int(buffer.frameLength)
+    let channel = chans[0]
+    var sumSq: Float = 0
+    for i in 0..<frames {
+        let s = channel[i]
+        sumSq += s * s
+    }
+    let rms = sqrt(sumSq / Float(max(1, frames)))
+    // Square-root compression + scale; clamps loud speech to ~1.0.
+    return min(1, sqrt(rms) * 2.5)
+}
+
+private final class AudioRecorderRunningState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var running = false
+
+    var isRunning: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return running
+    }
+
+    func setRunning(_ value: Bool) {
+        lock.lock()
+        running = value
+        lock.unlock()
+    }
 }
 
 private final class LevelUpdateThrottler: @unchecked Sendable {
@@ -192,7 +231,7 @@ private final class MonoM4ABufferWriter: @unchecked Sendable {
     private var writeError: Error?
 
     func begin(url: URL, sampleRate: Double) throws {
-        let rate = sampleRate > 0 ? sampleRate : 48_000
+        let rate = try validatedRecordingSampleRate(sampleRate)
         guard let format = AVAudioFormat(
             commonFormat: .pcmFormatFloat32,
             sampleRate: rate,
@@ -320,4 +359,12 @@ private final class MonoM4ABufferWriter: @unchecked Sendable {
             try? FileManager.default.removeItem(at: outputURL)
         }
     }
+}
+
+private func validatedRecordingSampleRate(_ sampleRate: Double) throws -> Double {
+    guard sampleRate.isFinite, sampleRate > 0 else {
+        Log.audio.error("Mac recorder received invalid hardware sample rate: \(sampleRate, privacy: .public)")
+        throw AudioRecorderError.fileSetupFailed("Invalid input sample rate: \(sampleRate)")
+    }
+    return sampleRate
 }

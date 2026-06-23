@@ -121,7 +121,10 @@ final class AudioTapFileWriter: @unchecked Sendable {
     func begin(format: AVAudioFormat) throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("typeforme-keyboard-\(UUID().uuidString).m4a")
-        let sampleRate = format.sampleRate > 0 ? format.sampleRate : 48_000
+        let sampleRate = try validatedRecordingSampleRate(
+            format.sampleRate,
+            context: "keyboard engine input"
+        )
         guard let writeFormat = AVAudioFormat(
             commonFormat: .pcmFormatFloat32,
             sampleRate: sampleRate,
@@ -355,9 +358,17 @@ final class AudioRecorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
         }
 
         let session = AVAudioSession.sharedInstance()
+        let sampleRate: Double
+        do {
+            sampleRate = try validatedRecordingSampleRate(
+                session.sampleRate,
+                context: "host prewarm session"
+            )
+        } catch {
+            return
+        }
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("typeforme-\(UUID().uuidString).m4a")
-        let sampleRate = session.sampleRate > 0 ? session.sampleRate : 44_100
         let settings: [String: Any] = [
             AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
             AVSampleRateKey: sampleRate,
@@ -414,9 +425,12 @@ final class AudioRecorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
         try await IOSRecordingAudioSession.activateRecording(reuseActiveSession: reuseActiveSession)
 
         let session = AVAudioSession.sharedInstance()
+        let sampleRate = try validatedRecordingSampleRate(
+            session.sampleRate,
+            context: "host recording session"
+        )
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("typeforme-\(UUID().uuidString).m4a")
-        let sampleRate = session.sampleRate > 0 ? session.sampleRate : 44_100
         let settings: [String: Any] = [
             AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
             AVSampleRateKey: sampleRate,
@@ -1013,4 +1027,18 @@ private final class LevelUpdateThrottler: @unchecked Sendable {
         lastUpdateAt = now
         return true
     }
+}
+
+private func validatedRecordingSampleRate(_ sampleRate: Double, context: String) throws -> Double {
+    guard sampleRate.isFinite, sampleRate > 0 else {
+        recordingLog.error(
+            "invalid recording sample rate context=\(context, privacy: .public) sampleRate=\(sampleRate, privacy: .public)"
+        )
+        throw NSError(
+            domain: "Typeforme",
+            code: 9,
+            userInfo: [NSLocalizedDescriptionKey: "Invalid audio sample rate for \(context): \(sampleRate)"]
+        )
+    }
+    return sampleRate
 }
