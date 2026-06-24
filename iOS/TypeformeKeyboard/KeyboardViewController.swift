@@ -2628,7 +2628,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                     self.cancelScheduledHostOpen()
                     self.cancelHostWakeResetTask()
                     self.lastDarwinAwakeAt = Date().timeIntervalSince1970
-                    if !self.applySharedBridgeStatusSnapshot() {
+                    if !self.applySharedBridgeStatusSnapshot(allowActiveState: true) {
                         self.applyBridgeStatus(fallbackStatus)
                     }
                     self.finishStartRequestIfNeeded(status: self.currentBridgeStatus ?? fallbackStatus)
@@ -9344,21 +9344,24 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     @discardableResult
-    private func applySharedBridgeStatusSnapshot() -> Bool {
+    private func applySharedBridgeStatusSnapshot(allowActiveState: Bool = false) -> Bool {
         guard let status = KeyboardSharedDefaults.loadStatusSnapshot(),
-              isUsableSharedBridgeStatusSnapshot(status)
+              isUsableSharedBridgeStatusSnapshot(status, allowActiveState: allowActiveState)
         else { return false }
         applyBridgeStatus(status, recordsLiveContact: false)
         return true
     }
 
-    private func isUsableSharedBridgeStatusSnapshot(_ status: KeyboardBridgeStatus) -> Bool {
+    private func isUsableSharedBridgeStatusSnapshot(
+        _ status: KeyboardBridgeStatus,
+        allowActiveState: Bool
+    ) -> Bool {
         guard status.state != .result else { return false }
         let age = Date().timeIntervalSince1970 - status.updatedAt
         guard age >= 0 else { return false }
         switch status.state {
         case .recording, .sending:
-            return age <= Self.sharedActiveStatusSnapshotMaxAge
+            return allowActiveState && age <= Self.sharedActiveStatusSnapshotMaxAge
         case .idle, .standby, .error:
             return age <= Self.sharedStatusSnapshotMaxAge
         case .result:
