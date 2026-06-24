@@ -171,9 +171,7 @@ struct HUDView: View {
 
     @ViewBuilder
     private var surface: some View {
-        if usesActionBarOnlySurface {
-            Color.clear
-        } else {
+        if !usesActionBarOnlySurface {
             let shape = RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
             shape
                 .fill(.ultraThinMaterial)
@@ -489,8 +487,8 @@ private struct VoicePreviewActionBar: View {
         .frame(maxWidth: .infinity)
         .background {
             if drawsChrome {
-                Capsule(style: .continuous)
-                    .fill(.ultraThinMaterial)
+                Color.clear
+                    .background(.ultraThinMaterial, in: Capsule(style: .continuous))
             }
         }
         .overlay {
@@ -499,12 +497,13 @@ private struct VoicePreviewActionBar: View {
                     .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 0.5)
             }
         }
-        .shadow(
-            color: drawsChrome ? Color.black.opacity(0.14) : Color.clear,
-            radius: drawsChrome ? 14 : 0,
-            x: 0,
-            y: drawsChrome ? 8 : 0
-        )
+        .mask {
+            if drawsChrome {
+                Capsule(style: .continuous)
+            } else {
+                Rectangle()
+            }
+        }
     }
 
     private var idleCluster: some View {

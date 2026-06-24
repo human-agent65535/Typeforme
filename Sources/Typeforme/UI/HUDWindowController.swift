@@ -63,7 +63,7 @@ final class HUDWindowController {
     init(coordinator: DictationCoordinator, onOpenSettings: @escaping () -> Void) {
         self.coordinator = coordinator
         self.panel = HUDPanel()
-        let hosting = NSHostingView(rootView: HUDView(coordinator: coordinator, onOpenSettings: onOpenSettings))
+        let hosting = TransparentHUDHostingView(rootView: HUDView(coordinator: coordinator, onOpenSettings: onOpenSettings))
         hosting.autoresizingMask = [.width, .height]
         // Empty sizing options: we explicitly do NOT want SwiftUI's preferred
         // content size to feed back into the hosting view's
@@ -73,6 +73,8 @@ final class HUDWindowController {
         // NSHostingView is layer-backed; keep its layer transparent so only
         // the SwiftUI rounded HUD surface paints the borderless panel.
         hosting.wantsLayer = true
+        hosting.layer?.isOpaque = false
+        hosting.layer?.masksToBounds = false
         hosting.layer?.backgroundColor = NSColor.clear.cgColor
         panel.contentView = hosting
         panel.alphaValue = 0
@@ -392,6 +394,10 @@ final class HUDWindowController {
         case .error:                         return 380
         }
     }
+}
+
+private final class TransparentHUDHostingView<Content: View>: NSHostingView<Content> {
+    override var isOpaque: Bool { false }
 }
 
 private extension NSRect {
