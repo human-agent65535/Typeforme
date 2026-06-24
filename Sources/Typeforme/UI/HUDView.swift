@@ -76,8 +76,8 @@ struct HUDView: View {
             leadingArea
                 .help(statusText)
             if coordinator.state == .error {
-                // Error keeps the text — users need to know what failed —
-                // plus a direct path to Settings to fix it.
+                // Error keeps the text; configuration failures keep a direct
+                // Settings path, while transient context errors can be closed.
                 Text(coordinator.lastError ?? "Error")
                     .font(.system(size: 13, weight: .medium, design: .rounded))
                     .foregroundStyle(.secondary)
@@ -85,16 +85,20 @@ struct HUDView: View {
                     .truncationMode(.middle)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 Button {
-                    onOpenSettings()
+                    if errorUsesDismissAction {
+                        coordinator.reset()
+                    } else {
+                        onOpenSettings()
+                    }
                 } label: {
-                    Image(systemName: "gearshape")
+                    Image(systemName: errorUsesDismissAction ? "xmark" : "gearshape")
                         .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(errorUsesDismissAction ? Color.red : Color.secondary)
                         .frame(width: 24, height: 24)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .help("Open Settings")
+                .help(errorUsesDismissAction ? "Cancel" : "Open Settings")
             } else if coordinator.state == .success, let warningText {
                 Text(warningText)
                     .font(.system(size: 13, weight: .semibold, design: .rounded))
@@ -152,6 +156,11 @@ struct HUDView: View {
     private var warningText: String? {
         let trimmed = coordinator.lastWarning?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private var errorUsesDismissAction: Bool {
+        let message = coordinator.lastError?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return message == "Select text or focus a text field first"
     }
 
     private var voicePreviewText: String {
