@@ -85,20 +85,20 @@ struct HUDView: View {
                     .truncationMode(.middle)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 Button {
-                    if errorUsesDismissAction {
-                        coordinator.reset()
-                    } else {
+                    if errorUsesSettingsAction {
                         onOpenSettings()
+                    } else {
+                        coordinator.reset()
                     }
                 } label: {
-                    Image(systemName: errorUsesDismissAction ? "xmark" : "gearshape")
+                    Image(systemName: errorUsesSettingsAction ? "gearshape" : "xmark")
                         .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(errorUsesDismissAction ? Color.red : Color.secondary)
+                        .foregroundStyle(errorUsesSettingsAction ? Color.secondary : Color.red)
                         .frame(width: 24, height: 24)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .help(errorUsesDismissAction ? "Cancel" : "Open Settings")
+                .help(errorUsesSettingsAction ? "Open Settings" : "Cancel")
             } else if coordinator.state == .success, let warningText {
                 Text(warningText)
                     .font(.system(size: 13, weight: .semibold, design: .rounded))
@@ -158,9 +158,32 @@ struct HUDView: View {
         return trimmed.isEmpty ? nil : trimmed
     }
 
-    private var errorUsesDismissAction: Bool {
+    private var errorUsesSettingsAction: Bool {
         let message = coordinator.lastError?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return message == "Select text or focus a text field first"
+        let lower = message.lowercased()
+        return [
+            "system settings",
+            "microphone permission",
+            "speech recognition permission",
+            "accessibility",
+            "client bridge",
+            "external llm",
+            "external model identifier",
+            "api key",
+            "api token",
+            "model file is missing",
+            "model not found",
+            "model download url",
+            "download url is empty",
+            "download failed with http",
+            "llama-server",
+            "bundled llama-server",
+            "nvidia nemotron asr runtime",
+            "does not support the selected languages",
+            "on-device recognition is unavailable",
+            "recognizer is unavailable",
+            "backend unavailable"
+        ].contains { lower.contains($0) }
     }
 
     private var voicePreviewText: String {
