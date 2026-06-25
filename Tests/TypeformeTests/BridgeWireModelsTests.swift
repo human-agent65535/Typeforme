@@ -124,6 +124,34 @@ struct BridgeWireModelsTests {
         #expect(object["app_category"] as? String == "chat")
     }
 
+    @Test func livePreviewStartResponseCarriesAudioFormat() throws {
+        let response = BridgeLivePreviewStartResponse(
+            sessionID: "preview-1",
+            provider: RecognitionSource.qwen.rawValue,
+            languageIDs: ["en-US"],
+            audioFormat: BridgeLivePreviewStartResponse.audioFormat,
+            startedAt: 122.0
+        )
+
+        let object = try encodedJSONObject(response)
+        #expect(object["session_id"] as? String == "preview-1")
+        #expect(object["provider"] as? String == RecognitionSource.qwen.rawValue)
+        #expect(object["language_ids"] as? [String] == ["en-US"])
+        #expect(object["audio_format"] as? String == "opus_16k_mono_20ms")
+        #expect(object["started_at"] as? Double == 122.0)
+    }
+
+    @Test func livePreviewStartResponseRejectsLegacyPayloadWithoutAudioFormat() {
+        let legacyPayload = Data(
+            #"{"session_id":"preview-1","provider":"qwen3-asr-llama","language_ids":["en-US"],"started_at":122.0}"#
+                .utf8
+        )
+
+        #expect(throws: DecodingError.self) {
+            try JSONDecoder().decode(BridgeLivePreviewStartResponse.self, from: legacyPayload)
+        }
+    }
+
     @Test func livePreviewFinishResponseCarriesProvider() throws {
         let response = BridgeLivePreviewFinishResponse(
             sessionID: "preview-1",

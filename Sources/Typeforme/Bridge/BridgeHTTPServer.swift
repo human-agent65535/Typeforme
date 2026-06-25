@@ -87,7 +87,7 @@ final class BridgeHTTPServer: @unchecked Sendable {
     private static let maxBodyBytes = 25 * 1024 * 1024
     private static let maxMultipartHeaderBytes = 16 * 1024
     private static let maxMultipartFieldBytes = 1 * 1024 * 1024
-    private static let maxLivePreviewSocketMessageBytes = 512 * 1024
+    private static let maxLivePreviewSocketMessageBytes = BridgeLivePreviewOpusDecoder.maxPacketBytes
     private static let restartSettleDelay: UInt64 = 150_000_000
 
     @MainActor
@@ -617,6 +617,7 @@ final class BridgeHTTPServer: @unchecked Sendable {
         outbound: WebSocketOutboundWriter
     ) async throws {
         let process = try await service.livePreviewAudioProcess(sessionID: sessionID)
+        let audioDecoder = BridgeLivePreviewOpusDecoder()
         let writer = BridgeLivePreviewWebSocketWriter()
         let socketOpenedAt = Date()
         let socketLogID = String(sessionID.prefix(8))
@@ -638,10 +639,8 @@ final class BridgeHTTPServer: @unchecked Sendable {
                     for try await message in inbound.messages(maxSize: Self.maxLivePreviewSocketMessageBytes) {
                         switch message {
                         case .binary(let buffer):
-                            let data = Data(buffer.readableBytesView)
-                            guard !data.isEmpty, data.count % MemoryLayout<Float>.size == 0 else {
-                                throw BridgeServiceError.invalidAudio
-                            }
+                            let packet = Data(buffer.readableBytesView)
+                            let data = try audioDecoder.decode(packet: packet)
                             let sampleCount = data.count / MemoryLayout<Float>.size
                             receivedSamples += sampleCount
                             if !firstAudioLogged || receivedSamples >= nextAudioLogSampleCount {
@@ -651,7 +650,7 @@ final class BridgeHTTPServer: @unchecked Sendable {
                                     nextAudioLogSampleCount += 16_000
                                 }
                                 Log.bridge.debug(
-                                    "Bridge live preview socket audio session=\(socketLogID, privacy: .public) first=\(isFirst, privacy: .public) bytes=\(data.count, privacy: .public) received_audio_ms=\(receivedSamples * 1_000 / 16_000, privacy: .public) elapsed_ms=\(Self.elapsedMS(since: socketOpenedAt), privacy: .public)"
+                                    "Bridge live preview socket audio session=\(socketLogID, privacy: .public) first=\(isFirst, privacy: .public) opus_bytes=\(packet.count, privacy: .public) pcm_bytes=\(data.count, privacy: .public) received_audio_ms=\(receivedSamples * 1_000 / 16_000, privacy: .public) elapsed_ms=\(Self.elapsedMS(since: socketOpenedAt), privacy: .public)"
                                 )
                             }
                             process.appendPCM16kMonoFloat32Data(data)

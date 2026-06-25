@@ -108,6 +108,8 @@ final class AudioTapFileWriter: @unchecked Sendable {
     private var currentURL: URL?
     private var file: AVAudioFile?
     private var writeFormat: AVAudioFormat?
+    private var converter: AVAudioConverter?
+    private var converterInputFormat: AVAudioFormat?
     private var recordedFrameCount: AVAudioFramePosition = 0
     private var currentSampleRate: Double = 0
     private var writeError: Error?
@@ -118,27 +120,22 @@ final class AudioTapFileWriter: @unchecked Sendable {
         return currentURL != nil
     }
 
-    func begin(format: AVAudioFormat) throws -> URL {
+    func begin(format _: AVAudioFormat) throws -> URL {
         let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("typeforme-keyboard-\(UUID().uuidString).m4a")
-        let sampleRate = try validatedRecordingSampleRate(
-            format.sampleRate,
-            context: "keyboard engine input"
-        )
+            .appendingPathComponent("typeforme-keyboard-\(UUID().uuidString).caf")
         guard let writeFormat = AVAudioFormat(
             commonFormat: .pcmFormatFloat32,
-            sampleRate: sampleRate,
-            channels: 1,
+            sampleRate: BridgeAudioRecordingContract.sampleRate,
+            channels: AVAudioChannelCount(BridgeAudioRecordingContract.channelCount),
             interleaved: false
         ) else {
             throw NSError(domain: "Typeforme", code: 7, userInfo: [NSLocalizedDescriptionKey: "Could not create keyboard recording format"])
         }
         let settings: [String: Any] = [
-            AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
-            AVSampleRateKey: sampleRate,
-            AVNumberOfChannelsKey: 1,
-            AVEncoderBitRateKey: BridgeAudioRecordingContract.aacBitRate,
-            AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue,
+            AVFormatIDKey: Int(kAudioFormatOpus),
+            AVSampleRateKey: BridgeAudioRecordingContract.sampleRate,
+            AVNumberOfChannelsKey: BridgeAudioRecordingContract.channelCount,
+            AVEncoderBitRateKey: BridgeAudioRecordingContract.opusBitRate,
         ]
         let file = try AVAudioFile(
             forWriting: url,
@@ -154,8 +151,10 @@ final class AudioTapFileWriter: @unchecked Sendable {
         currentURL = url
         self.file = file
         self.writeFormat = writeFormat
+        converter = nil
+        converterInputFormat = nil
         recordedFrameCount = 0
-        currentSampleRate = sampleRate
+        currentSampleRate = BridgeAudioRecordingContract.sampleRate
         writeError = nil
         lock.unlock()
         return url
@@ -165,29 +164,29 @@ final class AudioTapFileWriter: @unchecked Sendable {
         let frameLength = Int(buffer.frameLength)
         guard frameLength > 0 else { return }
 
-        lock.lock()
-        let recordingURL = currentURL
-        let format = writeFormat
-        let hasPreviousError = writeError != nil
-        lock.unlock()
-        guard recordingURL != nil, let format, !hasPreviousError,
-              let writeBuffer = Self.makeWriteBuffer(from: buffer, format: format)
-        else {
-            return
-        }
+        guard let inputBuffer = Self.makeMonoFloatBuffer(from: buffer) else { return }
 
+        lock.lock()
+        defer { lock.unlock() }
         do {
-            lock.lock()
-            defer { lock.unlock() }
-            guard currentURL == recordingURL, let file, writeError == nil else {
-                return
+            guard let file, let format = writeFormat, writeError == nil else { return }
+            if converter == nil || converterInputFormat?.isEqual(inputBuffer.format) != true {
+                converter = AVAudioConverter(from: inputBuffer.format, to: format)
+                converterInputFormat = inputBuffer.format
             }
-            do {
-                try file.write(from: writeBuffer)
-                recordedFrameCount += AVAudioFramePosition(buffer.frameLength)
-            } catch {
-                writeError = error
+            guard let converter,
+                  let writeBuffer = try Self.makeWriteBuffer(
+                      from: inputBuffer,
+                      outputFormat: format,
+                      converter: converter
+                  )
+            else {
+                throw NSError(domain: "Typeforme", code: 10, userInfo: [NSLocalizedDescriptionKey: "Could not convert keyboard recording buffer"])
             }
+            try file.write(from: writeBuffer)
+            recordedFrameCount += AVAudioFramePosition(writeBuffer.frameLength)
+        } catch {
+            writeError = error
         }
     }
 
@@ -201,6 +200,8 @@ final class AudioTapFileWriter: @unchecked Sendable {
         currentURL = nil
         file = nil
         writeFormat = nil
+        converter = nil
+        converterInputFormat = nil
         recordedFrameCount = 0
         currentSampleRate = 0
         writeError = nil
@@ -223,12 +224,12 @@ final class AudioTapFileWriter: @unchecked Sendable {
         }
         let fileBytes = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.intValue ?? 0
         guard fileBytes > 0 else {
-            recordingLog.error("keyboard audio finish: empty m4a duration=\(duration, privacy: .public) frames=\(frames, privacy: .public) sampleRate=\(sampleRate, privacy: .public)")
+            recordingLog.error("keyboard audio finish: empty opus caf duration=\(duration, privacy: .public) frames=\(frames, privacy: .public) sampleRate=\(sampleRate, privacy: .public)")
             try? FileManager.default.removeItem(at: url)
             return nil
         }
         recordingLog.debug(
-            "keyboard audio finish: m4a written duration=\(duration, privacy: .public) frames=\(frames, privacy: .public) fileBytes=\(fileBytes, privacy: .public) sampleRate=\(sampleRate, privacy: .public)"
+            "keyboard audio finish: opus caf written duration=\(duration, privacy: .public) frames=\(frames, privacy: .public) fileBytes=\(fileBytes, privacy: .public) sampleRate=\(sampleRate, privacy: .public)"
         )
         return url
     }
@@ -247,6 +248,8 @@ final class AudioTapFileWriter: @unchecked Sendable {
         currentURL = nil
         file = nil
         writeFormat = nil
+        converter = nil
+        converterInputFormat = nil
         recordedFrameCount = 0
         currentSampleRate = 0
         writeError = nil
@@ -256,20 +259,23 @@ final class AudioTapFileWriter: @unchecked Sendable {
         }
     }
 
-    /// Converts an arbitrary input buffer into the mono float32 write format,
-    /// averaging across channels. Car-kit / CarPlay mic arrays and USB
-    /// interfaces can deliver 2–4 channels, interleaved or planar.
-    private static func makeWriteBuffer(
-        from buffer: AVAudioPCMBuffer,
-        format: AVAudioFormat
-    ) -> AVAudioPCMBuffer? {
-        if buffer.format.isEqual(format) {
-            return buffer
-        }
-
+    /// Downmixes arbitrary input buffers before the stateful converter resamples
+    /// them to the Bridge upload contract: 16 kHz mono Opus in CAF.
+    private static func makeMonoFloatBuffer(from buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
         let frameLength = Int(buffer.frameLength)
+        guard frameLength > 0, buffer.format.sampleRate.isFinite, buffer.format.sampleRate > 0 else {
+            return nil
+        }
         let channelCount = max(1, Int(buffer.format.channelCount))
         let interleaved = buffer.format.isInterleaved
+        guard let format = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: buffer.format.sampleRate,
+            channels: 1,
+            interleaved: false
+        ) else {
+            return nil
+        }
         guard let output = AVAudioPCMBuffer(
             pcmFormat: format,
             frameCapacity: AVAudioFrameCount(frameLength)
@@ -301,6 +307,56 @@ final class AudioTapFileWriter: @unchecked Sendable {
             return output
         }
         return nil
+    }
+
+    private static func makeWriteBuffer(
+        from inputBuffer: AVAudioPCMBuffer,
+        outputFormat: AVAudioFormat,
+        converter: AVAudioConverter
+    ) throws -> AVAudioPCMBuffer? {
+        let ratio = outputFormat.sampleRate / inputBuffer.format.sampleRate
+        let capacity = max(1, Int(ceil(Double(inputBuffer.frameLength) * ratio)) + 128)
+        guard let output = AVAudioPCMBuffer(
+            pcmFormat: outputFormat,
+            frameCapacity: AVAudioFrameCount(capacity)
+        ) else {
+            return nil
+        }
+        let inputSource = SinglePCMBufferInput(buffer: inputBuffer)
+        var conversionError: NSError?
+        let status = converter.convert(to: output, error: &conversionError) { _, outStatus in
+            inputSource.next(outStatus)
+        }
+        if let conversionError {
+            throw conversionError
+        }
+        switch status {
+        case .haveData, .inputRanDry, .endOfStream:
+            return output.frameLength > 0 ? output : nil
+        case .error:
+            throw NSError(domain: "Typeforme", code: 11, userInfo: [NSLocalizedDescriptionKey: "Keyboard audio converter returned an error"])
+        @unknown default:
+            return output.frameLength > 0 ? output : nil
+        }
+    }
+}
+
+private final class SinglePCMBufferInput: @unchecked Sendable {
+    private let buffer: AVAudioPCMBuffer
+    private var supplied = false
+
+    init(buffer: AVAudioPCMBuffer) {
+        self.buffer = buffer
+    }
+
+    func next(_ status: UnsafeMutablePointer<AVAudioConverterInputStatus>) -> AVAudioBuffer? {
+        guard !supplied else {
+            status.pointee = .noDataNow
+            return nil
+        }
+        supplied = true
+        status.pointee = .haveData
+        return buffer
     }
 }
 
@@ -357,25 +413,9 @@ final class AudioRecorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
             return
         }
 
-        let session = AVAudioSession.sharedInstance()
-        let sampleRate: Double
-        do {
-            sampleRate = try validatedRecordingSampleRate(
-                session.sampleRate,
-                context: "host prewarm session"
-            )
-        } catch {
-            return
-        }
         let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("typeforme-\(UUID().uuidString).m4a")
-        let settings: [String: Any] = [
-            AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
-            AVSampleRateKey: sampleRate,
-            AVNumberOfChannelsKey: 1,
-            AVEncoderBitRateKey: BridgeAudioRecordingContract.aacBitRate,
-            AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue,
-        ]
+            .appendingPathComponent("typeforme-\(UUID().uuidString).caf")
+        let settings = Self.opusCAFRecorderSettings()
         guard let recorder = try? AVAudioRecorder(url: url, settings: settings) else {
             try? FileManager.default.removeItem(at: url)
             return
@@ -424,20 +464,9 @@ final class AudioRecorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
 
         try await IOSRecordingAudioSession.activateRecording(reuseActiveSession: reuseActiveSession)
 
-        let session = AVAudioSession.sharedInstance()
-        let sampleRate = try validatedRecordingSampleRate(
-            session.sampleRate,
-            context: "host recording session"
-        )
         let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("typeforme-\(UUID().uuidString).m4a")
-        let settings: [String: Any] = [
-            AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
-            AVSampleRateKey: sampleRate,
-            AVNumberOfChannelsKey: 1,
-            AVEncoderBitRateKey: BridgeAudioRecordingContract.aacBitRate,
-            AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue,
-        ]
+            .appendingPathComponent("typeforme-\(UUID().uuidString).caf")
+        let settings = Self.opusCAFRecorderSettings()
         let recorder = try AVAudioRecorder(url: url, settings: settings)
         recorder.delegate = self
         recorder.isMeteringEnabled = true
@@ -463,6 +492,13 @@ final class AudioRecorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
         if deactivateSession {
             IOSRecordingAudioSession.deactivateAndNotifyOthers()
         }
+        guard let url else { return nil }
+        guard BridgeAudioFormat.isOpusCAFFile(url) else {
+            let fileBytes = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.intValue ?? 0
+            recordingLog.error("host audio finish: invalid opus caf fileBytes=\(fileBytes, privacy: .public)")
+            try? FileManager.default.removeItem(at: url)
+            return nil
+        }
         return url
     }
 
@@ -485,6 +521,15 @@ final class AudioRecorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
         meteringTimer?.invalidate()
         meteringTimer = nil
         level = 0
+    }
+
+    private static func opusCAFRecorderSettings() -> [String: Any] {
+        [
+            AVFormatIDKey: Int(kAudioFormatOpus),
+            AVSampleRateKey: BridgeAudioRecordingContract.sampleRate,
+            AVNumberOfChannelsKey: BridgeAudioRecordingContract.channelCount,
+            AVEncoderBitRateKey: BridgeAudioRecordingContract.opusBitRate,
+        ]
     }
 
     private func sampleLevel() {
@@ -1027,18 +1072,4 @@ private final class LevelUpdateThrottler: @unchecked Sendable {
         lastUpdateAt = now
         return true
     }
-}
-
-private func validatedRecordingSampleRate(_ sampleRate: Double, context: String) throws -> Double {
-    guard sampleRate.isFinite, sampleRate > 0 else {
-        recordingLog.error(
-            "invalid recording sample rate context=\(context, privacy: .public) sampleRate=\(sampleRate, privacy: .public)"
-        )
-        throw NSError(
-            domain: "Typeforme",
-            code: 9,
-            userInfo: [NSLocalizedDescriptionKey: "Invalid audio sample rate for \(context): \(sampleRate)"]
-        )
-    }
-    return sampleRate
 }

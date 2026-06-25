@@ -316,6 +316,7 @@ final class BridgeService {
             sessionID: id,
             provider: lease.provider,
             languageIDs: lease.languageIDs,
+            audioFormat: BridgeLivePreviewStartResponse.audioFormat,
             startedAt: createdAt.timeIntervalSince1970
         )
     }
@@ -439,11 +440,12 @@ final class BridgeService {
                 modelOutputs: asrResult.modelOutputs
             )
         } catch {
+            let publishError = Self.bridgeUploadError(from: error)
             DebugLogStore.recordASR(
                 debugLog,
                 text: nil,
                 status: "error",
-                error: error.localizedDescription,
+                error: publishError.localizedDescription,
                 latencyMs: elapsedMs(since: asrStarted),
                 asrHypotheses: [],
                 alternateTranscripts: []
@@ -452,9 +454,9 @@ final class BridgeService {
                 jobID: jobID,
                 stage: .failed,
                 message: "Transcription failed",
-                error: error.localizedDescription
+                error: publishError.localizedDescription
             )
-            throw error
+            throw publishError
         }
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
@@ -1026,18 +1028,29 @@ final class BridgeService {
             guard audioFileURL.pathExtension.lowercased() == ext else {
                 throw BridgeServiceError.invalidRequest("Audio file extension does not match audio_extension")
             }
+            guard BridgeAudioFormat.isOpusCAFFile(audioFileURL) else {
+                throw BridgeServiceError.invalidAudio
+            }
             return audioFileURL
         }
         guard let data = request.audioData, !data.isEmpty else {
             throw BridgeServiceError.invalidAudio
         }
         let ext = try Self.validatedClientAudioExtension(request.audioExtension)
-        return try await Task.detached(priority: .utility) {
+        guard BridgeAudioFormat.hasCAFMagic(data) else {
+            throw BridgeServiceError.invalidAudio
+        }
+        let url = try await Task.detached(priority: .utility) {
             try AppPaths.ensureDirectories()
             let url = AppPaths.bridgeDir.appendingPathComponent("\(UUID().uuidString).\(ext)")
             try data.write(to: url, options: .atomic)
             return url
         }.value
+        guard BridgeAudioFormat.isOpusCAFFile(url) else {
+            try? FileManager.default.removeItem(at: url)
+            throw BridgeServiceError.invalidAudio
+        }
+        return url
     }
 
     private static func validatedClientAudioExtension(_ extensionHint: String?) throws -> String {
@@ -1048,6 +1061,18 @@ final class BridgeService {
             throw BridgeServiceError.invalidRequest("Unsupported audio extension: \(extensionHint)")
         }
         return ext
+    }
+
+    private static func bridgeUploadError(from error: Error) -> Error {
+        if let asrError = error as? ASRAudioSupportError {
+            switch asrError {
+            case .audioConversionFailed:
+                return BridgeServiceError.invalidAudio
+            case .requestBodyFailed, .httpStatus, .timeout, .emptyTranscript, .unsupportedBridgeAudioExtension:
+                return error
+            }
+        }
+        return error
     }
 
     private func resolveCorrectionMode(_ rawMode: String?) throws -> CorrectionMode {

@@ -3,6 +3,13 @@ import Foundation
 
 struct AppleSpeechASRService: ASRService {
     func transcribe(audioFileURL: URL, languageIDs: [String]) async throws -> String {
+        let recognitionURL = try await ASRAudioSupport.wavUploadableAudioURL(for: audioFileURL)
+        defer {
+            if recognitionURL != audioFileURL {
+                try? FileManager.default.removeItem(at: recognitionURL)
+            }
+        }
+
         guard let resolved = await AppleSpeechLanguageSupport.bestSupportedLocaleIdentifier(for: languageIDs) else {
             throw ASRAudioSupportError.httpStatus(422, "Apple Speech does not support the selected languages on device")
         }
@@ -21,7 +28,7 @@ struct AppleSpeechASRService: ASRService {
             throw ASRAudioSupportError.httpStatus(422, "Apple Speech on-device recognition is unavailable for \(localeID)")
         }
 
-        let request = SFSpeechURLRecognitionRequest(url: audioFileURL)
+        let request = SFSpeechURLRecognitionRequest(url: recognitionURL)
         request.shouldReportPartialResults = false
         request.requiresOnDeviceRecognition = true
         request.taskHint = .dictation

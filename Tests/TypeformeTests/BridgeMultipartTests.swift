@@ -19,9 +19,9 @@ struct BridgeMultipartTests {
 
     @Test func dictateUploadUsesMultipartFilePayload() throws {
         let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("typeforme-test-\(UUID().uuidString).m4a")
+            .appendingPathComponent("typeforme-test-\(UUID().uuidString).caf")
         defer { try? FileManager.default.removeItem(at: url) }
-        try Data("AUDIOBYTES".utf8).write(to: url)
+        try makeCAFBytes().write(to: url)
 
         let multipart = try RemoteBridgeClient.multipartDictateBody(
             audioURL: url,
@@ -38,8 +38,8 @@ struct BridgeMultipartTests {
 
         #expect(multipart.contentType.hasPrefix("multipart/form-data; boundary="))
         let bodyText = String(data: multipart.body, encoding: .utf8) ?? ""
-        #expect(bodyText.contains(#"name="audio"; filename="audio.m4a""#))
-        #expect(bodyText.contains("Content-Type: audio/mp4"))
+        #expect(bodyText.contains(#"name="audio"; filename="audio.caf""#))
+        #expect(bodyText.contains("Content-Type: audio/x-caf"))
         #expect(bodyText.contains("AUDIOBYTES"))
         #expect(bodyText.contains(#"name="language_ids""#))
         #expect(bodyText.contains(#"name="client_job_id""#))
@@ -51,15 +51,15 @@ struct BridgeMultipartTests {
         #expect(bodyText.contains("后一句。"))
         #expect(!bodyText.contains("audio_base64"))
         let audioExtensionRange = try #require(bodyText.range(of: #"name="audio_extension""#))
-        let audioRange = try #require(bodyText.range(of: #"name="audio"; filename="audio.m4a""#))
+        let audioRange = try #require(bodyText.range(of: #"name="audio"; filename="audio.caf""#))
         #expect(audioExtensionRange.lowerBound < audioRange.lowerBound)
     }
 
     @Test func dictateUploadCanStreamMultipartFromTempFile() throws {
         let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("typeforme-test-\(UUID().uuidString).m4a")
+            .appendingPathComponent("typeforme-test-\(UUID().uuidString).caf")
         defer { try? FileManager.default.removeItem(at: url) }
-        try Data("AUDIOBYTES".utf8).write(to: url)
+        try makeCAFBytes().write(to: url)
 
         let multipart = try RemoteBridgeClient.multipartDictateBodyFile(
             audioURL: url,
@@ -80,8 +80,8 @@ struct BridgeMultipartTests {
         let body = try Data(contentsOf: multipart.fileURL)
         #expect(Int64(body.count) == multipart.contentLength)
         let bodyText = String(data: body, encoding: .utf8) ?? ""
-        #expect(bodyText.contains(#"name="audio"; filename="audio.m4a""#))
-        #expect(bodyText.contains("Content-Type: audio/mp4"))
+        #expect(bodyText.contains(#"name="audio"; filename="audio.caf""#))
+        #expect(bodyText.contains("Content-Type: audio/x-caf"))
         #expect(bodyText.contains("AUDIOBYTES"))
         #expect(bodyText.contains(#"name="language_ids""#))
         #expect(bodyText.contains(#"name="client_job_id""#))
@@ -89,15 +89,15 @@ struct BridgeMultipartTests {
         #expect(bodyText.contains(#"["zh-CN","en-US"]"#))
         #expect(!bodyText.contains("audio_base64"))
         let audioExtensionRange = try #require(bodyText.range(of: #"name="audio_extension""#))
-        let audioRange = try #require(bodyText.range(of: #"name="audio"; filename="audio.m4a""#))
+        let audioRange = try #require(bodyText.range(of: #"name="audio"; filename="audio.caf""#))
         #expect(audioExtensionRange.lowerBound < audioRange.lowerBound)
     }
 
     @Test func serverParserStreamsMultipartAudioToTempFile() async throws {
         let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("typeforme-test-\(UUID().uuidString).m4a")
+            .appendingPathComponent("typeforme-test-\(UUID().uuidString).caf")
         defer { try? FileManager.default.removeItem(at: url) }
-        let audioBytes = Data((0..<8192).map { UInt8($0 % 251) })
+        let audioBytes = makeCAFBytes(extraBytes: 8188)
         try audioBytes.write(to: url)
 
         let multipart = try RemoteBridgeClient.multipartDictateBodyFile(
@@ -140,8 +140,8 @@ struct BridgeMultipartTests {
         let streamedAudioURL = try #require(form.audioFileURL)
         defer { try? FileManager.default.removeItem(at: streamedAudioURL) }
 
-        #expect(form.audioFilename == "audio.m4a")
-        #expect(streamedAudioURL.pathExtension == "m4a")
+        #expect(form.audioFilename == "audio.caf")
+        #expect(streamedAudioURL.pathExtension == "caf")
         #expect(form.fields["correction_mode"] == CorrectionMode.polishPlus.rawValue)
         #expect(form.fields["app_name"] == "Notes")
         #expect(form.fields["client_job_id"] == "ios_stream_1")
@@ -153,12 +153,12 @@ struct BridgeMultipartTests {
 
     @Test func serverParserRejectsAudioBeforeAudioExtensionField() throws {
         let boundary = "TypeformeTest-\(UUID().uuidString)"
-        let audioBytes = Data((0..<4096).map { UInt8($0 % 193) })
+        let audioBytes = makeCAFBytes(extraBytes: 4092)
         let body = multipartBody(
             boundary: boundary,
             audioBytes: audioBytes,
             fields: [
-                ("audio_extension", "m4a"),
+                ("audio_extension", "caf"),
                 ("correction_mode", CorrectionMode.polish.rawValue),
             ]
         )
@@ -171,9 +171,140 @@ struct BridgeMultipartTests {
         }
     }
 
+    @Test func serverParserRejectsMissingAudioExtensionField() throws {
+        let boundary = "TypeformeTest-\(UUID().uuidString)"
+        let audioBytes = makeCAFBytes(extraBytes: 4092)
+        let body = multipartBody(
+            boundary: boundary,
+            audioBytes: audioBytes,
+            fields: [
+                ("correction_mode", CorrectionMode.polish.rawValue),
+            ],
+            audioFirst: false
+        )
+        let audioDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("typeforme-stream-test-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: audioDirectory) }
+
+        #expect(throws: BridgeMultipartError.self) {
+            try parseStreamedMultipartBody(body, boundary: boundary, audioDirectory: audioDirectory)
+        }
+    }
+
+    @Test func serverParserRejectsM4AAudioExtensionField() throws {
+        let boundary = "TypeformeTest-\(UUID().uuidString)"
+        let audioBytes = makeCAFBytes(extraBytes: 4092)
+        let body = multipartBody(
+            boundary: boundary,
+            audioBytes: audioBytes,
+            audioFilename: "audio.m4a",
+            contentType: "audio/mp4",
+            fields: [
+                ("audio_extension", "m4a"),
+                ("correction_mode", CorrectionMode.polish.rawValue),
+            ],
+            audioFirst: false
+        )
+        let audioDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("typeforme-stream-test-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: audioDirectory) }
+
+        #expect(throws: BridgeMultipartError.self) {
+            try parseStreamedMultipartBody(body, boundary: boundary, audioDirectory: audioDirectory)
+        }
+    }
+
+    @Test func serverParserRejectsM4ADisguisedAsCAF() throws {
+        let boundary = "TypeformeTest-\(UUID().uuidString)"
+        let audioBytes = makeCAFBytes(extraBytes: 4092)
+        let body = multipartBody(
+            boundary: boundary,
+            audioBytes: audioBytes,
+            audioFilename: "audio.m4a",
+            contentType: "audio/mp4",
+            fields: [
+                ("audio_extension", "caf"),
+                ("correction_mode", CorrectionMode.polish.rawValue),
+            ],
+            audioFirst: false
+        )
+        let audioDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("typeforme-stream-test-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: audioDirectory) }
+
+        #expect(throws: BridgeMultipartError.self) {
+            try parseStreamedMultipartBody(body, boundary: boundary, audioDirectory: audioDirectory)
+        }
+    }
+
+    @Test func serverParserRejectsFLACAudioExtensionField() throws {
+        let boundary = "TypeformeTest-\(UUID().uuidString)"
+        let audioBytes = makeCAFBytes(extraBytes: 4092)
+        let body = multipartBody(
+            boundary: boundary,
+            audioBytes: audioBytes,
+            audioFilename: "audio.flac",
+            contentType: "audio/flac",
+            fields: [
+                ("audio_extension", "flac"),
+                ("correction_mode", CorrectionMode.polish.rawValue),
+            ],
+            audioFirst: false
+        )
+        let audioDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("typeforme-stream-test-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: audioDirectory) }
+
+        #expect(throws: BridgeMultipartError.self) {
+            try parseStreamedMultipartBody(body, boundary: boundary, audioDirectory: audioDirectory)
+        }
+    }
+
+    @Test func serverParserRejectsWrongAudioContentType() throws {
+        let boundary = "TypeformeTest-\(UUID().uuidString)"
+        let body = multipartBody(
+            boundary: boundary,
+            audioBytes: makeCAFBytes(extraBytes: 4092),
+            audioFilename: "audio.caf",
+            contentType: "audio/flac",
+            fields: [
+                ("audio_extension", "caf"),
+                ("correction_mode", CorrectionMode.polish.rawValue),
+            ],
+            audioFirst: false
+        )
+        let audioDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("typeforme-stream-test-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: audioDirectory) }
+
+        #expect(throws: BridgeMultipartError.self) {
+            try parseStreamedMultipartBody(body, boundary: boundary, audioDirectory: audioDirectory)
+        }
+    }
+
+    @Test func serverParserRejectsFakeCAFBytes() throws {
+        let boundary = "TypeformeTest-\(UUID().uuidString)"
+        let body = multipartBody(
+            boundary: boundary,
+            audioBytes: Data("AUDIOBYTES".utf8),
+            fields: [
+                ("audio_extension", "caf"),
+                ("correction_mode", CorrectionMode.polish.rawValue),
+            ],
+            audioFirst: false
+        )
+        let audioDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("typeforme-stream-test-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: audioDirectory) }
+
+        #expect(throws: BridgeMultipartError.self) {
+            try parseStreamedMultipartBody(body, boundary: boundary, audioDirectory: audioDirectory)
+        }
+    }
+
     @Test func dictateUploadRejectsUnsupportedAudioExtension() throws {
         let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("typeforme-test-\(UUID().uuidString).wav")
+            .appendingPathComponent("typeforme-test-\(UUID().uuidString).m4a")
         defer { try? FileManager.default.removeItem(at: url) }
         try Data("AUDIOBYTES".utf8).write(to: url)
 
@@ -195,19 +326,36 @@ struct BridgeMultipartTests {
     private func multipartBody(
         boundary: String,
         audioBytes: Data,
-        fields: [(name: String, value: String)]
+        audioFilename: String = "audio.caf",
+        contentType: String = "audio/x-caf",
+        fields: [(name: String, value: String)],
+        audioFirst: Bool = true
     ) -> Data {
         var body = Data()
-        body.appendUTF8("--\(boundary)\r\n")
-        body.appendUTF8("Content-Disposition: form-data; name=\"audio\"; filename=\"audio.m4a\"\r\n")
-        body.appendUTF8("Content-Type: audio/mp4\r\n\r\n")
-        body.append(audioBytes)
-        body.appendUTF8("\r\n")
-        for field in fields {
+
+        func appendAudio() {
             body.appendUTF8("--\(boundary)\r\n")
-            body.appendUTF8("Content-Disposition: form-data; name=\"\(field.name)\"\r\n\r\n")
-            body.appendUTF8(field.value)
+            body.appendUTF8("Content-Disposition: form-data; name=\"audio\"; filename=\"\(audioFilename)\"\r\n")
+            body.appendUTF8("Content-Type: \(contentType)\r\n\r\n")
+            body.append(audioBytes)
             body.appendUTF8("\r\n")
+        }
+
+        func appendFields() {
+            for field in fields {
+                body.appendUTF8("--\(boundary)\r\n")
+                body.appendUTF8("Content-Disposition: form-data; name=\"\(field.name)\"\r\n\r\n")
+                body.appendUTF8(field.value)
+                body.appendUTF8("\r\n")
+            }
+        }
+
+        if audioFirst {
+            appendAudio()
+            appendFields()
+        } else {
+            appendFields()
+            appendAudio()
         }
         body.appendUTF8("--\(boundary)--\r\n")
         return body
@@ -243,4 +391,13 @@ private extension Data {
     mutating func appendUTF8(_ string: String) {
         append(contentsOf: string.utf8)
     }
+}
+
+private func makeCAFBytes(extraBytes: Int = 10) -> Data {
+    var data = BridgeAudioFormat.cafMagic
+    data.append(Data("AUDIOBYTES".utf8))
+    if extraBytes > 0 {
+        data.append(Data((0..<extraBytes).map { UInt8($0 % 251) }))
+    }
+    return data
 }

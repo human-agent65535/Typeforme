@@ -217,6 +217,13 @@ private struct MultiSourceASRService: ASRService {
             languageIDs,
             sources: enabledSources
         )
+        let canonicalAudioURL = try await ASRAudioSupport.wavUploadableAudioURL(for: audioFileURL)
+        defer {
+            if canonicalAudioURL != audioFileURL {
+                try? FileManager.default.removeItem(at: canonicalAudioURL)
+            }
+        }
+
         var attempts: [ASRSourceAttemptResult] = []
         await withTaskGroup(of: ASRSourceAttemptResult.self) { group in
             for (index, source) in enabledSources.enumerated() {
@@ -224,7 +231,7 @@ private struct MultiSourceASRService: ASRService {
                     await Self.attempt(
                         source: source,
                         index: index,
-                        audioFileURL: audioFileURL,
+                        audioFileURL: canonicalAudioURL,
                         selectedLanguageIDs: selectedLanguageIDs
                     )
                 }

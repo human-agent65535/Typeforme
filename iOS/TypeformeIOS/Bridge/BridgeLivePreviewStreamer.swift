@@ -8,6 +8,7 @@ private let bridgeLivePreviewLog = Logger(
 )
 
 final class BridgeLivePreviewStreamer: @unchecked Sendable {
+    private static let audioFormat = "opus_16k_mono_20ms"
     private static let outputSampleRate = 16_000.0
     private static let outputFormat = AVAudioFormat(
         commonFormat: .pcmFormatFloat32,
@@ -24,7 +25,8 @@ final class BridgeLivePreviewStreamer: @unchecked Sendable {
     private let onFailure: @Sendable (String) -> Void
     private let audioQueue = DispatchQueue(label: "typeforme.ios.bridge-live-preview.audio")
     private var sessionID: String?
-    private var pendingData = Data()
+    private var pendingPackets: [LivePreviewOpusPacket] = []
+    private var pendingPacketBytes = 0
     private var startInFlight = false
     private var finished = false
     private var suppressSocketResult = false
@@ -33,6 +35,7 @@ final class BridgeLivePreviewStreamer: @unchecked Sendable {
     private var sendInFlight = false
     private var pendingControl: BridgeLivePreviewSocketControl.ControlType?
     private var converter: AVAudioConverter?
+    private var opusEncoder = LivePreviewOpusEncoder()
     private var converterInputSampleRate = 0.0
     private var lastTranscript = ""
     private var startedAt: Date?
@@ -121,12 +124,16 @@ final class BridgeLivePreviewStreamer: @unchecked Sendable {
     private func handleStartResponseOnAudioQueue(_ response: BridgeLivePreviewStartResponse) {
         startInFlight = false
         sessionID = response.sessionID
+        guard response.audioFormat == Self.audioFormat else {
+            handleFailureOnAudioQueue(message: "Bridge live preview audio format mismatch: \(response.audioFormat)")
+            return
+        }
         bridgeLivePreviewLog.notice(
             "server live preview start response session=\(self.logSessionID, privacy: .public) start_ms=\(Self.elapsedMS(since: self.startRequestStartedAt), privacy: .public) queued_audio_ms=\(self.queuedAudioMS, privacy: .public)"
         )
         guard !finished else {
             if suppressSocketResult {
-                pendingData.removeAll(keepingCapacity: false)
+                clearPendingPackets(keepingCapacity: false)
                 let client = self.client
                 Task { try? await client.finishLivePreview(sessionID: response.sessionID) }
                 return
@@ -147,20 +154,29 @@ final class BridgeLivePreviewStreamer: @unchecked Sendable {
         else { return }
         let frameCount = Int(output.frameLength)
         guard frameCount > 0 else { return }
-        pendingData.append(Self.littleEndianFloatData(samples: samples, count: frameCount))
+        do {
+            let packets = try opusEncoder.append(samples: samples, count: frameCount)
+            queuePacketsOnAudioQueue(packets)
+        } catch {
+            handleFailureOnAudioQueue(message: error.localizedDescription)
+            return
+        }
         queuedSampleCount += frameCount
         logQueuedAudioIfNeeded(frameCount: frameCount, sourceSampleRate: mono.format.sampleRate)
-        if pendingData.count > Self.maxPendingByteCount {
-            pendingData.removeFirst(pendingData.count - Self.maxPendingByteCount)
-        }
         flushWebSocketOnAudioQueue()
     }
 
     private func finishOnAudioQueue() {
         guard !finished else { return }
+        do {
+            queuePacketsOnAudioQueue(try opusEncoder.finish())
+        } catch {
+            handleFailureOnAudioQueue(message: error.localizedDescription)
+            return
+        }
         finished = true
         bridgeLivePreviewLog.notice(
-            "server live preview finish requested session=\(self.logSessionID, privacy: .public) queued_audio_ms=\(self.queuedAudioMS, privacy: .public) sent_audio_ms=\(self.sentAudioMS, privacy: .public) pending_bytes=\(self.pendingData.count, privacy: .public) elapsed_ms=\(self.elapsedMS, privacy: .public)"
+            "server live preview finish requested session=\(self.logSessionID, privacy: .public) queued_audio_ms=\(self.queuedAudioMS, privacy: .public) sent_audio_ms=\(self.sentAudioMS, privacy: .public) pending_bytes=\(self.pendingPacketBytes, privacy: .public) elapsed_ms=\(self.elapsedMS, privacy: .public)"
         )
         if webSocketTask != nil {
             queueControlOnAudioQueue(.finish)
@@ -169,14 +185,33 @@ final class BridgeLivePreviewStreamer: @unchecked Sendable {
         }
     }
 
+    private func queuePacketsOnAudioQueue(_ packets: [LivePreviewOpusPacket]) {
+        guard !packets.isEmpty else { return }
+        pendingPackets.append(contentsOf: packets)
+        pendingPacketBytes += packets.reduce(0) { $0 + $1.data.count }
+        trimPendingPacketsToLimit()
+    }
+
+    private func clearPendingPackets(keepingCapacity: Bool) {
+        pendingPackets.removeAll(keepingCapacity: keepingCapacity)
+        pendingPacketBytes = 0
+    }
+
+    private func trimPendingPacketsToLimit() {
+        while pendingPacketBytes > Self.maxPendingByteCount, !pendingPackets.isEmpty {
+            let removed = pendingPackets.removeFirst()
+            pendingPacketBytes -= removed.data.count
+        }
+    }
+
     private func cancelOnAudioQueue() {
         guard !finished else { return }
         finished = true
         suppressSocketResult = true
         bridgeLivePreviewLog.notice(
-            "server live preview cancel requested session=\(self.logSessionID, privacy: .public) queued_audio_ms=\(self.queuedAudioMS, privacy: .public) sent_audio_ms=\(self.sentAudioMS, privacy: .public) pending_bytes=\(self.pendingData.count, privacy: .public) elapsed_ms=\(self.elapsedMS, privacy: .public)"
+            "server live preview cancel requested session=\(self.logSessionID, privacy: .public) queued_audio_ms=\(self.queuedAudioMS, privacy: .public) sent_audio_ms=\(self.sentAudioMS, privacy: .public) pending_bytes=\(self.pendingPacketBytes, privacy: .public) elapsed_ms=\(self.elapsedMS, privacy: .public)"
         )
-        pendingData.removeAll(keepingCapacity: false)
+        clearPendingPackets(keepingCapacity: false)
         if webSocketTask != nil {
             queueControlOnAudioQueue(.cancel)
         } else {
@@ -191,7 +226,7 @@ final class BridgeLivePreviewStreamer: @unchecked Sendable {
         guard !finished else { return }
         finished = true
         suppressSocketResult = true
-        pendingData.removeAll(keepingCapacity: false)
+        clearPendingPackets(keepingCapacity: false)
         startInFlight = false
         closeWebSocketOnAudioQueue()
         sendCancelOnAudioQueue()
@@ -243,12 +278,13 @@ final class BridgeLivePreviewStreamer: @unchecked Sendable {
 
     private func flushWebSocketOnAudioQueue() {
         guard !sendInFlight, let task = webSocketTask else { return }
-        if !pendingData.isEmpty {
-            let data = pendingData
+        if !pendingPackets.isEmpty {
+            let packet = pendingPackets.removeFirst()
+            pendingPacketBytes -= packet.data.count
+            let data = packet.data
             let byteCount = data.count
-            let sampleCount = byteCount / MemoryLayout<Float>.size
+            let sampleCount = packet.sampleCount
             let sendStartedAt = Date()
-            pendingData.removeAll(keepingCapacity: true)
             sendInFlight = true
             Task {
                 do {
@@ -339,7 +375,7 @@ final class BridgeLivePreviewStreamer: @unchecked Sendable {
     }
 
     private func sendFinishRequestOnAudioQueue() {
-        pendingData.removeAll(keepingCapacity: false)
+        clearPendingPackets(keepingCapacity: false)
         guard let sessionID else { return }
         let client = self.client
         Task {
@@ -465,7 +501,7 @@ final class BridgeLivePreviewStreamer: @unchecked Sendable {
             nextQueueLogSampleCount += 16_000
         }
         bridgeLivePreviewLog.debug(
-            "server live preview audio queued session=\(self.logSessionID, privacy: .public) first=\(isFirst, privacy: .public) frames=\(frameCount, privacy: .public) source_hz=\(Int(sourceSampleRate.rounded()), privacy: .public) queued_audio_ms=\(self.queuedAudioMS, privacy: .public) pending_bytes=\(self.pendingData.count, privacy: .public) elapsed_ms=\(self.elapsedMS, privacy: .public)"
+            "server live preview audio queued session=\(self.logSessionID, privacy: .public) first=\(isFirst, privacy: .public) frames=\(frameCount, privacy: .public) source_hz=\(Int(sourceSampleRate.rounded()), privacy: .public) queued_audio_ms=\(self.queuedAudioMS, privacy: .public) pending_bytes=\(self.pendingPacketBytes, privacy: .public) elapsed_ms=\(self.elapsedMS, privacy: .public)"
         )
     }
 
@@ -592,15 +628,152 @@ final class BridgeLivePreviewStreamer: @unchecked Sendable {
         return nil
     }
 
-    private static func littleEndianFloatData(samples: UnsafePointer<Float>, count: Int) -> Data {
-        var data = Data(count: count * MemoryLayout<Float>.size)
-        data.withUnsafeMutableBytes { rawBuffer in
-            let output = rawBuffer.bindMemory(to: UInt32.self)
-            for index in 0..<count {
-                output[index] = samples[index].bitPattern.littleEndian
-            }
+}
+
+private struct LivePreviewOpusPacket {
+    let data: Data
+    let sampleCount: Int
+}
+
+private enum LivePreviewOpusCodecError: LocalizedError {
+    case unavailable
+    case encodeFailed(String)
+    case emptyPacket
+
+    var errorDescription: String? {
+        switch self {
+        case .unavailable:
+            return "Opus live preview codec is unavailable"
+        case .encodeFailed(let detail):
+            return "Opus live preview encode failed: \(detail)"
+        case .emptyPacket:
+            return "Opus live preview encoder produced no packet"
         }
-        return data
+    }
+}
+
+private final class LivePreviewOpusEncoder {
+    private static let sampleRate = 16_000.0
+    private static let channelCount: AVAudioChannelCount = 1
+    private static let frameSampleCount = 320
+    private static let maxPacketBytes = 4_096
+    private static let pcmFormat = AVAudioFormat(
+        commonFormat: .pcmFormatFloat32,
+        sampleRate: sampleRate,
+        channels: channelCount,
+        interleaved: false
+    )!
+    private static let opusFormat = AVAudioFormat(settings: [
+        AVFormatIDKey: Int(kAudioFormatOpus),
+        AVSampleRateKey: sampleRate,
+        AVNumberOfChannelsKey: Int(channelCount),
+        AVEncoderBitRateKey: 24_000,
+    ])!
+
+    private let converter: AVAudioConverter?
+    private var pendingSamples: [Float] = []
+
+    init() {
+        converter = AVAudioConverter(from: Self.pcmFormat, to: Self.opusFormat)
+    }
+
+    func append(samples: UnsafePointer<Float>, count: Int) throws -> [LivePreviewOpusPacket] {
+        guard count > 0 else { return [] }
+        pendingSamples.append(contentsOf: UnsafeBufferPointer(start: samples, count: count))
+        return try drainCompleteFrames()
+    }
+
+    func finish() throws -> [LivePreviewOpusPacket] {
+        guard !pendingSamples.isEmpty else { return [] }
+        let missing = Self.frameSampleCount - pendingSamples.count
+        if missing > 0 {
+            pendingSamples.append(contentsOf: repeatElement(Float(0), count: missing))
+        }
+        return try drainCompleteFrames()
+    }
+
+    private func drainCompleteFrames() throws -> [LivePreviewOpusPacket] {
+        var packets: [LivePreviewOpusPacket] = []
+        while pendingSamples.count >= Self.frameSampleCount {
+            let frame = Array(pendingSamples.prefix(Self.frameSampleCount))
+            pendingSamples.removeFirst(Self.frameSampleCount)
+            packets.append(try encodeFrame(frame))
+        }
+        return packets
+    }
+
+    private func encodeFrame(_ samples: [Float]) throws -> LivePreviewOpusPacket {
+        guard let converter,
+              let input = AVAudioPCMBuffer(
+                  pcmFormat: Self.pcmFormat,
+                  frameCapacity: AVAudioFrameCount(Self.frameSampleCount)
+              ),
+              let channel = input.floatChannelData?[0]
+        else {
+            throw LivePreviewOpusCodecError.unavailable
+        }
+        input.frameLength = AVAudioFrameCount(Self.frameSampleCount)
+        samples.withUnsafeBufferPointer { source in
+            channel.update(from: source.baseAddress!, count: Self.frameSampleCount)
+        }
+
+        let output = AVAudioCompressedBuffer(
+            format: Self.opusFormat,
+            packetCapacity: 1,
+            maximumPacketSize: Self.maxPacketBytes
+        )
+        let inputSource = LivePreviewOpusEncoderInput(buffer: input)
+        var conversionError: NSError?
+        let status = converter.convert(to: output, error: &conversionError) { _, outStatus in
+            inputSource.next(outStatus)
+        }
+        if let conversionError {
+            throw LivePreviewOpusCodecError.encodeFailed(conversionError.localizedDescription)
+        }
+        switch status {
+        case .haveData, .inputRanDry, .endOfStream:
+            break
+        case .error:
+            throw LivePreviewOpusCodecError.encodeFailed("converter returned error")
+        @unknown default:
+            break
+        }
+        guard output.byteLength > 0, output.packetCount > 0 else {
+            throw LivePreviewOpusCodecError.emptyPacket
+        }
+        let offset: Int
+        let byteCount: Int
+        if let description = output.packetDescriptions?.pointee {
+            offset = Int(description.mStartOffset)
+            byteCount = Int(description.mDataByteSize)
+        } else {
+            offset = 0
+            byteCount = Int(output.byteLength)
+        }
+        guard byteCount > 0 else {
+            throw LivePreviewOpusCodecError.emptyPacket
+        }
+        let packet = Data(bytes: output.data.advanced(by: offset), count: byteCount)
+        return LivePreviewOpusPacket(data: packet, sampleCount: Self.frameSampleCount)
+    }
+}
+
+private final class LivePreviewOpusEncoderInput: @unchecked Sendable {
+    private let buffer: AVAudioPCMBuffer
+    private var supplied = false
+
+    init(buffer: AVAudioPCMBuffer) {
+        self.buffer = buffer
+    }
+
+    func next(_ status: UnsafeMutablePointer<AVAudioConverterInputStatus>) -> AVAudioBuffer? {
+        guard !supplied else {
+            status.pointee = .noDataNow
+            return nil
+        }
+        supplied = true
+        status.pointee = .haveData
+        return buffer
     }
 }
 

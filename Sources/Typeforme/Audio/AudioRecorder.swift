@@ -27,7 +27,7 @@ enum AudioRecorderError: LocalizedError {
 @MainActor
 final class AudioRecorder {
     private let engine = AVAudioEngine()
-    private let fileWriter = MonoM4ABufferWriter()
+    private let fileWriter = MonoOpusCAFBufferWriter()
     private let levelThrottler = LevelUpdateThrottler(interval: 1.0 / 20.0)
     private let runningState = AudioRecorderRunningState()
     private var currentURL: URL?
@@ -46,9 +46,9 @@ final class AudioRecorder {
         let input = engine.inputNode
         let format = input.outputFormat(forBus: 0)
 
-        let m4aURL = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("typeforme-\(UUID().uuidString).m4a")
-        try fileWriter.begin(url: m4aURL, sampleRate: format.sampleRate)
+        let audioURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("typeforme-\(UUID().uuidString).caf")
+        try fileWriter.begin(url: audioURL)
 
         let writer = fileWriter
         let levelHandler = onLevel
@@ -96,14 +96,14 @@ final class AudioRecorder {
             engine.inputNode.removeTap(onBus: 0)
             engine.stop()
             removeObserver()
-            try? FileManager.default.removeItem(at: m4aURL)
+            try? FileManager.default.removeItem(at: audioURL)
             fileWriter.cancel()
             throw AudioRecorderError.engineFailedToStart(error.localizedDescription)
         }
 
-        currentURL = m4aURL
+        currentURL = audioURL
         isRunning = true
-        return m4aURL
+        return audioURL
     }
 
     @discardableResult
@@ -121,7 +121,7 @@ final class AudioRecorder {
             try fileWriter.finish()
             return url
         } catch {
-            Log.audio.notice("Mac recorder M4A write failed: \(error.localizedDescription, privacy: .public)")
+            Log.audio.notice("Mac recorder Opus CAF write failed: \(error.localizedDescription, privacy: .public)")
             try? FileManager.default.removeItem(at: url)
             return nil
         }
@@ -145,7 +145,7 @@ final class AudioRecorder {
 }
 
 private func makeAudioRecorderTapHandler(
-    writer: MonoM4ABufferWriter,
+    writer: MonoOpusCAFBufferWriter,
     pcmHandler: ((AVAudioPCMBuffer) -> Void)?,
     levelHandler: (@MainActor (Float) -> Void)?,
     levelThrottler: LevelUpdateThrottler,
@@ -222,31 +222,31 @@ private final class LevelUpdateThrottler: @unchecked Sendable {
     }
 }
 
-private final class MonoM4ABufferWriter: @unchecked Sendable {
+private final class MonoOpusCAFBufferWriter: @unchecked Sendable {
     private let lock = NSLock()
     private var url: URL?
     private var file: AVAudioFile?
     private var writeFormat: AVAudioFormat?
+    private var converter: AVAudioConverter?
+    private var converterInputFormat: AVAudioFormat?
     private var frameCount: AVAudioFramePosition = 0
     private var currentSampleRate: Double = 0
     private var writeError: Error?
 
-    func begin(url: URL, sampleRate: Double) throws {
-        let rate = try validatedRecordingSampleRate(sampleRate)
+    func begin(url: URL) throws {
         guard let format = AVAudioFormat(
             commonFormat: .pcmFormatFloat32,
-            sampleRate: rate,
-            channels: 1,
+            sampleRate: BridgeAudioRecordingContract.sampleRate,
+            channels: AVAudioChannelCount(BridgeAudioRecordingContract.channelCount),
             interleaved: false
         ) else {
-            throw AudioRecorderError.fileSetupFailed("Could not create M4A writer format")
+            throw AudioRecorderError.fileSetupFailed("Could not create Opus CAF writer format")
         }
         let settings: [String: Any] = [
-            AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
-            AVSampleRateKey: rate,
-            AVNumberOfChannelsKey: 1,
-            AVEncoderBitRateKey: BridgeAudioRecordingContract.aacBitRate,
-            AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue,
+            AVFormatIDKey: Int(kAudioFormatOpus),
+            AVSampleRateKey: BridgeAudioRecordingContract.sampleRate,
+            AVNumberOfChannelsKey: BridgeAudioRecordingContract.channelCount,
+            AVEncoderBitRateKey: BridgeAudioRecordingContract.opusBitRate,
         ]
         let file = try AVAudioFile(
             forWriting: url,
@@ -259,8 +259,10 @@ private final class MonoM4ABufferWriter: @unchecked Sendable {
         self.url = url
         self.file = file
         self.writeFormat = format
+        self.converter = nil
+        self.converterInputFormat = nil
         self.frameCount = 0
-        self.currentSampleRate = rate
+        self.currentSampleRate = BridgeAudioRecordingContract.sampleRate
         self.writeError = nil
         lock.unlock()
     }
@@ -269,23 +271,27 @@ private final class MonoM4ABufferWriter: @unchecked Sendable {
         let frameLength = Int(buffer.frameLength)
         guard frameLength > 0 else { return }
 
-        lock.lock()
-        let recordingURL = url
-        let format = writeFormat
-        let hasPreviousError = writeError != nil
-        lock.unlock()
-        guard recordingURL != nil, let format, !hasPreviousError,
-              let writeBuffer = Self.makeWriteBuffer(from: buffer, format: format)
-        else {
-            return
-        }
+        guard let inputBuffer = Self.makeMonoFloatBuffer(from: buffer) else { return }
 
         lock.lock()
         defer { lock.unlock() }
         do {
-            guard url == recordingURL, let file, writeError == nil else { return }
+            guard let file, let format = writeFormat, writeError == nil else { return }
+            if converter == nil || converterInputFormat?.isEqual(inputBuffer.format) != true {
+                converter = AVAudioConverter(from: inputBuffer.format, to: format)
+                converterInputFormat = inputBuffer.format
+            }
+            guard let converter,
+                  let writeBuffer = try Self.makeWriteBuffer(
+                      from: inputBuffer,
+                      outputFormat: format,
+                      converter: converter
+                  )
+            else {
+                throw AudioRecorderError.fileSetupFailed("Could not convert recording buffer to Opus CAF format")
+            }
             try file.write(from: writeBuffer)
-            frameCount += AVAudioFramePosition(buffer.frameLength)
+            frameCount += AVAudioFramePosition(writeBuffer.frameLength)
         } catch {
             writeError = error
         }
@@ -301,6 +307,8 @@ private final class MonoM4ABufferWriter: @unchecked Sendable {
         url = nil
         file = nil
         writeFormat = nil
+        converter = nil
+        converterInputFormat = nil
         frameCount = 0
         currentSampleRate = 0
         writeError = nil
@@ -316,26 +324,26 @@ private final class MonoM4ABufferWriter: @unchecked Sendable {
         }
         guard frames > 0 else {
             Log.audio.error(
-                "Mac recorder finish: empty m4a duration=\(duration, privacy: .public) frames=\(frames, privacy: .public) sampleRate=\(sampleRate, privacy: .public)"
+                "Mac recorder finish: empty opus caf duration=\(duration, privacy: .public) frames=\(frames, privacy: .public) sampleRate=\(sampleRate, privacy: .public)"
             )
-            throw AudioRecorderError.fileSetupFailed("Recorded M4A contains no audio data")
+            throw AudioRecorderError.fileSetupFailed("Recorded Opus CAF contains no audio data")
         }
         guard duration >= BridgeAudioRecordingContract.minimumDurationSeconds else {
             Log.audio.notice(
                 "Mac recorder finish: too short duration=\(duration, privacy: .public) frames=\(frames, privacy: .public) sampleRate=\(sampleRate, privacy: .public)"
             )
-            throw AudioRecorderError.fileSetupFailed("Recorded M4A is too short")
+            throw AudioRecorderError.fileSetupFailed("Recorded Opus CAF is too short")
         }
 
         let fileBytes = (try? FileManager.default.attributesOfItem(atPath: outputURL.path)[.size] as? NSNumber)?.intValue ?? 0
         guard fileBytes > 0 else {
             Log.audio.error(
-                "Mac recorder finish: empty m4a duration=\(duration, privacy: .public) frames=\(frames, privacy: .public) sampleRate=\(sampleRate, privacy: .public)"
+                "Mac recorder finish: empty opus caf duration=\(duration, privacy: .public) frames=\(frames, privacy: .public) sampleRate=\(sampleRate, privacy: .public)"
             )
-            throw AudioRecorderError.fileSetupFailed("Recorded M4A contains no audio data")
+            throw AudioRecorderError.fileSetupFailed("Recorded Opus CAF contains no audio data")
         }
         Log.audio.debug(
-            "Mac recorder finish: m4a written duration=\(duration, privacy: .public) frames=\(frames, privacy: .public) fileBytes=\(fileBytes, privacy: .public) sampleRate=\(sampleRate, privacy: .public)"
+            "Mac recorder finish: opus caf written duration=\(duration, privacy: .public) frames=\(frames, privacy: .public) fileBytes=\(fileBytes, privacy: .public) sampleRate=\(sampleRate, privacy: .public)"
         )
     }
 
@@ -345,6 +353,8 @@ private final class MonoM4ABufferWriter: @unchecked Sendable {
         url = nil
         file = nil
         writeFormat = nil
+        converter = nil
+        converterInputFormat = nil
         frameCount = 0
         currentSampleRate = 0
         writeError = nil
@@ -354,20 +364,23 @@ private final class MonoM4ABufferWriter: @unchecked Sendable {
         }
     }
 
-    /// Converts arbitrary input buffers to the mono float32 writer format.
-    /// Multi-channel input is averaged so USB and monitor-array devices produce
-    /// the same Bridge-ready M4A shape as the iOS keyboard path.
-    private static func makeWriteBuffer(
-        from buffer: AVAudioPCMBuffer,
-        format: AVAudioFormat
-    ) -> AVAudioPCMBuffer? {
-        if buffer.format.isEqual(format) {
-            return buffer
-        }
-
+    /// Downmixes arbitrary input buffers before the stateful converter resamples
+    /// them to the Bridge upload contract: 16 kHz mono Opus in CAF.
+    private static func makeMonoFloatBuffer(from buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
         let frameLength = Int(buffer.frameLength)
+        guard frameLength > 0, buffer.format.sampleRate.isFinite, buffer.format.sampleRate > 0 else {
+            return nil
+        }
         let channelCount = max(1, Int(buffer.format.channelCount))
         let interleaved = buffer.format.isInterleaved
+        guard let format = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: buffer.format.sampleRate,
+            channels: 1,
+            interleaved: false
+        ) else {
+            return nil
+        }
         guard let output = AVAudioPCMBuffer(
             pcmFormat: format,
             frameCapacity: AVAudioFrameCount(frameLength)
@@ -400,12 +413,54 @@ private final class MonoM4ABufferWriter: @unchecked Sendable {
         }
         return nil
     }
+
+    private static func makeWriteBuffer(
+        from inputBuffer: AVAudioPCMBuffer,
+        outputFormat: AVAudioFormat,
+        converter: AVAudioConverter
+    ) throws -> AVAudioPCMBuffer? {
+        let ratio = outputFormat.sampleRate / inputBuffer.format.sampleRate
+        let capacity = max(1, Int(ceil(Double(inputBuffer.frameLength) * ratio)) + 128)
+        guard let output = AVAudioPCMBuffer(
+            pcmFormat: outputFormat,
+            frameCapacity: AVAudioFrameCount(capacity)
+        ) else {
+            return nil
+        }
+        let inputSource = SinglePCMBufferInput(buffer: inputBuffer)
+        var conversionError: NSError?
+        let status = converter.convert(to: output, error: &conversionError) { _, outStatus in
+            inputSource.next(outStatus)
+        }
+        if let conversionError {
+            throw conversionError
+        }
+        switch status {
+        case .haveData, .inputRanDry, .endOfStream:
+            return output.frameLength > 0 ? output : nil
+        case .error:
+            throw AudioRecorderError.fileSetupFailed("Audio converter returned an error")
+        @unknown default:
+            return output.frameLength > 0 ? output : nil
+        }
+    }
 }
 
-private func validatedRecordingSampleRate(_ sampleRate: Double) throws -> Double {
-    guard sampleRate.isFinite, sampleRate > 0 else {
-        Log.audio.error("Mac recorder received invalid hardware sample rate: \(sampleRate, privacy: .public)")
-        throw AudioRecorderError.fileSetupFailed("Invalid input sample rate: \(sampleRate)")
+private final class SinglePCMBufferInput: @unchecked Sendable {
+    private let buffer: AVAudioPCMBuffer
+    private var supplied = false
+
+    init(buffer: AVAudioPCMBuffer) {
+        self.buffer = buffer
     }
-    return sampleRate
+
+    func next(_ status: UnsafeMutablePointer<AVAudioConverterInputStatus>) -> AVAudioBuffer? {
+        guard !supplied else {
+            status.pointee = .noDataNow
+            return nil
+        }
+        supplied = true
+        status.pointee = .haveData
+        return buffer
+    }
 }

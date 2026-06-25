@@ -1551,7 +1551,7 @@ final class AppState {
             let response = try await dictateWithRouteRetry(
                 initialBaseURL: baseURL,
                 audioURL: fileURL,
-                audioExtension: fileURL.pathExtension.isEmpty ? "m4a" : fileURL.pathExtension,
+                audioExtension: fileURL.pathExtension.isEmpty ? "caf" : fileURL.pathExtension,
                 languageIDs: activeLanguageIDs,
                 correctionMode: requestedCorrectionMode,
                 contextBefore: dictationContext?.contextBefore ?? "",

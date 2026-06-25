@@ -292,15 +292,19 @@ struct BridgeLivePreviewStartRequest: Codable, Sendable {
 }
 
 struct BridgeLivePreviewStartResponse: Codable, Sendable {
+    static let audioFormat = "opus_16k_mono_20ms"
+
     let sessionID: String
     let provider: String
     let languageIDs: [String]
+    let audioFormat: String
     let startedAt: TimeInterval
 
     enum CodingKeys: String, CodingKey {
         case sessionID = "session_id"
         case provider
         case languageIDs = "language_ids"
+        case audioFormat = "audio_format"
         case startedAt = "started_at"
     }
 }

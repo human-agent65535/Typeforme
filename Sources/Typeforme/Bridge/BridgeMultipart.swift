@@ -256,6 +256,7 @@ enum BridgeMultipart {
         private var currentFieldData = Data()
         private var audioHandle: FileHandle?
         private var audioBytes = 0
+        private var audioHeaderBytes = Data()
         private var didReturnAudioFile = false
 
         private(set) var audioFileURL: URL?
@@ -409,6 +410,7 @@ enum BridgeMultipart {
             guard !bytes.isEmpty, let currentPart else { return }
             if currentPart.name == "audio" {
                 try ensureAudioFile(for: currentPart)
+                try appendAudioHeaderBytes(bytes)
                 try audioHandle?.write(contentsOf: bytes)
                 audioBytes += bytes.count
                 guard audioBytes <= maxBodyBytes else {
@@ -430,6 +432,9 @@ enum BridgeMultipart {
             guard let currentPart else { return }
             if currentPart.name == "audio" {
                 try closeAudioHandle()
+                guard BridgeAudioFormat.hasCAFMagic(audioHeaderBytes) else {
+                    throw BridgeMultipartError.invalidRequest("Multipart audio part is not CAF")
+                }
                 return
             }
             if let value = String(data: currentFieldData, encoding: .utf8) {
@@ -444,11 +449,39 @@ enum BridgeMultipart {
             }
             try FileManager.default.createDirectory(at: audioDirectory, withIntermediateDirectories: true)
             let ext = try streamedAudioExtension()
+            try validateAudioPartMetadata(part, expectedExtension: ext)
             let url = audioDirectory.appendingPathComponent("\(UUID().uuidString).\(ext)")
             _ = FileManager.default.createFile(atPath: url.path, contents: nil)
             audioHandle = try FileHandle(forWritingTo: url)
             audioFileURL = url
             audioFilename = part.filename
+        }
+
+        private func appendAudioHeaderBytes(_ bytes: Data) throws {
+            if audioHeaderBytes.count < BridgeAudioFormat.cafMagicByteCount {
+                let needed = BridgeAudioFormat.cafMagicByteCount - audioHeaderBytes.count
+                audioHeaderBytes.append(bytes.prefix(needed))
+            }
+            if audioHeaderBytes.count == BridgeAudioFormat.cafMagicByteCount,
+               !BridgeAudioFormat.hasCAFMagic(audioHeaderBytes) {
+                throw BridgeMultipartError.invalidRequest("Multipart audio part is not CAF")
+            }
+        }
+
+        private func validateAudioPartMetadata(_ part: PartMetadata, expectedExtension ext: String) throws {
+            guard let filename = part.filename?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !filename.isEmpty,
+                  URL(fileURLWithPath: filename).pathExtension.lowercased() == ext
+            else {
+                throw BridgeMultipartError.invalidRequest("Multipart audio filename must use .\(ext)")
+            }
+            let contentType = part.contentType?
+                .split(separator: ";", maxSplits: 1)
+                .first
+                .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+            guard contentType == BridgeAudioFormat.mimeType(forExtension: ext) else {
+                throw BridgeMultipartError.invalidRequest("Multipart audio Content-Type must be \(BridgeAudioFormat.mimeType(forExtension: ext))")
+            }
         }
 
         private func streamedAudioExtension() throws -> String {
