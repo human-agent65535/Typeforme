@@ -141,10 +141,18 @@ final class BridgeService {
             requestedLivePreviewSource = nil
         }
         let supportedLanguages = ASRLanguageSelection.supportedOptions(for: sources)
-        let languageIDs = ASRLanguageSelection.validatedIDs(
-            request.languageIDs ?? AppSettings.asrLanguageIDs,
-            supportedOptions: supportedLanguages
-        )
+        let languageIDs: [String]
+        if let requestedLanguageIDs = request.languageIDs {
+            languageIDs = try Self.resolveSettingsLanguageIDs(
+                requestedLanguageIDs,
+                supportedOptions: supportedLanguages
+            )
+        } else {
+            languageIDs = ASRLanguageSelection.validatedIDs(
+                AppSettings.asrLanguageIDs,
+                supportedOptions: supportedLanguages
+            )
+        }
 
         if request.enabledRecognitionSources != nil {
             AppSettings.setEnabledRecognitionSources(sources)
@@ -566,28 +574,6 @@ final class BridgeService {
             correctionLatencyMs = elapsedMs(since: correctionStarted)
         } catch {
             let latencyMs = elapsedMs(since: correctionStarted)
-            guard Self.canFallbackToRawTranscript(error) else {
-                DebugLogStore.recordCorrection(
-                    debugLog,
-                    mode: correctionMode,
-                    text: nil,
-                    status: "error",
-                    error: error.localizedDescription,
-                    latencyMs: latencyMs,
-                    request: editRequest,
-                    timeoutMs: AppSettings.correctionTimeoutMs
-                )
-                await publishJobStatus(
-                    jobID: jobID,
-                    stage: .failed,
-                    message: "Refine failed",
-                    rawTranscriptLength: trimmed.count,
-                    transcriptionLatencyMs: transcriptionLatencyMs,
-                    refineLatencyMs: latencyMs,
-                    error: error.localizedDescription
-                )
-                throw error
-            }
             correction = fallbackCorrectionOutput(
                 rawTranscript: trimmed,
                 languageIDs: languageIDs,
@@ -737,17 +723,6 @@ final class BridgeService {
             correctionLatencyMs = elapsedMs(since: correctionStarted)
         } catch {
             let latencyMs = elapsedMs(since: correctionStarted)
-            guard Self.canFallbackToRawTranscript(error) else {
-                await publishJobStatus(
-                    jobID: jobID,
-                    stage: .failed,
-                    message: "Refine failed",
-                    rawTranscriptLength: rawTranscript.count,
-                    refineLatencyMs: latencyMs,
-                    error: error.localizedDescription
-                )
-                throw error
-            }
             correction = fallbackCorrectionOutput(
                 rawTranscript: rawTranscript,
                 languageIDs: languageIDs,
@@ -793,6 +768,10 @@ final class BridgeService {
         return response
     }
 
+    static func refineFailureStatus(for error: Error) -> String {
+        isCorrectionTimeout(error) ? "refine_timeout" : "refine_error"
+    }
+
     private static func isCorrectionTimeout(_ error: Error) -> Bool {
         if let correctorError = error as? CorrectorError, correctorError == .timeout {
             return true
@@ -800,40 +779,20 @@ final class BridgeService {
         return error.localizedDescription.localizedCaseInsensitiveContains("timed out")
     }
 
-    /// `.timeout`, `.unavailable`, `.requestFailed`, `.validationFailed` are
-    /// all "ASR succeeded but correction backend let us down" — fall back to
-    /// the raw transcript instead of dropping the dictation. `.empty` stays
-    /// throw-only because there's nothing to fall back to.
-    private static func canFallbackToRawTranscript(_ error: Error) -> Bool {
-        if let correctorError = error as? CorrectorError {
-            switch correctorError {
-            case .timeout, .unavailable, .requestFailed, .validationFailed:
-                return true
-            case .empty:
-                return false
-            }
-        }
-        // Network errors that escaped CorrectorError translation.
-        let message = error.localizedDescription.lowercased()
-        return message.contains("offline")
-            || message.contains("timed out")
-            || message.contains("unreach")
-            || message.contains("connection")
-    }
-
-    private static func fallbackCorrectionStatus(_ error: Error) -> String {
-        if let correctorError = error as? CorrectorError, correctorError == .timeout {
-            return "timeout"
-        }
-        return "fallback"
-    }
-
     static func resultReadyMessage(correctionStatus: String, okMessage: String) -> String {
         let normalized = correctionStatus.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if normalized == "skipped_fast_mode" {
+        switch normalized {
+        case "ok":
+            return okMessage
+        case "skipped_fast_mode":
             return "Fast transcript ready"
+        case "refine_timeout":
+            return "Without refine: refine timeout"
+        case "refine_error":
+            return "Without refine: refine error"
+        default:
+            return "Without refine"
         }
-        return normalized == "ok" ? okMessage : "Without refine"
     }
 
     private func skippedFastCorrectionOutput(rawTranscript: String) -> BridgeCorrectionOutput {
@@ -850,8 +809,8 @@ final class BridgeService {
         correctionMode: CorrectionMode,
         error: Error
     ) -> BridgeCorrectionOutput {
-        // Correction backend failed after ASR succeeded. Keep dictation usable
-        // by returning normalized raw text instead of dropping the audio result.
+        // Correction failed after ASR succeeded. Keep dictation usable while
+        // making the degraded refine reason explicit to clients and logs.
         let fallbackResult = normalize(
             CorrectionResult(action: .commit, text: rawTranscript, risk: .medium),
             languageIDs: languageIDs,
@@ -859,7 +818,7 @@ final class BridgeService {
         )
         return BridgeCorrectionOutput(
             result: fallbackResult,
-            status: Self.fallbackCorrectionStatus(error),
+            status: Self.refineFailureStatus(for: error),
             error: error.localizedDescription
         )
     }
@@ -1128,6 +1087,32 @@ final class BridgeService {
             throw BridgeServiceError.invalidRequest("Unknown text edit intent: \(rawIntent)")
         }
         return intent
+    }
+
+    static func resolveSettingsLanguageIDs(
+        _ rawIDs: [String],
+        supportedOptions: [ASRLanguageOption]
+    ) throws -> [String] {
+        let supportedIDs = Set(supportedOptions.map(\.id))
+        var requestedIDs: [String] = []
+        var seen = Set<String>()
+        for rawID in rawIDs {
+            let trimmedID = rawID.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmedID.isEmpty else {
+                throw BridgeServiceError.invalidRequest("Language ID cannot be empty")
+            }
+            guard rawID == trimmedID, supportedIDs.contains(rawID) else {
+                throw BridgeServiceError.invalidRequest("Unsupported language ID: \(rawID)")
+            }
+            if seen.insert(rawID).inserted {
+                requestedIDs.append(rawID)
+            }
+        }
+        guard !requestedIDs.isEmpty else {
+            throw BridgeServiceError.invalidRequest("At least one language must be selected")
+        }
+        let requested = Set(requestedIDs)
+        return supportedOptions.map(\.id).filter { requested.contains($0) }
     }
 
     private func resolveLanguageIDs(

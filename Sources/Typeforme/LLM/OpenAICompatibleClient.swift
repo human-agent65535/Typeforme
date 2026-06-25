@@ -153,16 +153,18 @@ enum OpenAICompatibleClient {
         }
         let timeoutMs = max(1, Int((timeout * 1000).rounded()))
         let data = try await responseData(for: request, timeoutMs: timeoutMs, onTimeout: nil)
-        return modelIDs(data: data)
+        return try modelIDs(data: data)
     }
 
-    static func modelIDs(data: Data) -> [String] {
-        guard let response = try? BridgeJSON.decode(ModelsResponse.self, from: data) else {
-            return []
-        }
-        return response.data.compactMap { model in
-            let trimmed = model.id.trimmingCharacters(in: .whitespacesAndNewlines)
-            return trimmed.isEmpty ? nil : trimmed
+    static func modelIDs(data: Data) throws -> [String] {
+        do {
+            let response = try BridgeJSON.decode(ModelsResponse.self, from: data)
+            return response.data.compactMap { model in
+                let trimmed = model.id.trimmingCharacters(in: .whitespacesAndNewlines)
+                return trimmed.isEmpty ? nil : trimmed
+            }
+        } catch {
+            throw OpenAICompatibleClientError.invalidResponse("unexpected /v1/models response shape")
         }
     }
 

@@ -217,7 +217,7 @@ struct RemoteBridgeClient {
     }
 
     private func validate(_ response: BridgeDictateResponse) throws {
-        try validateTextResponse(
+        try Self.validateTextResponse(
             text: response.text,
             status: response.correctionStatus,
             error: response.correctionError
@@ -225,7 +225,7 @@ struct RemoteBridgeClient {
     }
 
     private func validate(_ response: BridgeRefineResponse) throws {
-        try validateTextResponse(
+        try Self.validateTextResponse(
             text: response.text,
             status: response.correctionStatus,
             error: response.correctionError
@@ -233,15 +233,15 @@ struct RemoteBridgeClient {
     }
 
     private func validate(_ response: BridgeTextEditResponse) throws {
-        try validateTextResponse(
+        try Self.validateTextResponse(
             text: response.text,
             status: response.editStatus,
             error: response.editError
         )
     }
 
-    private func validateTextResponse(text: String, status: String?, error: String?) throws {
-        if status == "error" {
+    static func validateTextResponse(text: String, status: String?, error: String?) throws {
+        if status?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "error" {
             throw RemoteBridgeClientError.correctionFailed(error ?? "")
         }
         if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {

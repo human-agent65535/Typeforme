@@ -57,7 +57,7 @@ enum TypeformeBundleConfiguration {
 
 enum KeyboardSharedDefaults {
     static var appGroupIdentifier: String { TypeformeBundleConfiguration.appGroupIdentifier }
-    static let keyboardDefaultsKey = "keyboard.defaults.v1"
+    static let keyboardDefaultsKey = "keyboard.defaults.v2"
     private static let keyboardStatusKey = "keyboard.status.v1"
     private static let hostHandoffKey = "keyboard.host-handoff.v1"
     private static let hostForegroundKey = "keyboard.host-foreground.v1"

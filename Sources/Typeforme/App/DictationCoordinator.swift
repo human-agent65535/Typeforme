@@ -54,8 +54,8 @@ final class DictationCoordinator: ObservableObject {
     private static let minimumToggleStopInterval: TimeInterval = 0.6
     private static let asrLivePreviewFinishTimeout: TimeInterval = 4
     private static let asrLivePreviewResetTimeout: TimeInterval = 2
-    private static let previewWithoutRefineMessage = "Preview without refine"
-    private static let insertedWithoutRefineMessage = "Inserted without refine"
+    private static let previewWithoutRefineBaseMessage = "Preview without refine"
+    private static let insertedWithoutRefineBaseMessage = "Inserted without refine"
 
     init(dictionary: UserDictionaryStore) {
         self.dictionary = dictionary
@@ -447,49 +447,31 @@ final class DictationCoordinator: ObservableObject {
                 lastWarning = asrWarning
                 lastCorrected = normalizedResult.text
                 await finish(with: normalizedResult, sessionID: sessionID, cancelToken: cancelToken)
-            } catch CorrectorError.empty {
-                DebugLogStore.recordCorrection(
-                    debugLog,
-                    mode: request.correctionMode,
-                    text: nil,
-                    status: "empty",
-                    error: CorrectorError.empty.localizedDescription,
-                    request: request,
-                    timeoutMs: AppSettings.correctionTimeoutMs
-                )
+            } catch {
+                if error is CancellationError {
+                    throw error
+                }
                 try await ensureActive(sessionID: sessionID, token: cancelToken)
-                Log.coordinator.notice("corrector returned empty — back to idle")
-                clearActiveSession()
-                clearTextEditRequest()
-                clearDictationContext()
-                transition(to: .idle)
-            } catch let correctorError as CorrectorError where
-                correctorError == .timeout
-                || Self.isCorrectorRecoverableError(correctorError)
-            {
-                // Timeout / network / validation / backend-unavailable: keep
-                // the dictation usable by committing the raw transcript so
-                // the user doesn't lose the audio just because the styler is
-                // down. `.empty` is intentionally NOT in this set (handled
-                // above) — there's no raw text to fall back to.
-                try await ensureActive(sessionID: sessionID, token: cancelToken)
+                let statusLabel = Self.refineFailureStatus(for: error)
                 let fallbackResult = normalizeResult(
                     CorrectionResult(action: .commit, text: trimmed, risk: .medium),
                     correctionMode: request.correctionMode
                 )
-                let statusLabel: String = correctorError == .timeout ? "timeout" : "fallback"
                 DebugLogStore.recordCorrection(
                     debugLog,
                     mode: request.correctionMode,
                     text: fallbackResult.text,
                     status: statusLabel,
-                    error: correctorError.localizedDescription,
+                    error: error.localizedDescription,
                     latencyMs: elapsedMs(since: correctionStarted),
                     request: request,
                     timeoutMs: AppSettings.correctionTimeoutMs
                 )
                 previewCorrectionMode = request.correctionMode
-                lastWarning = Self.combinedWarning([Self.previewWithoutRefineMessage, asrWarning])
+                lastWarning = Self.combinedWarning([
+                    Self.previewWithoutRefineMessage(for: statusLabel),
+                    asrWarning,
+                ])
                 lastCorrected = fallbackResult.text
                 await finish(with: fallbackResult, sessionID: sessionID, cancelToken: cancelToken)
             }
@@ -557,22 +539,20 @@ final class DictationCoordinator: ObservableObject {
         return true
     }
 
-    /// `.unavailable` / `.requestFailed` / `.validationFailed` mean ASR
-    /// succeeded but the styling backend let us down — we can still commit
-    /// the raw transcript so the user doesn't lose dictation. `.empty` and
-    /// `.timeout` are handled by their own catches.
-    private static func isCorrectorRecoverableError(_ error: CorrectorError) -> Bool {
-        switch error {
-        case .unavailable, .requestFailed, .validationFailed:
+    private static func refineFailureStatus(for error: Error) -> String {
+        isCorrectionTimeout(error) ? "refine_timeout" : "refine_error"
+    }
+
+    private static func isCorrectionTimeout(_ error: Error) -> Bool {
+        if let correctorError = error as? CorrectorError, correctorError == .timeout {
             return true
-        case .timeout, .empty:
-            return false
         }
+        return error.localizedDescription.localizedCaseInsensitiveContains("timed out")
     }
 
     private static func isCorrectionDegradedStatus(_ status: String?) -> Bool {
         switch status?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-        case "fallback", "timeout":
+        case "refine_error", "refine_timeout":
             return true
         default:
             return false
@@ -756,8 +736,39 @@ final class DictationCoordinator: ObservableObject {
     private static func successWarning(from warning: String?) -> String? {
         let trimmed = warning?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if trimmed.isEmpty { return nil }
-        if trimmed == previewWithoutRefineMessage { return insertedWithoutRefineMessage }
-        return trimmed
+        let lines = trimmed.components(separatedBy: .newlines).map { line -> String in
+            let cleaned = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            if cleaned == previewWithoutRefineBaseMessage {
+                return insertedWithoutRefineBaseMessage
+            }
+            if cleaned == previewWithoutRefineMessage(for: "refine_timeout") {
+                return insertedWithoutRefineMessage(for: "refine_timeout")
+            }
+            if cleaned == previewWithoutRefineMessage(for: "refine_error") {
+                return insertedWithoutRefineMessage(for: "refine_error")
+            }
+            return line
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private static func previewWithoutRefineMessage(for status: String?) -> String {
+        withoutRefineMessage(prefix: previewWithoutRefineBaseMessage, status: status)
+    }
+
+    private static func insertedWithoutRefineMessage(for status: String?) -> String {
+        withoutRefineMessage(prefix: insertedWithoutRefineBaseMessage, status: status)
+    }
+
+    private static func withoutRefineMessage(prefix: String, status: String?) -> String {
+        switch status?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "refine_timeout":
+            return "\(prefix): refine timeout"
+        case "refine_error":
+            return "\(prefix): refine error"
+        default:
+            return prefix
+        }
     }
 
     private func asrService(for correctionMode: CorrectionMode) throws -> ASRService {
@@ -1064,7 +1075,7 @@ final class DictationCoordinator: ObservableObject {
             previewCorrectionMode = selectedCorrectionMode
             lastWarning = Self.combinedWarning([
                 Self.isCorrectionDegradedStatus(response.correctionStatus)
-                    ? Self.previewWithoutRefineMessage
+                    ? Self.previewWithoutRefineMessage(for: response.correctionStatus)
                     : nil,
                 response.asrWarning,
             ])
@@ -1136,7 +1147,7 @@ final class DictationCoordinator: ObservableObject {
                 )
                 try await ensureActive(sessionID: sessionID, token: cancelToken)
                 lastWarning = Self.isCorrectionDegradedStatus(response.correctionStatus)
-                    ? Self.previewWithoutRefineMessage
+                    ? Self.previewWithoutRefineMessage(for: response.correctionStatus)
                     : nil
                 text = normalizeResult(
                     CorrectionResult(action: .commit, text: response.text, risk: .low),
@@ -1156,10 +1167,23 @@ final class DictationCoordinator: ObservableObject {
                     punctuationPreference: AppSettings.punctuationPreference,
                     userDictionary: dictionary.sortedSnapshot()
                 )
-                let result = try await corrector.correct(request, timeoutMs: AppSettings.correctionTimeoutMs)
-                try await ensureActive(sessionID: sessionID, token: cancelToken)
-                lastWarning = nil
-                text = normalizeResult(result, correctionMode: request.correctionMode).text
+                do {
+                    let result = try await corrector.correct(request, timeoutMs: AppSettings.correctionTimeoutMs)
+                    try await ensureActive(sessionID: sessionID, token: cancelToken)
+                    lastWarning = nil
+                    text = normalizeResult(result, correctionMode: request.correctionMode).text
+                } catch {
+                    if error is CancellationError {
+                        throw error
+                    }
+                    try await ensureActive(sessionID: sessionID, token: cancelToken)
+                    let status = Self.refineFailureStatus(for: error)
+                    lastWarning = Self.previewWithoutRefineMessage(for: status)
+                    text = normalizeResult(
+                        CorrectionResult(action: .commit, text: sourceText, risk: .medium),
+                        correctionMode: request.correctionMode
+                    ).text
+                }
             }
 
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)

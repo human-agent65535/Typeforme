@@ -45,14 +45,21 @@ struct ExternalCompatibleCorrectorServiceTests {
     @Test func parsesModelIDsFromModelsResponse() throws {
         let data = #"{"data":[{"id":"qwen/qwen3-35b-a3b"},{"id":"  "},{"id":"claude-sonnet-4-5"}]}"#
             .data(using: .utf8)!
-        #expect(ExternalCompatibleCorrectorService.modelIDs(data: data, apiKind: .openAI) == [
+        #expect(try ExternalCompatibleCorrectorService.modelIDs(data: data, apiKind: .openAI) == [
             "qwen/qwen3-35b-a3b",
             "claude-sonnet-4-5",
         ])
-        #expect(ExternalCompatibleCorrectorService.modelIDs(data: data, apiKind: .anthropic) == [
+        #expect(try ExternalCompatibleCorrectorService.modelIDs(data: data, apiKind: .anthropic) == [
             "qwen/qwen3-35b-a3b",
             "claude-sonnet-4-5",
         ])
+    }
+
+    @Test func rejectsUnexpectedModelsResponseShape() throws {
+        let data = #"{"models":[{"id":"qwen"}]}"#.data(using: .utf8)!
+
+        expectInvalidModelsResponse(data: data, apiKind: .openAI)
+        expectInvalidModelsResponse(data: data, apiKind: .anthropic)
     }
 
     @Test func parsesAnthropicMessagesTextBlocks() throws {
@@ -223,6 +230,17 @@ struct ExternalCompatibleCorrectorServiceTests {
         let calls = await recorder.snapshot()
         #expect(report.ok)
         #expect(calls.map(\.apiKey) == [nil])
+    }
+
+    private func expectInvalidModelsResponse(data: Data, apiKind: ExternalLLMAPIKind) {
+        do {
+            _ = try ExternalCompatibleCorrectorService.modelIDs(data: data, apiKind: apiKind)
+            Issue.record("Expected /v1/models invalid response error")
+        } catch let error as OpenAICompatibleClientError {
+            #expect(error == .invalidResponse("unexpected /v1/models response shape"))
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
     }
 }
 
