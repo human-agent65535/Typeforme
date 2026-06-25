@@ -307,11 +307,13 @@ struct BridgeLivePreviewStartResponse: Codable, Sendable {
 
 struct BridgeLivePreviewFinishResponse: Codable, Sendable {
     let sessionID: String
+    let provider: String
     let text: String?
     let finishedAt: TimeInterval
 
     enum CodingKeys: String, CodingKey {
         case sessionID = "session_id"
+        case provider
         case text
         case finishedAt = "finished_at"
     }

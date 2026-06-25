@@ -127,6 +127,21 @@ struct BridgeWireModelsTests {
         #expect(object["app_category"] as? String == "chat")
     }
 
+    @Test func livePreviewFinishResponseCarriesProvider() throws {
+        let response = BridgeLivePreviewFinishResponse(
+            sessionID: "preview-1",
+            provider: RecognitionSource.qwen.rawValue,
+            text: "hello",
+            finishedAt: 123.0
+        )
+
+        let object = try encodedJSONObject(response)
+        #expect(object["session_id"] as? String == "preview-1")
+        #expect(object["provider"] as? String == RecognitionSource.qwen.rawValue)
+        #expect(object["text"] as? String == "hello")
+        #expect(object["finished_at"] as? Double == 123.0)
+    }
+
     @Test func settingsUpdateRequestEncodesSharedBridgeKeys() throws {
         let entryID = UUID(uuidString: "00000000-0000-0000-0000-000000000123")!
         let snapshot = BridgeSettingsEditableSnapshot(

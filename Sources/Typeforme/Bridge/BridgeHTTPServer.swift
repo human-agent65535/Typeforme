@@ -55,7 +55,7 @@ private actor BridgeLivePreviewWebSocketWriter {
     ) async throws {
         let event = BridgeLivePreviewEvent(
             sessionID: response.sessionID,
-            provider: "nvidia-nemotron-asr",
+            provider: response.provider,
             text: response.text,
             isFinal: true,
             updatedAt: response.finishedAt

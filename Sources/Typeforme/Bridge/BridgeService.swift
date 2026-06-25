@@ -357,6 +357,7 @@ final class BridgeService {
         )
         return BridgeLivePreviewFinishResponse(
             sessionID: session.id,
+            provider: session.provider,
             text: transcript,
             finishedAt: finishedAt.timeIntervalSince1970
         )
