@@ -626,7 +626,7 @@ final class BridgeHTTPServer: @unchecked Sendable {
         try await withThrowingTaskGroup(of: Void.self) { group in
             group.addTask {
                 let stream = await BridgeLivePreviewEventCenter.shared.subscribe(sessionID: sessionID)
-                for await event in stream where !event.isFinal {
+                for await event in stream {
                     try await writer.send(event, outbound: outbound)
                 }
             }

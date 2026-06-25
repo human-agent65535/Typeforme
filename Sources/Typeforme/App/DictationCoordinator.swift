@@ -47,6 +47,7 @@ final class DictationCoordinator: ObservableObject {
     private var liveSpeechRequest: SFSpeechAudioBufferRecognitionRequest?
     private var liveSpeechTask: SFSpeechRecognitionTask?
     private var asrLivePreviewLease: ASRLivePreviewLease?
+    private var remoteBridgeLivePreviewStreamer: RemoteBridgeLivePreviewStreamer?
 
     private static let errorResetDelay: TimeInterval = 8.0
     private static let successResetDelay: TimeInterval = 1.8
@@ -111,7 +112,7 @@ final class DictationCoordinator: ObservableObject {
         captureFrontmost()
         activeTextEditIntent = intent
 
-        let livePreviewPCMHandler = makeLivePartialPreviewPCMHandlerIfAvailable()
+        let livePreviewPCMHandler = await makeLivePartialPreviewPCMHandlerIfAvailable()
         do {
             let startedURL = try await recorder.start(pcmHandler: livePreviewPCMHandler)
             startInProgress = false
@@ -808,8 +809,11 @@ final class DictationCoordinator: ObservableObject {
     // Any preview failure silently degrades to "no preview" — recording still
     // works and final ASR still runs.
 
-    private func makeLivePartialPreviewPCMHandlerIfAvailable() -> ((AVAudioPCMBuffer) -> Void)? {
+    private func makeLivePartialPreviewPCMHandlerIfAvailable() async -> ((AVAudioPCMBuffer) -> Void)? {
         teardownLivePartialPreview(clearText: true)
+        if AppSettings.processingMode == .client {
+            return await makeRemoteBridgeLivePartialPreviewPCMHandlerIfAvailable()
+        }
         switch AppSettings.voiceLivePreviewSource {
         case .off:
             return nil
@@ -819,6 +823,45 @@ final class DictationCoordinator: ObservableObject {
             return makeAppleSpeechLivePartialPreviewPCMHandlerIfAvailable()
         case .nvidiaNemotron:
             return makeASRLivePartialPreviewPCMHandlerIfAvailable(source: .nvidiaNemotron)
+        }
+    }
+
+    private func makeRemoteBridgeLivePartialPreviewPCMHandlerIfAvailable() async -> ((AVAudioPCMBuffer) -> Void)? {
+        let source = AppSettings.voiceLivePreviewSource
+        guard source == .qwen || source == .nvidiaNemotron else {
+            if source != .off {
+                Log.bridge.notice("Mac client live preview skipped: source \(source.rawValue, privacy: .public) is not bridge-streamable")
+            }
+            return nil
+        }
+        let displaysLivePartial = activeTextEditIntent != .command
+        do {
+            let resolved = try await RemoteBridgeClient.resolvedFromSettings(probeAllEndpoints: false)
+            let snapshot = frontmostSnapshot
+            let streamer = RemoteBridgeLivePreviewStreamer(
+                client: resolved.client,
+                languageIDs: AppSettings.clientLanguageIDs,
+                correctionMode: AppSettings.correctionMode,
+                livePreviewSource: source,
+                appSnapshot: snapshot,
+                appCategory: AppCategory.from(bundleID: snapshot?.bundleID),
+                onTranscript: { [weak self] text in
+                    Task { @MainActor [weak self] in
+                        self?.applyLivePartialPreview(text, displaysLivePartial: displaysLivePartial)
+                    }
+                },
+                onFailure: { message in
+                    Log.bridge.notice("Mac client live preview failed: \(message, privacy: .public)")
+                }
+            )
+            remoteBridgeLivePreviewStreamer = streamer
+            streamer.start()
+            return { [streamer] buffer in
+                streamer.append(buffer)
+            }
+        } catch {
+            Log.bridge.notice("Mac client live preview skipped: \(error.localizedDescription, privacy: .public)")
+            return nil
         }
     }
 
@@ -917,6 +960,8 @@ final class DictationCoordinator: ObservableObject {
     /// of the request so the recognizer finalises its last partial. We keep
     /// `livePartialTranscript` on screen until the Mac final replaces it.
     func endLivePartialPreviewAudio() async {
+        remoteBridgeLivePreviewStreamer?.finish()
+        remoteBridgeLivePreviewStreamer = nil
         liveSpeechRequest?.endAudio()
         if let lease = asrLivePreviewLease {
             asrLivePreviewLease = nil
@@ -934,6 +979,8 @@ final class DictationCoordinator: ObservableObject {
 
     /// Called after the Mac final result is applied (or on reset / error).
     func teardownLivePartialPreview(clearText: Bool) {
+        remoteBridgeLivePreviewStreamer?.cancel()
+        remoteBridgeLivePreviewStreamer = nil
         liveSpeechTask?.cancel()
         liveSpeechTask = nil
         liveSpeechRequest = nil

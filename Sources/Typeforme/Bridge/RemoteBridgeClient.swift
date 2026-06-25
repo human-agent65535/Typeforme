@@ -152,6 +152,86 @@ struct RemoteBridgeClient {
         return response
     }
 
+    func startLivePreview(
+        languageIDs: [String],
+        correctionMode: CorrectionMode,
+        livePreviewSource: VoiceLivePreviewSource,
+        appSnapshot: FrontmostAppSnapshot?,
+        appCategory: AppCategory,
+        clientJobID: String? = nil,
+        timeout: TimeInterval = 5
+    ) async throws -> BridgeLivePreviewStartResponse {
+        let payload = BridgeLivePreviewStartRequest(
+            clientJobID: clientJobID,
+            languageIDs: languageIDs,
+            correctionMode: correctionMode.rawValue,
+            livePreviewSource: livePreviewSource.rawValue,
+            appName: appSnapshot?.localizedName,
+            bundleID: appSnapshot?.bundleID,
+            appCategory: appCategory.rawValue
+        )
+        let endpoint = BridgeAPIEndpoint.livePreviewStart
+        return try await request(path: endpoint.path, method: endpoint.method, json: payload, timeout: timeout)
+    }
+
+    func livePreviewWebSocketTask(
+        sessionID: String,
+        timeout: TimeInterval = 10 * 60
+    ) throws -> URLSessionWebSocketTask {
+        guard let encodedSessionID = sessionID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) else {
+            throw RemoteBridgeClientError.invalidURL
+        }
+        var request: URLRequest
+        do {
+            let endpoint = BridgeAPIEndpoint.livePreviewSocket(sessionID: encodedSessionID)
+            request = try http.makeRequest(
+                path: endpoint.path,
+                method: endpoint.method,
+                timeout: timeout,
+                accept: "application/json",
+                acceptEncoding: nil
+            )
+        } catch {
+            throw mapHTTPError(error)
+        }
+        guard let url = request.url,
+              var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        else {
+            throw RemoteBridgeClientError.invalidURL
+        }
+        switch components.scheme?.lowercased() {
+        case "http":
+            components.scheme = "ws"
+        case "https":
+            components.scheme = "wss"
+        default:
+            throw RemoteBridgeClientError.invalidURL
+        }
+        guard let webSocketURL = components.url else {
+            throw RemoteBridgeClientError.invalidURL
+        }
+        request.url = webSocketURL
+        let task = URLSession.shared.webSocketTask(with: request)
+        task.maximumMessageSize = 512 * 1024
+        return task
+    }
+
+    func finishLivePreview(
+        sessionID: String,
+        timeout: TimeInterval = 5
+    ) async throws -> BridgeLivePreviewFinishResponse {
+        guard let encodedSessionID = sessionID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) else {
+            throw RemoteBridgeClientError.invalidURL
+        }
+        let endpoint = BridgeAPIEndpoint.livePreviewFinish(sessionID: encodedSessionID)
+        return try await request(
+            path: endpoint.path,
+            method: endpoint.method,
+            body: Optional<Data>.none,
+            timeout: timeout
+        )
+    }
+
     func refine(
         sessionID: String?,
         rawTranscript: String?,
