@@ -45,9 +45,6 @@ struct BridgeWireModelsTests {
         #expect(RecognitionSource.rawValue(for: [.qwen, .appleSpeech]) == "qwen3-asr-llama,apple-speech")
         #expect(RecognitionSource.qwen.hasModelConfiguration)
         #expect(!RecognitionSource.appleSpeech.hasModelConfiguration)
-        #expect(RecognitionSource.qwen.supportsLivePreview)
-        #expect(RecognitionSource.nvidiaNemotron.supportsLivePreview)
-        #expect(RecognitionSource.appleSpeech.supportsLivePreview)
     }
 
     @Test func languageOptionContractUsesSharedBridgeKeys() throws {

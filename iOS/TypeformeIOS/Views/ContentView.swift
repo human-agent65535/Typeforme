@@ -1153,7 +1153,7 @@ private struct LivePreviewSettingsSection: View {
     var body: some View {
         Section {
             Toggle("Live Preview", isOn: livePreviewBinding)
-                .disabled(state.isBusy || !state.correctionMode.allowsLivePreview)
+                .disabled(state.isBusy)
             Picker("Preview Source", selection: livePreviewSourceBinding) {
                 ForEach(sourceOptions) { source in
                     Text(sourceTitle(source))
@@ -1162,7 +1162,7 @@ private struct LivePreviewSettingsSection: View {
                 }
             }
             .pickerStyle(.menu)
-            .disabled(!state.keyboardLivePreviewEnabled || state.isBusy || !state.correctionMode.allowsLivePreview)
+            .disabled(!state.keyboardLivePreviewEnabled || state.isBusy)
             if state.keyboardLivePreviewSource == .appleSpeech {
                 Picker("Preview Recognition", selection: livePreviewRecognitionModeBinding) {
                     ForEach(KeyboardLivePreviewRecognitionMode.allCases) { mode in
@@ -1170,13 +1170,13 @@ private struct LivePreviewSettingsSection: View {
                     }
                 }
                 .pickerStyle(.menu)
-                .disabled(!state.keyboardLivePreviewEnabled || state.isBusy || !state.correctionMode.allowsLivePreview)
+                .disabled(!state.keyboardLivePreviewEnabled || state.isBusy)
             } else {
                 LabeledContent("Preview Recognition") {
                     Text("Server-side")
                         .foregroundStyle(.secondary)
                 }
-                .disabled(!state.keyboardLivePreviewEnabled || !state.correctionMode.allowsLivePreview)
+                .disabled(!state.keyboardLivePreviewEnabled)
             }
         } header: {
             Text(title)
@@ -1656,6 +1656,13 @@ private struct MacSettingsView: View {
         return !draft.hasSameEditableSettings(as: initialDraft)
     }
 
+    private var livePreviewServerASRAvailable: Bool {
+        guard let draft else { return false }
+        return state.config.correctionMode == .fast
+            ? draft.supportsFastMode
+            : draft.supportsServerASRPreview
+    }
+
     var body: some View {
         List {
             if let draft {
@@ -1675,7 +1682,7 @@ private struct MacSettingsView: View {
 
                 LivePreviewSettingsSection(
                     title: "Live Preview",
-                    serverASRAvailable: draft.supportsServerASRPreview
+                    serverASRAvailable: livePreviewServerASRAvailable
                 )
 
                 Section {

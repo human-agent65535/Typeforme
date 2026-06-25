@@ -79,4 +79,27 @@ struct VoiceLivePreviewSourceTests {
             correctionMode: .fast
         ))
     }
+
+    @Test func bridgeFastPreviewPrefersQwen() {
+        #expect(BridgeSettingsPayload.bridgeLivePreviewSource(
+            configuredSource: .appleSpeech,
+            sources: [.qwen, .appleSpeech],
+            correctionMode: .fast
+        ) == .qwen)
+        #expect(BridgeSettingsPayload.bridgeLivePreviewSource(
+            configuredSource: .off,
+            sources: [.qwen],
+            correctionMode: .fast
+        ) == .qwen)
+        #expect(BridgeSettingsPayload.bridgeLivePreviewSource(
+            configuredSource: .appleSpeech,
+            sources: [.appleSpeech],
+            correctionMode: .fast
+        ) == .off)
+        #expect(BridgeSettingsPayload.bridgeLivePreviewSource(
+            configuredSource: .appleSpeech,
+            sources: [.qwen, .appleSpeech],
+            correctionMode: .polish
+        ) == .appleSpeech)
+    }
 }

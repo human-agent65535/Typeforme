@@ -1178,8 +1178,12 @@ struct DictationInputSettingsView: View {
     private func constrainPreviewSourceToCurrentSources() {
         let source = VoiceLivePreviewSource(rawValue: voiceLivePreviewSourceRaw) ?? .appleSpeech
         guard voiceLivePreview, !previewSourceOptions.contains(source) else { return }
-        voiceLivePreview = false
-        voiceLivePreviewSourceRaw = VoiceLivePreviewSource.off.rawValue
+        if let preferred = previewSourceOptions.first(where: { $0 != .off }) {
+            voiceLivePreviewSourceRaw = preferred.rawValue
+        } else {
+            voiceLivePreview = false
+            voiceLivePreviewSourceRaw = VoiceLivePreviewSource.off.rawValue
+        }
     }
 
     private func isPreviewSourceEnabled(_ source: VoiceLivePreviewSource) -> Bool {

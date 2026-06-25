@@ -557,12 +557,13 @@ final class AppState {
     }
 
     func isKeyboardLivePreviewSourceEnabled(_ source: KeyboardLivePreviewSource) -> Bool {
-        guard correctionMode.allowsLivePreview else { return false }
         switch source {
         case .appleSpeech:
             return correctionMode.usesRefine
         case .serverASR:
-            return macSettings?.supportsServerASRPreview == true
+            return correctionMode == .fast
+                ? macSettings?.supportsFastMode == true
+                : macSettings?.supportsServerASRPreview == true
         }
     }
 
@@ -739,7 +740,6 @@ final class AppState {
     }
 
     func setKeyboardLivePreviewEnabled(_ enabled: Bool) {
-        guard correctionMode.allowsLivePreview || !enabled else { return }
         guard updateStoredBoolPreference(
             \.keyboardLivePreviewEnabled,
             to: enabled,
@@ -763,17 +763,25 @@ final class AppState {
         guard keyboardLivePreviewEnabled,
               !isKeyboardLivePreviewSourceEnabled(keyboardLivePreviewSource)
         else { return }
-        _ = updateStoredBoolPreference(
-            \.keyboardLivePreviewEnabled,
-            to: false,
-            key: Self.keyboardLivePreviewKey
-        )
-        updateStoredRawPreference(
-            \.keyboardLivePreviewSource,
-            to: KeyboardLivePreviewSource.appleSpeech,
-            key: Self.keyboardLivePreviewSourceKey
-        )
-        teardownLivePartialPreview(clearText: true)
+        if let preferred = keyboardLivePreviewSourceOptions.first {
+            updateStoredRawPreference(
+                \.keyboardLivePreviewSource,
+                to: preferred,
+                key: Self.keyboardLivePreviewSourceKey
+            )
+        } else {
+            _ = updateStoredBoolPreference(
+                \.keyboardLivePreviewEnabled,
+                to: false,
+                key: Self.keyboardLivePreviewKey
+            )
+            updateStoredRawPreference(
+                \.keyboardLivePreviewSource,
+                to: KeyboardLivePreviewSource.appleSpeech,
+                key: Self.keyboardLivePreviewSourceKey
+            )
+            teardownLivePartialPreview(clearText: true)
+        }
     }
 
     func setKeyboardLivePreviewRecognitionMode(_ mode: KeyboardLivePreviewRecognitionMode) {
@@ -2247,10 +2255,6 @@ final class AppState {
         teardownLivePartialPreview(clearText: true)
         let generation = nextLivePreviewGeneration()
 
-        guard correctionMode.allowsLivePreview else {
-            appLog.debug("live preview skipped: fast mode")
-            return false
-        }
         guard keyboardLivePreviewEnabled else {
             appLog.debug("live preview skipped: disabled")
             return false
@@ -2358,7 +2362,10 @@ final class AppState {
             appLog.debug("server live preview skipped: server ASR preview disabled")
             return false
         }
-        guard macSettings?.supportsServerASRPreview == true else {
+        let serverASRPreviewAvailable = correctionMode == .fast
+            ? macSettings?.supportsFastMode == true
+            : macSettings?.supportsServerASRPreview == true
+        guard serverASRPreviewAvailable else {
             appLog.debug("server live preview skipped: Mac server ASR preview is not enabled")
             return false
         }

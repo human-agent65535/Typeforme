@@ -263,17 +263,14 @@ final class BridgeService {
     func startLivePreview(_ request: BridgeLivePreviewStartRequest) async throws -> BridgeLivePreviewStartResponse {
         pruneExpiredLivePreviewSessions()
         let correctionMode = try resolveCorrectionMode(request.correctionMode)
-        guard correctionMode.allowsLivePreview else {
-            throw BridgeServiceError.invalidRequest("Live preview is not available in Fast mode")
-        }
         guard livePreviewSessions.count < Self.maxLivePreviewSessions else {
             throw BridgeServiceError.invalidRequest("Too many active live preview sessions")
         }
 
         let id = UUID().uuidString
         let requestedLanguageIDs = resolveLivePreviewLanguageIDs(ids: request.languageIDs, mode: request.languageMode)
-        let previewSource = BridgeSettingsPayload.normalizedLivePreviewSource(
-            AppSettings.voiceLivePreviewSource,
+        let previewSource = BridgeSettingsPayload.bridgeLivePreviewSource(
+            configuredSource: AppSettings.voiceLivePreviewSource,
             sources: AppSettings.enabledRecognitionSources,
             correctionMode: correctionMode
         )

@@ -29,10 +29,6 @@ enum CorrectionMode: String, Codable, CaseIterable, Identifiable, Sendable {
         self == .fast
     }
 
-    var allowsLivePreview: Bool {
-        true
-    }
-
     static var promptEditableCases: [CorrectionMode] {
         allCases.filter(\.usesRefine)
     }

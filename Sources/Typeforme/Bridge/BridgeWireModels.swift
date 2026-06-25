@@ -54,13 +54,6 @@ enum RecognitionSource: String, CaseIterable, Codable, Identifiable, Sendable {
         }
     }
 
-    var supportsLivePreview: Bool {
-        switch self {
-        case .qwen, .nvidiaNemotron, .appleSpeech:
-            return true
-        }
-    }
-
     static let defaultEnabled: [RecognitionSource] = [.qwen]
 
     static func recognizedSources(_ raw: [String]) -> [RecognitionSource] {

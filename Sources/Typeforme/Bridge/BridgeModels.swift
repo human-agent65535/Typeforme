@@ -461,6 +461,17 @@ struct BridgeSettingsPayload: Codable, Sendable {
         ).contains(source) ? source : .off
     }
 
+    static func bridgeLivePreviewSource(
+        configuredSource source: VoiceLivePreviewSource,
+        sources: [RecognitionSource],
+        correctionMode: CorrectionMode
+    ) -> VoiceLivePreviewSource {
+        if correctionMode == .fast, sources.contains(.qwen) {
+            return .qwen
+        }
+        return normalizedLivePreviewSource(source, sources: sources, correctionMode: correctionMode)
+    }
+
     mutating func normalize() {
         recognitionSourceOptions = Self.controllableRecognitionSources
         enabledRecognitionSources = RecognitionSource.recognizedSources(enabledRecognitionSources).map(\.rawValue)

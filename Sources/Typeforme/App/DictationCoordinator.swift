@@ -799,7 +799,6 @@ final class DictationCoordinator: ObservableObject {
 
     private func makeLivePartialPreviewPCMHandlerIfAvailable() -> ((AVAudioPCMBuffer) -> Void)? {
         teardownLivePartialPreview(clearText: true)
-        guard AppSettings.correctionMode.allowsLivePreview else { return nil }
         switch AppSettings.voiceLivePreviewSource {
         case .off:
             return nil
