@@ -180,6 +180,7 @@ private struct DebugLogCorrectionInput: Codable, Sendable {
     var userDictionaryCount: Int
     var vocabularyCandidates: [VocabularyCandidatePayload]?
     var asrHypotheses: [String]
+    var sourceHypotheses: [ASRSourceHypothesis]?
     var rawTranscriptChars: Int
     var asrHypothesisCount: Int
     var contextBeforeChars: Int
@@ -198,6 +199,7 @@ private struct DebugLogCorrectionInput: Codable, Sendable {
         case userDictionaryCount = "user_dictionary_count"
         case vocabularyCandidates = "vocabulary_candidates"
         case asrHypotheses = "asr_hypotheses"
+        case sourceHypotheses = "source_hypotheses"
         case rawTranscriptChars = "raw_transcript_chars"
         case asrHypothesisCount = "asr_hypothesis_count"
         case contextBeforeChars = "context_before_chars"
@@ -524,6 +526,7 @@ enum DebugLogStore {
             userDictionaryCount: request.userDictionary.count,
             vocabularyCandidates: correctionVocabularyCandidates(for: request),
             asrHypotheses: request.asrHypotheses,
+            sourceHypotheses: request.sourceHypotheses,
             rawTranscriptChars: request.rawTranscript.count,
             asrHypothesisCount: request.asrHypotheses.count,
             contextBeforeChars: request.contextBefore.count,

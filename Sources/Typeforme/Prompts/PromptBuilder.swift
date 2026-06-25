@@ -13,6 +13,10 @@ enum PromptBuilder {
             ?? BuiltInPrompts.modePrompt(request.correctionMode)
         var parts = [systemPrompt, modePrompt]
 
+        if let asrSourceNotes = BuiltInPrompts.asrSourceNotesPrompt(for: request.sourceHypotheses) {
+            parts.append(asrSourceNotes)
+        }
+
         let additional = AppSettings.promptAdditionalSystem.trimmingCharacters(in: .whitespacesAndNewlines)
         if !additional.isEmpty {
             parts.append("""
@@ -48,9 +52,7 @@ enum PromptBuilder {
         )
         let vocabularyCandidates = vocabularyCandidates(for: request)
 
-        let asrHypotheses = CorrectionRequest.normalizedASRHypotheses(
-            candidates: request.asrHypotheses.map(Optional.some) + [Optional.some(request.rawTranscript)]
-        )
+        let asrHypotheses = request.sourceHypotheses
         let input = DictationPromptInputPayload(
             task: "clean_dictation_transcript_for_direct_insertion",
             commitScope: "new_transcript_only",
@@ -402,18 +404,22 @@ enum PromptBuilder {
         let rawTranscript: String
         let outputText: String
         let vocabularyCandidates: [VocabularyCandidatePayload]
-        let asrHypotheses: [String]
+        let asrHypotheses: [ASRSourceHypothesis]
 
         init(
             rawTranscript: String,
             outputText: String,
             vocabularyCandidates: [VocabularyCandidatePayload] = [],
-            asrHypotheses: [String] = []
+            asrHypotheses: [String] = [],
+            sourceHypotheses: [ASRSourceHypothesis] = []
         ) {
             self.rawTranscript = rawTranscript
             self.outputText = outputText
             self.vocabularyCandidates = vocabularyCandidates
-            self.asrHypotheses = asrHypotheses
+            self.asrHypotheses = ASRSourceHypothesis.normalized(
+                sourceHypotheses,
+                fallbackTexts: asrHypotheses.map(Optional.some)
+            )
         }
     }
 
@@ -421,7 +427,7 @@ enum PromptBuilder {
         let context: PromptExampleContextPayload
         let vocabularyCandidates: [VocabularyCandidatePayload]
         let rawTranscript: String
-        let asrHypotheses: [String]
+        let asrHypotheses: [ASRSourceHypothesis]
 
         enum CodingKeys: String, CodingKey {
             case context

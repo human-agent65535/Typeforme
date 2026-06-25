@@ -5,6 +5,7 @@ struct ASRTranscription: Sendable {
     /// Correction uses `hypotheses` so no ASR source is treated as primary.
     let text: String
     let hypotheses: [String]
+    let sourceHypotheses: [ASRSourceHypothesis]
     let alternateTranscripts: [String]
     let modelOutputs: [ASRTranscriptModelOutput]
     let warnings: [String]
@@ -21,6 +22,10 @@ struct ASRTranscription: Sendable {
             candidates: hypotheses.map(Optional.some)
                 + [Optional.some(text)]
                 + alternateTranscripts.map(Optional.some)
+        )
+        self.sourceHypotheses = ASRSourceHypothesis.fromModelOutputs(
+            modelOutputs,
+            fallbackTexts: self.hypotheses.map(Optional.some)
         )
         self.alternateTranscripts = alternateTranscripts
         self.modelOutputs = modelOutputs

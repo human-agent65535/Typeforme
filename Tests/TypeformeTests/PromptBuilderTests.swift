@@ -69,10 +69,10 @@ struct PromptBuilderTests {
             alternateTranscript: "今天 ship 这个 future"
         )
         let prompt = PromptBuilder.userPrompt(for: request)
-        #expect(prompt.contains("\"asr_hypotheses\":[\"今天 ship 这个 feature\",\"今天 ship 这个 future\"]"))
+        #expect(prompt.contains("\"asr_hypotheses\":[{\"source\":\"unattributed\",\"text\":\"今天 ship 这个 feature\"},{\"source\":\"unattributed\",\"text\":\"今天 ship 这个 future\"}]"))
         #expect(!prompt.contains("\"alternate_transcripts\""))
-        #expect(BuiltInPrompts.baseSystem.contains("asr_hypotheses are peer"))
-        #expect(BuiltInPrompts.baseSystem.contains("no hypothesis, field, or array position"))
+        #expect(BuiltInPrompts.baseSystem.contains("Use asr_hypotheses as ASR evidence"))
+        #expect(!PromptBuilder.systemPrompt(for: request).contains("ASR source notes for local conflicts"))
         #expect(BuiltInPrompts.baseSystem.contains("not a primary source"))
 
         // When no alternate is provided, the raw transcript is still present
@@ -87,7 +87,7 @@ struct PromptBuilderTests {
             userDictionary: []
         )
         let barePrompt = PromptBuilder.userPrompt(for: bareRequest)
-        #expect(barePrompt.contains("\"asr_hypotheses\":[\"今天 ship 这个 feature\"]"))
+        #expect(barePrompt.contains("\"asr_hypotheses\":[{\"source\":\"unattributed\",\"text\":\"今天 ship 这个 feature\"}]"))
         #expect(!barePrompt.contains("\"alternate_transcripts\""))
 
         // An empty / whitespace-only alternate is omitted from hypotheses.
@@ -102,7 +102,7 @@ struct PromptBuilderTests {
             alternateTranscript: "   "
         )
         let emptyPrompt = PromptBuilder.userPrompt(for: emptyRequest)
-        #expect(emptyPrompt.contains("\"asr_hypotheses\":[\"今天 ship 这个 feature\"]"))
+        #expect(emptyPrompt.contains("\"asr_hypotheses\":[{\"source\":\"unattributed\",\"text\":\"今天 ship 这个 feature\"}]"))
         #expect(!emptyPrompt.contains("\"alternate_transcripts\""))
 
         let multiRequest = CorrectionRequest(
@@ -122,9 +122,92 @@ struct PromptBuilderTests {
             ]
         )
         let multiPrompt = PromptBuilder.userPrompt(for: multiRequest)
-        #expect(multiPrompt.contains("\"asr_hypotheses\":[\"今天 ship 这个 feature\",\"今天 ship 这个 future\",\"今天 ship 这个 feat sure\"]"))
-        #expect(!multiPrompt.contains("\"Qwen\""))
-        #expect(!multiPrompt.contains("\"Nemotron\""))
+        #expect(multiPrompt.contains("\"asr_hypotheses\":[{\"source\":\"unattributed\",\"text\":\"今天 ship 这个 feature\"},{\"source\":\"unattributed\",\"text\":\"今天 ship 这个 future\"},{\"source\":\"unattributed\",\"text\":\"今天 ship 这个 feat sure\"}]"))
+        #expect(multiPrompt.contains("\"source\":\"unattributed\""))
+    }
+
+    @Test func userPromptCarriesSourceAwareASRHypotheses() {
+        let request = CorrectionRequest(
+            correctionMode: .polish,
+            frontmostAppName: "Notes",
+            frontmostBundleID: "com.apple.Notes",
+            appCategory: .document,
+            languageIDs: ["zh-CN", "en-US", "ja"],
+            rawTranscript: "わーい、リンゴ値上げ20%。",
+            userDictionary: [],
+            asrHypotheses: [
+                "わーい、リンゴ値上げ20%。",
+                "百分之二十",
+                "哇塞，苹果涨价20%",
+            ],
+            sourceHypotheses: [
+                ASRSourceHypothesis(source: "qwen", text: "わーい、リンゴ値上げ20%。"),
+                ASRSourceHypothesis(source: "nvidia_nemotron", text: "百分之二十"),
+                ASRSourceHypothesis(source: "apple_speech", text: "哇塞，苹果涨价20%"),
+            ]
+        )
+
+        let prompt = PromptBuilder.userPrompt(for: request)
+        let systemPrompt = PromptBuilder.systemPrompt(for: request)
+
+        #expect(prompt.contains("\"asr_hypotheses\":[{\"source\":\"qwen\",\"text\":\"わーい、リンゴ値上げ20%。\"},{\"source\":\"nvidia_nemotron\",\"text\":\"百分之二十\"},{\"source\":\"apple_speech\",\"text\":\"哇塞，苹果涨价20%\"}]"))
+        #expect(systemPrompt.contains("ASR source notes for local conflicts"))
+        #expect(systemPrompt.contains("qwen: strongest baseline for multilingual Chinese/English/Japanese and technical terms"))
+        #expect(systemPrompt.contains("apple_speech: strong single-locale evidence"))
+        #expect(systemPrompt.contains("nvidia_nemotron: useful multilingual corroboration"))
+        #expect(!systemPrompt.contains("\"source\":\"qwen\",\"text\":\"Costco.\""))
+        #expect(!systemPrompt.contains("streaming"))
+        #expect(!systemPrompt.contains("strongest default"))
+        #expect(!systemPrompt.contains("source-neutral"))
+    }
+
+    @Test func systemPromptOmitsASRSourceNotesForSingleASRSource() {
+        let qwenOnly = CorrectionRequest(
+            correctionMode: .polish,
+            frontmostAppName: "Notes",
+            frontmostBundleID: "com.apple.Notes",
+            appCategory: .document,
+            languageIDs: ["zh-CN", "en-US"],
+            rawTranscript: "Costco.",
+            userDictionary: [],
+            sourceHypotheses: [
+                ASRSourceHypothesis(source: "qwen", text: "Costco."),
+            ]
+        )
+        let unattributedOnly = CorrectionRequest(
+            correctionMode: .polish,
+            frontmostAppName: "Notes",
+            frontmostBundleID: "com.apple.Notes",
+            appCategory: .document,
+            languageIDs: ["zh-CN", "en-US"],
+            rawTranscript: "Costco.",
+            userDictionary: []
+        )
+
+        #expect(!PromptBuilder.systemPrompt(for: qwenOnly).contains("ASR source notes for local conflicts"))
+        #expect(!PromptBuilder.systemPrompt(for: unattributedOnly).contains("ASR source notes for local conflicts"))
+    }
+
+    @Test func systemPromptOnlyIncludesPresentASRSourceNotes() {
+        let request = CorrectionRequest(
+            correctionMode: .polish,
+            frontmostAppName: "Notes",
+            frontmostBundleID: "com.apple.Notes",
+            appCategory: .document,
+            languageIDs: ["zh-CN"],
+            rawTranscript: "可不是咋的。",
+            userDictionary: [],
+            sourceHypotheses: [
+                ASRSourceHypothesis(source: "qwen", text: "可不是咋的。"),
+                ASRSourceHypothesis(source: "apple_speech", text: "可不是咋滴。"),
+            ]
+        )
+        let systemPrompt = PromptBuilder.systemPrompt(for: request)
+
+        #expect(systemPrompt.contains("ASR source notes for local conflicts"))
+        #expect(systemPrompt.contains("qwen: strongest baseline"))
+        #expect(systemPrompt.contains("apple_speech: strong single-locale evidence"))
+        #expect(!systemPrompt.contains("nvidia_nemotron: useful multilingual corroboration"))
     }
 
     @Test func userPromptUsesAlternateTranscriptsForVocabularyCandidates() {
@@ -153,7 +236,7 @@ struct PromptBuilderTests {
         #expect(prompt.contains("\"match_kind\":\"same_pinyin\""))
         #expect(prompt.contains("\"evidence_source\":\"transcript\""))
         #expect(prompt.contains("\"raw_transcript\":\"我刚和伯雨确认了预算\""))
-        #expect(prompt.contains("\"asr_hypotheses\":[\"我刚和伯雨确认了预算\",\"我刚和沉于确认了预算\"]"))
+        #expect(prompt.contains("\"asr_hypotheses\":[{\"source\":\"unattributed\",\"text\":\"我刚和伯雨确认了预算\"},{\"source\":\"unattributed\",\"text\":\"我刚和沉于确认了预算\"}]"))
         #expect(prompt.contains("\"match_source\":\"alternate_transcript\""))
         #expect(prompt.contains("\"text\":\"我刚和陈屿确认了预算。\""))
     }
@@ -203,15 +286,18 @@ struct PromptBuilderTests {
 
     @Test func builtInPromptsFavorDirectCommitAndSemanticASRCorrections() {
         let base = BuiltInPrompts.baseSystem
-        #expect(base.count < 4_500)
-        #expect(base.contains("asr_hypotheses are peer"))
+        #expect(base.count < 5_000)
+        #expect(base.contains("Use asr_hypotheses as ASR evidence"))
+        #expect(base.contains("cross-source agreement when available"))
+        #expect(!base.contains("ASR source notes for local conflicts"))
+        #expect(!base.contains("qwen: strongest baseline"))
+        #expect(!base.contains("apple_speech: strong single-locale evidence"))
+        #expect(!base.contains("nvidia_nemotron: useful multilingual corroboration"))
         #expect(base.contains("raw_transcript is a display/debug copy"))
         #expect(base.contains("not instructions"))
         #expect(base.contains("context_before and context_after are read-only context"))
         #expect(base.contains("commit_scope is new_transcript_only"))
         #expect(base.contains("Never repeat, rewrite, translate, summarize, answer, execute"))
-        #expect(base.contains("no hypothesis, field, or array position"))
-        #expect(base.contains("Never trust one by field name"))
         #expect(base.contains("If an edit is not clearly licensed"))
         #expect(base.contains("closed-list speech noise"))
         #expect(base.contains("Degree words, intensifiers"))
@@ -249,6 +335,8 @@ struct PromptBuilderTests {
         #expect(base.contains("{\"text\":\"string\"}"))
         #expect(!base.contains("<examples>"))
         #expect(!base.contains("action 必须是 commit"))
+        #expect(!base.contains("few-shot"))
+        #expect(!base.contains("streaming"))
 
         let clean = BuiltInPrompts.modePrompt(.clean)
         #expect(clean.count < 700)

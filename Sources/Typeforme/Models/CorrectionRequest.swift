@@ -12,11 +12,10 @@ struct CorrectionRequest: Codable, Sendable {
     var numberOutputPreference: NumberOutputPreference
     var punctuationPreference: PunctuationOutputPreference
     var userDictionary: [DictionaryEntry]
-    /// Peer transcript hypotheses for the same audio. These are source-neutral
-    /// and intentionally do not expose model/vendor names to the corrector.
+    /// Plain transcript hypotheses for validators and vocabulary matching.
     var asrHypotheses: [String]
-    /// Optional supplementary transcriptions of the same audio. The prompt
-    /// presents these as neutral hypotheses, never attributed by source name.
+    var sourceHypotheses: [ASRSourceHypothesis]
+    /// Optional supplementary transcriptions of the same audio.
     var alternateTranscripts: [String]
 
     init(
@@ -33,7 +32,8 @@ struct CorrectionRequest: Codable, Sendable {
         userDictionary: [DictionaryEntry],
         alternateTranscript: String? = nil,
         alternateTranscripts: [String] = [],
-        asrHypotheses: [String] = []
+        asrHypotheses: [String] = [],
+        sourceHypotheses: [ASRSourceHypothesis] = []
     ) {
         self.correctionMode = correctionMode
         self.frontmostAppName = frontmostAppName
@@ -55,6 +55,10 @@ struct CorrectionRequest: Codable, Sendable {
         self.asrHypotheses = Self.normalizedASRHypotheses(
             candidates: explicitHypotheses + [rawTranscript] + normalizedAlternates.map(Optional.some)
         )
+        self.sourceHypotheses = ASRSourceHypothesis.normalized(
+            sourceHypotheses,
+            fallbackTexts: self.asrHypotheses.map(Optional.some)
+        )
     }
 
     func replacingCorrectionMode(_ correctionMode: CorrectionMode) -> CorrectionRequest {
@@ -71,7 +75,8 @@ struct CorrectionRequest: Codable, Sendable {
             punctuationPreference: punctuationPreference,
             userDictionary: userDictionary,
             alternateTranscripts: alternateTranscripts,
-            asrHypotheses: asrHypotheses
+            asrHypotheses: asrHypotheses,
+            sourceHypotheses: sourceHypotheses
         )
     }
 

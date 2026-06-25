@@ -428,7 +428,8 @@ final class DictationCoordinator: ObservableObject {
             let request = buildCorrectionRequest(
                 rawTranscript: trimmed,
                 alternateTranscripts: alternateTranscripts,
-                asrHypotheses: asrHypotheses
+                asrHypotheses: asrHypotheses,
+                sourceHypotheses: asrResult.sourceHypotheses
             )
             let correctionStarted = Date()
             do {
@@ -687,7 +688,8 @@ final class DictationCoordinator: ObservableObject {
         rawTranscript: String,
         correctionModeOverride: CorrectionMode? = nil,
         alternateTranscripts: [String] = [],
-        asrHypotheses: [String] = []
+        asrHypotheses: [String] = [],
+        sourceHypotheses: [ASRSourceHypothesis] = []
     ) -> CorrectionRequest {
         let snapshot = frontmostSnapshot
         let category = AppCategory.from(bundleID: snapshot?.bundleID)
@@ -709,7 +711,8 @@ final class DictationCoordinator: ObservableObject {
             punctuationPreference: AppSettings.punctuationPreference,
             userDictionary: dictionary.sortedSnapshot(),
             alternateTranscripts: alternateForRequest,
-            asrHypotheses: asrHypotheses
+            asrHypotheses: asrHypotheses,
+            sourceHypotheses: sourceHypotheses
         )
     }
 

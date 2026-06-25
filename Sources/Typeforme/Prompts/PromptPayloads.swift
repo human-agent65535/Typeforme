@@ -46,8 +46,8 @@ struct DictationPromptInputPayload: Codable, Sendable, Equatable {
     let contextAfter: String
     let vocabularyCandidates: [VocabularyCandidatePayload]
     let rawTranscript: String
-    /// Source-neutral peer ASR hypotheses. Array order is not confidence.
-    let asrHypotheses: [String]
+    /// Source-aware ASR hypotheses. Source is evidence metadata, not authority.
+    let asrHypotheses: [ASRSourceHypothesis]
 
     enum CodingKeys: String, CodingKey {
         case task

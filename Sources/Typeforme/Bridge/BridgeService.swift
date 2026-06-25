@@ -408,6 +408,7 @@ final class BridgeService {
         let asrStarted = Date()
         let raw: String
         let asrHypotheses: [String]
+        let asrSourceHypotheses: [ASRSourceHypothesis]
         let asrWarning: String?
         let transcriptionLatencyMs: Int
         do {
@@ -424,6 +425,7 @@ final class BridgeService {
             asrHypotheses = Self.combinedASRHypotheses(
                 candidates: asrResult.hypotheses.map(Optional.some)
             )
+            asrSourceHypotheses = asrResult.sourceHypotheses
             asrWarning = asrResult.warningText
             transcriptionLatencyMs = elapsedMs(since: asrStarted)
             let combinedAlternateTranscripts = Self.combinedAlternateTranscripts(
@@ -494,7 +496,8 @@ final class BridgeService {
             contextBefore: contextBefore,
             contextAfter: contextAfter,
             alternateTranscripts: combinedAlternateTranscripts,
-            asrHypotheses: asrHypotheses
+            asrHypotheses: asrHypotheses,
+            sourceHypotheses: asrSourceHypotheses
         )
 
         if !correctionMode.usesRefine {
@@ -571,7 +574,8 @@ final class BridgeService {
                 contextBefore: contextBefore,
                 contextAfter: contextAfter,
                 alternateTranscripts: combinedAlternateTranscripts,
-                asrHypotheses: asrHypotheses
+                asrHypotheses: asrHypotheses,
+                sourceHypotheses: asrSourceHypotheses
             )
             correctionLatencyMs = elapsedMs(since: correctionStarted)
         } catch {
@@ -932,7 +936,8 @@ final class BridgeService {
         contextBefore: String = "",
         contextAfter: String = "",
         alternateTranscripts: [String] = [],
-        asrHypotheses: [String] = []
+        asrHypotheses: [String] = [],
+        sourceHypotheses: [ASRSourceHypothesis] = []
     ) async throws -> BridgeCorrectionOutput {
         let request = correctionRequest(
             rawTranscript: rawTranscript,
@@ -944,7 +949,8 @@ final class BridgeService {
             contextBefore: contextBefore,
             contextAfter: contextAfter,
             alternateTranscripts: alternateTranscripts,
-            asrHypotheses: asrHypotheses
+            asrHypotheses: asrHypotheses,
+            sourceHypotheses: sourceHypotheses
         )
 
         var result = try await CorrectorFactory.shared.make().correct(
@@ -968,7 +974,8 @@ final class BridgeService {
         contextBefore: String = "",
         contextAfter: String = "",
         alternateTranscripts: [String] = [],
-        asrHypotheses: [String] = []
+        asrHypotheses: [String] = [],
+        sourceHypotheses: [ASRSourceHypothesis] = []
     ) -> CorrectionRequest {
         CorrectionRequest(
             correctionMode: correctionMode,
@@ -983,7 +990,8 @@ final class BridgeService {
             punctuationPreference: AppSettings.punctuationPreference,
             userDictionary: dictionary.sortedSnapshot(),
             alternateTranscripts: alternateTranscripts,
-            asrHypotheses: asrHypotheses
+            asrHypotheses: asrHypotheses,
+            sourceHypotheses: sourceHypotheses
         )
     }
 
