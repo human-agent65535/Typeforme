@@ -268,8 +268,9 @@ enum KeyboardLivePreviewRecognitionMode: String, CaseIterable, Identifiable {
 }
 
 enum KeyboardLivePreviewSource: String, CaseIterable, Identifiable {
-    case appleSpeech = "apple_speech"
-    case serverASR = "server_asr"
+    case appleSpeech = "apple-speech"
+    case qwen = "qwen3-asr-llama"
+    case nvidiaNemotron = "nvidia-nemotron"
 
     var id: String { rawValue }
 
@@ -277,8 +278,21 @@ enum KeyboardLivePreviewSource: String, CaseIterable, Identifiable {
         switch self {
         case .appleSpeech:
             return NSLocalizedString("Apple Speech", comment: "Apple Speech live preview source")
-        case .serverASR:
-            return NSLocalizedString("Server ASR", comment: "Server-side ASR live preview source")
+        case .qwen:
+            return NSLocalizedString("Qwen3-ASR (Mac)", comment: "Qwen server ASR preview source")
+        case .nvidiaNemotron:
+            return NSLocalizedString("NVIDIA Nemotron (Mac)", comment: "Nemotron server ASR preview source")
+        }
+    }
+
+    var bridgeLivePreviewSource: VoiceLivePreviewSource? {
+        switch self {
+        case .appleSpeech:
+            return nil
+        case .qwen:
+            return .qwen
+        case .nvidiaNemotron:
+            return .nvidiaNemotron
         }
     }
 }
@@ -552,18 +566,19 @@ final class AppState {
         KeyboardLivePreviewSource.allCases.filter(isKeyboardLivePreviewSourceEnabled)
     }
 
-    func isCorrectionModeAvailable(_ mode: CorrectionMode) -> Bool {
-        !mode.requiresQwenASR || macSettings?.supportsFastMode == true
+    func isCorrectionModeAvailable(_: CorrectionMode) -> Bool {
+        true
     }
 
     func isKeyboardLivePreviewSourceEnabled(_ source: KeyboardLivePreviewSource) -> Bool {
         switch source {
         case .appleSpeech:
             return correctionMode.usesRefine
-        case .serverASR:
-            return correctionMode == .fast
-                ? macSettings?.supportsFastMode == true
-                : macSettings?.supportsServerASRPreview == true
+        case .qwen:
+            return macSettings?.isRecognitionSourceEnabled(.qwen) == true
+        case .nvidiaNemotron:
+            return correctionMode.usesRefine
+                && macSettings?.isRecognitionSourceEnabled(.nvidiaNemotron) == true
         }
     }
 
@@ -1040,7 +1055,7 @@ final class AppState {
         macSettingsRevision = settings.settingsRevision?.trimmingCharacters(in: .whitespacesAndNewlines)
         cachedServerRimeUserPhrases = settings.rimeUserPhrases
         UserDefaults.standard.set(settings.rimeUserPhrases, forKey: Self.serverRimeUserPhrasesKey)
-        normalizeUnavailableCorrectionMode()
+        constrainKeyboardLivePreviewSourceToMacSettings()
         config.supportedLanguages = settings.supportedLanguages
         config.languageIDs = ASRLanguageSelection.validatedIDs(
             config.languageIDs,
@@ -1049,16 +1064,6 @@ final class AppState {
         selectedLanguageIDs = Set(config.validatedLanguageIDs)
         store.save(config)
         publishKeyboardDefaults()
-    }
-
-    private func normalizeUnavailableCorrectionMode() {
-        if !isCorrectionModeAvailable(config.correctionMode) {
-            config.correctionMode = .polish
-        }
-        if !isCorrectionModeAvailable(correctionMode) {
-            correctionMode = config.correctionMode
-        }
-        constrainKeyboardLivePreviewSourceToMacSettings()
     }
 
     private func scheduleHostRecorderPreWarm() {
@@ -1075,7 +1080,6 @@ final class AppState {
     }
 
     private func applyKeyboardDefaultCorrectionMode(_ mode: CorrectionMode) {
-        guard isCorrectionModeAvailable(mode) else { return }
         let configChanged = config.correctionMode != mode
         let visibleChanged = correctionMode != mode
         guard configChanged || visibleChanged else { return }
@@ -1089,10 +1093,6 @@ final class AppState {
     }
 
     func setDefaultCorrectionMode(_ mode: CorrectionMode) {
-        guard isCorrectionModeAvailable(mode) else {
-            showTransient("Fast requires Qwen ASR enabled on Mac")
-            return
-        }
         applyKeyboardDefaultCorrectionMode(mode)
     }
 
@@ -1257,10 +1257,6 @@ final class AppState {
             return
         }
         guard phase.allowsRecordingStart else { return }
-        guard isCorrectionModeAvailable(correctionMode) else {
-            setFailure("Fast requires Qwen ASR enabled on Mac")
-            return
-        }
 
         hostHoldReleasePending = false
         setPhase(.preparing)
@@ -1312,10 +1308,6 @@ final class AppState {
             return
         }
         guard phase.allowsRecordingStart else { return }
-        guard isCorrectionModeAvailable(correctionMode) else {
-            setFailure("Fast requires Qwen ASR enabled on Mac")
-            return
-        }
         setPhase(.preparing)
 
         guard await ensureMicrophonePermissionForUserAction() else {
@@ -1721,10 +1713,6 @@ final class AppState {
         // Block mode changes while a request is mid-flight to avoid a stale
         // result coming back in the old mode while the UI shows the new one.
         guard !isBusy else { return }
-        guard isCorrectionModeAvailable(newMode) else {
-            showTransient("Fast requires Qwen ASR enabled on Mac")
-            return
-        }
         guard let source = currentRefineSource() else {
             rawTranscript = ""
             sessionID = nil
@@ -1894,10 +1882,6 @@ final class AppState {
     ) async {
         var shouldReturnToKeyboard = handoff.shouldReturnToKeyboard
         if let nextMode = CorrectionMode(rawValue: handoff.correctionMode) {
-            guard isCorrectionModeAvailable(nextMode) else {
-                setFailure("Fast requires Qwen ASR enabled on Mac")
-                return
-            }
             correctionMode = nextMode
         } else {
             setFailure("Unsupported correction mode: \(handoff.correctionMode)")
@@ -2144,10 +2128,6 @@ final class AppState {
                     setFailure("Unsupported correction mode: \(value)")
                     return false
                 }
-                guard isCorrectionModeAvailable(nextMode) else {
-                    setFailure("Fast requires Qwen ASR enabled on Mac")
-                    return false
-                }
                 correctionMode = nextMode
             case "languages":
                 let ids = item.value?
@@ -2268,8 +2248,11 @@ final class AppState {
         switch keyboardLivePreviewSource {
         case .appleSpeech:
             return startAppleSpeechLivePreviewIfAvailable(generation: generation)
-        case .serverASR:
-            return startServerASRLivePreviewIfAvailable(generation: generation)
+        case .qwen, .nvidiaNemotron:
+            return startServerASRLivePreviewIfAvailable(
+                source: keyboardLivePreviewSource,
+                generation: generation
+            )
         }
     }
 
@@ -2359,16 +2342,16 @@ final class AppState {
     }
 
     @discardableResult
-    private func startServerASRLivePreviewIfAvailable(generation: UInt64) -> Bool {
-        guard isKeyboardLivePreviewSourceEnabled(.serverASR) else {
+    private func startServerASRLivePreviewIfAvailable(
+        source: KeyboardLivePreviewSource,
+        generation: UInt64
+    ) -> Bool {
+        guard isKeyboardLivePreviewSourceEnabled(source) else {
             appLog.debug("server live preview skipped: server ASR preview disabled")
             return false
         }
-        let serverASRPreviewAvailable = correctionMode == .fast
-            ? macSettings?.supportsFastMode == true
-            : macSettings?.supportsServerASRPreview == true
-        guard serverASRPreviewAvailable else {
-            appLog.debug("server live preview skipped: Mac server ASR preview is not enabled")
+        guard let bridgeLivePreviewSource = source.bridgeLivePreviewSource else {
+            appLog.debug("server live preview skipped: local source selected")
             return false
         }
         guard let baseURL = routeStatus.activeURL else {
@@ -2383,6 +2366,7 @@ final class AppState {
             client: client,
             languageIDs: activeLanguageIDs,
             correctionMode: correctionMode,
+            livePreviewSource: bridgeLivePreviewSource,
             onTranscript: { [weak self, trace] text in
                 Task { @MainActor [weak self] in
                     guard let self else { return }
@@ -2407,14 +2391,14 @@ final class AppState {
                     if self.serverLivePreviewStreamer != nil {
                         self.serverLivePreviewStreamer = nil
                     }
-                    if self.keyboardLivePreviewSource == .serverASR {
+                    if self.keyboardLivePreviewSource == source {
                         self.keyboardAudioSession.onPCMBuffer = nil
                     }
                 }
             }
         )
         serverLivePreviewStreamer = streamer
-        appLog.notice("server live preview started")
+        appLog.notice("server live preview started source=\(bridgeLivePreviewSource.rawValue, privacy: .public)")
         keyboardAudioSession.onPCMBuffer = { [streamer, trace] buffer in
             streamer.append(buffer)
             let timing = trace.recordPCM()
@@ -2822,10 +2806,6 @@ final class AppState {
                 return keyboardBridgeStatus
             }
             if let requestedMode = CorrectionMode(rawValue: command.correctionMode) {
-                guard isCorrectionModeAvailable(requestedMode) else {
-                    publishKeyboardStatus(.error, commandID: command.id, message: "Fast requires Qwen ASR enabled on Mac")
-                    return keyboardBridgeStatus
-                }
                 applyKeyboardDefaultCorrectionMode(requestedMode)
             }
             activeKeyboardTextEditContext = command.textEditContext
@@ -2847,10 +2827,6 @@ final class AppState {
             resetCorrectionModeToDefault()
         case .configure:
             if let requestedMode = CorrectionMode(rawValue: command.correctionMode) {
-                guard isCorrectionModeAvailable(requestedMode) else {
-                    publishKeyboardStatus(.error, commandID: command.id, message: "Fast requires Qwen ASR enabled on Mac")
-                    return keyboardBridgeStatus
-                }
                 applyKeyboardDefaultCorrectionMode(requestedMode)
             } else {
                 resetCorrectionModeToDefault()
@@ -2906,10 +2882,6 @@ final class AppState {
             return
         }
         let requestedCorrectionMode = CorrectionMode(rawValue: command.correctionMode) ?? config.correctionMode
-        guard isCorrectionModeAvailable(requestedCorrectionMode) else {
-            publishKeyboardStatus(.error, commandID: command.id, message: "Fast requires Qwen ASR enabled on Mac")
-            return
-        }
         guard let source = command.text?.trimmingCharacters(in: .whitespacesAndNewlines),
               !source.isEmpty
         else {

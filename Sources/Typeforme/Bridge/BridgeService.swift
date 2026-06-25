@@ -277,8 +277,8 @@ final class BridgeService {
 
         let id = UUID().uuidString
         let requestedLanguageIDs = resolveLivePreviewLanguageIDs(ids: request.languageIDs, mode: request.languageMode)
-        let previewSource = BridgeSettingsPayload.bridgeLivePreviewSource(
-            configuredSource: AppSettings.voiceLivePreviewSource,
+        let previewSource = try resolveLivePreviewSource(
+            request.livePreviewSource,
             sources: AppSettings.enabledRecognitionSources,
             correctionMode: correctionMode
         )

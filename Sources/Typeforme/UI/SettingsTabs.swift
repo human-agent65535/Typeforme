@@ -475,7 +475,7 @@ struct ClientServerSettingsView: View {
                     Text("Server sections edit a draft — nothing changes on the server until you press Save to Server below.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
-                    ForEach(current.recognitionSourceOptions) { option in
+                    ForEach(visibleRecognitionSourceOptions(for: current)) { option in
                         if let source = RecognitionSource(rawValue: option.id) {
                             Toggle(isOn: serverRecognitionSourceBinding(source)) {
                                 RecognitionSourceSettingsLabel(
@@ -492,7 +492,7 @@ struct ClientServerSettingsView: View {
                         }
                     }
 
-                    ForEach(current.enabledSources.filter(\.hasModelConfiguration)) { source in
+                    ForEach(visibleEnabledSources(for: current).filter(\.hasModelConfiguration)) { source in
                         if !current.asrModelOptions(for: source.rawValue).isEmpty {
                             Picker("\(source.displayName) model", selection: serverASRModelBinding(source)) {
                                 ForEach(current.asrModelOptions(for: source.rawValue)) { option in
@@ -627,6 +627,20 @@ struct ClientServerSettingsView: View {
     private func isServerCorrectionModeEnabled(_ mode: CorrectionMode) -> Bool {
         guard let draft else { return !mode.requiresQwenASR }
         return mode.isAvailable(enabledRecognitionSources: draft.enabledSources)
+    }
+
+    private func visibleRecognitionSourceOptions(for settings: BridgeSettingsPayload) -> [BridgeSettingOption] {
+        guard CorrectionMode(rawValue: settings.correctionMode)?.requiresQwenASR == true else {
+            return settings.recognitionSourceOptions
+        }
+        return settings.recognitionSourceOptions.filter { $0.id == RecognitionSource.qwen.rawValue }
+    }
+
+    private func visibleEnabledSources(for settings: BridgeSettingsPayload) -> [RecognitionSource] {
+        guard CorrectionMode(rawValue: settings.correctionMode)?.requiresQwenASR == true else {
+            return settings.enabledSources
+        }
+        return settings.enabledSources.filter { $0 == .qwen }
     }
 
     private func serverCorrectionModeTitle(_ mode: CorrectionMode) -> String {
@@ -1327,7 +1341,7 @@ struct ASRSettingsView: View {
     var body: some View {
         Form {
             Section("Recognition Sources") {
-                ForEach(RecognitionSource.allCases) { source in
+                ForEach(visibleRecognitionSources) { source in
                     Toggle(isOn: sourceEnabledBinding(source)) {
                         RecognitionSourceSettingsLabel(
                             title: source.displayName,
@@ -1371,7 +1385,7 @@ struct ASRSettingsView: View {
                 }
             }
 
-            if nvidiaEnabled {
+            if nvidiaEnabled && !selectedCorrectionMode.requiresQwenASR {
                 Section("NVIDIA Nemotron") {
                     Picker("Model", selection: $nvidiaModelID) {
                         ForEach(NvidiaNemotronASRModelCatalog.all) { spec in
@@ -1428,7 +1442,7 @@ struct ASRSettingsView: View {
                         .id(selectedQwenModel.id)
                 }
             }
-            if nvidiaEnabled {
+            if nvidiaEnabled && !selectedCorrectionMode.requiresQwenASR {
                 Section("NVIDIA Nemotron model") {
                     NvidiaNemotronASRModelRow(spec: selectedNvidiaModel)
                         .id(selectedNvidiaModel.id)
@@ -1474,7 +1488,7 @@ struct ASRSettingsView: View {
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
-                    if nvidiaEnabled {
+                    if nvidiaEnabled && !selectedCorrectionMode.requiresQwenASR {
                         IntegerSettingField(
                             title: "Nemotron timeout",
                             value: Binding(
@@ -1531,6 +1545,9 @@ struct ASRSettingsView: View {
     }
 
     private var selectedSources: [RecognitionSource] {
+        if selectedCorrectionMode.requiresQwenASR {
+            return [.qwen]
+        }
         var sources: [RecognitionSource] = []
         if qwenEnabled { sources.append(.qwen) }
         if nvidiaEnabled { sources.append(.nvidiaNemotron) }
@@ -1540,6 +1557,10 @@ struct ASRSettingsView: View {
 
     private var selectedCorrectionMode: CorrectionMode {
         CorrectionMode(rawValue: correctionModeRaw) ?? .polish
+    }
+
+    private var visibleRecognitionSources: [RecognitionSource] {
+        selectedCorrectionMode.requiresQwenASR ? [.qwen] : RecognitionSource.allCases
     }
 
     private func preloadEnabledASRModels() {

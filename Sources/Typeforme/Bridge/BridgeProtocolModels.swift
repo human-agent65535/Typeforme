@@ -258,6 +258,7 @@ struct BridgeLivePreviewStartRequest: Codable, Sendable {
     let languageIDs: [String]?
     let languageMode: String?
     let correctionMode: String?
+    let livePreviewSource: String
     let appName: String?
     let bundleID: String?
     let appCategory: String?
@@ -267,6 +268,7 @@ struct BridgeLivePreviewStartRequest: Codable, Sendable {
         case languageIDs = "language_ids"
         case languageMode = "language_mode"
         case correctionMode = "correction_mode"
+        case livePreviewSource = "live_preview_source"
         case appName = "app_name"
         case bundleID = "bundle_id"
         case appCategory = "app_category"
@@ -277,6 +279,7 @@ struct BridgeLivePreviewStartRequest: Codable, Sendable {
         languageIDs: [String]? = nil,
         languageMode: String? = nil,
         correctionMode: String? = nil,
+        livePreviewSource: String,
         appName: String? = nil,
         bundleID: String? = nil,
         appCategory: String? = nil
@@ -285,6 +288,7 @@ struct BridgeLivePreviewStartRequest: Codable, Sendable {
         self.languageIDs = languageIDs
         self.languageMode = languageMode
         self.correctionMode = correctionMode
+        self.livePreviewSource = livePreviewSource
         self.appName = appName
         self.bundleID = bundleID
         self.appCategory = appCategory

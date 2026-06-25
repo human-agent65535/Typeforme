@@ -1139,31 +1139,35 @@ private struct KeyboardSettingsView: View {
 
 private struct LivePreviewSettingsSection: View {
     @Environment(AppState.self) private var state
-    let serverASRAvailable: Bool?
     let title: LocalizedStringKey
 
     init(
-        title: LocalizedStringKey = "iPhone Keyboard Preview",
-        serverASRAvailable: Bool? = nil
+        title: LocalizedStringKey = "iPhone Keyboard Preview"
     ) {
         self.title = title
-        self.serverASRAvailable = serverASRAvailable
     }
 
     var body: some View {
         Section {
             Toggle("Live Preview", isOn: livePreviewBinding)
-                .disabled(state.isBusy)
-            Picker("Preview Source", selection: livePreviewSourceBinding) {
-                ForEach(sourceOptions) { source in
-                    Text(sourceTitle(source))
-                        .tag(source)
-                        .disabled(!isSourceEnabled(source))
+                .disabled(state.isBusy || sourceOptions.isEmpty)
+            if sourceOptions.count > 1 {
+                Picker("Preview Source", selection: livePreviewSourceBinding) {
+                    ForEach(sourceOptions) { source in
+                        Text(sourceTitle(source))
+                            .tag(source)
+                    }
                 }
+                .pickerStyle(.menu)
+                .disabled(!state.keyboardLivePreviewEnabled || state.isBusy)
+            } else if let source = sourceOptions.first {
+                LabeledContent("Preview Source") {
+                    Text(sourceTitle(source))
+                        .foregroundStyle(.secondary)
+                }
+                .disabled(!state.keyboardLivePreviewEnabled || state.isBusy)
             }
-            .pickerStyle(.menu)
-            .disabled(!state.keyboardLivePreviewEnabled || state.isBusy)
-            if state.keyboardLivePreviewSource == .appleSpeech {
+            if effectivePreviewSource == .appleSpeech {
                 Picker("Preview Recognition", selection: livePreviewRecognitionModeBinding) {
                     ForEach(KeyboardLivePreviewRecognitionMode.allCases) { mode in
                         Text(mode.title).tag(mode)
@@ -1181,31 +1185,42 @@ private struct LivePreviewSettingsSection: View {
         } header: {
             Text(title)
         } footer: {
-            Text(livePreviewFooter)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("This preview setting is local to the iPhone keyboard and applies immediately. It does not change the Mac live transcript setting.")
+                Text(livePreviewFooter)
+            }
         }
     }
 
     private var sourceOptions: [KeyboardLivePreviewSource] {
-        KeyboardLivePreviewSource.allCases
+        state.keyboardLivePreviewSourceOptions
+    }
+
+    private var effectivePreviewSource: KeyboardLivePreviewSource? {
+        if sourceOptions.contains(state.keyboardLivePreviewSource) {
+            return state.keyboardLivePreviewSource
+        }
+        return sourceOptions.first
     }
 
     private var livePreviewFooter: LocalizedStringKey {
-        return state.keyboardLivePreviewSource == .serverASR
-            ? "Server ASR runs on the Mac. Apple Speech recognition mode only applies to Apple Speech."
-            : "Apple Speech is local. Server uses Mac."
-    }
-
-    private func isSourceEnabled(_ source: KeyboardLivePreviewSource) -> Bool {
-        if let serverASRAvailable, source == .serverASR {
-            return serverASRAvailable
+        guard let source = effectivePreviewSource else {
+            return "No live preview source is available for the current mode."
         }
-        return state.isKeyboardLivePreviewSourceEnabled(source)
+        switch source {
+        case .appleSpeech:
+            return "Apple Speech preview runs on this iPhone."
+        case .qwen:
+            return state.config.correctionMode == .fast
+                ? "Qwen3-ASR preview runs on the Mac in Fast mode."
+                : "Qwen3-ASR preview runs on the Mac."
+        case .nvidiaNemotron:
+            return "NVIDIA Nemotron preview runs on the Mac."
+        }
     }
 
     private func sourceTitle(_ source: KeyboardLivePreviewSource) -> String {
-        isSourceEnabled(source)
-            ? source.title
-            : "\(source.title) - \(NSLocalizedString("Source off", comment: "Disabled live preview source suffix"))"
+        source.title
     }
 
     private var livePreviewBinding: Binding<Bool> {
@@ -1218,9 +1233,9 @@ private struct LivePreviewSettingsSection: View {
 
     private var livePreviewSourceBinding: Binding<KeyboardLivePreviewSource> {
         Binding {
-            state.keyboardLivePreviewSource
+            effectivePreviewSource ?? state.keyboardLivePreviewSource
         } set: { source in
-            guard isSourceEnabled(source) else { return }
+            guard sourceOptions.contains(source) else { return }
             state.setKeyboardLivePreviewSource(source)
         }
     }
@@ -1656,11 +1671,20 @@ private struct MacSettingsView: View {
         return !draft.hasSameEditableSettings(as: initialDraft)
     }
 
-    private var livePreviewServerASRAvailable: Bool {
-        guard let draft else { return false }
-        return state.config.correctionMode == .fast
-            ? draft.supportsFastMode
-            : draft.supportsServerASRPreview
+    private var showsFastASROnly: Bool {
+        state.config.correctionMode.requiresQwenASR || draft?.correctionMode.requiresQwenASR == true
+    }
+
+    private var visibleRecognitionSourceOptions: [BridgeSettingOption] {
+        guard let draft else { return [] }
+        guard showsFastASROnly else { return draft.recognitionSourceOptions }
+        return draft.recognitionSourceOptions.filter { $0.id == RecognitionSource.qwen.rawValue }
+    }
+
+    private var visibleEnabledRecognitionSources: [RecognitionSource] {
+        guard let draft else { return [] }
+        guard showsFastASROnly else { return draft.enabledSources }
+        return draft.enabledSources.filter { $0 == .qwen }
     }
 
     var body: some View {
@@ -1680,13 +1704,10 @@ private struct MacSettingsView: View {
                     Text("Applies to this iPhone and the Typeforme keyboard. Fast requires Qwen ASR enabled on the Mac.")
                 }
 
-                LivePreviewSettingsSection(
-                    title: "Live Preview",
-                    serverASRAvailable: livePreviewServerASRAvailable
-                )
+                LivePreviewSettingsSection()
 
                 Section {
-                    ForEach(draft.recognitionSourceOptions) { option in
+                    ForEach(visibleRecognitionSourceOptions) { option in
                         if let source = RecognitionSource(rawValue: option.id) {
                             Toggle(isOn: recognitionSourceBinding(source)) {
                                 RecognitionSourceSettingsLabel(
@@ -1701,7 +1722,7 @@ private struct MacSettingsView: View {
                         }
                     }
 
-                    ForEach(draft.enabledSources.filter(\.hasModelConfiguration)) { source in
+                    ForEach(visibleEnabledRecognitionSources.filter(\.hasModelConfiguration)) { source in
                         if !draft.asrModelOptions(for: source.rawValue).isEmpty {
                             Picker("\(source.displayName) Model", selection: asrModelBinding(source)) {
                                 ForEach(draft.asrModelOptions(for: source.rawValue)) { option in

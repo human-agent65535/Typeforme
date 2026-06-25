@@ -217,6 +217,15 @@
 "Server ASR" = "服务端 ASR";
 "Server-side" = "服务端";
 "Server ASR runs on the Mac. Apple Speech recognition mode only applies to Apple Speech." = "Server ASR 在 Mac 上运行。Apple Speech 识别模式只作用于 Apple Speech。";
+"No live preview source is available for the current mode." = "当前模式没有可用的实时预览源。";
+"Qwen3-ASR preview runs on the Mac in Fast mode." = "Fast 模式下使用 Mac 上的 Qwen3-ASR 预览。";
+"Qwen3-ASR preview runs on the Mac." = "Qwen3-ASR 预览在 Mac 上运行。";
+"NVIDIA Nemotron preview runs on the Mac." = "NVIDIA Nemotron 预览在 Mac 上运行。";
+"Server ASR preview runs on the Mac." = "服务端 ASR 预览在 Mac 上运行。";
+"Apple Speech preview runs on this iPhone." = "Apple Speech 预览在这台 iPhone 上运行。";
+"Qwen3-ASR (Mac)" = "Qwen3-ASR (Mac)";
+"Server ASR (Mac)" = "服务端 ASR (Mac)";
+"NVIDIA Nemotron (Mac)" = "NVIDIA Nemotron (Mac)";
 "Preview follows enabled ASR sources." = "预览跟随已启用 ASR 源。";
 "Source off" = "源未开启";
 "High quality / slower" = "高质量 / 较慢";

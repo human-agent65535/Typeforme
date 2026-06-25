@@ -1996,12 +1996,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         guard let rawValue,
               let defaultMode = CorrectionMode(rawValue: rawValue)
         else { return }
-        guard isCorrectionModeAvailable(defaultMode) else {
-            if pendingDefaultCorrectionMode == defaultMode {
-                pendingDefaultCorrectionMode = nil
-            }
-            return
-        }
         if pendingDefaultCorrectionMode == defaultMode {
             pendingDefaultCorrectionMode = nil
         }
@@ -2013,38 +2007,22 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func currentDefaultCorrectionMode() -> CorrectionMode {
-        if let pendingDefaultCorrectionMode, isCorrectionModeAvailable(pendingDefaultCorrectionMode) {
+        if let pendingDefaultCorrectionMode {
             return pendingDefaultCorrectionMode
         }
         return defaultCorrectionModeFromHost() ?? .polish
     }
 
     private func defaultCorrectionModeFromHost() -> CorrectionMode? {
-        guard let payload = hostKeyboardDefaultsPayload(),
-              isCorrectionModeAvailable(payload.correctionMode, payload: payload)
-        else { return nil }
-        return payload.correctionMode
+        hostKeyboardDefaultsPayload()?.correctionMode
     }
 
-    private func isCorrectionModeAvailable(_ mode: CorrectionMode) -> Bool {
-        guard let payload = hostKeyboardDefaultsPayload() else {
-            return !mode.requiresQwenASR
-        }
-        return isCorrectionModeAvailable(mode, payload: payload)
-    }
-
-    private func isCorrectionModeAvailable(_ mode: CorrectionMode, payload: KeyboardDefaultsPayload) -> Bool {
-        !mode.requiresQwenASR || payload.supportsFastMode
+    private func isCorrectionModeAvailable(_: CorrectionMode) -> Bool {
+        true
     }
 
     private var correctionModeOptions: [CorrectionMode] {
-        let payload = hostKeyboardDefaultsPayload()
-        return CorrectionMode.allCases.filter { mode in
-            if let payload {
-                return isCorrectionModeAvailable(mode, payload: payload)
-            }
-            return !mode.requiresQwenASR
-        }
+        CorrectionMode.allCases
     }
 
     private func refreshKeyboardPreferencesFromHost(
@@ -2073,11 +2051,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         rimeProfile.learningEnabled = payload.rimeLearningEnabled
         rimeProfile.correctionEnabled = payload.rimeCorrectionEnabled
         isTouchLearningEnabled = payload.touchLearningEnabled
-        if !isCorrectionModeAvailable(correctionMode, payload: payload) {
-            correctionMode = .polish
-            pendingDefaultCorrectionMode = nil
-            lastCorrectionModeButtonSignature = ""
-        }
         if previousTouchLearningEnabled && !isTouchLearningEnabled {
             pendingTextTouchSample = nil
             pendingTextTouchCorrection = nil

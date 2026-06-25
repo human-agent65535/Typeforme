@@ -134,6 +134,7 @@ struct BridgeClient: Sendable {
     func startLivePreview(
         languageIDs: [String],
         correctionMode: CorrectionMode,
+        livePreviewSource: VoiceLivePreviewSource,
         clientJobID: String? = nil,
         timeout: TimeInterval = 5
     ) async throws -> BridgeLivePreviewStartResponse {
@@ -141,6 +142,7 @@ struct BridgeClient: Sendable {
             clientJobID: clientJobID,
             languageIDs: languageIDs,
             correctionMode: correctionMode.rawValue,
+            livePreviewSource: livePreviewSource.rawValue,
             appName: Self.clientAppName,
             appCategory: Self.clientAppCategory.rawValue
         )

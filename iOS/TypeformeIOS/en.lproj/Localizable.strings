@@ -217,6 +217,15 @@
 "Server ASR" = "Server ASR";
 "Server-side" = "Server-side";
 "Server ASR runs on the Mac. Apple Speech recognition mode only applies to Apple Speech." = "Server ASR runs on the Mac. Apple Speech recognition mode only applies to Apple Speech.";
+"No live preview source is available for the current mode." = "No live preview source is available for the current mode.";
+"Qwen3-ASR preview runs on the Mac in Fast mode." = "Qwen3-ASR preview runs on the Mac in Fast mode.";
+"Qwen3-ASR preview runs on the Mac." = "Qwen3-ASR preview runs on the Mac.";
+"NVIDIA Nemotron preview runs on the Mac." = "NVIDIA Nemotron preview runs on the Mac.";
+"Server ASR preview runs on the Mac." = "Server ASR preview runs on the Mac.";
+"Apple Speech preview runs on this iPhone." = "Apple Speech preview runs on this iPhone.";
+"Qwen3-ASR (Mac)" = "Qwen3-ASR (Mac)";
+"Server ASR (Mac)" = "Server ASR (Mac)";
+"NVIDIA Nemotron (Mac)" = "NVIDIA Nemotron (Mac)";
 "Preview follows enabled ASR sources." = "Preview follows enabled ASR sources.";
 "Source off" = "Source off";
 "High quality / slower" = "High quality / slower";

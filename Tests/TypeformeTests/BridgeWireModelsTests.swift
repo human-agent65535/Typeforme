@@ -109,6 +109,7 @@ struct BridgeWireModelsTests {
             languageIDs: ["en-US"],
             languageMode: "custom",
             correctionMode: CorrectionMode.polish.rawValue,
+            livePreviewSource: VoiceLivePreviewSource.qwen.rawValue,
             appName: "Notes",
             bundleID: "com.apple.Notes",
             appCategory: "chat"
@@ -119,6 +120,7 @@ struct BridgeWireModelsTests {
         #expect(object["language_ids"] as? [String] == ["en-US"])
         #expect(object["language_mode"] as? String == "custom")
         #expect(object["correction_mode"] as? String == CorrectionMode.polish.rawValue)
+        #expect(object["live_preview_source"] as? String == VoiceLivePreviewSource.qwen.rawValue)
         #expect(object["app_name"] as? String == "Notes")
         #expect(object["bundle_id"] as? String == "com.apple.Notes")
         #expect(object["app_category"] as? String == "chat")
