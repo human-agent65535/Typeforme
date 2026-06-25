@@ -148,28 +148,10 @@ final class QwenLlamaASRService: ASRService {
             languageIDs,
             supportedOptions: ASRLanguageSelection.qwenASRSupportedLanguages
         )
-        var seen = Set<String>()
-        let names = qwenASRPrefixOrderedLanguageIDs(ids).compactMap { id -> String? in
-            guard let name = qwenASRLanguageName(for: id),
-                  !seen.contains(name)
-            else { return nil }
-            seen.insert(name)
-            return name
-        }
-        guard !names.isEmpty else { return nil }
-        return "language \(names.joined(separator: ", "))<asr_text>"
-    }
-
-    private static func qwenASRPrefixOrderedLanguageIDs(_ ids: [String]) -> [String] {
-        let defaultIDs = Set(ASRLanguageSelection.defaultIDs)
-        return ids.enumerated().sorted { lhs, rhs in
-            let lhsIsDefault = defaultIDs.contains(lhs.element)
-            let rhsIsDefault = defaultIDs.contains(rhs.element)
-            if lhsIsDefault != rhsIsDefault {
-                return !lhsIsDefault
-            }
-            return lhs.offset < rhs.offset
-        }.map(\.element)
+        guard ids.count == 1,
+              let name = qwenASRLanguageName(for: ids[0])
+        else { return nil }
+        return "language \(name)<asr_text>"
     }
 
     private static func qwenASRLanguageName(for id: String) -> String? {

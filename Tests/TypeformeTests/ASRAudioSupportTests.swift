@@ -23,10 +23,11 @@ struct ASRAudioSupportTests {
         #expect(try QwenLlamaASRService.parseChatTranscript(data: data) == "你好，世界。")
     }
 
-    @Test func qwenASRConstrainsLanguageCombosWithAssistantPrefix() {
-        #expect(QwenLlamaASRService.languageAssistantPrefix(languageIDs: ["zh-CN", "en-US"]) == "language Chinese, English<asr_text>")
-        #expect(QwenLlamaASRService.languageAssistantPrefix(languageIDs: ["zh-CN", "en-US", "vi"]) == "language Vietnamese, Chinese, English<asr_text>")
-        #expect(QwenLlamaASRService.languageAssistantPrefix(languageIDs: ["zh-CN", "en-US", "ja"]) == "language Japanese, Chinese, English<asr_text>")
+    @Test func qwenASRUsesAutomaticLanguageDetectionForMultiLanguageSelection() {
+        #expect(QwenLlamaASRService.languageAssistantPrefix(languageIDs: ["zh-CN", "en-US"]) == nil)
+        #expect(QwenLlamaASRService.languageAssistantPrefix(languageIDs: ["zh-CN", "en-US", "vi"]) == nil)
+        #expect(QwenLlamaASRService.languageAssistantPrefix(languageIDs: ["zh-CN", "en-US", "ja"]) == nil)
+        #expect(QwenLlamaASRService.languageAssistantPrefix(languageIDs: ["auto"]) == nil)
     }
 
     @Test func qwenASRUsesForcedPrefixForSingleLanguage() {
