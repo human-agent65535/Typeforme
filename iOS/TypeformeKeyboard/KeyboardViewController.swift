@@ -275,6 +275,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private var rimeUserPhrasesRevision = ""
     private var isSymbolKeyboard = false
     private var isAlternateSymbolKeyboard = false
+    private var renderedTextKeyboardLayoutKind: TextKeyboardLayoutKind?
     private var isAutoCapitalizationEnabled = true
     private var isCharacterPreviewEnabled = false
     private var isChineseInputEnabled = true
@@ -704,6 +705,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private struct TextKeyboardHitButton {
         let button: UIButton
         let frame: CGRect
+    }
+
+    private enum TextKeyboardLayoutKind: Equatable {
+        case standard
+        case numeric(decimalSeparator: String?)
     }
 
     private struct TextKeyTouchSample {
@@ -1699,6 +1705,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
         configureRimeStateCallback()
         refreshKeyboardPreferencesFromHost(rebuildIfNeeded: true)
+        refreshTextKeyboardLayoutForCurrentInputTraits()
         refreshInputModeSwitchKeyVisibility()
         applyKeyboardHeightForCurrentTraits()
         resetCorrectionModeToDefault()
@@ -1791,11 +1798,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     override func textWillChange(_ textInput: UITextInput?) {
         super.textWillChange(textInput)
+        refreshTextKeyboardLayoutForCurrentInputTraits()
         refreshInputModeSwitchKeyVisibility()
     }
 
     override func textDidChange(_ textInput: UITextInput?) {
         super.textDidChange(textInput)
+        refreshTextKeyboardLayoutForCurrentInputTraits()
         refreshInputModeSwitchKeyVisibility()
         refreshReturnKeyTitle()
         refreshEnglishLetterCasingIfNeeded()
@@ -3640,10 +3649,48 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         ))
     }
 
+    private var textKeyboardLayoutKindForCurrentTraits: TextKeyboardLayoutKind {
+        switch textDocumentProxy.keyboardType {
+        case .numberPad, .asciiCapableNumberPad:
+            return .numeric(decimalSeparator: nil)
+        case .decimalPad:
+            return .numeric(decimalSeparator: Locale.current.decimalSeparator ?? ".")
+        default:
+            return .standard
+        }
+    }
+
+    private var isRenderedNumericTextKeyboard: Bool {
+        if case .numeric = renderedTextKeyboardLayoutKind {
+            return true
+        }
+        return false
+    }
+
+    private func refreshTextKeyboardLayoutForCurrentInputTraits() {
+        guard renderedTextKeyboardLayoutKind != nil else { return }
+        let next = textKeyboardLayoutKindForCurrentTraits
+        guard renderedTextKeyboardLayoutKind != next else { return }
+        if case .numeric = next {
+            clearNumericIncompatibleCompositionState()
+        }
+        rebuildTextKeyboardRows()
+        updateKeyboardSurfaceMask()
+    }
+
+    private func clearNumericIncompatibleCompositionState() {
+        pendingRimeCharacters.removeAll()
+        pendingRimeDirectTextKeys.removeAll()
+        clearTextShiftState()
+        applyRimeState(rimeInput.clearComposition())
+    }
+
     private func rebuildTextKeyboardRows() {
         resetAllPressedControlStates(animated: false)
+        let layoutKind = textKeyboardLayoutKindForCurrentTraits
+        renderedTextKeyboardLayoutKind = layoutKind
         isCandidateGridExpanded = false
-        textToolbar.isHidden = false
+        textToolbar.isHidden = layoutKind != .standard
         keyRowsStack.isHidden = false
         candidateGridScrollView.isHidden = true
         candidateGridCollapseButton.isHidden = true
@@ -3660,8 +3707,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         lastLetterCasingSnapshot = nil
         textShiftButton = nil
         textSpaceKeyButton = nil
+        textReturnKeyButton = nil
 
-        if isSymbolKeyboard {
+        if case .numeric(let decimalSeparator) = layoutKind {
+            isSymbolKeyboard = false
+            isAlternateSymbolKeyboard = false
+            addNumericKeyboardRows(decimalSeparator: decimalSeparator)
+        } else if isSymbolKeyboard {
             let rows = symbolRowsForCurrentLanguage()
             addTextKeyRow(rows[0])
             addTextKeyRow(rows[1])
@@ -3671,7 +3723,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             addTextKeyRow(["a", "s", "d", "f", "g", "h", "j", "k", "l"], usesHalfKeyHorizontalOffset: true)
             addTextKeyRow(["z", "x", "c", "v", "b", "n", "m"], includeShift: true, includeDelete: true)
         }
-        addTextBottomRow()
+        if layoutKind == .standard {
+            addTextBottomRow()
+        }
         refreshTextControlTitles()
     }
 
@@ -3698,6 +3752,190 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             return chinesePunctuationPage
         }
         return englishPunctuationPage
+    }
+
+    private func addNumericKeyboardRows(decimalSeparator: String?) {
+        [
+            ["1", "2", "3"],
+            ["4", "5", "6"],
+            ["7", "8", "9"],
+        ].forEach { addNumericKeyRow($0) }
+        addNumericBottomRow(decimalSeparator: decimalSeparator)
+    }
+
+    private func addNumericKeyRow(_ keys: [String]) {
+        let row = makeTextKeyRow()
+        row.distribution = .fillEqually
+        var keyButtons: [UIButton] = []
+        keys.forEach { key in
+            let button = makeNumericDigitButton(key)
+            row.addArrangedSubview(button)
+            textKeyboardButtons.append(button)
+            textKeyCommitCharacters[ObjectIdentifier(button)] = key
+            keyButtons.append(button)
+        }
+        keyRowsStack.addArrangedSubview(row)
+        registerTextKeyboardHitRow(
+            row,
+            routedButtons: keyButtons,
+            directButtons: [],
+            boundaryButtons: keyButtons,
+            kind: .character
+        )
+    }
+
+    private func addNumericBottomRow(decimalSeparator: String?) {
+        let row = makeTextKeyRow()
+        row.distribution = .fillEqually
+        var routedButtons: [UIButton] = []
+        var directButtons: [UIButton] = []
+        var boundaryButtons: [UIButton] = []
+
+        if let decimalSeparator {
+            let decimalButton = makeTextKeyButton(title: decimalSeparator)
+            decimalButton.accessibilityLabel = NSLocalizedString("Decimal separator", comment: "Accessibility label for decimal separator key")
+            row.addArrangedSubview(decimalButton)
+            textKeyboardButtons.append(decimalButton)
+            textKeyCommitCharacters[ObjectIdentifier(decimalButton)] = decimalSeparator
+            routedButtons.append(decimalButton)
+            boundaryButtons.append(decimalButton)
+            if needsInputModeSwitchKey {
+                let globeButton = attachNumericGlobeOverlay(to: decimalButton)
+                directButtons.append(globeButton)
+            }
+        } else if needsInputModeSwitchKey {
+            let globeButton = makeNumericGlobeButton(compactOverlay: false)
+            row.addArrangedSubview(globeButton)
+            textKeyboardButtons.append(globeButton)
+            directButtons.append(globeButton)
+            boundaryButtons.append(globeButton)
+        } else {
+            let placeholder = makeNumericPlaceholderButton()
+            row.addArrangedSubview(placeholder)
+            textKeyboardButtons.append(placeholder)
+            directButtons.append(placeholder)
+            boundaryButtons.append(placeholder)
+        }
+
+        let zeroButton = makeNumericDigitButton("0")
+        row.addArrangedSubview(zeroButton)
+        textKeyboardButtons.append(zeroButton)
+        textKeyCommitCharacters[ObjectIdentifier(zeroButton)] = "0"
+        routedButtons.append(zeroButton)
+        boundaryButtons.append(zeroButton)
+
+        let deleteKey = makeTextKeyButton(title: "", image: "delete.left", weight: .utility)
+        deleteKey.addTarget(self, action: #selector(deletePressDown), for: [.touchDown, .touchDragEnter])
+        deleteKey.addTarget(self, action: #selector(deletePressUp), for: [.touchUpInside, .touchUpOutside, .touchCancel, .touchDragExit])
+        row.addArrangedSubview(deleteKey)
+        textKeyboardButtons.append(deleteKey)
+        directButtons.append(deleteKey)
+        boundaryButtons.append(deleteKey)
+
+        keyRowsStack.addArrangedSubview(row)
+        registerTextKeyboardHitRow(
+            row,
+            routedButtons: routedButtons,
+            directButtons: directButtons,
+            boundaryButtons: boundaryButtons,
+            kind: .character
+        )
+    }
+
+    private func makeNumericGlobeButton(compactOverlay: Bool) -> UIButton {
+        let button = UIButton(type: .system)
+        if compactOverlay {
+            configureToolbarIconButton(button, image: "globe")
+        } else {
+            configureTextControlButton(button, title: "", image: "globe")
+        }
+        button.accessibilityLabel = NSLocalizedString("Next keyboard", comment: "Accessibility label for switching to the next keyboard")
+        button.addTarget(self, action: #selector(handleInputModeList(from:with:)), for: .allTouchEvents)
+        attachPressAnimation(button)
+        return button
+    }
+
+    private func attachNumericGlobeOverlay(to hostButton: UIButton) -> UIButton {
+        let button = makeNumericGlobeButton(compactOverlay: true)
+        button.translatesAutoresizingMaskIntoConstraints = false
+        hostButton.addSubview(button)
+        textKeyboardButtons.append(button)
+        NSLayoutConstraint.activate([
+            button.leadingAnchor.constraint(equalTo: hostButton.leadingAnchor, constant: 2),
+            button.bottomAnchor.constraint(equalTo: hostButton.bottomAnchor, constant: -2),
+            button.widthAnchor.constraint(equalToConstant: 28),
+            button.heightAnchor.constraint(equalToConstant: 28),
+        ])
+        return button
+    }
+
+    private func makeNumericDigitButton(_ digit: String) -> UIButton {
+        let button = makeTextKeyButton(title: "")
+        button.accessibilityLabel = digit
+        installNumericDigitLabels(on: button, digit: digit)
+        return button
+    }
+
+    private func installNumericDigitLabels(on button: UIButton, digit: String) {
+        let stack = UIStackView()
+        stack.axis = .vertical
+        stack.alignment = .center
+        stack.spacing = -1
+        stack.isUserInteractionEnabled = false
+        stack.translatesAutoresizingMaskIntoConstraints = false
+
+        let digitLabel = UILabel()
+        digitLabel.text = digit
+        digitLabel.textColor = .label
+        digitLabel.textAlignment = .center
+        digitLabel.font = .systemFont(ofSize: 30, weight: .regular)
+        digitLabel.adjustsFontSizeToFitWidth = true
+        digitLabel.minimumScaleFactor = 0.82
+        stack.addArrangedSubview(digitLabel)
+
+        if let secondary = numericSecondaryTitle(for: digit) {
+            let secondaryLabel = UILabel()
+            secondaryLabel.text = secondary
+            secondaryLabel.textColor = .label
+            secondaryLabel.textAlignment = .center
+            secondaryLabel.font = .systemFont(ofSize: 10, weight: .bold)
+            secondaryLabel.adjustsFontSizeToFitWidth = true
+            secondaryLabel.minimumScaleFactor = 0.75
+            stack.addArrangedSubview(secondaryLabel)
+        }
+
+        button.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.centerXAnchor.constraint(equalTo: button.centerXAnchor),
+            stack.centerYAnchor.constraint(equalTo: button.centerYAnchor, constant: numericSecondaryTitle(for: digit) == nil ? 0 : 1),
+            stack.leadingAnchor.constraint(greaterThanOrEqualTo: button.leadingAnchor, constant: 6),
+            stack.trailingAnchor.constraint(lessThanOrEqualTo: button.trailingAnchor, constant: -6),
+        ])
+    }
+
+    private func numericSecondaryTitle(for digit: String) -> String? {
+        switch digit {
+        case "2": return "A B C"
+        case "3": return "D E F"
+        case "4": return "G H I"
+        case "5": return "J K L"
+        case "6": return "M N O"
+        case "7": return "P Q R S"
+        case "8": return "T U V"
+        case "9": return "W X Y Z"
+        default: return nil
+        }
+    }
+
+    private func makeNumericPlaceholderButton() -> UIButton {
+        let button = UIButton(type: .system)
+        var configuration = UIButton.Configuration.plain()
+        configuration.background.backgroundColor = .clear
+        configuration.baseForegroundColor = .clear
+        configuration.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0)
+        button.configuration = configuration
+        button.accessibilityElementsHidden = true
+        return button
     }
 
     private func addTextKeyRow(
@@ -7032,6 +7270,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     @objc private func toggleSymbolKeyboard() {
+        guard !isRenderedNumericTextKeyboard else { return }
         clearTransientKeyboardErrorIfShowing()
         if isSymbolKeyboard {
             isSymbolKeyboard = false
@@ -7045,7 +7284,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     @objc private func toggleAlternateSymbolKeyboard() {
-        guard isSymbolKeyboard else { return }
+        guard isSymbolKeyboard, !isRenderedNumericTextKeyboard else { return }
         clearTransientKeyboardErrorIfShowing()
         isAlternateSymbolKeyboard.toggle()
         rebuildTextKeyboardRows()
@@ -7053,7 +7292,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     @objc private func toggleTextShift() {
-        guard !isSymbolKeyboard else { return }
+        guard !isSymbolKeyboard, !isRenderedNumericTextKeyboard else { return }
         clearTransientKeyboardErrorIfShowing()
         // Stray second contact from a fat press on the a↔shift seam: the routed
         // character already committed on touch-down, so this shift touch-up is
@@ -7253,6 +7492,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
 
         clearTransientKeyboardErrorIfShowing()
+
+        if isRenderedNumericTextKeyboard {
+            clearRefineUndoStateForManualEdit()
+            textDocumentProxy.insertText(character)
+            renderRefineSuggestionsIfIdle()
+            return true
+        }
 
         if textInputLanguage == .english {
             commitDisplayedRimeCompositionIfNeeded()
