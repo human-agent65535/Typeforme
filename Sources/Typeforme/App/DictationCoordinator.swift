@@ -365,14 +365,64 @@ final class DictationCoordinator: ObservableObject {
                let editIntent = activeTextEditIntent {
                 transition(to: .correcting)
                 do {
+                    let spokenInstruction: String
+                    if !selectedCorrectionMode.usesRefine {
+                        spokenInstruction = trimmed
+                        lastWarning = asrWarning
+                    } else {
+                        let request = buildCorrectionRequest(
+                            rawTranscript: trimmed,
+                            alternateTranscripts: alternateTranscripts,
+                            asrHypotheses: asrHypotheses,
+                            sourceHypotheses: asrResult.sourceHypotheses
+                        )
+                        let correctionStarted = Date()
+                        do {
+                            let result = try await corrector.correct(request, timeoutMs: AppSettings.correctionTimeoutMs)
+                            try await ensureActive(sessionID: sessionID, token: cancelToken)
+                            let normalizedResult = normalizeResult(result, correctionMode: request.correctionMode)
+                            spokenInstruction = normalizedResult.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                            lastWarning = asrWarning
+                        } catch {
+                            if error is CancellationError {
+                                throw error
+                            }
+                            try await ensureActive(sessionID: sessionID, token: cancelToken)
+                            let statusLabel = Self.refineFailureStatus(for: error)
+                            let fallbackResult = normalizeResult(
+                                CorrectionResult(action: .commit, text: trimmed, risk: .medium),
+                                correctionMode: request.correctionMode
+                            )
+                            spokenInstruction = fallbackResult.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                            lastWarning = Self.combinedWarning([
+                                Self.previewWithoutRefineMessage(for: statusLabel),
+                                asrWarning,
+                            ])
+                            DebugLogStore.recordCorrection(
+                                debugLog,
+                                mode: request.correctionMode,
+                                text: fallbackResult.text,
+                                status: statusLabel,
+                                error: error.localizedDescription,
+                                latencyMs: elapsedMs(since: correctionStarted),
+                                request: request,
+                                timeoutMs: AppSettings.correctionTimeoutMs
+                            )
+                        }
+                    }
+                    guard !spokenInstruction.isEmpty else {
+                        reportError("Dictation produced an empty edit command")
+                        scheduleAutoReset(after: Self.errorResetDelay)
+                        return
+                    }
                     let editStarted = Date()
                     let result = try await textEditService.edit(
                         intent: editIntent,
                         contextBefore: editTarget.contextBefore,
                         targetText: editTarget.targetText,
                         contextAfter: editTarget.contextAfter,
-                        spokenInstruction: trimmed,
-                        languageIDs: AppSettings.asrLanguageIDs,
+                        spokenInstruction: spokenInstruction,
+                        languageIDs: selectedTranscriptionLanguageIDs,
                         appName: snapshot?.localizedName,
                         bundleID: snapshot?.bundleID,
                         appCategory: AppCategory.from(bundleID: snapshot?.bundleID)
@@ -815,7 +865,14 @@ final class DictationCoordinator: ObservableObject {
     private func makeLivePartialPreviewPCMHandlerIfAvailable() async -> ((AVAudioPCMBuffer) -> Void)? {
         teardownLivePartialPreview(clearText: true)
         if AppSettings.processingMode == .client {
-            return await makeRemoteBridgeLivePartialPreviewPCMHandlerIfAvailable()
+            switch AppSettings.voiceLivePreviewSource {
+            case .off:
+                return nil
+            case .appleSpeech:
+                return makeAppleSpeechLivePartialPreviewPCMHandlerIfAvailable(requiresEnabledRecognitionSource: false)
+            case .qwen, .nvidiaNemotron:
+                return await makeRemoteBridgeLivePartialPreviewPCMHandlerIfAvailable()
+            }
         }
         switch AppSettings.voiceLivePreviewSource {
         case .off:
@@ -895,7 +952,13 @@ final class DictationCoordinator: ObservableObject {
     }
 
     private func makeAppleSpeechLivePartialPreviewPCMHandlerIfAvailable() -> ((AVAudioPCMBuffer) -> Void)? {
-        guard AppSettings.enabledRecognitionSources.contains(.appleSpeech) else {
+        makeAppleSpeechLivePartialPreviewPCMHandlerIfAvailable(requiresEnabledRecognitionSource: true)
+    }
+
+    private func makeAppleSpeechLivePartialPreviewPCMHandlerIfAvailable(
+        requiresEnabledRecognitionSource: Bool
+    ) -> ((AVAudioPCMBuffer) -> Void)? {
+        guard !requiresEnabledRecognitionSource || AppSettings.enabledRecognitionSources.contains(.appleSpeech) else {
             return nil
         }
         guard let localeID = AppSettings.activeLanguageIDs.lazy.compactMap({
@@ -1067,7 +1130,7 @@ final class DictationCoordinator: ObservableObject {
 
             if let editTarget = activeTextEditTarget,
                let editIntent = activeTextEditIntent {
-                let spoken = lastTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+                let spoken = response.text.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !spoken.isEmpty else {
                     reportError("Remote transcript was empty")
                     scheduleAutoReset(after: Self.errorResetDelay)

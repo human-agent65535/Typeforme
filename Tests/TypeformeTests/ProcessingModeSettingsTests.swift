@@ -17,12 +17,14 @@ struct ProcessingModeSettingsTests {
         defaults.set("https://old.example.com", forKey: AppSettings.Keys.clientCloudBridgeURL)
         defaults.set("old-token", forKey: AppSettings.Keys.clientBridgeToken)
         defaults.set("en,zh", forKey: AppSettings.Keys.clientLanguageIDs)
+        defaults.set(RecognitionSource.qwen.rawValue, forKey: AppSettings.Keys.clientBridgeEnabledRecognitionSources)
 
         AppSettings.setProcessingMode(.client, defaults: defaults)
         defaults.set("http://192.168.1.20:18081", forKey: AppSettings.Keys.clientLocalBridgeURLs)
         defaults.set("https://client.example.com", forKey: AppSettings.Keys.clientCloudBridgeURL)
         defaults.set("client-token", forKey: AppSettings.Keys.clientBridgeToken)
         defaults.set("ja,vi", forKey: AppSettings.Keys.clientLanguageIDs)
+        defaults.set(RecognitionSource.nvidiaNemotron.rawValue, forKey: AppSettings.Keys.clientBridgeEnabledRecognitionSources)
         defaults.set(CorrectionBackendKind.qwen35_2B.rawValue, forKey: AppSettings.Keys.correctionBackend)
         defaults.set(false, forKey: AppSettings.Keys.bridgeEnabled)
 
@@ -37,5 +39,6 @@ struct ProcessingModeSettingsTests {
         #expect(defaults.string(forKey: AppSettings.Keys.clientCloudBridgeURL) == "https://client.example.com")
         #expect(defaults.string(forKey: AppSettings.Keys.clientBridgeToken) == "client-token")
         #expect(defaults.string(forKey: AppSettings.Keys.clientLanguageIDs) == "ja,vi")
+        #expect(defaults.string(forKey: AppSettings.Keys.clientBridgeEnabledRecognitionSources) == RecognitionSource.nvidiaNemotron.rawValue)
     }
 }

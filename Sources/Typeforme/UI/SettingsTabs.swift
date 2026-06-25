@@ -1060,6 +1060,8 @@ struct DictationInputSettingsView: View {
     @AppStorage(AppSettings.Keys.holdModifier)         private var holdModifierRaw: String = HoldModifier.rightOption.rawValue
     @AppStorage(AppSettings.Keys.voiceLivePreview)     private var voiceLivePreview: Bool = true
     @AppStorage(AppSettings.Keys.voiceLivePreviewSource) private var voiceLivePreviewSourceRaw: String = VoiceLivePreviewSource.appleSpeech.rawValue
+    @AppStorage(AppSettings.Keys.processingMode)       private var processingModeRaw: String = ProcessingMode.client.rawValue
+    @AppStorage(AppSettings.Keys.clientBridgeEnabledRecognitionSources) private var clientBridgeEnabledRecognitionSourcesRaw: String = ""
     @AppStorage(AppSettings.Keys.asrQwenEnabled)       private var qwenEnabled: Bool = true
     @AppStorage(AppSettings.Keys.asrNvidiaNemotronEnabled) private var nvidiaEnabled: Bool = false
     @AppStorage(AppSettings.Keys.asrAppleSpeechEnabled) private var appleSpeechEnabled: Bool = false
@@ -1150,6 +1152,12 @@ struct DictationInputSettingsView: View {
         .onChange(of: appleSpeechEnabled) { _, _ in
             constrainPreviewSourceToCurrentSources()
         }
+        .onChange(of: clientBridgeEnabledRecognitionSourcesRaw) { _, _ in
+            constrainPreviewSourceToCurrentSources()
+        }
+        .onChange(of: processingModeRaw) { _, _ in
+            constrainPreviewSourceToCurrentSources()
+        }
         .onChange(of: correctionModeRaw) { _, _ in
             constrainPreviewSourceToCurrentSources()
         }
@@ -1160,7 +1168,13 @@ struct DictationInputSettingsView: View {
     }
 
     private var previewSourceOptions: [VoiceLivePreviewSource] {
-        VoiceLivePreviewSource.options(
+        if processingMode == .client {
+            return VoiceLivePreviewSource.clientOptions(
+                forRemoteRecognitionSources: clientBridgeEnabledRecognitionSources,
+                correctionMode: selectedCorrectionMode
+            )
+        }
+        return VoiceLivePreviewSource.options(
             forRecognitionSources: enabledRecognitionSources,
             correctionMode: selectedCorrectionMode
         )
@@ -1201,7 +1215,13 @@ struct DictationInputSettingsView: View {
     }
 
     private func isPreviewSourceEnabled(_ source: VoiceLivePreviewSource) -> Bool {
-        source.isEnabled(
+        if processingMode == .client {
+            return source.isClientEnabled(
+                forRemoteRecognitionSources: clientBridgeEnabledRecognitionSources,
+                correctionMode: selectedCorrectionMode
+            )
+        }
+        return source.isEnabled(
             forRecognitionSources: enabledRecognitionSources,
             correctionMode: selectedCorrectionMode
         )
@@ -1212,7 +1232,12 @@ struct DictationInputSettingsView: View {
     }
 
     private var previewHelpText: String {
-        "Preview follows enabled ASR sources."
+        switch processingMode {
+        case .client:
+            return "Apple Speech preview runs on this Mac. Qwen and Nemotron preview follow the paired Mac."
+        case .server:
+            return "Preview follows enabled ASR sources."
+        }
     }
 
     private var previewDisabledReason: String {
@@ -1223,12 +1248,20 @@ struct DictationInputSettingsView: View {
         CorrectionMode(rawValue: correctionModeRaw) ?? .polish
     }
 
+    private var processingMode: ProcessingMode {
+        ProcessingMode(rawValue: processingModeRaw) ?? .client
+    }
+
     private var enabledRecognitionSources: [RecognitionSource] {
         var sources: [RecognitionSource] = []
         if qwenEnabled { sources.append(.qwen) }
         if nvidiaEnabled { sources.append(.nvidiaNemotron) }
         if appleSpeechEnabled { sources.append(.appleSpeech) }
         return sources
+    }
+
+    private var clientBridgeEnabledRecognitionSources: [RecognitionSource] {
+        AppSettings.recognitionSources(fromRaw: clientBridgeEnabledRecognitionSourcesRaw)
     }
 }
 
@@ -2408,6 +2441,8 @@ struct CorrectionSettingsView: View {
     @AppStorage(AppSettings.Keys.correctionContextSize)   private var contextSize: Int = 4096
     @AppStorage(AppSettings.Keys.correctionMode)   private var correctionModeRaw: String = CorrectionMode.polish.rawValue
     @AppStorage(AppSettings.Keys.asrQwenEnabled)   private var qwenEnabled: Bool = true
+    @AppStorage(AppSettings.Keys.processingMode)   private var processingModeRaw: String = ProcessingMode.client.rawValue
+    @AppStorage(AppSettings.Keys.clientBridgeEnabledRecognitionSources) private var clientBridgeEnabledRecognitionSourcesRaw: String = ""
     @AppStorage(AppSettings.Keys.numberOutputPreference)  private var numberOutputPreferenceRaw: String = NumberOutputPreference.automatic.rawValue
     @AppStorage(AppSettings.Keys.punctuationPreference)   private var punctuationPreferenceRaw: String = PunctuationOutputPreference.normal.rawValue
     @AppStorage(AppSettings.Keys.externalLLMBaseURL)      private var externalLLMBaseURL: String = "http://127.0.0.1:1234"
@@ -2633,7 +2668,14 @@ struct CorrectionSettingsView: View {
     }
 
     private var enabledRecognitionSources: [RecognitionSource] {
-        qwenEnabled ? [.qwen] : []
+        if processingMode == .client {
+            return AppSettings.recognitionSources(fromRaw: clientBridgeEnabledRecognitionSourcesRaw)
+        }
+        return qwenEnabled ? [.qwen] : []
+    }
+
+    private var processingMode: ProcessingMode {
+        ProcessingMode(rawValue: processingModeRaw) ?? .client
     }
 
     private var numberOutputPreferenceDescription: String {

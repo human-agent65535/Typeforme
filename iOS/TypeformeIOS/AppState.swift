@@ -1554,9 +1554,7 @@ final class AppState {
                 recordingInfo: recordingInfo
             )
             let client = BridgeClient(baseURL: routeStatus.activeURL ?? baseURL, token: config.token)
-            let spokenTranscript = response.rawTranscript?
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-                ?? response.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            let spokenTranscript = response.text.trimmingCharacters(in: .whitespacesAndNewlines)
             var text = response.text.trimmingCharacters(in: .whitespacesAndNewlines)
             var resultMessage = "Inserted \(recordingInfo.durationLabel) audio"
             var correctionLatencyMs = response.correctionLatencyMs

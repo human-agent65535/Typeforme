@@ -29,11 +29,7 @@ final class ClientBridgeSettingsSync {
 
     static func applyServerDefaults(_ settings: BridgeSettingsPayload) {
         let sources = settings.enabledSources
-        AppSettings.setEnabledRecognitionSources(sources)
-        if let mode = CorrectionMode(rawValue: settings.correctionMode) {
-            let resolvedMode = mode.isAvailable(enabledRecognitionSources: sources) ? mode : CorrectionMode.polish
-            UserDefaults.standard.set(resolvedMode.rawValue, forKey: AppSettings.Keys.correctionMode)
-        }
+        AppSettings.setClientBridgeEnabledRecognitionSources(sources)
         AppSettings.setClientSettingsRevision(settings.settingsRevision)
 
         let supported = settings.supportedLanguageOptionsForEnabledSources()

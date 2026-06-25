@@ -59,10 +59,33 @@ enum VoiceLivePreviewSource: String, CaseIterable, Identifiable {
         return options
     }
 
+    static func clientOptions(
+        forRemoteRecognitionSources sources: [RecognitionSource],
+        correctionMode: CorrectionMode = .polish
+    ) -> [VoiceLivePreviewSource] {
+        var options: [VoiceLivePreviewSource] = [.off]
+        if sources.contains(.qwen) {
+            options.append(.qwen)
+        }
+        guard correctionMode.usesRefine else { return options }
+        if sources.contains(.nvidiaNemotron) {
+            options.append(.nvidiaNemotron)
+        }
+        options.append(.appleSpeech)
+        return options
+    }
+
     func isEnabled(
         forRecognitionSources sources: [RecognitionSource],
         correctionMode: CorrectionMode = .polish
     ) -> Bool {
         Self.options(forRecognitionSources: sources, correctionMode: correctionMode).contains(self)
+    }
+
+    func isClientEnabled(
+        forRemoteRecognitionSources sources: [RecognitionSource],
+        correctionMode: CorrectionMode = .polish
+    ) -> Bool {
+        Self.clientOptions(forRemoteRecognitionSources: sources, correctionMode: correctionMode).contains(self)
     }
 }

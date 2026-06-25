@@ -87,6 +87,7 @@ enum AppSettings {
         static let clientCloudBridgeURL = "processing.client.cloudBridgeURL"
         static let clientBridgeToken   = "processing.client.bridgeToken"
         static let clientLanguageIDs   = "processing.client.languages"
+        static let clientBridgeEnabledRecognitionSources = "processing.client.enabledRecognitionSources"
         static let clientIdentityID    = "processing.client.identityID"
         static let clientSettingsRevision = "processing.client.settingsRevision"
         static let serverSettingsSnapshot = "processing.server.settingsSnapshot"
@@ -160,6 +161,7 @@ enum AppSettings {
             Keys.clientCloudBridgeURL: "",
             Keys.clientBridgeToken: "",
             Keys.clientLanguageIDs: ASRLanguageSelection.defaultRawValue,
+            Keys.clientBridgeEnabledRecognitionSources: "",
 
             Keys.bridgeEnabled:    false,
             Keys.bridgeLANEnabled: false,
@@ -270,6 +272,7 @@ enum AppSettings {
         Keys.clientCloudBridgeURL,
         Keys.clientBridgeToken,
         Keys.clientLanguageIDs,
+        Keys.clientBridgeEnabledRecognitionSources,
     ]
 
     static var maxRecordingDuration: TimeInterval     { ud.double(forKey: Keys.maxRecordingDuration) }
@@ -285,6 +288,12 @@ enum AppSettings {
     static var voiceLivePreviewSource: VoiceLivePreviewSource {
         guard voiceLivePreview else { return .off }
         let source: VoiceLivePreviewSource = rawSetting(forKey: Keys.voiceLivePreviewSource, default: .appleSpeech)
+        if processingMode == .client {
+            return source.isClientEnabled(
+                forRemoteRecognitionSources: clientBridgeEnabledRecognitionSources,
+                correctionMode: correctionMode
+            ) ? source : .off
+        }
         return source.isEnabled(forRecognitionSources: enabledRecognitionSources, correctionMode: correctionMode) ? source : .off
     }
     static var holdModifier: HoldModifier {
@@ -311,7 +320,8 @@ enum AppSettings {
     }
 
     static var supportsFastMode: Bool {
-        configuredRecognitionSources.contains(.qwen)
+        let sources = processingMode == .client ? clientBridgeEnabledRecognitionSources : configuredRecognitionSources
+        return sources.contains(.qwen)
     }
 
     static func isCorrectionModeAvailable(_ mode: CorrectionMode) -> Bool {
@@ -322,6 +332,18 @@ enum AppSettings {
         ud.set(sources.contains(.qwen), forKey: Keys.asrQwenEnabled)
         ud.set(sources.contains(.nvidiaNemotron), forKey: Keys.asrNvidiaNemotronEnabled)
         ud.set(sources.contains(.appleSpeech), forKey: Keys.asrAppleSpeechEnabled)
+    }
+
+    static var clientBridgeEnabledRecognitionSources: [RecognitionSource] {
+        recognitionSources(fromRaw: ud.string(forKey: Keys.clientBridgeEnabledRecognitionSources) ?? "")
+    }
+
+    static func setClientBridgeEnabledRecognitionSources(_ sources: [RecognitionSource]) {
+        ud.set(RecognitionSource.rawValue(for: sources), forKey: Keys.clientBridgeEnabledRecognitionSources)
+    }
+
+    static func recognitionSources(fromRaw raw: String) -> [RecognitionSource] {
+        RecognitionSource.recognizedSources(raw.components(separatedBy: ","))
     }
 
     static var asrLanguageIDs: [String] {
