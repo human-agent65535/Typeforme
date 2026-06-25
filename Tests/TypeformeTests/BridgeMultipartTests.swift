@@ -50,6 +50,9 @@ struct BridgeMultipartTests {
         #expect(bodyText.contains(#"name="context_after""#))
         #expect(bodyText.contains("后一句。"))
         #expect(!bodyText.contains("audio_base64"))
+        let audioExtensionRange = try #require(bodyText.range(of: #"name="audio_extension""#))
+        let audioRange = try #require(bodyText.range(of: #"name="audio"; filename="audio.m4a""#))
+        #expect(audioExtensionRange.lowerBound < audioRange.lowerBound)
     }
 
     @Test func dictateUploadCanStreamMultipartFromTempFile() throws {
@@ -85,6 +88,9 @@ struct BridgeMultipartTests {
         #expect(bodyText.contains("ios_test_2"))
         #expect(bodyText.contains(#"["zh-CN","en-US"]"#))
         #expect(!bodyText.contains("audio_base64"))
+        let audioExtensionRange = try #require(bodyText.range(of: #"name="audio_extension""#))
+        let audioRange = try #require(bodyText.range(of: #"name="audio"; filename="audio.m4a""#))
+        #expect(audioExtensionRange.lowerBound < audioRange.lowerBound)
     }
 
     @Test func serverParserStreamsMultipartAudioToTempFile() async throws {
@@ -145,6 +151,26 @@ struct BridgeMultipartTests {
         #expect(try Data(contentsOf: streamedAudioURL) == audioBytes)
     }
 
+    @Test func serverParserRejectsAudioBeforeAudioExtensionField() throws {
+        let boundary = "TypeformeTest-\(UUID().uuidString)"
+        let audioBytes = Data((0..<4096).map { UInt8($0 % 193) })
+        let body = multipartBody(
+            boundary: boundary,
+            audioBytes: audioBytes,
+            fields: [
+                ("audio_extension", "m4a"),
+                ("correction_mode", CorrectionMode.polish.rawValue),
+            ]
+        )
+        let audioDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("typeforme-stream-test-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: audioDirectory) }
+
+        #expect(throws: BridgeMultipartError.self) {
+            try parseStreamedMultipartBody(body, boundary: boundary, audioDirectory: audioDirectory)
+        }
+    }
+
     @Test func dictateUploadRejectsUnsupportedAudioExtension() throws {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("typeforme-test-\(UUID().uuidString).wav")
@@ -164,5 +190,57 @@ struct BridgeMultipartTests {
                 includeRawTranscript: true
             )
         }
+    }
+
+    private func multipartBody(
+        boundary: String,
+        audioBytes: Data,
+        fields: [(name: String, value: String)]
+    ) -> Data {
+        var body = Data()
+        body.appendUTF8("--\(boundary)\r\n")
+        body.appendUTF8("Content-Disposition: form-data; name=\"audio\"; filename=\"audio.m4a\"\r\n")
+        body.appendUTF8("Content-Type: audio/mp4\r\n\r\n")
+        body.append(audioBytes)
+        body.appendUTF8("\r\n")
+        for field in fields {
+            body.appendUTF8("--\(boundary)\r\n")
+            body.appendUTF8("Content-Disposition: form-data; name=\"\(field.name)\"\r\n\r\n")
+            body.appendUTF8(field.value)
+            body.appendUTF8("\r\n")
+        }
+        body.appendUTF8("--\(boundary)--\r\n")
+        return body
+    }
+
+    private func parseStreamedMultipartBody(
+        _ body: Data,
+        boundary: String,
+        audioDirectory: URL
+    ) throws -> BridgeMultipart.StreamedFormData {
+        let parser = try BridgeMultipart.StreamingFormDataParser(
+            contentType: "multipart/form-data; boundary=\(boundary)",
+            maxBodyBytes: body.count + 1024,
+            maxHeaderBytes: 16 * 1024,
+            maxFieldBytes: 1 * 1024 * 1024,
+            audioDirectory: audioDirectory
+        )
+        let chunkSizes = [1, 7, 3, 128, 2, 64, 5]
+        var offset = body.startIndex
+        var index = 0
+        while offset < body.endIndex {
+            let size = chunkSizes[index % chunkSizes.count]
+            let end = min(body.index(offset, offsetBy: size, limitedBy: body.endIndex) ?? body.endIndex, body.endIndex)
+            try parser.append(body[offset..<end])
+            offset = end
+            index += 1
+        }
+        return try parser.finish()
+    }
+}
+
+private extension Data {
+    mutating func appendUTF8(_ string: String) {
+        append(contentsOf: string.utf8)
     }
 }

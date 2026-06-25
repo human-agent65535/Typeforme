@@ -381,16 +381,10 @@ final class QwenLlamaLivePreviewSession: ASRLivePreviewSession, @unchecked Senda
             return nil
         }
 
-        var suppliedInput = false
         var conversionError: NSError?
+        let input = ASRAudioConverterOneShotInput(buffer: mono)
         let status = converter.convert(to: output, error: &conversionError) { _, outStatus in
-            if suppliedInput {
-                outStatus.pointee = .noDataNow
-                return nil
-            }
-            suppliedInput = true
-            outStatus.pointee = .haveData
-            return mono
+            input.provide(outStatus)
         }
 
         if let conversionError {
