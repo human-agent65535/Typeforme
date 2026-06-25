@@ -293,12 +293,17 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private var activeMarkedText = ""
     private var activeMarkedTextOwner: MarkedTextOwner?
     private var heightConstraint: NSLayoutConstraint?
-    /// While entering Typeforme from the system globe menu, UIKit may deliver
-    /// the original selection touch to our globe key as a non-began event.
-    /// Suppress only that carry-over touch; the first fresh touch-began is a
-    /// deliberate user action and must switch keyboards immediately.
+    /// While entering Typeforme from the system globe menu, UIKit may retarget
+    /// the original selection touch to our globe key. Suppress that activation
+    /// touch sequence, but let a fresh touch that starts after activation switch
+    /// keyboards immediately.
     private var isSuppressingCarryoverInputModeTouch = true
     private var didSuppressInitialInputModeSwitchEvent = false
+    private var keyboardActivationStartedAt: CFTimeInterval = 0
+    private var suppressedInputModeTouches: Set<ObjectIdentifier> = []
+    private static let inputModeCarryoverBeganGrace: CFTimeInterval = 0.12
+    private static let inputModeCarryoverNoTouchGrace: CFTimeInterval = 0.25
+    private var pendingTextKeyboardTraitRefresh: DispatchWorkItem?
     /// Last time a routed character key committed (on touch-down). A shift
     /// toggle (touch-up) arriving within `adjacentKeyGuardWindow` is treated as
     /// a stray second contact from the same fat press on the a↔shift seam and
@@ -747,8 +752,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     override func loadView() {
         let initialHeight = currentKeyboardContentHeight + Self.topChromeCoverHeight
-        isSuppressingCarryoverInputModeTouch = true
-        didSuppressInitialInputModeSwitchEvent = false
+        beginInputModeCarryoverSuppression()
         let rootView = ClickFeedbackInputView(
             frame: CGRect(x: 0, y: 0, width: UIScreen.main.bounds.width, height: initialHeight),
             // `.keyboard` is required for full-keyboard replacements. `.default`
@@ -1701,13 +1705,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
-        isSuppressingCarryoverInputModeTouch = true
-        didSuppressInitialInputModeSwitchEvent = false
+        beginInputModeCarryoverSuppression()
         configureSystemKeyboardAffordances()
         setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
         configureRimeStateCallback()
         refreshKeyboardPreferencesFromHost(rebuildIfNeeded: true)
-        refreshTextKeyboardLayoutForCurrentInputTraits()
         refreshInputModeSwitchKeyVisibility()
         applyKeyboardHeightForCurrentTraits()
         resetCorrectionModeToDefault()
@@ -1730,6 +1732,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         logKeyboardPresentationGateIfUnstable()
         keyboardHaptics.prepareForKeyboardReady()
         logKeyboardPresentationLayout("viewDidAppear", force: true)
+        scheduleDeferredTextKeyboardLayoutRefresh()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
             self?.disableGestureRecognizerDelays()
             self?.setKeyboardContentVisible(true)
@@ -1751,14 +1754,58 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         super.handleInputModeList(from: view, with: event)
     }
 
+    private func beginInputModeCarryoverSuppression() {
+        keyboardActivationStartedAt = CACurrentMediaTime()
+        isSuppressingCarryoverInputModeTouch = true
+        didSuppressInitialInputModeSwitchEvent = false
+        suppressedInputModeTouches.removeAll()
+    }
+
     private func shouldSuppressCarryoverInputModeSwitch(event: UIEvent) -> Bool {
-        guard isSuppressingCarryoverInputModeTouch else { return false }
-        guard let touches = event.allTouches, !touches.isEmpty else { return true }
-        if touches.contains(where: { $0.phase == .began }) {
+        let activationElapsed = CACurrentMediaTime() - keyboardActivationStartedAt
+
+        guard let touches = event.allTouches, !touches.isEmpty else {
+            guard isSuppressingCarryoverInputModeTouch else { return false }
+            if activationElapsed <= Self.inputModeCarryoverNoTouchGrace {
+                return true
+            }
             isSuppressingCarryoverInputModeTouch = false
             return false
         }
+
+        let touchIdentifiers = Set(touches.map { ObjectIdentifier($0) })
+        if !suppressedInputModeTouches.isDisjoint(with: touchIdentifiers) {
+            removeFinishedSuppressedInputModeTouches(from: touches)
+            return true
+        }
+
+        guard isSuppressingCarryoverInputModeTouch else { return false }
+
+        if touches.contains(where: { $0.phase == .began }) {
+            let firstTimestamp = touches.map(\.timestamp).min() ?? CACurrentMediaTime()
+            if firstTimestamp - keyboardActivationStartedAt <= Self.inputModeCarryoverBeganGrace {
+                suppressedInputModeTouches.formUnion(touchIdentifiers)
+                removeFinishedSuppressedInputModeTouches(from: touches)
+                return true
+            }
+            isSuppressingCarryoverInputModeTouch = false
+            return false
+        }
+
+        suppressedInputModeTouches.formUnion(touchIdentifiers)
+        removeFinishedSuppressedInputModeTouches(from: touches)
         return true
+    }
+
+    private func removeFinishedSuppressedInputModeTouches(from touches: Set<UITouch>) {
+        let finished = touches
+            .filter { $0.phase == .ended || $0.phase == .cancelled }
+            .map { ObjectIdentifier($0) }
+        suppressedInputModeTouches.subtract(finished)
+        if suppressedInputModeTouches.isEmpty,
+           touches.allSatisfy({ $0.phase == .ended || $0.phase == .cancelled }) {
+            isSuppressingCarryoverInputModeTouch = false
+        }
     }
 
     private func disableGestureRecognizerDelays(in root: UIView? = nil) {
@@ -1800,7 +1847,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     override func textWillChange(_ textInput: UITextInput?) {
         super.textWillChange(textInput)
-        refreshTextKeyboardLayoutForCurrentInputTraits()
         refreshInputModeSwitchKeyVisibility()
     }
 
@@ -1813,6 +1859,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     isolated deinit {
+        pendingTextKeyboardTraitRefresh?.cancel()
         deferredStartupWorkItem?.cancel()
         textToolbarStatusClearTask?.cancel()
         scheduledHostOpenTask?.cancel()
@@ -3650,8 +3697,19 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         if case .numeric = next {
             clearNumericIncompatibleCompositionState()
         }
-        rebuildTextKeyboardRows()
+        rebuildTextKeyboardRows(layoutKind: next)
         updateKeyboardSurfaceMask()
+    }
+
+    private func scheduleDeferredTextKeyboardLayoutRefresh() {
+        pendingTextKeyboardTraitRefresh?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.pendingTextKeyboardTraitRefresh = nil
+            self.refreshTextKeyboardLayoutForCurrentInputTraits()
+        }
+        pendingTextKeyboardTraitRefresh = workItem
+        DispatchQueue.main.async(execute: workItem)
     }
 
     private func clearNumericIncompatibleCompositionState() {
@@ -3661,9 +3719,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         applyRimeState(rimeInput.clearComposition())
     }
 
-    private func rebuildTextKeyboardRows() {
+    private func rebuildTextKeyboardRows(layoutKind explicitLayoutKind: TextKeyboardLayoutKind? = nil) {
         resetAllPressedControlStates(animated: false)
-        let layoutKind = textKeyboardLayoutKindForCurrentTraits
+        let layoutKind = explicitLayoutKind ?? renderedTextKeyboardLayoutKind ?? .standard
         renderedTextKeyboardLayoutKind = layoutKind
         isCandidateGridExpanded = false
         textToolbar.isHidden = layoutKind != .standard
