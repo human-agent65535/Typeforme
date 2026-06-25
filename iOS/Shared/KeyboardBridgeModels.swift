@@ -326,7 +326,7 @@ struct KeyboardDefaultsPayload: Codable, Equatable {
         version = try container.decode(Int.self, forKey: .version)
         bridgeToken = try container.decode(String.self, forKey: .bridgeToken)
         correctionMode = try container.decode(CorrectionMode.self, forKey: .correctionMode)
-        supportsFastMode = try container.decode(Bool.self, forKey: .supportsFastMode)
+        supportsFastMode = try container.decodeIfPresent(Bool.self, forKey: .supportsFastMode) ?? false
         autoCapitalizationEnabled = try container.decode(Bool.self, forKey: .autoCapitalizationEnabled)
         characterPreviewEnabled = try container.decode(Bool.self, forKey: .characterPreviewEnabled)
         keySoundEnabled = try container.decode(Bool.self, forKey: .keySoundEnabled)

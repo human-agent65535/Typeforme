@@ -275,6 +275,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private var rimeUserPhrasesRevision = ""
     private var isSymbolKeyboard = false
     private var isAlternateSymbolKeyboard = false
+    private var isPhoneSymbolKeyboard = false
     private var renderedTextKeyboardLayoutKind: TextKeyboardLayoutKind?
     private var isAutoCapitalizationEnabled = true
     private var isCharacterPreviewEnabled = false
@@ -709,7 +710,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     private enum TextKeyboardLayoutKind: Equatable {
         case standard
-        case numeric(decimalSeparator: String?)
+        case numeric(decimalSeparator: String?, phoneSymbols: Bool)
     }
 
     private struct TextKeyTouchSample {
@@ -1629,6 +1630,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 guard let button,
                       !button.isHidden,
                       button.alpha > 0.01,
+                      button.isDescendant(of: keyRowsStack),
                       button.bounds.height > 0
                 else { return nil }
                 return button.convert(button.bounds, to: view).minY
@@ -3652,9 +3654,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private var textKeyboardLayoutKindForCurrentTraits: TextKeyboardLayoutKind {
         switch textDocumentProxy.keyboardType {
         case .numberPad, .asciiCapableNumberPad:
-            return .numeric(decimalSeparator: nil)
+            return .numeric(decimalSeparator: nil, phoneSymbols: false)
         case .decimalPad:
-            return .numeric(decimalSeparator: Locale.current.decimalSeparator ?? ".")
+            return .numeric(decimalSeparator: Locale.current.decimalSeparator ?? ".", phoneSymbols: false)
+        case .phonePad, .namePhonePad:
+            return .numeric(decimalSeparator: nil, phoneSymbols: true)
         default:
             return .standard
         }
@@ -3709,16 +3713,21 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         textSpaceKeyButton = nil
         textReturnKeyButton = nil
 
-        if case .numeric(let decimalSeparator) = layoutKind {
+        if case .numeric(let decimalSeparator, let phoneSymbols) = layoutKind {
             isSymbolKeyboard = false
             isAlternateSymbolKeyboard = false
-            addNumericKeyboardRows(decimalSeparator: decimalSeparator)
+            if !phoneSymbols {
+                isPhoneSymbolKeyboard = false
+            }
+            addNumericKeyboardRows(decimalSeparator: decimalSeparator, phoneSymbols: phoneSymbols)
         } else if isSymbolKeyboard {
+            isPhoneSymbolKeyboard = false
             let rows = symbolRowsForCurrentLanguage()
             addTextKeyRow(rows[0])
             addTextKeyRow(rows[1])
             addTextKeyRow(rows[2], includeAlternateSymbols: true, includeDelete: true)
         } else {
+            isPhoneSymbolKeyboard = false
             addTextKeyRow(["q", "w", "e", "r", "t", "y", "u", "i", "o", "p"])
             addTextKeyRow(["a", "s", "d", "f", "g", "h", "j", "k", "l"], usesHalfKeyHorizontalOffset: true)
             addTextKeyRow(["z", "x", "c", "v", "b", "n", "m"], includeShift: true, includeDelete: true)
@@ -3754,13 +3763,20 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         return englishPunctuationPage
     }
 
-    private func addNumericKeyboardRows(decimalSeparator: String?) {
+    private func addNumericKeyboardRows(decimalSeparator: String?, phoneSymbols: Bool) {
+        if phoneSymbols, isPhoneSymbolKeyboard {
+            addNumericKeyRow(["+", "*", "#"])
+            addNumericKeyRow(["1", "2", "3"])
+            addNumericKeyRow(["4", "5", "6"])
+            addPhoneSymbolBottomRow()
+            return
+        }
         [
             ["1", "2", "3"],
             ["4", "5", "6"],
             ["7", "8", "9"],
         ].forEach { addNumericKeyRow($0) }
-        addNumericBottomRow(decimalSeparator: decimalSeparator)
+        addNumericBottomRow(decimalSeparator: decimalSeparator, phoneSymbols: phoneSymbols)
     }
 
     private func addNumericKeyRow(_ keys: [String]) {
@@ -3784,7 +3800,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         )
     }
 
-    private func addNumericBottomRow(decimalSeparator: String?) {
+    private func addNumericBottomRow(decimalSeparator: String?, phoneSymbols: Bool) {
         let row = makeTextKeyRow()
         row.distribution = .fillEqually
         var routedButtons: [UIButton] = []
@@ -3803,6 +3819,14 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 let globeButton = attachNumericGlobeOverlay(to: decimalButton)
                 directButtons.append(globeButton)
             }
+        } else if phoneSymbols {
+            let phoneSymbolsButton = makeTextKeyButton(title: "+*#", weight: .utility)
+            phoneSymbolsButton.accessibilityLabel = NSLocalizedString("Show phone symbols", comment: "Accessibility label for phone symbols key")
+            phoneSymbolsButton.addTarget(self, action: #selector(togglePhoneSymbolKeyboard), for: .touchUpInside)
+            row.addArrangedSubview(phoneSymbolsButton)
+            textKeyboardButtons.append(phoneSymbolsButton)
+            directButtons.append(phoneSymbolsButton)
+            boundaryButtons.append(phoneSymbolsButton)
         } else if needsInputModeSwitchKey {
             let globeButton = makeNumericGlobeButton(compactOverlay: false)
             row.addArrangedSubview(globeButton)
@@ -3836,6 +3860,44 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         registerTextKeyboardHitRow(
             row,
             routedButtons: routedButtons,
+            directButtons: directButtons,
+            boundaryButtons: boundaryButtons,
+            kind: .character
+        )
+    }
+
+    private func addPhoneSymbolBottomRow() {
+        let row = makeTextKeyRow()
+        row.distribution = .fillEqually
+        var directButtons: [UIButton] = []
+        var boundaryButtons: [UIButton] = []
+
+        let numericButton = makeTextKeyButton(title: "123", weight: .utility)
+        numericButton.accessibilityLabel = NSLocalizedString("Show numbers", comment: "Accessibility label for returning to phone numbers")
+        numericButton.addTarget(self, action: #selector(togglePhoneSymbolKeyboard), for: .touchUpInside)
+        row.addArrangedSubview(numericButton)
+        textKeyboardButtons.append(numericButton)
+        directButtons.append(numericButton)
+        boundaryButtons.append(numericButton)
+
+        let zeroButton = makeNumericDigitButton("0")
+        row.addArrangedSubview(zeroButton)
+        textKeyboardButtons.append(zeroButton)
+        textKeyCommitCharacters[ObjectIdentifier(zeroButton)] = "0"
+        boundaryButtons.append(zeroButton)
+
+        let deleteKey = makeTextKeyButton(title: "", image: "delete.left", weight: .utility)
+        deleteKey.addTarget(self, action: #selector(deletePressDown), for: [.touchDown, .touchDragEnter])
+        deleteKey.addTarget(self, action: #selector(deletePressUp), for: [.touchUpInside, .touchUpOutside, .touchCancel, .touchDragExit])
+        row.addArrangedSubview(deleteKey)
+        textKeyboardButtons.append(deleteKey)
+        directButtons.append(deleteKey)
+        boundaryButtons.append(deleteKey)
+
+        keyRowsStack.addArrangedSubview(row)
+        registerTextKeyboardHitRow(
+            row,
+            routedButtons: [zeroButton],
             directButtons: directButtons,
             boundaryButtons: boundaryButtons,
             kind: .character
@@ -7287,6 +7349,14 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         guard isSymbolKeyboard, !isRenderedNumericTextKeyboard else { return }
         clearTransientKeyboardErrorIfShowing()
         isAlternateSymbolKeyboard.toggle()
+        rebuildTextKeyboardRows()
+        lightHaptic()
+    }
+
+    @objc private func togglePhoneSymbolKeyboard() {
+        guard isRenderedNumericTextKeyboard else { return }
+        clearTransientKeyboardErrorIfShowing()
+        isPhoneSymbolKeyboard.toggle()
         rebuildTextKeyboardRows()
         lightHaptic()
     }
