@@ -135,6 +135,7 @@ struct BridgeMultipartTests {
         defer { try? FileManager.default.removeItem(at: streamedAudioURL) }
 
         #expect(form.audioFilename == "audio.m4a")
+        #expect(streamedAudioURL.pathExtension == "m4a")
         #expect(form.fields["correction_mode"] == CorrectionMode.polishPlus.rawValue)
         #expect(form.fields["app_name"] == "Notes")
         #expect(form.fields["client_job_id"] == "ios_stream_1")

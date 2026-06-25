@@ -4,11 +4,12 @@ import Testing
 @Suite("BridgeAudioFormat")
 struct BridgeAudioFormatTests {
     @Test func bridgeFormatContractListsCurrentUploadExtensions() {
-        #expect(BridgeAudioFormat.defaultExtension == "m4a")
         #expect(BridgeAudioFormat.allowedExtensions == ["m4a", "aac"])
         #expect(BridgeAudioFormat.isAllowedExtension("m4a"))
         #expect(BridgeAudioFormat.isAllowedExtension("AAC"))
         #expect(!BridgeAudioFormat.isAllowedExtension("wav"))
+        #expect(BridgeAudioFormat.normalizedExtension(" M4A ") == "m4a")
+        #expect(BridgeAudioFormat.normalizedExtension("m-4a") == nil)
     }
 
     @Test func bridgeFormatContractMapsMimeTypes() {

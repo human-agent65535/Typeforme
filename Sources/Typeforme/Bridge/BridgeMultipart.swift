@@ -443,11 +443,22 @@ enum BridgeMultipart {
                 throw BridgeMultipartError.invalidRequest("Multipart request contains multiple audio parts")
             }
             try FileManager.default.createDirectory(at: audioDirectory, withIntermediateDirectories: true)
-            let url = audioDirectory.appendingPathComponent("\(UUID().uuidString).upload")
+            let ext = try streamedAudioExtension()
+            let url = audioDirectory.appendingPathComponent("\(UUID().uuidString).\(ext)")
             _ = FileManager.default.createFile(atPath: url.path, contents: nil)
             audioHandle = try FileHandle(forWritingTo: url)
             audioFileURL = url
             audioFilename = part.filename
+        }
+
+        private func streamedAudioExtension() throws -> String {
+            guard let rawExtension = fields["audio_extension"] else {
+                throw BridgeMultipartError.invalidRequest("Multipart audio_extension is required before audio")
+            }
+            guard let ext = BridgeAudioFormat.normalizedExtension(rawExtension) else {
+                throw BridgeMultipartError.invalidRequest("Unsupported audio extension: \(rawExtension)")
+            }
+            return ext
         }
 
         private func closeAudioHandle() throws {
@@ -610,13 +621,16 @@ enum BridgeMultipart {
     }
 
     private static func resolvedAudioExtension(for audioURL: URL, explicitExtension: String?) throws -> String {
-        let ext = (
-            explicitExtension?.isEmpty == false
-                ? explicitExtension!
-                : (audioURL.pathExtension.isEmpty ? BridgeAudioFormat.defaultExtension : audioURL.pathExtension)
-        ).lowercased()
-        guard BridgeAudioFormat.isAllowedExtension(ext) else {
-            throw BridgeMultipartError.invalidRequest("Unsupported audio extension: \(ext)")
+        let rawExtension: String
+        if let explicitExtension, !explicitExtension.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            rawExtension = explicitExtension
+        } else if !audioURL.pathExtension.isEmpty {
+            rawExtension = audioURL.pathExtension
+        } else {
+            throw BridgeMultipartError.invalidRequest("Missing audio extension")
+        }
+        guard let ext = BridgeAudioFormat.normalizedExtension(rawExtension) else {
+            throw BridgeMultipartError.invalidRequest("Unsupported audio extension: \(rawExtension)")
         }
         return ext
     }

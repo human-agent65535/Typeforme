@@ -69,3 +69,8 @@
 "double-tap %@" = "double-tap %@";
 "Tap %@ to complete" = "Tap %@ to complete";
 "Click ✓ to complete" = "Click ✓ to complete";
+
+// ASR source ratings
+"High quality / slower" = "High quality / slower";
+"Medium quality / fastest" = "Medium quality / fastest";
+"Low quality / medium speed" = "Low quality / medium speed";

@@ -799,7 +799,7 @@ final class BridgeHTTPServer: @unchecked Sendable {
 
             return BridgeDictateRequest(
                 audioFileURL: tempAudioURL,
-                audioExtension: fields["audio_extension"] ?? form.audioFilename.flatMap(fileExtension),
+                audioExtension: fields["audio_extension"],
                 clientJobID: fields["client_job_id"],
                 languageIDs: parseLanguageIDs(fields["language_ids"]),
                 languageMode: fields["language_mode"],
@@ -836,10 +836,5 @@ final class BridgeHTTPServer: @unchecked Sendable {
     private static func parseBool(_ raw: String?) -> Bool? {
         guard let raw = raw?.lowercased(), !raw.isEmpty else { return nil }
         return ["1", "true", "yes", "y"].contains(raw)
-    }
-
-    private static func fileExtension(_ filename: String) -> String? {
-        let ext = URL(fileURLWithPath: filename).pathExtension
-        return ext.isEmpty ? nil : ext
     }
 }

@@ -1621,6 +1621,20 @@ private struct TimeoutSecondsRow: View {
     }
 }
 
+private struct RecognitionSourceSettingsLabel: View {
+    let title: String
+    let source: RecognitionSource
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+            Text(source.qualitySpeedLabel)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+
 private struct MacSettingsView: View {
     @Environment(AppState.self) private var state
     @Environment(\.dismiss) private var dismiss
@@ -1643,7 +1657,12 @@ private struct MacSettingsView: View {
                 Section("Speech") {
                     ForEach(draft.recognitionSourceOptions) { option in
                         if let source = RecognitionSource(rawValue: option.id) {
-                            Toggle(option.displayName, isOn: recognitionSourceBinding(source))
+                            Toggle(isOn: recognitionSourceBinding(source)) {
+                                RecognitionSourceSettingsLabel(
+                                    title: option.displayName,
+                                    source: source
+                                )
+                            }
                         }
                     }
 

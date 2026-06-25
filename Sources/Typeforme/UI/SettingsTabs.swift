@@ -68,6 +68,26 @@ private struct IntegerSettingField: View {
     }
 }
 
+private struct RecognitionSourceSettingsLabel: View {
+    let title: String
+    let source: RecognitionSource
+    var detail: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+            Text(source.qualitySpeedLabel)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            if let detail, !detail.isEmpty {
+                Text(detail)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
 // MARK: - General
 
 struct GeneralSettingsView: View {
@@ -458,7 +478,10 @@ struct ClientServerSettingsView: View {
                     ForEach(current.recognitionSourceOptions) { option in
                         if let source = RecognitionSource(rawValue: option.id) {
                             Toggle(isOn: serverRecognitionSourceBinding(source)) {
-                                Text(option.displayName)
+                                RecognitionSourceSettingsLabel(
+                                    title: option.displayName,
+                                    source: source
+                                )
                             }
                             .toggleStyle(.switch)
                         }
@@ -1257,12 +1280,11 @@ struct ASRSettingsView: View {
             Section("Recognition Sources") {
                 ForEach(RecognitionSource.allCases) { source in
                     Toggle(isOn: sourceEnabledBinding(source)) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(source.displayName)
-                            Text(source.detail)
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
-                        }
+                        RecognitionSourceSettingsLabel(
+                            title: source.displayName,
+                            source: source,
+                            detail: source.detail
+                        )
                     }
                     .toggleStyle(.switch)
                 }

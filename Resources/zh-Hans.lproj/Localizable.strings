@@ -67,3 +67,8 @@
 "double-tap %@" = "双击 %@";
 "Tap %@ to complete" = "轻按 %@ 完成";
 "Click ✓ to complete" = "点击 ✓ 完成";
+
+// ASR 源评级
+"High quality / slower" = "高质量 / 较慢";
+"Medium quality / fastest" = "中等质量 / 最快";
+"Low quality / medium speed" = "低质量 / 中速";

@@ -211,6 +211,9 @@
 "Server Nemotron runs on the Mac. Apple Speech recognition mode only applies to Apple Speech." = "Server Nemotron runs on the Mac. Apple Speech recognition mode only applies to Apple Speech.";
 "Preview follows enabled ASR sources." = "Preview follows enabled ASR sources.";
 "Source off" = "Source off";
+"High quality / slower" = "High quality / slower";
+"Medium quality / fastest" = "Medium quality / fastest";
+"Low quality / medium speed" = "Low quality / medium speed";
 "Update Typeforme on the paired Mac, then try again." = "Update Typeforme on the paired Mac, then try again.";
 "On-device Only keeps preview audio local. Cloud Fallback uses on-device when available and Apple servers otherwise. Preview punctuation follows Dictation Settings. Host audio session controls how long keyboard dictation stays ready." = "On-device Only keeps preview audio local. Cloud Fallback uses on-device when available and Apple servers otherwise. Preview punctuation follows Dictation Settings. Host audio session controls how long keyboard dictation stays ready.";
 "Dictation Vocabulary" = "Dictation Vocabulary";

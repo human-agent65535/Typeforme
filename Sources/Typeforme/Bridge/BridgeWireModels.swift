@@ -34,6 +34,17 @@ enum RecognitionSource: String, CaseIterable, Codable, Identifiable, Sendable {
         }
     }
 
+    var qualitySpeedLabel: String {
+        switch self {
+        case .qwen:
+            return NSLocalizedString("High quality / slower", comment: "Qwen ASR quality and speed rating")
+        case .nvidiaNemotron:
+            return NSLocalizedString("Low quality / medium speed", comment: "NVIDIA Nemotron ASR quality and speed rating")
+        case .appleSpeech:
+            return NSLocalizedString("Medium quality / fastest", comment: "Apple Speech ASR quality and speed rating")
+        }
+    }
+
     var hasModelConfiguration: Bool {
         switch self {
         case .qwen, .nvidiaNemotron:

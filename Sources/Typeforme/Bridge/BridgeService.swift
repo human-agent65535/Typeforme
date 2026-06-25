@@ -933,10 +933,13 @@ final class BridgeService {
 
     private func writeAudio(_ request: BridgeDictateRequest) async throws -> URL {
         if let audioFileURL = request.audioFileURL {
-            _ = try Self.validatedClientAudioExtension(request.audioExtension)
+            let ext = try Self.validatedClientAudioExtension(request.audioExtension)
             let size = (try? FileManager.default.attributesOfItem(atPath: audioFileURL.path)[.size] as? NSNumber)?.intValue ?? 0
             guard size > 0 else {
                 throw BridgeServiceError.invalidAudio
+            }
+            guard audioFileURL.pathExtension.lowercased() == ext else {
+                throw BridgeServiceError.invalidRequest("Audio file extension does not match audio_extension")
             }
             return audioFileURL
         }
@@ -953,17 +956,13 @@ final class BridgeService {
     }
 
     private static func validatedClientAudioExtension(_ extensionHint: String?) throws -> String {
-        guard let extensionHint else { return BridgeAudioFormat.defaultExtension }
-        let allowed = extensionHint
-            .lowercased()
-            .filter { $0.isLetter || $0.isNumber }
-        guard !allowed.isEmpty, allowed.count <= 8 else {
-            throw BridgeServiceError.invalidRequest("Unsupported audio extension")
+        guard let extensionHint else {
+            throw BridgeServiceError.invalidRequest("Missing audio_extension")
         }
-        guard BridgeAudioFormat.isAllowedExtension(allowed) else {
-            throw BridgeServiceError.invalidRequest("Unsupported audio extension: \(allowed)")
+        guard let ext = BridgeAudioFormat.normalizedExtension(extensionHint) else {
+            throw BridgeServiceError.invalidRequest("Unsupported audio extension: \(extensionHint)")
         }
-        return allowed
+        return ext
     }
 
     private func resolveCorrectionMode(_ rawMode: String?) throws -> CorrectionMode {
