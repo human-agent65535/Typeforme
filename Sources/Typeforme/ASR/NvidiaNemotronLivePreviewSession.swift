@@ -1,7 +1,8 @@
 @preconcurrency import AVFoundation
 import Foundation
 
-final class NvidiaNemotronLivePreviewSession: @unchecked Sendable {
+final class NvidiaNemotronLivePreviewSession: ASRLivePreviewSession, @unchecked Sendable {
+    static let providerID = "nvidia-nemotron-asr"
     private static let outputSampleRate = 16_000.0
     private static let finishMarkerBits: UInt32 = 0x7FC0_1001
     private static let cancelMarkerBits: UInt32 = 0x7FC0_1002
@@ -41,6 +42,8 @@ final class NvidiaNemotronLivePreviewSession: @unchecked Sendable {
     private var firstInputWriteLogged = false
     private var stdoutEventCount = 0
     private var firstStdoutEventLogged = false
+
+    var provider: String { Self.providerID }
 
     private struct SessionLogSnapshot {
         let logID: String
