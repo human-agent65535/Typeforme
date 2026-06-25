@@ -385,10 +385,6 @@ private struct RouteStatusBar: View {
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                     }
-                    if state.isRefreshingRoute {
-                        ProgressView()
-                            .controlSize(.mini)
-                    }
                     Spacer()
                 }
                 // Install state and server timing coexist — previously the
@@ -493,15 +489,7 @@ private struct HeroRecordCard: View {
                 Button {
                     Task { await state.refreshRoute(force: true) }
                 } label: {
-                    if state.isRefreshingRoute {
-                        HStack(spacing: 8) {
-                            ProgressView()
-                                .controlSize(.small)
-                            Text("Checking Bridge")
-                        }
-                    } else {
-                        Label("Refresh Bridge", systemImage: "arrow.clockwise")
-                    }
+                    Label("Refresh Bridge", systemImage: "arrow.clockwise")
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
@@ -548,7 +536,7 @@ private struct HeroRecordCard: View {
                 if isRecording {
                     VoicePrintBars(level: state.hostRecordingLevel, isActive: true, tint: .white)
                         .frame(width: orbDiameter * 0.62, height: orbDiameter * 0.34)
-                } else if state.isRefreshingRoute || state.phase == .preparing || state.phase == .sending || state.phase == .refining {
+                } else if state.phase == .preparing || state.phase == .sending || state.phase == .refining {
                     ProgressView()
                         .controlSize(.large)
                         .tint(.white)
@@ -629,9 +617,7 @@ private struct HeroRecordCard: View {
         case .refining:
             return NSLocalizedString("Refining", comment: "Bridge job stage")
         default:
-            return state.isRefreshingRoute
-                ? NSLocalizedString("Transcribing", comment: "Bridge job stage")
-                : state.inputMode.idleTitle
+            return state.inputMode.idleTitle
         }
     }
 
@@ -658,9 +644,6 @@ private struct HeroRecordCard: View {
         case .failure, .idle, .preparing, .recording:
             if state.routeStatus.activeURL == nil {
                 return "Recording is local. Bridge will be resolved when you send."
-            }
-            if state.isRefreshingRoute {
-                return "Checking whether your paired Mac is reachable."
             }
             return state.inputMode.idleDetail
         }
@@ -696,7 +679,6 @@ private struct HeroRecordCard: View {
 
     private var gradient: OrbGradient {
         if isPressed || isRecording { return .recording }
-        if state.isRefreshingRoute { return .sending }
         switch state.phase {
         case .sending, .refining: return .sending
         case .success:             return .success
