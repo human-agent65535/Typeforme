@@ -1663,7 +1663,7 @@ final class AppState {
             let resultCommandID = effectiveKeyboardCommandID ?? (shouldPublishKeyboardResult ? "keyboard-\(UUID().uuidString)" : nil)
             let successKind: AppPhase.SuccessKind = resultCommandID == nil ? .ready : .inserted
             if Self.isCorrectionDegradedStatus(finalCorrectionStatus) {
-                resultMessage = Self.degradedCorrectionMessage(for: successKind)
+                resultMessage = Self.degradedCorrectionMessage(for: successKind, status: finalCorrectionStatus)
             }
             errorMessage = nil
             applyCorrectionMetadata(
@@ -2984,7 +2984,7 @@ final class AppState {
                 .result,
                 commandID: command.id,
                 message: Self.isCorrectionDegradedStatus(response.correctionStatus)
-                    ? Self.degradedCorrectionMessage(for: .inserted)
+                    ? Self.degradedCorrectionMessage(for: .inserted, status: response.correctionStatus)
                     : "Refined",
                 resultText: text,
                 rawTranscriptLength: isRefiningCurrentDictationResult
@@ -3423,7 +3423,7 @@ final class AppState {
         if Self.isCorrectionDegradedStatus(normalizedStatus) {
             errorMessage = nil
             setPhase(.success(successKind))
-            showTransient(Self.statusMessage(Self.degradedCorrectionMessage(for: successKind), warning: warning))
+            showTransient(Self.statusMessage(Self.degradedCorrectionMessage(for: successKind, status: normalizedStatus), warning: warning))
             return
         }
         errorMessage = nil
@@ -3433,21 +3433,30 @@ final class AppState {
 
     private static func isCorrectionDegradedStatus(_ status: String?) -> Bool {
         switch status?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-        case "fallback", "timeout":
+        case "refine_error", "refine_timeout", "fallback", "timeout":
             return true
         default:
             return false
         }
     }
 
-    private static func degradedCorrectionMessage(for successKind: AppPhase.SuccessKind) -> String {
+    private static func degradedCorrectionMessage(for successKind: AppPhase.SuccessKind, status: String?) -> String {
+        let base: String
         switch successKind {
         case .ready:
-            return "Ready without refine"
+            base = "Ready without refine"
         case .copied:
-            return "Copied without refine"
+            base = "Copied without refine"
         case .inserted:
-            return "Inserted without refine"
+            base = "Inserted without refine"
+        }
+        switch status?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "refine_timeout", "timeout":
+            return "\(base): refine timeout"
+        case "refine_error", "fallback":
+            return "\(base): refine error"
+        default:
+            return base
         }
     }
 

@@ -2110,35 +2110,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     private func hostKeyboardDefaultsPayload() -> KeyboardDefaultsPayload? {
         guard hasFullAccess else { return nil }
-        if let payload = KeyboardSharedDefaults.loadPayload() {
-            return payload
-        }
-        return bootstrapKeyboardDefaultsPayload()
-    }
-
-    private func bootstrapKeyboardDefaultsPayload() -> KeyboardDefaultsPayload? {
-        let hostDefaultLanguage = defaults.string(forKey: hostDefaultTextInputLanguageKey)
-            .flatMap(KeyboardDefaultTextInputLanguage.init(rawValue:)) ?? .lastUsed
-        let payload = KeyboardDefaultsPayload(
-            bridgeToken: KeyboardSharedDefaults.makeBridgeToken(),
-            correctionMode: correctionMode,
-            supportsFastMode: false,
-            autoCapitalizationEnabled: isAutoCapitalizationEnabled,
-            characterPreviewEnabled: isCharacterPreviewEnabled,
-            chineseInputEnabled: isChineseInputEnabled,
-            chinesePunctuationStyle: chinesePunctuationStyle,
-            rimeDictionaryTier: rimeProfile.dictionaryTier,
-            rimeLearningEnabled: rimeProfile.learningEnabled,
-            rimeCorrectionEnabled: rimeProfile.correctionEnabled,
-            touchLearningEnabled: isTouchLearningEnabled,
-            rimeUserPhrases: [],
-            rimeUserPhrasesRevision: "",
-            defaultTextInputLanguage: hostDefaultLanguage,
-            rimeLearningResetGeneration: defaults.integer(forKey: rimeLearningResetGenerationKey),
-            touchLearningResetGeneration: defaults.integer(forKey: touchLearningResetGenerationKey)
-        )
-        guard KeyboardSharedDefaults.savePayload(payload) else { return nil }
-        return payload
+        return KeyboardSharedDefaults.loadPayload()
     }
 
     private var hostKeyboardBridgeToken: String? {

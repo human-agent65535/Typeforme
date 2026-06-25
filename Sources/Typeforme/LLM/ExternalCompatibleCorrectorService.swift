@@ -213,12 +213,12 @@ final class ExternalCompatibleCorrectorService: CorrectorService {
         }
     }
 
-    static func modelIDs(data: Data, apiKind: ExternalLLMAPIKind) -> [String] {
+    static func modelIDs(data: Data, apiKind: ExternalLLMAPIKind) throws -> [String] {
         switch apiKind {
         case .openAI:
-            return OpenAICompatibleClient.modelIDs(data: data)
+            return try OpenAICompatibleClient.modelIDs(data: data)
         case .anthropic:
-            return AnthropicCompatibleClient.modelIDs(data: data)
+            return try AnthropicCompatibleClient.modelIDs(data: data)
         }
     }
 
