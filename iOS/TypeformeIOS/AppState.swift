@@ -745,7 +745,9 @@ final class AppState {
             to: enabled,
             key: Self.keyboardLivePreviewKey
         ) else { return }
-        if !enabled {
+        if enabled {
+            constrainKeyboardLivePreviewSourceToMacSettings()
+        } else {
             teardownLivePartialPreview(clearText: true)
         }
     }
