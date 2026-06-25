@@ -1139,15 +1139,15 @@ private struct KeyboardSettingsView: View {
 
 private struct LivePreviewSettingsSection: View {
     @Environment(AppState.self) private var state
-    let serverNemotronAvailable: Bool?
+    let serverASRAvailable: Bool?
     let title: LocalizedStringKey
 
     init(
         title: LocalizedStringKey = "iPhone Keyboard Preview",
-        serverNemotronAvailable: Bool? = nil
+        serverASRAvailable: Bool? = nil
     ) {
         self.title = title
-        self.serverNemotronAvailable = serverNemotronAvailable
+        self.serverASRAvailable = serverASRAvailable
     }
 
     var body: some View {
@@ -1190,14 +1190,14 @@ private struct LivePreviewSettingsSection: View {
     }
 
     private var livePreviewFooter: LocalizedStringKey {
-        return state.keyboardLivePreviewSource == .serverNemotron
+        return state.keyboardLivePreviewSource == .serverASR
             ? "Server ASR runs on the Mac. Apple Speech recognition mode only applies to Apple Speech."
             : "Apple Speech is local. Server uses Mac."
     }
 
     private func isSourceEnabled(_ source: KeyboardLivePreviewSource) -> Bool {
-        if let serverNemotronAvailable, source == .serverNemotron {
-            return serverNemotronAvailable
+        if let serverASRAvailable, source == .serverASR {
+            return serverASRAvailable
         }
         return state.isKeyboardLivePreviewSourceEnabled(source)
     }
@@ -1675,7 +1675,7 @@ private struct MacSettingsView: View {
 
                 LivePreviewSettingsSection(
                     title: "Live Preview",
-                    serverNemotronAvailable: draft.supportsServerNemotronPreview
+                    serverASRAvailable: draft.supportsServerASRPreview
                 )
 
                 Section {

@@ -154,11 +154,7 @@ struct BridgeSettingsPayload: Codable, Sendable {
         enabledSources.contains(source)
     }
 
-    var usesNvidiaNemotronASR: Bool {
-        isRecognitionSourceEnabled(.nvidiaNemotron)
-    }
-
-    var supportsServerNemotronPreview: Bool {
+    var supportsServerASRPreview: Bool {
         guard let source = VoiceLivePreviewSource(rawValue: livePreviewSource) else {
             return false
         }

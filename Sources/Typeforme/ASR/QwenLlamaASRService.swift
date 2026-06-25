@@ -377,12 +377,22 @@ final class QwenLlamaASRService: ASRService {
     }
 
     private func runUserRequest<T>(_ operation: () async throws -> T) async throws -> T {
+        let requestStart = await warmupState.beginUserRequest()
         let cancelledPreview = await QwenLlamaLivePreviewTaskRegistry.shared.cancelAll()
-        let cancelledWarmup = await warmupState.beginUserRequest()
+        let waitedForPreview: Bool
+        do {
+            waitedForPreview = try await warmupState.waitForPreviewRequestsToFinish()
+        } catch {
+            await warmupState.finishUserRequest()
+            throw error
+        }
         if cancelledPreview {
             Log.asr.notice("Qwen3-ASR live preview cancelled for user transcription")
         }
-        if cancelledWarmup {
+        if waitedForPreview {
+            Log.asr.notice("Qwen3-ASR user transcription waited for live preview to stop")
+        }
+        if requestStart.cancelledWarmup {
             Log.asr.notice("Qwen3-ASR GGUF audio warmup cancelled for user transcription")
         }
         do {
@@ -583,6 +593,10 @@ private enum QwenLlamaWarmupOutcome: Sendable {
     case failed(String)
 }
 
+private struct QwenLlamaUserRequestStart: Sendable {
+    let cancelledWarmup: Bool
+}
+
 private actor QwenLlamaWarmupState {
     private var warmingKey: String?
     private var warmingID: UUID?
@@ -631,14 +645,26 @@ private actor QwenLlamaWarmupState {
         warmingTask = nil
     }
 
-    func beginUserRequest() -> Bool {
+    func beginUserRequest() -> QwenLlamaUserRequestStart {
         userRequestCount += 1
         let cancelled = warmingKey != nil || warmingTask != nil
         warmingTask?.cancel()
         warmingKey = nil
         warmingID = nil
         warmingTask = nil
-        return cancelled
+        return QwenLlamaUserRequestStart(cancelledWarmup: cancelled)
+    }
+
+    func waitForPreviewRequestsToFinish() async throws -> Bool {
+        let waitedForPreview = previewRequestCount > 0
+        do {
+            while previewRequestCount > 0 {
+                try await Task.sleep(nanoseconds: 10_000_000)
+            }
+        } catch {
+            throw error
+        }
+        return waitedForPreview
     }
 
     func finishUserRequest() {

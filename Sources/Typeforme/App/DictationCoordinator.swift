@@ -277,7 +277,7 @@ final class DictationCoordinator: ObservableObject {
             return
         }
         let url = recorder.stop()
-        endLivePartialPreviewAudio()
+        await endLivePartialPreviewAudio()
         audioLevel = 0
 
         guard let url else {
@@ -906,24 +906,18 @@ final class DictationCoordinator: ObservableObject {
     /// Called when stopDictation() pulls the audio file. Closes the audio side
     /// of the request so the recognizer finalises its last partial. We keep
     /// `livePartialTranscript` on screen until the Mac final replaces it.
-    func endLivePartialPreviewAudio() {
+    func endLivePartialPreviewAudio() async {
         liveSpeechRequest?.endAudio()
         if let lease = asrLivePreviewLease {
             asrLivePreviewLease = nil
-            if lease.session is QwenLlamaLivePreviewSession {
+            let completed = await lease.session.finishInputAndWaitForFinal(
+                timeout: Self.asrLivePreviewFinishTimeout
+            )
+            if completed {
                 lease.returnIdle(reason: "mac_preview_finished")
-                return
-            }
-            Task { @MainActor in
-                let completed = await lease.session.finishInputAndWaitForFinal(
-                    timeout: Self.asrLivePreviewFinishTimeout
-                )
-                if completed {
-                    lease.returnIdle(reason: "mac_preview_finished")
-                } else {
-                    lease.session.terminate(reason: "mac_preview_finish_timeout")
-                    lease.preloadReplacement()
-                }
+            } else {
+                lease.session.terminate(reason: "mac_preview_finish_timeout")
+                lease.preloadReplacement()
             }
         }
     }

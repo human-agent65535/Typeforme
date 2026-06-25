@@ -1,26 +1,64 @@
 @preconcurrency import AVFoundation
 import Foundation
 
-actor QwenLlamaLivePreviewTaskRegistry {
+final class QwenLlamaLivePreviewTaskRegistry: @unchecked Sendable {
     static let shared = QwenLlamaLivePreviewTaskRegistry()
 
+    private let lock = NSLock()
+    private var reservedIDs = Set<UUID>()
     private var tasks: [UUID: Task<Void, Never>] = [:]
+    private var cancelledIDs = Set<UUID>()
 
-    func register(_ task: Task<Void, Never>, id: UUID) {
+    func reserve(id: UUID) {
+        lock.lock()
+        reservedIDs.insert(id)
+        lock.unlock()
+    }
+
+    @discardableResult
+    func install(_ task: Task<Void, Never>, id: UUID) -> Bool {
+        lock.lock()
+        reservedIDs.remove(id)
+        if cancelledIDs.remove(id) != nil {
+            lock.unlock()
+            task.cancel()
+            return false
+        }
         tasks[id] = task
+        lock.unlock()
+        return true
     }
 
     func unregister(id: UUID) {
+        lock.lock()
+        reservedIDs.remove(id)
         tasks.removeValue(forKey: id)
+        cancelledIDs.remove(id)
+        lock.unlock()
     }
 
-    func cancelAll() -> Bool {
-        let hadTasks = !tasks.isEmpty
-        for task in tasks.values {
+    func cancelAll() async -> Bool {
+        let (hadRequests, taskList) = cancelAllSnapshot()
+        for task in taskList {
             task.cancel()
         }
+        for task in taskList {
+            await task.value
+        }
+        return hadRequests
+    }
+
+    private func cancelAllSnapshot() -> (Bool, [Task<Void, Never>]) {
+        lock.lock()
+        let taskIDs = Set(tasks.keys)
+        let taskList = Array(tasks.values)
+        let hadRequests = !reservedIDs.isEmpty || !taskList.isEmpty
+        cancelledIDs.formUnion(reservedIDs)
+        cancelledIDs.formUnion(taskIDs)
+        reservedIDs.removeAll()
         tasks.removeAll()
-        return hadTasks
+        lock.unlock()
+        return (hadRequests, taskList)
     }
 }
 
@@ -128,13 +166,13 @@ final class QwenLlamaLivePreviewSession: ASRLivePreviewSession, @unchecked Senda
     }
 
     func finishInputAndWaitForFinal(timeout: TimeInterval) async -> Bool {
-        terminateOnQueue(reason: "finish")
-        return true
+        let task = terminateOnQueue(reason: "finish")
+        return await Self.waitForTaskCompletion(task, timeout: timeout)
     }
 
     func cancelInputAndWaitForReset(timeout: TimeInterval) async -> Bool {
-        terminateOnQueue(reason: "cancel")
-        return true
+        let task = terminateOnQueue(reason: "cancel")
+        return await Self.waitForTaskCompletion(task, timeout: timeout)
     }
 
     func currentTranscript() -> String? {
@@ -214,13 +252,14 @@ final class QwenLlamaLivePreviewSession: ASRLivePreviewSession, @unchecked Senda
         let isFirst = !firstRequestLogged
         firstRequestLogged = true
         lastRequestedSampleCount = totalSamples
+        QwenLlamaLivePreviewTaskRegistry.shared.reserve(id: requestID)
+        let startGate = QwenLivePreviewStartGate()
 
-        let task = Task(priority: .utility) { [weak self, audio, languageIDs, service, logID, startedAt] in
+        let task = Task(priority: .utility) { [weak self, audio, languageIDs, service, logID, startedAt, startGate] in
             defer {
-                Task {
-                    await QwenLlamaLivePreviewTaskRegistry.shared.unregister(id: requestID)
-                }
+                QwenLlamaLivePreviewTaskRegistry.shared.unregister(id: requestID)
             }
+            await startGate.wait()
             do {
                 guard !Task.isCancelled else { return }
                 let text = try await service.transcribeLivePreviewPCM16kMonoFloat32Data(
@@ -247,8 +286,12 @@ final class QwenLlamaLivePreviewSession: ASRLivePreviewSession, @unchecked Senda
         }
         inFlightTask = task
         inFlightTaskID = requestID
+        let installed = QwenLlamaLivePreviewTaskRegistry.shared.install(task, id: requestID)
         Task {
-            await QwenLlamaLivePreviewTaskRegistry.shared.register(task, id: requestID)
+            await startGate.open()
+        }
+        if !installed {
+            handlePreviewCompletion(requestID: requestID)
         }
         Log.asr.debug(
             "Qwen3-ASR live preview request session=\(logID, privacy: .public) first=\(isFirst, privacy: .public) window_start_ms=\(windowStart * 1_000 / 16_000, privacy: .public) input_audio_ms=\(totalSamples * 1_000 / 16_000, privacy: .public) elapsed_ms=\(Self.elapsedMS(since: startedAt), privacy: .public)"
@@ -294,17 +337,14 @@ final class QwenLlamaLivePreviewSession: ASRLivePreviewSession, @unchecked Senda
         }
     }
 
-    private func terminateOnQueue(reason: String) {
+    @discardableResult
+    private func terminateOnQueue(reason: String) -> Task<Void, Never>? {
         syncOnQueue {
-            guard !terminated else { return }
+            guard !terminated else { return nil }
             self.inputClosed = true
             self.terminated = true
-            self.inFlightTask?.cancel()
-            if let inFlightTaskID = self.inFlightTaskID {
-                Task {
-                    await QwenLlamaLivePreviewTaskRegistry.shared.unregister(id: inFlightTaskID)
-                }
-            }
+            let task = self.inFlightTask
+            task?.cancel()
             self.inFlightTask = nil
             self.inFlightTaskID = nil
             self.pcmWindow.removeAll(keepingCapacity: false)
@@ -312,14 +352,15 @@ final class QwenLlamaLivePreviewSession: ASRLivePreviewSession, @unchecked Senda
             Log.asr.notice(
                 "Qwen3-ASR live preview terminate session=\(self.logID, privacy: .public) reason=\(reason, privacy: .public) input_audio_ms=\(self.totalSampleCount * 1_000 / 16_000, privacy: .public) elapsed_ms=\(Self.elapsedMS(since: self.startedAt), privacy: .public)"
             )
+            return task
         }
     }
 
-    private func syncOnQueue(_ work: () -> Void) {
+    private func syncOnQueue<T>(_ work: () -> T) -> T {
         if DispatchQueue.getSpecific(key: queueKey) != nil {
-            work()
+            return work()
         } else {
-            queue.sync(execute: work)
+            return queue.sync(execute: work)
         }
     }
 
@@ -466,6 +507,26 @@ final class QwenLlamaLivePreviewSession: ASRLivePreviewSession, @unchecked Senda
     private static func elapsedMS(since date: Date) -> Int {
         max(0, Int(Date().timeIntervalSince(date) * 1_000))
     }
+
+    private static func waitForTaskCompletion(
+        _ task: Task<Void, Never>?,
+        timeout: TimeInterval
+    ) async -> Bool {
+        guard let task else { return true }
+        guard timeout > 0 else { return false }
+        return await withCheckedContinuation { continuation in
+            let waiter = QwenLivePreviewTaskCompletionWaiter()
+
+            Task {
+                await task.value
+                waiter.resume(true, continuation: continuation)
+            }
+
+            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
+                waiter.resume(false, continuation: continuation)
+            }
+        }
+    }
 }
 
 private final class QwenLivePreviewSendablePCMBuffer: @unchecked Sendable {
@@ -473,5 +534,47 @@ private final class QwenLivePreviewSendablePCMBuffer: @unchecked Sendable {
 
     init(_ buffer: AVAudioPCMBuffer) {
         self.buffer = buffer
+    }
+}
+
+private actor QwenLivePreviewStartGate {
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        guard !isOpen else { return }
+        await withCheckedContinuation { continuation in
+            if isOpen {
+                continuation.resume()
+            } else {
+                waiters.append(continuation)
+            }
+        }
+    }
+
+    func open() {
+        guard !isOpen else { return }
+        isOpen = true
+        let continuations = waiters
+        waiters.removeAll()
+        for continuation in continuations {
+            continuation.resume()
+        }
+    }
+}
+
+private final class QwenLivePreviewTaskCompletionWaiter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var didResume = false
+
+    func resume(
+        _ value: Bool,
+        continuation: CheckedContinuation<Bool, Never>
+    ) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !didResume else { return }
+        didResume = true
+        continuation.resume(returning: value)
     }
 }

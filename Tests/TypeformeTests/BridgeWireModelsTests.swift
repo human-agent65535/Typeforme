@@ -206,22 +206,22 @@ struct BridgeWireModelsTests {
 
         payload.enabledRecognitionSources = [RecognitionSource.qwen.rawValue]
         payload.livePreviewSource = VoiceLivePreviewSource.qwen.rawValue
-        #expect(payload.supportsServerNemotronPreview)
+        #expect(payload.supportsServerASRPreview)
 
         payload.enabledRecognitionSources = [RecognitionSource.nvidiaNemotron.rawValue]
         payload.livePreviewSource = VoiceLivePreviewSource.nvidiaNemotron.rawValue
-        #expect(payload.supportsServerNemotronPreview)
+        #expect(payload.supportsServerASRPreview)
 
         payload.enabledRecognitionSources = [RecognitionSource.qwen.rawValue, RecognitionSource.nvidiaNemotron.rawValue]
         payload.livePreviewSource = VoiceLivePreviewSource.appleSpeech.rawValue
-        #expect(!payload.supportsServerNemotronPreview)
+        #expect(!payload.supportsServerASRPreview)
 
         payload.livePreviewSource = VoiceLivePreviewSource.off.rawValue
-        #expect(!payload.supportsServerNemotronPreview)
+        #expect(!payload.supportsServerASRPreview)
 
         payload.enabledRecognitionSources = [RecognitionSource.appleSpeech.rawValue]
         payload.livePreviewSource = VoiceLivePreviewSource.qwen.rawValue
-        #expect(!payload.supportsServerNemotronPreview)
+        #expect(!payload.supportsServerASRPreview)
     }
 
     @Test func editableSnapshotNormalizesUserDictionaryForComparison() {

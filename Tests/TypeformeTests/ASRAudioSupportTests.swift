@@ -100,6 +100,39 @@ struct ASRAudioSupportTests {
         #expect(QwenLlamaLivePreviewSession.shouldRequestPreview(totalSamples: 40_000, lastRequestedSamples: 24_000))
     }
 
+    @Test func qwenLivePreviewRegistryCancelsRegisteredAndPendingTasks() async {
+        _ = await QwenLlamaLivePreviewTaskRegistry.shared.cancelAll()
+
+        let registeredID = UUID()
+        let registeredMarker = QwenPreviewRegistryMarker()
+        QwenLlamaLivePreviewTaskRegistry.shared.reserve(id: registeredID)
+        let registeredTask = Task {
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 1_000_000)
+            }
+            await registeredMarker.markFinished()
+        }
+
+        #expect(QwenLlamaLivePreviewTaskRegistry.shared.install(registeredTask, id: registeredID))
+        #expect(await QwenLlamaLivePreviewTaskRegistry.shared.cancelAll())
+        #expect(await registeredMarker.isFinished)
+
+        let pendingID = UUID()
+        let pendingMarker = QwenPreviewRegistryMarker()
+        QwenLlamaLivePreviewTaskRegistry.shared.reserve(id: pendingID)
+        #expect(await QwenLlamaLivePreviewTaskRegistry.shared.cancelAll())
+
+        let pendingTask = Task {
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 1_000_000)
+            }
+            await pendingMarker.markFinished()
+        }
+        #expect(!QwenLlamaLivePreviewTaskRegistry.shared.install(pendingTask, id: pendingID))
+        await pendingTask.value
+        #expect(await pendingMarker.isFinished)
+    }
+
     @Test func nvidiaNemotronTargetLanguageUsesAutoForMixedSelection() {
         #expect(NvidiaNemotronASRService.targetLanguage(for: ["en-US"]) == "en-US")
         #expect(NvidiaNemotronASRService.targetLanguage(for: ["ja"]) == "ja-JP")
@@ -177,5 +210,17 @@ struct ASRAudioSupportTests {
             | (UInt32(data[offset + 1]) << 8)
             | (UInt32(data[offset + 2]) << 16)
             | (UInt32(data[offset + 3]) << 24)
+    }
+}
+
+private actor QwenPreviewRegistryMarker {
+    private var finished = false
+
+    var isFinished: Bool {
+        finished
+    }
+
+    func markFinished() {
+        finished = true
     }
 }

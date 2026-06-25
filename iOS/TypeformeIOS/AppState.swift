@@ -269,7 +269,7 @@ enum KeyboardLivePreviewRecognitionMode: String, CaseIterable, Identifiable {
 
 enum KeyboardLivePreviewSource: String, CaseIterable, Identifiable {
     case appleSpeech = "apple_speech"
-    case serverNemotron = "server_nemotron"
+    case serverASR = "server_asr"
 
     var id: String { rawValue }
 
@@ -277,7 +277,7 @@ enum KeyboardLivePreviewSource: String, CaseIterable, Identifiable {
         switch self {
         case .appleSpeech:
             return NSLocalizedString("Apple Speech", comment: "Apple Speech live preview source")
-        case .serverNemotron:
+        case .serverASR:
             return NSLocalizedString("Server ASR", comment: "Server-side ASR live preview source")
         }
     }
@@ -561,8 +561,8 @@ final class AppState {
         switch source {
         case .appleSpeech:
             return correctionMode.usesRefine
-        case .serverNemotron:
-            return macSettings?.supportsServerNemotronPreview == true
+        case .serverASR:
+            return macSettings?.supportsServerASRPreview == true
         }
     }
 
@@ -2262,8 +2262,8 @@ final class AppState {
         switch keyboardLivePreviewSource {
         case .appleSpeech:
             return startAppleSpeechLivePreviewIfAvailable(generation: generation)
-        case .serverNemotron:
-            return startServerNemotronLivePreviewIfAvailable(generation: generation)
+        case .serverASR:
+            return startServerASRLivePreviewIfAvailable(generation: generation)
         }
     }
 
@@ -2353,12 +2353,12 @@ final class AppState {
     }
 
     @discardableResult
-    private func startServerNemotronLivePreviewIfAvailable(generation: UInt64) -> Bool {
-        guard isKeyboardLivePreviewSourceEnabled(.serverNemotron) else {
+    private func startServerASRLivePreviewIfAvailable(generation: UInt64) -> Bool {
+        guard isKeyboardLivePreviewSourceEnabled(.serverASR) else {
             appLog.debug("server live preview skipped: server ASR preview disabled")
             return false
         }
-        guard macSettings?.supportsServerNemotronPreview == true else {
+        guard macSettings?.supportsServerASRPreview == true else {
             appLog.debug("server live preview skipped: Mac server ASR preview is not enabled")
             return false
         }
@@ -2398,7 +2398,7 @@ final class AppState {
                     if self.serverLivePreviewStreamer != nil {
                         self.serverLivePreviewStreamer = nil
                     }
-                    if self.keyboardLivePreviewSource == .serverNemotron {
+                    if self.keyboardLivePreviewSource == .serverASR {
                         self.keyboardAudioSession.onPCMBuffer = nil
                     }
                 }
