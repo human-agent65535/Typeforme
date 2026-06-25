@@ -47,11 +47,39 @@ struct ASRAudioSupportTests {
         #expect(!QwenLlamaASRService.shouldRetryTransientASRError(ASRAudioSupportError.httpStatus(400, "bad request"), attempt: 1))
     }
 
+    @Test func qwenWarmupSilenceWAVIs16kMonoPCM() throws {
+        let url = try QwenLlamaASRService.writeWarmupSilenceWAVFile(sampleCount: 3)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let data = try Data(contentsOf: url)
+        #expect(ascii(data, 0..<4) == "RIFF")
+        #expect(ascii(data, 8..<12) == "WAVE")
+        #expect(ascii(data, 12..<16) == "fmt ")
+        #expect(littleEndianUInt16(data, offset: 20) == 1)
+        #expect(littleEndianUInt16(data, offset: 22) == 1)
+        #expect(littleEndianUInt32(data, offset: 24) == 16_000)
+        #expect(littleEndianUInt32(data, offset: 28) == 32_000)
+        #expect(littleEndianUInt16(data, offset: 32) == 2)
+        #expect(littleEndianUInt16(data, offset: 34) == 16)
+        #expect(ascii(data, 36..<40) == "data")
+        #expect(littleEndianUInt32(data, offset: 40) == 6)
+        #expect(data[44..<50].allSatisfy { $0 == 0 })
+    }
+
     @Test func nvidiaNemotronTargetLanguageUsesAutoForMixedSelection() {
         #expect(NvidiaNemotronASRService.targetLanguage(for: ["en-US"]) == "en-US")
         #expect(NvidiaNemotronASRService.targetLanguage(for: ["ja"]) == "ja-JP")
         #expect(NvidiaNemotronASRService.targetLanguage(for: ["no"]) == "nb-NO")
         #expect(NvidiaNemotronASRService.targetLanguage(for: ["zh-CN", "en-US"]) == "auto")
+    }
+
+    @Test func nvidiaNemotronDetectsDecodedChunkLog() {
+        #expect(NvidiaNemotronLivePreviewSession.isDecodedChunkLog(
+            "typeforme-nemotron-asr stream chunk=1 audio_ms=560 decode_ms=72 changed=false text_chars=0 flushing=false elapsed_ms=1583"
+        ))
+        #expect(!NvidiaNemotronLivePreviewSession.isDecodedChunkLog(
+            "typeforme-nemotron-asr ready mode=Multilingual target_lang=auto load_ms=1027"
+        ))
     }
 
     @Test func nvidiaNemotronRuntimeStatusRequiresBundledHelperAndModelFiles() throws {
@@ -100,5 +128,20 @@ struct ASRAudioSupportTests {
         )
         #expect(!status.isReady)
         #expect(status.missingModelFiles == ["tokenizer.model"])
+    }
+
+    private func ascii(_ data: Data, _ range: Range<Int>) -> String {
+        String(data: data.subdata(in: range), encoding: .ascii) ?? ""
+    }
+
+    private func littleEndianUInt16(_ data: Data, offset: Int) -> UInt16 {
+        UInt16(data[offset]) | (UInt16(data[offset + 1]) << 8)
+    }
+
+    private func littleEndianUInt32(_ data: Data, offset: Int) -> UInt32 {
+        UInt32(data[offset])
+            | (UInt32(data[offset + 1]) << 8)
+            | (UInt32(data[offset + 2]) << 16)
+            | (UInt32(data[offset + 3]) << 24)
     }
 }

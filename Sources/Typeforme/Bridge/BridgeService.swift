@@ -34,48 +34,40 @@ private struct BridgeSession {
     let createdAt: Date
 }
 
+@MainActor
 private final class BridgeLivePreviewSession {
     let id: String
     let clientJobID: String?
-    let provider: String
-    let languageIDs: [String]
-    let process: any ASRLivePreviewSession
+    let lease: ASRLivePreviewLease
     let createdAt: Date
     var updatedAt: Date
     var lastTranscript: String?
 
-    private let returnIdleHandler: @MainActor (any ASRLivePreviewSession, [String], String) -> Void
-    private let preloadReplacementHandler: @MainActor ([String]) -> Void
+    var provider: String { lease.provider }
+    var languageIDs: [String] { lease.languageIDs }
+    var process: any ASRLivePreviewSession { lease.session }
 
     init(
         id: String,
         clientJobID: String?,
-        provider: String,
-        languageIDs: [String],
-        process: any ASRLivePreviewSession,
-        returnIdleHandler: @escaping @MainActor (any ASRLivePreviewSession, [String], String) -> Void,
-        preloadReplacementHandler: @escaping @MainActor ([String]) -> Void,
+        lease: ASRLivePreviewLease,
         createdAt: Date = Date()
     ) {
         self.id = id
         self.clientJobID = clientJobID
-        self.provider = provider
-        self.languageIDs = languageIDs
-        self.process = process
-        self.returnIdleHandler = returnIdleHandler
-        self.preloadReplacementHandler = preloadReplacementHandler
+        self.lease = lease
         self.createdAt = createdAt
         self.updatedAt = createdAt
     }
 
     @MainActor
     func returnIdle(reason: String) {
-        returnIdleHandler(process, languageIDs, reason)
+        lease.returnIdle(reason: reason)
     }
 
     @MainActor
     func preloadReplacement() {
-        preloadReplacementHandler(languageIDs)
+        lease.preloadReplacement()
     }
 }
 
@@ -274,47 +266,43 @@ final class BridgeService {
         guard correctionMode.allowsLivePreview else {
             throw BridgeServiceError.invalidRequest("Live preview is not available in Fast mode")
         }
-        guard AppSettings.enabledRecognitionSources.contains(.nvidiaNemotron) else {
-            throw BridgeServiceError.invalidRequest("NVIDIA Nemotron ASR is not enabled")
-        }
         guard livePreviewSessions.count < Self.maxLivePreviewSessions else {
             throw BridgeServiceError.invalidRequest("Too many active live preview sessions")
         }
 
         let id = UUID().uuidString
         let requestedLanguageIDs = resolveLivePreviewLanguageIDs(ids: request.languageIDs, mode: request.languageMode)
-        let languageIDs = ASRLanguageSelection.effectiveIDs(requestedLanguageIDs, for: .nvidiaNemotron)
-        guard !languageIDs.isEmpty else {
-            throw BridgeServiceError.invalidRequest(
-                "NVIDIA Nemotron ASR does not support the selected live preview languages"
-            )
-        }
         Log.bridge.notice(
-            "Bridge live preview start session=\(Self.logID(id), privacy: .public) languages=\(languageIDs.joined(separator: ","), privacy: .public)"
+            "Bridge live preview start session=\(Self.logID(id), privacy: .public)"
         )
-        let process = try NvidiaNemotronWarmPool.shared.takeOrStart(languageIDs: languageIDs, diagnosticID: id) { [weak self] text in
-            Task { @MainActor [weak self] in
-                self?.recordLivePreviewTranscript(sessionID: id, text: text)
+        let lease: ASRLivePreviewLease
+        do {
+            lease = try ASRLivePreviewLeaseFactory.take(
+                source: .nvidiaNemotron,
+                requestedLanguageIDs: requestedLanguageIDs,
+                diagnosticID: id
+            ) { [weak self] text in
+                Task { @MainActor [weak self] in
+                    self?.recordLivePreviewTranscript(sessionID: id, text: text)
+                }
             }
+        } catch {
+            throw BridgeServiceError.invalidRequest(error.localizedDescription)
         }
         let createdAt = Date()
         livePreviewSessions[id] = BridgeLivePreviewSession(
             id: id,
             clientJobID: BridgeClientJobID.normalized(request.clientJobID),
-            provider: process.provider,
-            languageIDs: languageIDs,
-            process: process,
-            returnIdleHandler: Self.returnNvidiaNemotronLivePreviewSessionToIdle,
-            preloadReplacementHandler: NvidiaNemotronWarmPool.shared.preload(languageIDs:),
+            lease: lease,
             createdAt: createdAt
         )
         Log.bridge.notice(
-            "Bridge live preview started session=\(Self.logID(id), privacy: .public) elapsed_ms=\(self.elapsedMs(since: createdAt), privacy: .public)"
+            "Bridge live preview started session=\(Self.logID(id), privacy: .public) provider=\(lease.provider, privacy: .public) languages=\(lease.languageIDs.joined(separator: ","), privacy: .public) elapsed_ms=\(self.elapsedMs(since: createdAt), privacy: .public)"
         )
         return BridgeLivePreviewStartResponse(
             sessionID: id,
-            provider: process.provider,
-            languageIDs: languageIDs,
+            provider: lease.provider,
+            languageIDs: lease.languageIDs,
             startedAt: createdAt.timeIntervalSince1970
         )
     }
@@ -1366,22 +1354,6 @@ final class BridgeService {
         Task {
             await BridgeLivePreviewEventCenter.shared.publish(event)
         }
-    }
-
-    private static func returnNvidiaNemotronLivePreviewSessionToIdle(
-        _ process: any ASRLivePreviewSession,
-        languageIDs: [String],
-        reason: String
-    ) {
-        guard let process = process as? NvidiaNemotronLivePreviewSession else {
-            process.terminate(reason: "\(reason)_unsupported_reuse")
-            return
-        }
-        NvidiaNemotronWarmPool.shared.returnIdle(
-            process,
-            languageIDs: languageIDs,
-            reason: reason
-        )
     }
 
     private func storeSession(_ session: BridgeSession) {

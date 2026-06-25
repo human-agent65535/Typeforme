@@ -81,6 +81,13 @@ final class ASRFactory {
         do {
             try await warmQwenLlama()
             Log.asr.info("Qwen3-ASR GGUF preloaded")
+        } catch let error as QwenLlamaWarmupError {
+            switch error {
+            case .skipped(let reason):
+                Log.asr.notice("Qwen3-ASR GGUF preload skipped: \(reason, privacy: .public)")
+            case .failed(let message):
+                Log.asr.error("Qwen3-ASR GGUF preload failed: \(message, privacy: .public)")
+            }
         } catch {
             Log.asr.error("Qwen3-ASR GGUF preload failed: \(error.localizedDescription, privacy: .public)")
         }

@@ -4,6 +4,7 @@ import Foundation
 final class NvidiaNemotronLivePreviewSession: ASRLivePreviewSession, @unchecked Sendable {
     static let providerID = "nvidia-nemotron-asr"
     private static let outputSampleRate = 16_000.0
+    private static let stdinChunkSampleCount = 8_960
     private static let finishMarkerBits: UInt32 = 0x7FC0_1001
     private static let cancelMarkerBits: UInt32 = 0x7FC0_1002
     private static let outputFormat = AVAudioFormat(
@@ -34,6 +35,7 @@ final class NvidiaNemotronLivePreviewSession: ASRLivePreviewSession, @unchecked 
     private var terminationContinuations: [UUID: CheckedContinuation<Bool, Never>] = [:]
     private var finalContinuations: [UUID: CheckedContinuation<Bool, Never>] = [:]
     private var resetContinuations: [UUID: CheckedContinuation<Bool, Never>] = [:]
+    private var decodedChunkContinuations: [UUID: CheckedContinuation<Bool, Never>] = [:]
     private var lastTranscript: String?
     private var converter: AVAudioConverter?
     private var converterInputSampleRate = 0.0
@@ -163,6 +165,32 @@ final class NvidiaNemotronLivePreviewSession: ASRLivePreviewSession, @unchecked 
         lock.lock()
         defer { lock.unlock() }
         return ready
+    }
+
+    static func isDecodedChunkLog(_ message: String) -> Bool {
+        message.hasPrefix("typeforme-nemotron-asr stream chunk=")
+    }
+
+    func warmUpWithDecodedSilence(timeout: TimeInterval) async -> Bool {
+        let snapshot = sessionLogSnapshot()
+        Log.asr.notice(
+            "Nemotron live preview warmup start session=\(snapshot.logID, privacy: .public)"
+        )
+        let decoded = await waitForNextDecodedChunk(timeout: timeout) {
+            self.writeSilenceChunkForWarmup()
+        }
+        guard decoded else {
+            Log.asr.notice(
+                "Nemotron live preview warmup decode timeout session=\(snapshot.logID, privacy: .public) elapsed_ms=\(Self.elapsedMS(since: snapshot.startedAt), privacy: .public)"
+            )
+            return false
+        }
+        let reset = await cancelInputAndWaitForReset(timeout: timeout)
+        let completed = decoded && reset
+        Log.asr.notice(
+            "Nemotron live preview warmup finished session=\(snapshot.logID, privacy: .public) reset=\(reset, privacy: .public) elapsed_ms=\(Self.elapsedMS(since: snapshot.startedAt), privacy: .public)"
+        )
+        return completed
     }
 
     func prepareForUse(
@@ -315,6 +343,14 @@ final class NvidiaNemotronLivePreviewSession: ASRLivePreviewSession, @unchecked 
     private func appendPCM16kMonoFloat32DataOnAudioQueue(_ data: Data) {
         guard isInputOpen, process.isRunning else { return }
         writePCMDataToStdin(data, sampleCount: data.count / MemoryLayout<Float>.size)
+    }
+
+    private func writeSilenceChunkForWarmup() {
+        let data = Data(count: Self.stdinChunkSampleCount * MemoryLayout<Float>.size)
+        audioQueue.async { [weak self, data] in
+            guard let self, self.isInputOpen, self.process.isRunning else { return }
+            self.writePCMDataToStdin(data, sampleCount: Self.stdinChunkSampleCount)
+        }
     }
 
     private func writePCMDataToStdin(_ data: Data, sampleCount: Int) {
@@ -479,6 +515,33 @@ final class NvidiaNemotronLivePreviewSession: ASRLivePreviewSession, @unchecked 
                 ready = true
                 lock.unlock()
             }
+            if Self.isDecodedChunkLog(message) {
+                resumeDecodedChunkWaiters(success: true)
+            }
+        }
+    }
+
+    private func waitForNextDecodedChunk(
+        timeout: TimeInterval,
+        afterRegistering action: @escaping () -> Void
+    ) async -> Bool {
+        await withCheckedContinuation { continuation in
+            let waiterID = UUID()
+            lock.lock()
+            decodedChunkContinuations[waiterID] = continuation
+            lock.unlock()
+
+            action()
+
+            let timeoutMilliseconds = Int((max(0, timeout) * 1_000).rounded(.up))
+            DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(timeoutMilliseconds)) { [weak self] in
+                guard let self else { return }
+                let timedOutContinuation: CheckedContinuation<Bool, Never>?
+                self.lock.lock()
+                timedOutContinuation = self.decodedChunkContinuations.removeValue(forKey: waiterID)
+                self.lock.unlock()
+                timedOutContinuation?.resume(returning: false)
+            }
         }
     }
 
@@ -605,6 +668,7 @@ final class NvidiaNemotronLivePreviewSession: ASRLivePreviewSession, @unchecked 
         drainRemainingOutput()
         resumeFinalWaiters(success: false)
         resumeResetWaiters(success: false)
+        resumeDecodedChunkWaiters(success: false)
         resumeTerminationWaiters()
         cleanup()
     }
@@ -647,6 +711,17 @@ final class NvidiaNemotronLivePreviewSession: ASRLivePreviewSession, @unchecked 
         }
         continuations = Array(resetContinuations.values)
         resetContinuations.removeAll()
+        lock.unlock()
+        for continuation in continuations {
+            continuation.resume(returning: success)
+        }
+    }
+
+    private func resumeDecodedChunkWaiters(success: Bool) {
+        let continuations: [CheckedContinuation<Bool, Never>]
+        lock.lock()
+        continuations = Array(decodedChunkContinuations.values)
+        decodedChunkContinuations.removeAll()
         lock.unlock()
         for continuation in continuations {
             continuation.resume(returning: success)

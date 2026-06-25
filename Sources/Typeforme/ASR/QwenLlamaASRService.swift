@@ -3,8 +3,12 @@ import Foundation
 final class QwenLlamaASRService: ASRService {
     static let maxTransientASRAttempts = 2
     private static let requestBodyAudioChunkSize = 48 * 1024
+    private static let warmupSampleRate = 16_000
+    private static let warmupMaxTokens = 8
+    private static let warmupTimeout: TimeInterval = 20
 
     private let server: LlamaCppServerManager
+    private let warmupState = QwenLlamaWarmupState()
 
     init(server: LlamaCppServerManager) {
         self.server = server
@@ -21,15 +25,16 @@ final class QwenLlamaASRService: ASRService {
         } catch {
             throw ASRAudioSupportError.httpStatus(503, error.localizedDescription)
         }
-        let text = try await Self.transcribeViaLlamaChatWithRetry(
-            audioFileURL: audioFileURL,
-            languageIDs: supportedLanguageIDs,
-            port: port,
-            timeout: AppSettings.asrQwenLlamaTimeoutSeconds,
-            maxTokens: AppSettings.asrQwenLlamaMaxTokens,
-            model: (AppSettings.asrQwenLlamaModelPath as NSString).lastPathComponent
-        )
-        return text
+        return try await runUserRequest {
+            try await Self.transcribeViaLlamaChatWithRetry(
+                audioFileURL: audioFileURL,
+                languageIDs: supportedLanguageIDs,
+                port: port,
+                timeout: AppSettings.asrQwenLlamaTimeoutSeconds,
+                maxTokens: AppSettings.asrQwenLlamaMaxTokens,
+                model: (AppSettings.asrQwenLlamaModelPath as NSString).lastPathComponent
+            )
+        }
     }
 
     static func shouldRetryTransientASRError(_ error: Error, attempt: Int) -> Bool {
@@ -56,7 +61,35 @@ final class QwenLlamaASRService: ASRService {
     }
 
     func preload() async throws {
-        _ = try await server.ensureRunning()
+        let port = try await server.ensureRunning()
+        let model = (AppSettings.asrQwenLlamaModelPath as NSString).lastPathComponent
+        let languageIDs = ASRLanguageSelection.validatedIDs(
+            AppSettings.asrLanguageIDs,
+            supportedOptions: ASRLanguageSelection.qwenASRSupportedLanguages
+        )
+        let key = Self.warmupKey(port: port, languageIDs: languageIDs)
+        switch await warmupState.beginWarmup(key: key) {
+        case .started(let ticket):
+            let task = Task(priority: .utility) {
+                await Self.warmUpLlamaChat(
+                    port: port,
+                    model: model.isEmpty ? "qwen3-asr" : model,
+                    languageIDs: languageIDs
+                )
+            }
+            guard await warmupState.installWarmupTask(task, ticket: ticket) else {
+                task.cancel()
+                _ = await task.value
+                throw QwenLlamaWarmupError.skipped("user transcription is active")
+            }
+            let outcome = await task.value
+            await warmupState.finishWarmup(ticket: ticket)
+            try Self.validateWarmupOutcome(outcome)
+        case .wait(let task):
+            try Self.validateWarmupOutcome(await task.value)
+        case .skipped(let reason):
+            throw QwenLlamaWarmupError.skipped(reason)
+        }
     }
 
     func stop() async {
@@ -65,6 +98,15 @@ final class QwenLlamaASRService: ASRService {
 
     static func chatCompletionsEndpoint(port: Int) -> URL {
         URL(string: "http://127.0.0.1:\(port)/v1/chat/completions")!
+    }
+
+    private static func warmupKey(port: Int, languageIDs: [String]) -> String {
+        [
+            "port=\(port)",
+            "model=\(AppSettings.asrQwenLlamaModelPath)",
+            "mmproj=\(AppSettings.asrQwenLlamaMMProjPath)",
+            "languages=\(languageIDs.joined(separator: ","))",
+        ].joined(separator: "|")
     }
 
     static func languageAssistantPrefix(languageIDs: [String]) -> String? {
@@ -155,6 +197,26 @@ final class QwenLlamaASRService: ASRService {
         maxTokens: Int,
         model: String
     ) async throws -> String {
+        try await llamaChat(
+            audioFileURL: audioFileURL,
+            languageIDs: languageIDs,
+            port: port,
+            timeout: timeout,
+            maxTokens: maxTokens,
+            model: model,
+            allowEmptyTranscript: false
+        )
+    }
+
+    private static func llamaChat(
+        audioFileURL: URL,
+        languageIDs: [String],
+        port: Int,
+        timeout: TimeInterval,
+        maxTokens: Int,
+        model: String,
+        allowEmptyTranscript: Bool
+    ) async throws -> String {
         let uploadURL = try await ASRAudioSupport.llamaUploadableAudioURL(for: audioFileURL)
         defer {
             if uploadURL != audioFileURL {
@@ -192,7 +254,7 @@ final class QwenLlamaASRService: ASRService {
         let (data, response) = try await session.data(for: request)
         try ASRAudioSupport.validateHTTPResponse(response, data: data)
         let text = try parseChatTranscript(data: data)
-        guard !text.isEmpty else {
+        guard allowEmptyTranscript || !text.isEmpty else {
             Log.asr.notice("qwen3-asr empty transcript response: \(responseSummary(data: data), privacy: .public)")
             throw ASRAudioSupportError.emptyTranscript
         }
@@ -239,11 +301,115 @@ final class QwenLlamaASRService: ASRService {
             if languagePrefix != nil {
                 try write(#","continue_final_message":true,"add_generation_prompt":false"#)
             }
-            try write(#","stream":false}"#)
+            try write(#","stream":false,"cache_prompt":true}"#)
 
             let byteCount = try FileManager.default.attributesOfItem(atPath: bodyURL.path)[.size] as? NSNumber
             return QwenASRChatBodyFile(url: bodyURL, byteCount: byteCount?.uint64Value ?? 0)
         }.value
+    }
+
+    private static func warmUpLlamaChat(
+        port: Int,
+        model: String,
+        languageIDs: [String]
+    ) async -> QwenLlamaWarmupOutcome {
+        let started = Date()
+        do {
+            let audioURL = try writeWarmupSilenceWAVFile()
+            defer { try? FileManager.default.removeItem(at: audioURL) }
+            _ = try await llamaChat(
+                audioFileURL: audioURL,
+                languageIDs: languageIDs,
+                port: port,
+                timeout: warmupTimeout,
+                maxTokens: warmupMaxTokens,
+                model: model,
+                allowEmptyTranscript: true
+            )
+            Log.asr.info(
+                "Qwen3-ASR GGUF audio warmup finished elapsed_ms=\(Self.elapsedMS(since: started), privacy: .public)"
+            )
+            return .warmed
+        } catch {
+            if Task.isCancelled || (error as? URLError)?.code == .cancelled {
+                Log.asr.notice("Qwen3-ASR GGUF audio warmup cancelled")
+                return .cancelled("user transcription interrupted warmup")
+            }
+            Log.asr.notice(
+                "Qwen3-ASR GGUF audio warmup failed: \(error.localizedDescription, privacy: .public)"
+            )
+            return .failed(error.localizedDescription)
+        }
+    }
+
+    private func runUserRequest<T>(_ operation: () async throws -> T) async throws -> T {
+        let cancelledWarmup = await warmupState.beginUserRequest()
+        if cancelledWarmup {
+            Log.asr.notice("Qwen3-ASR GGUF audio warmup cancelled for user transcription")
+        }
+        do {
+            let result = try await operation()
+            await warmupState.finishUserRequest()
+            return result
+        } catch {
+            await warmupState.finishUserRequest()
+            throw error
+        }
+    }
+
+    private static func validateWarmupOutcome(_ outcome: QwenLlamaWarmupOutcome) throws {
+        switch outcome {
+        case .warmed:
+            return
+        case .cancelled(let reason):
+            throw QwenLlamaWarmupError.skipped(reason)
+        case .failed(let message):
+            throw QwenLlamaWarmupError.failed(message)
+        }
+    }
+
+    static func writeWarmupSilenceWAVFile(sampleCount: Int = 16_000) throws -> URL {
+        let clampedSampleCount = max(1, sampleCount)
+        let url = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("typeforme-qwen-asr-warmup-\(UUID().uuidString).wav")
+        var data = Data()
+
+        func appendASCII(_ value: String) {
+            data.append(Data(value.utf8))
+        }
+
+        func appendUInt16LE(_ value: UInt16) {
+            var littleEndian = value.littleEndian
+            withUnsafeBytes(of: &littleEndian) { data.append(contentsOf: $0) }
+        }
+
+        func appendUInt32LE(_ value: UInt32) {
+            var littleEndian = value.littleEndian
+            withUnsafeBytes(of: &littleEndian) { data.append(contentsOf: $0) }
+        }
+
+        let bytesPerSample = 2
+        let audioByteCount = clampedSampleCount * bytesPerSample
+        appendASCII("RIFF")
+        appendUInt32LE(UInt32(36 + audioByteCount))
+        appendASCII("WAVE")
+        appendASCII("fmt ")
+        appendUInt32LE(16)
+        appendUInt16LE(1)
+        appendUInt16LE(1)
+        appendUInt32LE(UInt32(warmupSampleRate))
+        appendUInt32LE(UInt32(warmupSampleRate * bytesPerSample))
+        appendUInt16LE(UInt16(bytesPerSample))
+        appendUInt16LE(16)
+        appendASCII("data")
+        appendUInt32LE(UInt32(audioByteCount))
+        data.append(Data(count: audioByteCount))
+        try data.write(to: url, options: .atomic)
+        return url
+    }
+
+    private static func elapsedMS(since date: Date) -> Int {
+        max(0, Int(Date().timeIntervalSince(date) * 1_000))
     }
 
     private static func writeBase64Audio(_ audioURL: URL, to output: FileHandle) throws {
@@ -291,6 +457,98 @@ final class QwenLlamaASRService: ASRService {
             }
         }
         throw lastError ?? ASRAudioSupportError.emptyTranscript
+    }
+}
+
+enum QwenLlamaWarmupError: LocalizedError {
+    case skipped(String)
+    case failed(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .skipped(let reason):
+            return "Qwen3-ASR GGUF audio warmup skipped: \(reason)"
+        case .failed(let message):
+            return "Qwen3-ASR GGUF audio warmup failed: \(message)"
+        }
+    }
+}
+
+private struct QwenLlamaWarmupTicket: Sendable {
+    let id = UUID()
+    let key: String
+}
+
+private enum QwenLlamaWarmupStart: Sendable {
+    case started(QwenLlamaWarmupTicket)
+    case wait(Task<QwenLlamaWarmupOutcome, Never>)
+    case skipped(String)
+}
+
+private enum QwenLlamaWarmupOutcome: Sendable {
+    case warmed
+    case cancelled(String)
+    case failed(String)
+}
+
+private actor QwenLlamaWarmupState {
+    private var warmingKey: String?
+    private var warmingID: UUID?
+    private var warmingTask: Task<QwenLlamaWarmupOutcome, Never>?
+    private var userRequestCount = 0
+
+    func beginWarmup(key: String) -> QwenLlamaWarmupStart {
+        guard userRequestCount == 0 else {
+            return .skipped("user transcription is active")
+        }
+        if warmingKey == key {
+            if let warmingTask {
+                return .wait(warmingTask)
+            }
+            return .skipped("matching warmup is already starting")
+        }
+        warmingTask?.cancel()
+        let ticket = QwenLlamaWarmupTicket(key: key)
+        warmingKey = key
+        warmingID = ticket.id
+        warmingTask = nil
+        return .started(ticket)
+    }
+
+    func installWarmupTask(
+        _ task: Task<QwenLlamaWarmupOutcome, Never>,
+        ticket: QwenLlamaWarmupTicket
+    ) -> Bool {
+        guard warmingKey == ticket.key,
+              warmingID == ticket.id,
+              userRequestCount == 0
+        else {
+            task.cancel()
+            return false
+        }
+        warmingTask = task
+        return true
+    }
+
+    func finishWarmup(ticket: QwenLlamaWarmupTicket) {
+        guard warmingKey == ticket.key, warmingID == ticket.id else { return }
+        warmingKey = nil
+        warmingID = nil
+        warmingTask = nil
+    }
+
+    func beginUserRequest() -> Bool {
+        userRequestCount += 1
+        let cancelled = warmingKey != nil || warmingTask != nil
+        warmingTask?.cancel()
+        warmingKey = nil
+        warmingID = nil
+        warmingTask = nil
+        return cancelled
+    }
+
+    func finishUserRequest() {
+        userRequestCount = max(0, userRequestCount - 1)
     }
 }
 

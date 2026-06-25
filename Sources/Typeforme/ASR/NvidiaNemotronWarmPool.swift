@@ -3,6 +3,7 @@ import Foundation
 @MainActor
 final class NvidiaNemotronWarmPool {
     static let shared = NvidiaNemotronWarmPool()
+    private static let warmupTimeout: TimeInterval = 8
 
     private struct IdleSession {
         let key: String
@@ -12,6 +13,8 @@ final class NvidiaNemotronWarmPool {
     }
 
     private var idle: IdleSession?
+    private var warmingKey: String?
+    private var warmingSession: NvidiaNemotronLivePreviewSession?
 
     private init() {}
 
@@ -39,7 +42,13 @@ final class NvidiaNemotronWarmPool {
             if idle.key == key, idle.session.isRunning {
                 return
             }
-            terminateIdle(reason: "key_changed")
+            terminateIdleSession(reason: "key_changed")
+        }
+        if let warmingSession {
+            if warmingKey == key, warmingSession.isRunning {
+                return
+            }
+            terminateWarming(reason: "key_changed")
         }
 
         do {
@@ -49,16 +58,20 @@ final class NvidiaNemotronWarmPool {
                 diagnosticID: diagnosticID,
                 onTranscript: { _ in }
             )
-            session.prepareForIdle(diagnosticID: diagnosticID)
-            idle = IdleSession(
-                key: key,
-                languageIDs: languageIDs,
-                session: session,
-                createdAt: Date()
-            )
+            warmingKey = key
+            warmingSession = session
             Log.asr.info(
                 "NVIDIA Nemotron warm helper started languages=\(languageIDs.joined(separator: ","), privacy: .public)"
             )
+            Task { [weak self, session, key, languageIDs] in
+                let warmed = await session.warmUpWithDecodedSilence(timeout: Self.warmupTimeout)
+                await self?.finishPreload(
+                    session,
+                    key: key,
+                    languageIDs: languageIDs,
+                    warmed: warmed
+                )
+            }
         } catch {
             Log.asr.error("NVIDIA Nemotron warm helper failed: \(error.localizedDescription, privacy: .public)")
         }
@@ -84,6 +97,12 @@ final class NvidiaNemotronWarmPool {
                 return idle.session
             }
             idle.session.terminate(reason: "key_changed_on_take")
+        }
+        if let warmingSession {
+            let reason = warmingKey == key ? "take_during_warmup" : "key_changed_on_take"
+            self.warmingSession = nil
+            warmingKey = nil
+            warmingSession.terminate(reason: reason)
         }
 
         let session = try NvidiaNemotronLivePreviewSession.start(
@@ -126,9 +145,58 @@ final class NvidiaNemotronWarmPool {
     }
 
     func terminateIdle(reason: String) {
+        terminateWarming(reason: reason)
+        terminateIdleSession(reason: reason)
+    }
+
+    private func terminateIdleSession(reason: String) {
         guard let idle else { return }
         self.idle = nil
         idle.session.terminate(reason: reason)
+    }
+
+    private func terminateWarming(reason: String) {
+        guard let warmingSession else { return }
+        self.warmingSession = nil
+        warmingKey = nil
+        warmingSession.terminate(reason: reason)
+    }
+
+    private func finishPreload(
+        _ session: NvidiaNemotronLivePreviewSession,
+        key: String,
+        languageIDs: [String],
+        warmed: Bool
+    ) {
+        guard warmingSession === session, warmingKey == key else {
+            session.terminate(reason: "warmup_superseded")
+            return
+        }
+        warmingSession = nil
+        warmingKey = nil
+
+        guard AppSettings.enabledRecognitionSources.contains(.nvidiaNemotron) else {
+            session.terminate(reason: "source_disabled_after_warmup")
+            return
+        }
+        guard session.isRunning, warmed else {
+            session.terminate(reason: warmed ? "warmup_process_stopped" : "warmup_failed")
+            Log.asr.error(
+                "NVIDIA Nemotron warm helper failed during decoded warmup languages=\(languageIDs.joined(separator: ","), privacy: .public)"
+            )
+            return
+        }
+
+        session.prepareForIdle(diagnosticID: Self.warmDiagnosticID())
+        idle = IdleSession(
+            key: key,
+            languageIDs: languageIDs,
+            session: session,
+            createdAt: Date()
+        )
+        Log.asr.info(
+            "NVIDIA Nemotron warm helper ready languages=\(languageIDs.joined(separator: ","), privacy: .public)"
+        )
     }
 
     private static func key(for languageIDs: [String]) -> String {
