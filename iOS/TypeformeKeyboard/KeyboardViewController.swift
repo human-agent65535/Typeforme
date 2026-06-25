@@ -9144,12 +9144,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private func replaceOrSkipCommittedLivePartialPreview(
         _ preview: CommittedLivePartialPreview,
         with finalText: String
-    ) {
+    ) -> Bool {
         if deleteVisibleCommittedLivePartial(preview.text) {
             textDocumentProxy.insertText(finalText)
-            return
+            return true
         }
         kbLog.notice("skipped result commit because committed live partial preview is no longer in host input")
+        return false
     }
 
     private func deleteVisibleCommittedLivePartial(_ text: String) -> Bool {
@@ -10030,7 +10031,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 isCommandPressActive = false
                 if command.action == .stop {
                     pendingStopCommandID = command.id
-                    commitLivePartialBeforeHostReturnIfNeeded(commandID: command.id)
                 }
             }
             if command.action == .cancel {
@@ -10120,7 +10120,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 tapRecordingActive = false
                 isCommandPressActive = false
                 pendingStopCommandID = commandID
-                commitLivePartialBeforeHostReturnIfNeeded(commandID: commandID)
             }
             bridgeStatus = KeyboardBridgeStatus(
                 commandID: commandID,
@@ -10566,18 +10565,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         if suppressesPartialPreview, activeMarkedTextOwner == .livePartial {
             replaceMarkedText("")
         } else if showsPartial {
-            if status.state == .sending {
-                commitLivePartialPreviewForSending(status, partial: partial)
-            } else {
-                replaceMarkedText(partial, owner: .livePartial)
-            }
-        } else if commitActiveLivePartialPreviewForSending(status) {
-            // The stop/sending status can arrive without a fresh partial. Keep
-            // the last visible preview anchored so the final result replaces it.
+            replaceMarkedText(partial, owner: .livePartial)
         } else if status.state != .result, activeMarkedTextOwner == .livePartial {
             // .result is handled below — don't clear here or the commit step
             // would have no marked text to replace.
-            replaceMarkedText("")
+            if status.state != .sending {
+                replaceMarkedText("")
+            }
         }
         bridgeStatus = status
         updateRefineTimeoutWatchdog(for: status)
@@ -10606,9 +10600,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 appliedRewriteTarget = nil
             } else if let preview = committedLivePartialPreview,
                       preview.commandID == commandID {
-                replaceOrSkipCommittedLivePartialPreview(preview, with: text)
+                didApply = replaceOrSkipCommittedLivePartialPreview(preview, with: text)
                 committedLivePartialPreview = nil
-                didApply = true
                 appliedRewriteTarget = nil
             } else if shouldSkipResultCommitForConsumedLivePartial() {
                 kbLog.notice("skipped result commit because live partial preview is no longer in host input")

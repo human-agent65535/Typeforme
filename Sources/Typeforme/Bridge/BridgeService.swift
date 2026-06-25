@@ -1028,7 +1028,7 @@ final class BridgeService {
             guard audioFileURL.pathExtension.lowercased() == ext else {
                 throw BridgeServiceError.invalidRequest("Audio file extension does not match audio_extension")
             }
-            guard BridgeAudioFormat.isOpusCAFFile(audioFileURL) else {
+            guard BridgeAudioFormat.isFLACFile(audioFileURL) else {
                 throw BridgeServiceError.invalidAudio
             }
             return audioFileURL
@@ -1037,7 +1037,7 @@ final class BridgeService {
             throw BridgeServiceError.invalidAudio
         }
         let ext = try Self.validatedClientAudioExtension(request.audioExtension)
-        guard BridgeAudioFormat.hasCAFMagic(data) else {
+        guard BridgeAudioFormat.hasFLACMagic(data) else {
             throw BridgeServiceError.invalidAudio
         }
         let url = try await Task.detached(priority: .utility) {
@@ -1046,7 +1046,7 @@ final class BridgeService {
             try data.write(to: url, options: .atomic)
             return url
         }.value
-        guard BridgeAudioFormat.isOpusCAFFile(url) else {
+        guard BridgeAudioFormat.isFLACFile(url) else {
             try? FileManager.default.removeItem(at: url)
             throw BridgeServiceError.invalidAudio
         }

@@ -18,7 +18,7 @@ enum BridgeClientError: LocalizedError {
         case .server(let message):
             return message
         case .unsupportedAudioFormat(let detail):
-            return "Bridge upload audio must be Opus CAF; got \(detail)"
+            return "Bridge upload audio must be FLAC; got \(detail)"
         }
     }
 }

@@ -27,7 +27,7 @@ enum AudioRecorderError: LocalizedError {
 @MainActor
 final class AudioRecorder {
     private let engine = AVAudioEngine()
-    private let fileWriter = MonoOpusCAFBufferWriter()
+    private let fileWriter = MonoFLACBufferWriter()
     private let levelThrottler = LevelUpdateThrottler(interval: 1.0 / 20.0)
     private let runningState = AudioRecorderRunningState()
     private var currentURL: URL?
@@ -47,7 +47,7 @@ final class AudioRecorder {
         let format = input.outputFormat(forBus: 0)
 
         let audioURL = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("typeforme-\(UUID().uuidString).caf")
+            .appendingPathComponent("typeforme-\(UUID().uuidString).flac")
         try fileWriter.begin(url: audioURL)
 
         let writer = fileWriter
@@ -121,7 +121,7 @@ final class AudioRecorder {
             try fileWriter.finish()
             return url
         } catch {
-            Log.audio.notice("Mac recorder Opus CAF write failed: \(error.localizedDescription, privacy: .public)")
+            Log.audio.notice("Mac recorder FLAC write failed: \(error.localizedDescription, privacy: .public)")
             try? FileManager.default.removeItem(at: url)
             return nil
         }
@@ -145,7 +145,7 @@ final class AudioRecorder {
 }
 
 private func makeAudioRecorderTapHandler(
-    writer: MonoOpusCAFBufferWriter,
+    writer: MonoFLACBufferWriter,
     pcmHandler: ((AVAudioPCMBuffer) -> Void)?,
     levelHandler: (@MainActor (Float) -> Void)?,
     levelThrottler: LevelUpdateThrottler,
@@ -222,7 +222,7 @@ private final class LevelUpdateThrottler: @unchecked Sendable {
     }
 }
 
-private final class MonoOpusCAFBufferWriter: @unchecked Sendable {
+private final class MonoFLACBufferWriter: @unchecked Sendable {
     private let lock = NSLock()
     private var url: URL?
     private var file: AVAudioFile?
@@ -235,23 +235,24 @@ private final class MonoOpusCAFBufferWriter: @unchecked Sendable {
 
     func begin(url: URL) throws {
         guard let format = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32,
+            commonFormat: .pcmFormatInt16,
             sampleRate: BridgeAudioRecordingContract.sampleRate,
             channels: AVAudioChannelCount(BridgeAudioRecordingContract.channelCount),
             interleaved: false
         ) else {
-            throw AudioRecorderError.fileSetupFailed("Could not create Opus CAF writer format")
+            throw AudioRecorderError.fileSetupFailed("Could not create FLAC writer format")
         }
         let settings: [String: Any] = [
-            AVFormatIDKey: Int(kAudioFormatOpus),
+            AVFormatIDKey: Int(kAudioFormatFLAC),
             AVSampleRateKey: BridgeAudioRecordingContract.sampleRate,
             AVNumberOfChannelsKey: BridgeAudioRecordingContract.channelCount,
-            AVEncoderBitRateKey: BridgeAudioRecordingContract.opusBitRate,
+            AVEncoderBitDepthHintKey: BridgeAudioRecordingContract.flacBitDepth,
+            AVLinearPCMBitDepthKey: BridgeAudioRecordingContract.flacBitDepth,
         ]
         let file = try AVAudioFile(
             forWriting: url,
             settings: settings,
-            commonFormat: .pcmFormatFloat32,
+            commonFormat: .pcmFormatInt16,
             interleaved: false
         )
 
@@ -288,7 +289,7 @@ private final class MonoOpusCAFBufferWriter: @unchecked Sendable {
                       converter: converter
                   )
             else {
-                throw AudioRecorderError.fileSetupFailed("Could not convert recording buffer to Opus CAF format")
+                throw AudioRecorderError.fileSetupFailed("Could not convert recording buffer to FLAC format")
             }
             try file.write(from: writeBuffer)
             frameCount += AVAudioFramePosition(writeBuffer.frameLength)
@@ -324,26 +325,26 @@ private final class MonoOpusCAFBufferWriter: @unchecked Sendable {
         }
         guard frames > 0 else {
             Log.audio.error(
-                "Mac recorder finish: empty opus caf duration=\(duration, privacy: .public) frames=\(frames, privacy: .public) sampleRate=\(sampleRate, privacy: .public)"
+                "Mac recorder finish: empty flac duration=\(duration, privacy: .public) frames=\(frames, privacy: .public) sampleRate=\(sampleRate, privacy: .public)"
             )
-            throw AudioRecorderError.fileSetupFailed("Recorded Opus CAF contains no audio data")
+            throw AudioRecorderError.fileSetupFailed("Recorded FLAC contains no audio data")
         }
         guard duration >= BridgeAudioRecordingContract.minimumDurationSeconds else {
             Log.audio.notice(
                 "Mac recorder finish: too short duration=\(duration, privacy: .public) frames=\(frames, privacy: .public) sampleRate=\(sampleRate, privacy: .public)"
             )
-            throw AudioRecorderError.fileSetupFailed("Recorded Opus CAF is too short")
+            throw AudioRecorderError.fileSetupFailed("Recorded FLAC is too short")
         }
 
         let fileBytes = (try? FileManager.default.attributesOfItem(atPath: outputURL.path)[.size] as? NSNumber)?.intValue ?? 0
         guard fileBytes > 0 else {
             Log.audio.error(
-                "Mac recorder finish: empty opus caf duration=\(duration, privacy: .public) frames=\(frames, privacy: .public) sampleRate=\(sampleRate, privacy: .public)"
+                "Mac recorder finish: empty flac duration=\(duration, privacy: .public) frames=\(frames, privacy: .public) sampleRate=\(sampleRate, privacy: .public)"
             )
-            throw AudioRecorderError.fileSetupFailed("Recorded Opus CAF contains no audio data")
+            throw AudioRecorderError.fileSetupFailed("Recorded FLAC contains no audio data")
         }
         Log.audio.debug(
-            "Mac recorder finish: opus caf written duration=\(duration, privacy: .public) frames=\(frames, privacy: .public) fileBytes=\(fileBytes, privacy: .public) sampleRate=\(sampleRate, privacy: .public)"
+            "Mac recorder finish: flac written duration=\(duration, privacy: .public) frames=\(frames, privacy: .public) fileBytes=\(fileBytes, privacy: .public) sampleRate=\(sampleRate, privacy: .public)"
         )
     }
 
@@ -365,7 +366,7 @@ private final class MonoOpusCAFBufferWriter: @unchecked Sendable {
     }
 
     /// Downmixes arbitrary input buffers before the stateful converter resamples
-    /// them to the Bridge upload contract: 16 kHz mono Opus in CAF.
+    /// them to the Bridge upload contract: 16 kHz mono FLAC.
     private static func makeMonoFloatBuffer(from buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
         let frameLength = Int(buffer.frameLength)
         guard frameLength > 0, buffer.format.sampleRate.isFinite, buffer.format.sampleRate > 0 else {

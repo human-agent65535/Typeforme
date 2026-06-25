@@ -22,7 +22,7 @@ enum ASRAudioSupportError: LocalizedError {
         case .emptyTranscript:
             return "ASR server returned an empty transcript"
         case .unsupportedBridgeAudioExtension(let ext):
-            return "Bridge upload audio must be Opus CAF; got \(ext)"
+            return "Bridge upload audio must be FLAC; got \(ext)"
         }
     }
 }

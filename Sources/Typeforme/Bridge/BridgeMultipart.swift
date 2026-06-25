@@ -432,8 +432,8 @@ enum BridgeMultipart {
             guard let currentPart else { return }
             if currentPart.name == "audio" {
                 try closeAudioHandle()
-                guard BridgeAudioFormat.hasCAFMagic(audioHeaderBytes) else {
-                    throw BridgeMultipartError.invalidRequest("Multipart audio part is not CAF")
+                guard BridgeAudioFormat.hasFLACMagic(audioHeaderBytes) else {
+                    throw BridgeMultipartError.invalidRequest("Multipart audio part is not FLAC")
                 }
                 return
             }
@@ -458,13 +458,13 @@ enum BridgeMultipart {
         }
 
         private func appendAudioHeaderBytes(_ bytes: Data) throws {
-            if audioHeaderBytes.count < BridgeAudioFormat.cafMagicByteCount {
-                let needed = BridgeAudioFormat.cafMagicByteCount - audioHeaderBytes.count
+            if audioHeaderBytes.count < BridgeAudioFormat.flacMagicByteCount {
+                let needed = BridgeAudioFormat.flacMagicByteCount - audioHeaderBytes.count
                 audioHeaderBytes.append(bytes.prefix(needed))
             }
-            if audioHeaderBytes.count == BridgeAudioFormat.cafMagicByteCount,
-               !BridgeAudioFormat.hasCAFMagic(audioHeaderBytes) {
-                throw BridgeMultipartError.invalidRequest("Multipart audio part is not CAF")
+            if audioHeaderBytes.count == BridgeAudioFormat.flacMagicByteCount,
+               !BridgeAudioFormat.hasFLACMagic(audioHeaderBytes) {
+                throw BridgeMultipartError.invalidRequest("Multipart audio part is not FLAC")
             }
         }
 

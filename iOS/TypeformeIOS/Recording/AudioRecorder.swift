@@ -122,9 +122,9 @@ final class AudioTapFileWriter: @unchecked Sendable {
 
     func begin(format _: AVAudioFormat) throws -> URL {
         let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("typeforme-keyboard-\(UUID().uuidString).caf")
+            .appendingPathComponent("typeforme-keyboard-\(UUID().uuidString).flac")
         guard let writeFormat = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32,
+            commonFormat: .pcmFormatInt16,
             sampleRate: BridgeAudioRecordingContract.sampleRate,
             channels: AVAudioChannelCount(BridgeAudioRecordingContract.channelCount),
             interleaved: false
@@ -132,15 +132,16 @@ final class AudioTapFileWriter: @unchecked Sendable {
             throw NSError(domain: "Typeforme", code: 7, userInfo: [NSLocalizedDescriptionKey: "Could not create keyboard recording format"])
         }
         let settings: [String: Any] = [
-            AVFormatIDKey: Int(kAudioFormatOpus),
+            AVFormatIDKey: Int(kAudioFormatFLAC),
             AVSampleRateKey: BridgeAudioRecordingContract.sampleRate,
             AVNumberOfChannelsKey: BridgeAudioRecordingContract.channelCount,
-            AVEncoderBitRateKey: BridgeAudioRecordingContract.opusBitRate,
+            AVEncoderBitDepthHintKey: BridgeAudioRecordingContract.flacBitDepth,
+            AVLinearPCMBitDepthKey: BridgeAudioRecordingContract.flacBitDepth,
         ]
         let file = try AVAudioFile(
             forWriting: url,
             settings: settings,
-            commonFormat: .pcmFormatFloat32,
+            commonFormat: .pcmFormatInt16,
             interleaved: false
         )
 
@@ -224,12 +225,12 @@ final class AudioTapFileWriter: @unchecked Sendable {
         }
         let fileBytes = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.intValue ?? 0
         guard fileBytes > 0 else {
-            recordingLog.error("keyboard audio finish: empty opus caf duration=\(duration, privacy: .public) frames=\(frames, privacy: .public) sampleRate=\(sampleRate, privacy: .public)")
+            recordingLog.error("keyboard audio finish: empty flac duration=\(duration, privacy: .public) frames=\(frames, privacy: .public) sampleRate=\(sampleRate, privacy: .public)")
             try? FileManager.default.removeItem(at: url)
             return nil
         }
         recordingLog.debug(
-            "keyboard audio finish: opus caf written duration=\(duration, privacy: .public) frames=\(frames, privacy: .public) fileBytes=\(fileBytes, privacy: .public) sampleRate=\(sampleRate, privacy: .public)"
+            "keyboard audio finish: flac written duration=\(duration, privacy: .public) frames=\(frames, privacy: .public) fileBytes=\(fileBytes, privacy: .public) sampleRate=\(sampleRate, privacy: .public)"
         )
         return url
     }
@@ -260,7 +261,7 @@ final class AudioTapFileWriter: @unchecked Sendable {
     }
 
     /// Downmixes arbitrary input buffers before the stateful converter resamples
-    /// them to the Bridge upload contract: 16 kHz mono Opus in CAF.
+    /// them to the Bridge upload contract: 16 kHz mono FLAC.
     private static func makeMonoFloatBuffer(from buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
         let frameLength = Int(buffer.frameLength)
         guard frameLength > 0, buffer.format.sampleRate.isFinite, buffer.format.sampleRate > 0 else {
@@ -414,8 +415,8 @@ final class AudioRecorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
         }
 
         let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("typeforme-\(UUID().uuidString).caf")
-        let settings = Self.opusCAFRecorderSettings()
+            .appendingPathComponent("typeforme-\(UUID().uuidString).flac")
+        let settings = Self.flacRecorderSettings()
         guard let recorder = try? AVAudioRecorder(url: url, settings: settings) else {
             try? FileManager.default.removeItem(at: url)
             return
@@ -465,8 +466,8 @@ final class AudioRecorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
         try await IOSRecordingAudioSession.activateRecording(reuseActiveSession: reuseActiveSession)
 
         let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("typeforme-\(UUID().uuidString).caf")
-        let settings = Self.opusCAFRecorderSettings()
+            .appendingPathComponent("typeforme-\(UUID().uuidString).flac")
+        let settings = Self.flacRecorderSettings()
         let recorder = try AVAudioRecorder(url: url, settings: settings)
         recorder.delegate = self
         recorder.isMeteringEnabled = true
@@ -493,9 +494,9 @@ final class AudioRecorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
             IOSRecordingAudioSession.deactivateAndNotifyOthers()
         }
         guard let url else { return nil }
-        guard BridgeAudioFormat.isOpusCAFFile(url) else {
+        guard BridgeAudioFormat.isFLACFile(url) else {
             let fileBytes = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.intValue ?? 0
-            recordingLog.error("host audio finish: invalid opus caf fileBytes=\(fileBytes, privacy: .public)")
+            recordingLog.error("host audio finish: invalid flac fileBytes=\(fileBytes, privacy: .public)")
             try? FileManager.default.removeItem(at: url)
             return nil
         }
@@ -523,12 +524,13 @@ final class AudioRecorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
         level = 0
     }
 
-    private static func opusCAFRecorderSettings() -> [String: Any] {
+    private static func flacRecorderSettings() -> [String: Any] {
         [
-            AVFormatIDKey: Int(kAudioFormatOpus),
+            AVFormatIDKey: Int(kAudioFormatFLAC),
             AVSampleRateKey: BridgeAudioRecordingContract.sampleRate,
             AVNumberOfChannelsKey: BridgeAudioRecordingContract.channelCount,
-            AVEncoderBitRateKey: BridgeAudioRecordingContract.opusBitRate,
+            AVEncoderBitDepthHintKey: BridgeAudioRecordingContract.flacBitDepth,
+            AVLinearPCMBitDepthKey: BridgeAudioRecordingContract.flacBitDepth,
         ]
     }
 

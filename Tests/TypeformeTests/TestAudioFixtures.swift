@@ -3,21 +3,22 @@ import Foundation
 @testable import Typeforme
 
 enum TestAudioFixtures {
-    static func makeOpusCAFFile(frameCount: AVAudioFrameCount = 16_000) throws -> URL {
+    static func makeFLACFile(frameCount: AVAudioFrameCount = 16_000) throws -> URL {
         let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("typeforme-test-\(UUID().uuidString).caf")
+            .appendingPathComponent("typeforme-test-\(UUID().uuidString).flac")
         let settings: [String: Any] = [
-            AVFormatIDKey: Int(kAudioFormatOpus),
+            AVFormatIDKey: Int(kAudioFormatFLAC),
             AVSampleRateKey: BridgeAudioRecordingContract.sampleRate,
             AVNumberOfChannelsKey: BridgeAudioRecordingContract.channelCount,
-            AVEncoderBitRateKey: BridgeAudioRecordingContract.opusBitRate,
+            AVEncoderBitDepthHintKey: BridgeAudioRecordingContract.flacBitDepth,
+            AVLinearPCMBitDepthKey: BridgeAudioRecordingContract.flacBitDepth,
         ]
 
         do {
             let file = try AVAudioFile(
                 forWriting: url,
                 settings: settings,
-                commonFormat: .pcmFormatFloat32,
+                commonFormat: .pcmFormatInt16,
                 interleaved: false
             )
             guard let buffer = AVAudioPCMBuffer(
@@ -27,13 +28,13 @@ enum TestAudioFixtures {
                 throw NSError(
                     domain: "TypeformeTests",
                     code: 1,
-                    userInfo: [NSLocalizedDescriptionKey: "Could not create Opus CAF fixture buffer"]
+                    userInfo: [NSLocalizedDescriptionKey: "Could not create FLAC fixture buffer"]
                 )
             }
             buffer.frameLength = frameCount
-            if let channel = buffer.floatChannelData?[0] {
+            if let channel = buffer.int16ChannelData?[0] {
                 for frame in 0..<Int(frameCount) {
-                    channel[frame] = frame.isMultiple(of: 2) ? 0.01 : -0.01
+                    channel[frame] = frame.isMultiple(of: 2) ? 400 : -400
                 }
             }
             try file.write(from: buffer)
@@ -45,8 +46,8 @@ enum TestAudioFixtures {
         return url
     }
 
-    static func makeOpusCAFData(frameCount: AVAudioFrameCount = 16_000) throws -> Data {
-        let url = try makeOpusCAFFile(frameCount: frameCount)
+    static func makeFLACData(frameCount: AVAudioFrameCount = 16_000) throws -> Data {
+        let url = try makeFLACFile(frameCount: frameCount)
         defer { try? FileManager.default.removeItem(at: url) }
         return try Data(contentsOf: url)
     }
