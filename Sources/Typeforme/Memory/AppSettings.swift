@@ -284,13 +284,14 @@ enum AppSettings {
     }
     static var voiceLivePreviewSource: VoiceLivePreviewSource {
         guard voiceLivePreview else { return .off }
-        return rawSetting(forKey: Keys.voiceLivePreviewSource, default: .appleSpeech)
+        let source: VoiceLivePreviewSource = rawSetting(forKey: Keys.voiceLivePreviewSource, default: .appleSpeech)
+        return source.isEnabled(forRecognitionSources: enabledRecognitionSources, correctionMode: correctionMode) ? source : .off
     }
     static var holdModifier: HoldModifier {
         rawSetting(forKey: Keys.holdModifier, default: .rightOption)
     }
 
-    static var enabledRecognitionSources: [RecognitionSource] {
+    static var configuredRecognitionSources: [RecognitionSource] {
         var sources: [RecognitionSource] = []
         if ud.bool(forKey: Keys.asrQwenEnabled) {
             sources.append(.qwen)
@@ -301,7 +302,26 @@ enum AppSettings {
         if ud.bool(forKey: Keys.asrAppleSpeechEnabled) {
             sources.append(.appleSpeech)
         }
+        return sources
+    }
+
+    static var enabledRecognitionSources: [RecognitionSource] {
+        let sources = configuredRecognitionSources
         return sources.isEmpty ? RecognitionSource.defaultEnabled : sources
+    }
+
+    static var supportsFastMode: Bool {
+        configuredRecognitionSources.contains(.qwen)
+    }
+
+    static func isCorrectionModeAvailable(_ mode: CorrectionMode) -> Bool {
+        !mode.requiresQwenASR || supportsFastMode
+    }
+
+    static func setEnabledRecognitionSources(_ sources: [RecognitionSource]) {
+        ud.set(sources.contains(.qwen), forKey: Keys.asrQwenEnabled)
+        ud.set(sources.contains(.nvidiaNemotron), forKey: Keys.asrNvidiaNemotronEnabled)
+        ud.set(sources.contains(.appleSpeech), forKey: Keys.asrAppleSpeechEnabled)
     }
 
     static var asrLanguageIDs: [String] {

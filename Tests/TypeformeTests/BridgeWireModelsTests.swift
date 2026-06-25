@@ -39,6 +39,8 @@ struct BridgeWireModelsTests {
                 "unknown",
             ]) == [.nvidiaNemotron, .qwen]
         )
+        #expect(RecognitionSource.recognizedSources([]) == [])
+        #expect(RecognitionSource.recognizedSources(["unknown"]) == [])
         #expect(RecognitionSource.normalizedSources([]) == [.qwen])
         #expect(RecognitionSource.rawValue(for: [.qwen, .appleSpeech]) == "qwen3-asr-llama,apple-speech")
         #expect(RecognitionSource.qwen.hasModelConfiguration)
@@ -104,6 +106,27 @@ struct BridgeWireModelsTests {
         #expect(object["context_after"] as? String == "after")
     }
 
+    @Test func livePreviewStartRequestEncodesCorrectionMode() throws {
+        let request = BridgeLivePreviewStartRequest(
+            clientJobID: "ios_preview_1",
+            languageIDs: ["en-US"],
+            languageMode: "custom",
+            correctionMode: CorrectionMode.polish.rawValue,
+            appName: "Notes",
+            bundleID: "com.apple.Notes",
+            appCategory: "chat"
+        )
+
+        let object = try encodedJSONObject(request)
+        #expect(object["client_job_id"] as? String == "ios_preview_1")
+        #expect(object["language_ids"] as? [String] == ["en-US"])
+        #expect(object["language_mode"] as? String == "custom")
+        #expect(object["correction_mode"] as? String == CorrectionMode.polish.rawValue)
+        #expect(object["app_name"] as? String == "Notes")
+        #expect(object["bundle_id"] as? String == "com.apple.Notes")
+        #expect(object["app_category"] as? String == "chat")
+    }
+
     @Test func settingsUpdateRequestEncodesSharedBridgeKeys() throws {
         let entryID = UUID(uuidString: "00000000-0000-0000-0000-000000000123")!
         let snapshot = BridgeSettingsEditableSnapshot(
@@ -156,6 +179,26 @@ struct BridgeWireModelsTests {
         #expect(request.correctionTimeoutMs == 2000)
         #expect(request.autoCommit == false)
         #expect(request.userDictionary == nil)
+    }
+
+    @Test func bridgeSettingsPayloadDoesNotDefaultEmptySourcesToFastSupport() {
+        var payload = BridgeSettingsPayload.current()
+        payload.enabledRecognitionSources = []
+        payload.normalize()
+
+        #expect(payload.enabledSources == [])
+        #expect(!payload.supportsFastMode)
+    }
+
+    @Test func bridgeSettingsPayloadClearsFastWhenQwenIsUnavailable() {
+        var payload = BridgeSettingsPayload.current()
+        payload.enabledRecognitionSources = [RecognitionSource.appleSpeech.rawValue]
+        payload.correctionMode = CorrectionMode.fast.rawValue
+        payload.normalize()
+
+        #expect(payload.enabledSources == [.appleSpeech])
+        #expect(!payload.supportsFastMode)
+        #expect(payload.correctionMode == CorrectionMode.polish.rawValue)
     }
 
     @Test func editableSnapshotNormalizesUserDictionaryForComparison() {

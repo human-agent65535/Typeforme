@@ -25,8 +25,6 @@ final class DictationCoordinator: ObservableObject {
     @Published private(set) var livePartialTranscript: String = ""
 
     private let recorder = AudioRecorder()
-    /// Resolved per-request so provider/model setting changes take effect immediately.
-    private var asr: ASRService { ASRFactory.shared.get() }
     private var corrector: CorrectorService { CorrectorFactory.shared.make() }
     private let committer = PasteboardTextCommitter()
     private let textEditService: TextEditService
@@ -290,11 +288,20 @@ final class DictationCoordinator: ObservableObject {
 
         let snapshot = frontmostSnapshot
         let selectedCorrectionMode = AppSettings.correctionMode
+        let selectedTranscriptionLanguageIDs: [String]
+        do {
+            selectedTranscriptionLanguageIDs = try transcriptionLanguageIDs(for: selectedCorrectionMode)
+        } catch {
+            try? FileManager.default.removeItem(at: url)
+            reportError(error.localizedDescription)
+            scheduleAutoReset(after: Self.errorResetDelay)
+            return
+        }
         let debugLog = DebugLogStore.begin(
             source: AppSettings.processingMode == .client ? "mac-client" : "mac",
             audioURL: url,
             selectedCorrectionMode: selectedCorrectionMode,
-            languageIDs: AppSettings.activeLanguageIDs,
+            languageIDs: selectedTranscriptionLanguageIDs,
             appName: snapshot?.localizedName,
             bundleID: snapshot?.bundleID,
             appCategory: AppCategory.from(bundleID: snapshot?.bundleID)
@@ -315,7 +322,10 @@ final class DictationCoordinator: ObservableObject {
         var didRecordASR = false
         let asrStarted = Date()
         do {
-            let asrResult = try await asr.transcribeResult(audioFileURL: url, languageIDs: AppSettings.asrLanguageIDs)
+            let asrResult = try await asrService(for: selectedCorrectionMode).transcribeResult(
+                audioFileURL: url,
+                languageIDs: selectedTranscriptionLanguageIDs
+            )
             let raw = asrResult.text
             let asrHypotheses = Self.combinedASRHypotheses(
                 candidates: asrResult.hypotheses.map(Optional.some)
@@ -390,6 +400,26 @@ final class DictationCoordinator: ObservableObject {
                     reportError("Text edit failed: \(error.localizedDescription)")
                     scheduleAutoReset(after: Self.errorResetDelay)
                 }
+                return
+            }
+
+            if !selectedCorrectionMode.usesRefine {
+                DebugLogStore.recordCorrection(
+                    debugLog,
+                    mode: selectedCorrectionMode,
+                    text: trimmed,
+                    status: "skipped_fast_mode",
+                    latencyMs: 0,
+                    timeoutMs: AppSettings.correctionTimeoutMs
+                )
+                previewCorrectionMode = selectedCorrectionMode
+                lastWarning = asrWarning
+                lastCorrected = trimmed
+                await finish(
+                    with: CorrectionResult(action: .commit, text: trimmed, risk: .low),
+                    sessionID: sessionID,
+                    cancelToken: cancelToken
+                )
                 return
             }
 
@@ -730,6 +760,32 @@ final class DictationCoordinator: ObservableObject {
         return trimmed
     }
 
+    private func asrService(for correctionMode: CorrectionMode) throws -> ASRService {
+        ASRFactory.shared.get(sources: try recognitionSources(for: correctionMode))
+    }
+
+    private func validateCorrectionModeAvailable(_ correctionMode: CorrectionMode) throws {
+        guard AppSettings.isCorrectionModeAvailable(correctionMode) else {
+            throw BridgeServiceError.invalidRequest("Fast mode requires Qwen ASR enabled on Mac")
+        }
+    }
+
+    private func recognitionSources(for correctionMode: CorrectionMode) throws -> [RecognitionSource] {
+        try validateCorrectionModeAvailable(correctionMode)
+        guard AppSettings.processingMode != .client else {
+            return correctionMode == .fast ? [.qwen] : AppSettings.enabledRecognitionSources
+        }
+        return correctionMode == .fast ? [.qwen] : AppSettings.enabledRecognitionSources
+    }
+
+    private func transcriptionLanguageIDs(for correctionMode: CorrectionMode) throws -> [String] {
+        guard AppSettings.processingMode != .client else { return AppSettings.clientLanguageIDs }
+        return ASRLanguageSelection.validatedIDs(
+            AppSettings.asrLanguageIDs,
+            sources: try recognitionSources(for: correctionMode)
+        )
+    }
+
     // MARK: - Live partial preview
     //
     // The selected preview source subscribes to the AudioRecorder PCM tap and
@@ -743,6 +799,7 @@ final class DictationCoordinator: ObservableObject {
 
     private func makeLivePartialPreviewPCMHandlerIfAvailable() -> ((AVAudioPCMBuffer) -> Void)? {
         teardownLivePartialPreview(clearText: true)
+        guard AppSettings.correctionMode.allowsLivePreview else { return nil }
         switch AppSettings.voiceLivePreviewSource {
         case .off:
             return nil
@@ -1062,7 +1119,12 @@ final class DictationCoordinator: ObservableObject {
 
         do {
             let text: String
-            if AppSettings.processingMode == .client {
+            if !newMode.usesRefine {
+                try validateCorrectionModeAvailable(newMode)
+                try await ensureActive(sessionID: sessionID, token: cancelToken)
+                lastWarning = nil
+                text = sourceText
+            } else if AppSettings.processingMode == .client {
                 let resolved = try await RemoteBridgeClient.resolvedFromSettings(probeAllEndpoints: false)
                 let response = try await resolved.client.refine(
                     sessionID: nil,

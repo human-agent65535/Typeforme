@@ -19,6 +19,7 @@ final class BridgeLivePreviewStreamer: @unchecked Sendable {
 
     private let client: BridgeClient
     private let languageIDs: [String]
+    private let correctionMode: CorrectionMode
     private let onTranscript: @Sendable (String) -> Void
     private let onFailure: @Sendable (String) -> Void
     private let audioQueue = DispatchQueue(label: "typeforme.ios.bridge-live-preview.audio")
@@ -48,11 +49,13 @@ final class BridgeLivePreviewStreamer: @unchecked Sendable {
     init(
         client: BridgeClient,
         languageIDs: [String],
+        correctionMode: CorrectionMode,
         onTranscript: @escaping @Sendable (String) -> Void,
         onFailure: @escaping @Sendable (String) -> Void
     ) {
         self.client = client
         self.languageIDs = languageIDs
+        self.correctionMode = correctionMode
         self.onTranscript = onTranscript
         self.onFailure = onFailure
     }
@@ -96,9 +99,13 @@ final class BridgeLivePreviewStreamer: @unchecked Sendable {
         bridgeLivePreviewLog.notice("server live preview start request")
         let client = self.client
         let languageIDs = self.languageIDs
+        let correctionMode = self.correctionMode
         Task {
             do {
-                let response = try await client.startLivePreview(languageIDs: languageIDs)
+                let response = try await client.startLivePreview(
+                    languageIDs: languageIDs,
+                    correctionMode: correctionMode
+                )
                 self.audioQueue.async {
                     self.handleStartResponseOnAudioQueue(response)
                 }

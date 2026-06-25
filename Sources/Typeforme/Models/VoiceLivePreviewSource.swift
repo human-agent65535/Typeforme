@@ -35,7 +35,11 @@ enum VoiceLivePreviewSource: String, CaseIterable, Identifiable {
         .appleSpeech,
     ]
 
-    static func options(forRecognitionSources sources: [RecognitionSource]) -> [VoiceLivePreviewSource] {
+    static func options(
+        forRecognitionSources sources: [RecognitionSource],
+        correctionMode: CorrectionMode = .polish
+    ) -> [VoiceLivePreviewSource] {
+        guard correctionMode.allowsLivePreview else { return [.off] }
         var options: [VoiceLivePreviewSource] = [.off]
         if sources.contains(.nvidiaNemotron) {
             options.append(.nvidiaNemotron)
@@ -46,7 +50,10 @@ enum VoiceLivePreviewSource: String, CaseIterable, Identifiable {
         return options
     }
 
-    func isEnabled(forRecognitionSources sources: [RecognitionSource]) -> Bool {
-        Self.options(forRecognitionSources: sources).contains(self)
+    func isEnabled(
+        forRecognitionSources sources: [RecognitionSource],
+        correctionMode: CorrectionMode = .polish
+    ) -> Bool {
+        Self.options(forRecognitionSources: sources, correctionMode: correctionMode).contains(self)
     }
 }

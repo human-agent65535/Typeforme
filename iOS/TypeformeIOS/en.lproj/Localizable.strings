@@ -2,7 +2,6 @@
 
 // Toolbar / sheets
 "Pairing" = "Pairing";
-"Mac Settings" = "Mac Settings";
 "Dictation Settings" = "Dictation Settings";
 "Keyboard Guide" = "Keyboard Guide";
 "Done" = "Done";
@@ -119,7 +118,7 @@
 "Typeforme uses your Mac's local ASR + LLM to clean up dictation. Pair the Mac Bridge URL and token to get started." = "Typeforme uses your Mac's local ASR + LLM to clean up dictation. Pair the Mac Bridge URL and token to get started.";
 "Pair Mac Bridge" = "Pair Mac Bridge";
 "Or copy the pairing JSON from the Mac app." = "Or copy the pairing JSON from the Mac app.";
-"Open the Mac app, copy the pairing JSON, then paste it here. Pairing only stores connection details. Languages are an iOS override on the main screen, and the default mode follows Dictation Settings." = "Open the Mac app, copy the pairing JSON, then paste it here. Pairing only stores connection details. Languages are an iOS override on the main screen, and the default mode follows Dictation Settings.";
+"Open the Mac app, copy the pairing JSON, then paste it here. Pairing stores connection details. Languages and the default dictation mode are iPhone settings." = "Open the Mac app, copy the pairing JSON, then paste it here. Pairing stores connection details. Languages and the default dictation mode are iPhone settings.";
 "Paste Pairing JSON" = "Paste Pairing JSON";
 "Paste from Clipboard" = "Paste from Clipboard";
 "Scan QR from Mac" = "Scan QR from Mac";
@@ -156,7 +155,7 @@
 "In Any App" = "In Any App";
 "Refine Buttons" = "Refine Buttons";
 "Pair Typeforme on Mac" = "Pair Typeforme on Mac";
-"Paste the pairing JSON from the Mac app, then refresh Dictation Settings so iOS has the current languages and default mode." = "Paste the pairing JSON from the Mac app, then refresh Dictation Settings so iOS has the current languages and default mode.";
+"Paste the pairing JSON from the Mac app, then refresh Dictation Settings so iOS has current Mac capabilities and languages." = "Paste the pairing JSON from the Mac app, then refresh Dictation Settings so iOS has current Mac capabilities and languages.";
 "Enable the keyboard" = "Enable the keyboard";
 "In iOS Settings, add Typeforme and allow Full Access. The keyboard needs that to talk to the host app." = "In iOS Settings, add Typeforme and allow Full Access. The keyboard needs that to talk to the host app.";
 "Dictate" = "Dictate";
@@ -165,15 +164,23 @@
 "Select the wrong span first, then press the mic and say the intended replacement. Only that selected span is replaced." = "Select the wrong span first, then press the mic and say the intended replacement. Only that selected span is replaced.";
 "Command edit" = "Command edit";
 "Press the wand and speak an instruction like make this shorter, translate this, or turn it into bullets. With no selection, it targets the current input text." = "Press the wand and speak an instruction like make this shorter, translate this, or turn it into bullets. With no selection, it targets the current input text.";
+"Fast" = "Fast";
+"Fast inserts the Qwen transcript directly and skips refine. It appears only when Qwen ASR is enabled on the paired Mac." = "Fast inserts the Qwen transcript directly and skips refine. It appears only when Qwen ASR is enabled on the paired Mac.";
 "Refine existing text" = "Refine existing text";
+"Clean, Polish, Polish+, Structure+, and Formal+ use the selected text first, then the current visible input text. Fast bypasses refine." = "Clean, Polish, Polish+, Structure+, and Formal+ use the selected text first, then the current visible input text. Fast bypasses refine.";
 "Clean, Polish, Polish+, Structure+, and Formal+ use the selected text first, then the current visible input text." = "Clean, Polish, Polish+, Structure+, and Formal+ use the selected text first, then the current visible input text.";
 "Selection changed" = "Selection changed";
 "If iOS no longer reports the same selection when the result returns, Typeforme copies the result instead of guessing where to paste it." = "If iOS no longer reports the same selection when the result returns, Typeforme copies the result instead of guessing where to paste it.";
 
 // Dictation settings
+"Default Mode" = "Default Mode";
+"Fast requires Qwen ASR enabled on the Mac." = "Fast requires Qwen ASR enabled on the Mac.";
+"Requires Qwen" = "Requires Qwen";
+"Mac ASR" = "Mac ASR";
+"Mac Refine Engine" = "Mac Refine Engine";
+"Loading dictation settings" = "Loading dictation settings";
 "Speech" = "Speech";
 "Recognition Sources" = "Recognition Sources";
-"Mac Live Preview" = "Mac Live Preview";
 "Preview Source" = "Preview Source";
 "ASR Timeout" = "ASR Timeout";
 "Refine" = "Refine";

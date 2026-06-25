@@ -33,7 +33,7 @@ struct PairingView: View {
         NavigationStack {
             List {
                 Section {
-                    Text("Open the Mac app, copy the pairing JSON, then paste it here. Pairing only stores connection details. Languages are an iOS override on the main screen, and the default mode follows Mac Settings.")
+                    Text("Open the Mac app, copy the pairing JSON, then paste it here. Pairing stores connection details. Languages and the default dictation mode are iPhone settings.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -135,7 +135,7 @@ struct PairingView: View {
                         Label(
                             isPulling
                                 ? NSLocalizedString("Pulling…", comment: "Pairing settings pull in progress")
-                                : NSLocalizedString("Refresh Mac Settings", comment: "Pull Mac settings button"),
+                                : NSLocalizedString("Refresh Dictation Settings", comment: "Pull dictation settings button"),
                             systemImage: "arrow.down.doc"
                         )
                     }
@@ -386,7 +386,6 @@ struct PairingView: View {
 
     private func applyMacSettings(_ settings: BridgeMacSettingsPayload) {
         config.supportedLanguages = settings.supportedLanguages
-        config.correctionMode = settings.correctionMode
         config.languageIDs = ASRLanguageSelection.validatedIDs(
             config.languageIDs,
             supportedOptions: config.supportedLanguageOptions

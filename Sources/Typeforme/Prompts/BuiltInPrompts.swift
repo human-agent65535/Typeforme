@@ -40,6 +40,11 @@ enum BuiltInPrompts {
     """
 
     static let modeAddendum: [CorrectionMode: String] = [
+        .fast: """
+        <correction_mode id="fast">
+        Goal: no correction. This mode is handled before prompting by returning the ASR transcript directly.
+        </correction_mode>
+        """,
         .clean: """
         <correction_mode id="clean">
         Goal: minimal cleanup for direct insertion.

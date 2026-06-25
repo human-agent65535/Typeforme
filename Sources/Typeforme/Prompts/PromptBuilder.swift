@@ -135,6 +135,9 @@ enum PromptBuilder {
         }
 
         switch request.correctionMode {
+        case .fast:
+            return []
+
         case .clean:
             if containsPromptLiteral(rawText) {
                 add(.cleanPromptLiteral)

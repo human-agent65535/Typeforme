@@ -1,6 +1,7 @@
 import Foundation
 
 enum CorrectionMode: String, Codable, CaseIterable, Identifiable, Sendable {
+    case fast = "fast"
     case clean = "clean"
     case polish = "polish"
     case polishPlus = "polish_plus"
@@ -11,6 +12,7 @@ enum CorrectionMode: String, Codable, CaseIterable, Identifiable, Sendable {
 
     var displayName: String {
         switch self {
+        case .fast:              return "Fast"
         case .clean:             return "Clean"
         case .polish:            return "Polish"
         case .polishPlus:        return "Polish+"
@@ -19,8 +21,26 @@ enum CorrectionMode: String, Codable, CaseIterable, Identifiable, Sendable {
         }
     }
 
+    var usesRefine: Bool {
+        self != .fast
+    }
+
+    var requiresQwenASR: Bool {
+        self == .fast
+    }
+
+    var allowsLivePreview: Bool {
+        self != .fast
+    }
+
+    static var promptEditableCases: [CorrectionMode] {
+        allCases.filter(\.usesRefine)
+    }
+
     var helpText: String {
         switch self {
+        case .fast:
+            return "Use Qwen ASR on Mac and insert the transcript directly. Requires Qwen ASR to be enabled; skips refine and live preview."
         case .clean:
             return "Fix punctuation, ASR mistakes, repeated words, and meaningless speech noise without rewriting."
         case .polish:

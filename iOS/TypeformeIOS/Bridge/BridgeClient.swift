@@ -133,12 +133,14 @@ struct BridgeClient: Sendable {
 
     func startLivePreview(
         languageIDs: [String],
+        correctionMode: CorrectionMode,
         clientJobID: String? = nil,
         timeout: TimeInterval = 5
     ) async throws -> BridgeLivePreviewStartResponse {
         let payload = BridgeLivePreviewStartRequest(
             clientJobID: clientJobID,
             languageIDs: languageIDs,
+            correctionMode: correctionMode.rawValue,
             appName: Self.clientAppName,
             appCategory: Self.clientAppCategory.rawValue
         )

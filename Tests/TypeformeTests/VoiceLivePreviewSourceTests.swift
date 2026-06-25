@@ -13,7 +13,7 @@ struct VoiceLivePreviewSourceTests {
         #expect(VoiceLivePreviewSource.appleSpeech.isEnabled(forRecognitionSources: [.appleSpeech]))
     }
 
-    @Test func qwenOnlyOffersOffAndAppleSpeech() {
+    @Test func qwenAndAppleSpeechOfferOffAndAppleSpeech() {
         #expect(
             VoiceLivePreviewSource.options(forRecognitionSources: [.qwen, .appleSpeech]) == [
                 .off,
@@ -36,5 +36,22 @@ struct VoiceLivePreviewSourceTests {
                 .appleSpeech,
             ]
         )
+    }
+
+    @Test func fastModeDisablesPreviewSources() {
+        #expect(
+            VoiceLivePreviewSource.options(
+                forRecognitionSources: [.qwen, .nvidiaNemotron, .appleSpeech],
+                correctionMode: .fast
+            ) == [.off]
+        )
+        #expect(!VoiceLivePreviewSource.appleSpeech.isEnabled(
+            forRecognitionSources: [.appleSpeech],
+            correctionMode: .fast
+        ))
+        #expect(!VoiceLivePreviewSource.nvidiaNemotron.isEnabled(
+            forRecognitionSources: [.nvidiaNemotron],
+            correctionMode: .fast
+        ))
     }
 }

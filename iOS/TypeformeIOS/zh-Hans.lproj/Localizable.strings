@@ -2,7 +2,6 @@
 
 // 工具栏 / sheet
 "Pairing" = "配对";
-"Mac Settings" = "Mac 设置";
 "Dictation Settings" = "听写设置";
 "Keyboard Guide" = "键盘使用指南";
 "Done" = "完成";
@@ -119,7 +118,7 @@
 "Typeforme uses your Mac's local ASR + LLM to clean up dictation. Pair the Mac Bridge URL and token to get started." = "Typeforme 使用 Mac 本地 ASR 和 LLM 清理听写文本。先配对 Mac Bridge URL 和 token。";
 "Pair Mac Bridge" = "配对 Mac Bridge";
 "Or copy the pairing JSON from the Mac app." = "也可以从 Mac app 复制配对 JSON。";
-"Open the Mac app, copy the pairing JSON, then paste it here. Pairing only stores connection details. Languages are an iOS override on the main screen, and the default mode follows Dictation Settings." = "打开 Mac app,复制配对 JSON 后粘贴到这里。配对只保存连接信息;语言在 iOS 主界面覆盖,默认模式跟随听写设置。";
+"Open the Mac app, copy the pairing JSON, then paste it here. Pairing stores connection details. Languages and the default dictation mode are iPhone settings." = "打开 Mac app,复制配对 JSON 后粘贴到这里。配对只保存连接信息;语言和默认听写模式是 iPhone 设置。";
 "Paste Pairing JSON" = "粘贴配对 JSON";
 "Paste from Clipboard" = "从剪贴板粘贴";
 "Scan QR from Mac" = "扫描 Mac 上的二维码";
@@ -156,7 +155,7 @@
 "In Any App" = "在任意 App 中";
 "Refine Buttons" = "优化按钮";
 "Pair Typeforme on Mac" = "配对 Mac 上的 Typeforme";
-"Paste the pairing JSON from the Mac app, then refresh Dictation Settings so iOS has the current languages and default mode." = "粘贴 Mac app 的配对 JSON,然后刷新听写设置,让 iOS 获取当前语言和默认模式。";
+"Paste the pairing JSON from the Mac app, then refresh Dictation Settings so iOS has current Mac capabilities and languages." = "粘贴 Mac app 的配对 JSON,然后刷新听写设置,让 iOS 获取当前 Mac 能力和语言。";
 "Enable the keyboard" = "启用键盘";
 "In iOS Settings, add Typeforme and allow Full Access. The keyboard needs that to talk to the host app." = "在 iOS 设置中添加 Typeforme 并允许完全访问。键盘需要它来连接宿主 app。";
 "Dictate" = "听写";
@@ -165,15 +164,23 @@
 "Select the wrong span first, then press the mic and say the intended replacement. Only that selected span is replaced." = "先选中错误片段,再按麦克风说出想替换的内容。只会替换选中的片段。";
 "Command edit" = "指令编辑";
 "Press the wand and speak an instruction like make this shorter, translate this, or turn it into bullets. With no selection, it targets the current input text." = "点击魔棒后说出指令,例如缩短、翻译或改成项目符号。没有选区时会处理当前输入文本。";
+"Fast" = "Fast";
+"Fast inserts the Qwen transcript directly and skips refine. It appears only when Qwen ASR is enabled on the paired Mac." = "Fast 会直接插入 Qwen 转写并跳过优化。只有配对 Mac 启用 Qwen ASR 时才会出现。";
 "Refine existing text" = "优化现有文本";
+"Clean, Polish, Polish+, Structure+, and Formal+ use the selected text first, then the current visible input text. Fast bypasses refine." = "Clean、Polish、Polish+、Structure+、Formal+ 会优先使用选中文本,否则使用当前可见输入文本。Fast 会绕过优化。";
 "Clean, Polish, Polish+, Structure+, and Formal+ use the selected text first, then the current visible input text." = "清洁、润色、润色+、结构+、正式+ 会优先使用选中文本,否则使用当前可见输入文本。";
 "Selection changed" = "选区已变化";
 "If iOS no longer reports the same selection when the result returns, Typeforme copies the result instead of guessing where to paste it." = "如果结果返回时 iOS 不再报告同一选区,Typeforme 会复制结果,不会猜测粘贴位置。";
 
 // 听写设置
+"Default Mode" = "默认模式";
+"Fast requires Qwen ASR enabled on the Mac." = "Fast 需要 Mac 上启用 Qwen ASR。";
+"Requires Qwen" = "需要 Qwen";
+"Mac ASR" = "Mac ASR";
+"Mac Refine Engine" = "Mac 优化引擎";
+"Loading dictation settings" = "正在加载听写设置";
 "Speech" = "语音";
 "Recognition Sources" = "识别源";
-"Mac Live Preview" = "Mac 实时预览";
 "Preview Source" = "预览源";
 "ASR Timeout" = "ASR 超时";
 "Refine" = "优化";

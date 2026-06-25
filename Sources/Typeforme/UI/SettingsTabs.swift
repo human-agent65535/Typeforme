@@ -484,6 +484,11 @@ struct ClientServerSettingsView: View {
                                 )
                             }
                             .toggleStyle(.switch)
+                            .disabled(
+                                source == .qwen
+                                    && current.isRecognitionSourceEnabled(.qwen)
+                                    && (CorrectionMode(rawValue: current.correctionMode)?.requiresQwenASR == true)
+                            )
                         }
                     }
 
@@ -533,7 +538,8 @@ struct ClientServerSettingsView: View {
 
                     Picker("Default mode", selection: correctionModeBinding) {
                         ForEach(CorrectionMode.allCases, id: \.rawValue) { mode in
-                            Text(mode.displayName).tag(mode.rawValue)
+                            Text(serverCorrectionModeTitle(mode)).tag(mode.rawValue)
+                                .disabled(!isServerCorrectionModeEnabled(mode))
                         }
                     }
                     .pickerStyle(.menu)
@@ -610,9 +616,21 @@ struct ClientServerSettingsView: View {
         Binding {
             draft?.correctionMode ?? CorrectionMode.polish.rawValue
         } set: { value in
+            guard let mode = CorrectionMode(rawValue: value),
+                  isServerCorrectionModeEnabled(mode)
+            else { return }
             draft?.correctionMode = value
             normalizeDraft()
         }
+    }
+
+    private func isServerCorrectionModeEnabled(_ mode: CorrectionMode) -> Bool {
+        guard let draft else { return !mode.requiresQwenASR }
+        return mode.isAvailable(enabledRecognitionSources: draft.enabledSources)
+    }
+
+    private func serverCorrectionModeTitle(_ mode: CorrectionMode) -> String {
+        isServerCorrectionModeEnabled(mode) ? mode.displayName : "\(mode.displayName) - Requires Qwen"
     }
 
     private var numberOutputPreferenceBinding: Binding<String> {
@@ -801,6 +819,10 @@ struct ClientServerSettingsView: View {
         Binding {
             draft?.isRecognitionSourceEnabled(source) ?? false
         } set: { enabled in
+            guard !(source == .qwen
+                    && !enabled
+                    && (draft.flatMap { CorrectionMode(rawValue: $0.correctionMode) }?.requiresQwenASR == true))
+            else { return }
             draft?.setRecognitionSource(source, enabled: enabled)
             normalizeDraft()
         }
@@ -1027,6 +1049,7 @@ struct DictationInputSettingsView: View {
     @AppStorage(AppSettings.Keys.asrQwenEnabled)       private var qwenEnabled: Bool = true
     @AppStorage(AppSettings.Keys.asrNvidiaNemotronEnabled) private var nvidiaEnabled: Bool = false
     @AppStorage(AppSettings.Keys.asrAppleSpeechEnabled) private var appleSpeechEnabled: Bool = false
+    @AppStorage(AppSettings.Keys.correctionMode)       private var correctionModeRaw: String = CorrectionMode.polish.rawValue
     @AppStorage(AppSettings.Keys.soundFeedback)        private var soundFeedback: Bool = true
 
     var body: some View {
@@ -1049,7 +1072,7 @@ struct DictationInputSettingsView: View {
                 Text(selectedPreviewSource.detail)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
-                Text("Preview follows enabled ASR sources.")
+                Text(previewHelpText)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
@@ -1113,6 +1136,9 @@ struct DictationInputSettingsView: View {
         .onChange(of: appleSpeechEnabled) { _, _ in
             constrainPreviewSourceToCurrentSources()
         }
+        .onChange(of: correctionModeRaw) { _, _ in
+            constrainPreviewSourceToCurrentSources()
+        }
     }
 
     private var selectedHoldModifier: HoldModifier {
@@ -1120,7 +1146,10 @@ struct DictationInputSettingsView: View {
     }
 
     private var previewSourceOptions: [VoiceLivePreviewSource] {
-        VoiceLivePreviewSource.options(forRecognitionSources: enabledRecognitionSources)
+        VoiceLivePreviewSource.options(
+            forRecognitionSources: enabledRecognitionSources,
+            correctionMode: selectedCorrectionMode
+        )
     }
 
     private var selectedPreviewSource: VoiceLivePreviewSource {
@@ -1154,11 +1183,28 @@ struct DictationInputSettingsView: View {
     }
 
     private func isPreviewSourceEnabled(_ source: VoiceLivePreviewSource) -> Bool {
-        source.isEnabled(forRecognitionSources: enabledRecognitionSources)
+        source.isEnabled(
+            forRecognitionSources: enabledRecognitionSources,
+            correctionMode: selectedCorrectionMode
+        )
     }
 
     private func previewPickerTitle(for source: VoiceLivePreviewSource) -> String {
-        isPreviewSourceEnabled(source) ? source.displayName : "\(source.displayName) - Source off"
+        isPreviewSourceEnabled(source) ? source.displayName : "\(source.displayName) - \(previewDisabledReason)"
+    }
+
+    private var previewHelpText: String {
+        selectedCorrectionMode.allowsLivePreview
+            ? "Preview follows enabled ASR sources."
+            : "Fast disables live preview until Qwen streaming is available."
+    }
+
+    private var previewDisabledReason: String {
+        selectedCorrectionMode.allowsLivePreview ? "Source off" : "Fast mode"
+    }
+
+    private var selectedCorrectionMode: CorrectionMode {
+        CorrectionMode(rawValue: correctionModeRaw) ?? .polish
     }
 
     private var enabledRecognitionSources: [RecognitionSource] {
@@ -1271,6 +1317,7 @@ struct ASRSettingsView: View {
     @AppStorage(AppSettings.Keys.asrQwenLlamaTimeoutSec) private var qwenTimeoutSec: Double = 120
     @AppStorage(AppSettings.Keys.asrQwenLlamaModelID) private var qwenModelID: String = QwenASRModelCatalog.defaultID
     @AppStorage(AppSettings.Keys.asrQwenLlamaMaxTokens) private var qwenMaxTokens: Int = 2048
+    @AppStorage(AppSettings.Keys.correctionMode) private var correctionModeRaw: String = CorrectionMode.polish.rawValue
     @State private var showAllLanguages = false
     @State private var showAdvanced = false
     @State private var appleSpeechLanguageSupportRevision = 0
@@ -1287,11 +1334,17 @@ struct ASRSettingsView: View {
                         )
                     }
                     .toggleStyle(.switch)
+                    .disabled(source == .qwen && qwenEnabled && selectedCorrectionMode.requiresQwenASR)
                 }
 
                 Text("Enabled sources run independently. Each source contributes a transcript when it supports at least one selected language.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+                if selectedCorrectionMode.requiresQwenASR {
+                    Text("Qwen is required while Fast mode is selected.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
 
                 TimelineView(.periodic(from: .now, by: 2)) { _ in
                     if !selectedEnginesInstalled {
@@ -1483,6 +1536,10 @@ struct ASRSettingsView: View {
         return sources.isEmpty ? RecognitionSource.defaultEnabled : sources
     }
 
+    private var selectedCorrectionMode: CorrectionMode {
+        CorrectionMode(rawValue: correctionModeRaw) ?? .polish
+    }
+
     private func preloadEnabledASRModels() {
         Task { @MainActor in
             await ASRFactory.shared.preloadCachedActiveModel()
@@ -1643,6 +1700,7 @@ struct ASRSettingsView: View {
             set: { enabled in
                 switch source {
                 case .qwen:
+                    guard enabled || !selectedCorrectionMode.requiresQwenASR else { return }
                     qwenEnabled = enabled
                 case .nvidiaNemotron:
                     nvidiaEnabled = enabled
@@ -2326,6 +2384,7 @@ struct CorrectionSettingsView: View {
     @AppStorage(AppSettings.Keys.correctionMaxTokens)     private var maxTokens: Int = 128
     @AppStorage(AppSettings.Keys.correctionContextSize)   private var contextSize: Int = 4096
     @AppStorage(AppSettings.Keys.correctionMode)   private var correctionModeRaw: String = CorrectionMode.polish.rawValue
+    @AppStorage(AppSettings.Keys.asrQwenEnabled)   private var qwenEnabled: Bool = true
     @AppStorage(AppSettings.Keys.numberOutputPreference)  private var numberOutputPreferenceRaw: String = NumberOutputPreference.automatic.rawValue
     @AppStorage(AppSettings.Keys.punctuationPreference)   private var punctuationPreferenceRaw: String = PunctuationOutputPreference.normal.rawValue
     @AppStorage(AppSettings.Keys.externalLLMBaseURL)      private var externalLLMBaseURL: String = "http://127.0.0.1:1234"
@@ -2423,9 +2482,10 @@ struct CorrectionSettingsView: View {
                 }
             }
             Section("Output") {
-                Picker("Mode", selection: $correctionModeRaw) {
+                Picker("Mode", selection: correctionModeBinding) {
                     ForEach(CorrectionMode.allCases, id: \.rawValue) { mode in
-                        Text(mode.displayName).tag(mode.rawValue)
+                        Text(correctionModeTitle(mode)).tag(mode.rawValue)
+                            .disabled(!isCorrectionModeEnabled(mode))
                     }
                 }
                 .pickerStyle(.menu)
@@ -2528,6 +2588,29 @@ struct CorrectionSettingsView: View {
 
     private var correctionModeDescription: String {
         (CorrectionMode(rawValue: correctionModeRaw) ?? .polish).helpText
+    }
+
+    private var correctionModeBinding: Binding<String> {
+        Binding {
+            correctionModeRaw
+        } set: { value in
+            guard let mode = CorrectionMode(rawValue: value),
+                  isCorrectionModeEnabled(mode)
+            else { return }
+            correctionModeRaw = value
+        }
+    }
+
+    private func isCorrectionModeEnabled(_ mode: CorrectionMode) -> Bool {
+        mode.isAvailable(enabledRecognitionSources: enabledRecognitionSources)
+    }
+
+    private func correctionModeTitle(_ mode: CorrectionMode) -> String {
+        isCorrectionModeEnabled(mode) ? mode.displayName : "\(mode.displayName) - Requires Qwen"
+    }
+
+    private var enabledRecognitionSources: [RecognitionSource] {
+        qwenEnabled ? [.qwen] : []
     }
 
     private var numberOutputPreferenceDescription: String {
@@ -2925,7 +3008,7 @@ struct PromptsSettingsView: View {
                 Divider()
 
                 Picker("Mode", selection: $correctionMode) {
-                    ForEach(CorrectionMode.allCases, id: \.self) { mode in
+                    ForEach(CorrectionMode.promptEditableCases, id: \.self) { mode in
                         Text(mode.displayName).tag(mode)
                     }
                 }

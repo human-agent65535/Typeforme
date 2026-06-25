@@ -65,17 +65,27 @@ enum RecognitionSource: String, CaseIterable, Codable, Identifiable, Sendable {
 
     static let defaultEnabled: [RecognitionSource] = [.qwen]
 
-    static func normalizedSources(_ raw: [String]) -> [RecognitionSource] {
+    static func recognizedSources(_ raw: [String]) -> [RecognitionSource] {
         var seen = Set<RecognitionSource>()
         let values = raw.compactMap { value -> RecognitionSource? in
             RecognitionSource(rawValue: value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
         }
-        let result = values.filter { seen.insert($0).inserted }
+        return values.filter { seen.insert($0).inserted }
+    }
+
+    static func normalizedSources(_ raw: [String]) -> [RecognitionSource] {
+        let result = recognizedSources(raw)
         return result.isEmpty ? defaultEnabled : result
     }
 
     static func rawValue(for sources: [RecognitionSource]) -> String {
         sources.map(\.rawValue).joined(separator: ",")
+    }
+}
+
+extension CorrectionMode {
+    func isAvailable(enabledRecognitionSources sources: [RecognitionSource]) -> Bool {
+        !requiresQwenASR || sources.contains(.qwen)
     }
 }
 

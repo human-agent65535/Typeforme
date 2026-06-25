@@ -392,7 +392,7 @@ private struct ModeChipRow: View {
                     Task { await coordinator.requestCorrectionModeChange(to: mode) }
                 }
                 .help(mode.helpText)
-                .disabled(disabled)
+                .disabled(disabled || !AppSettings.isCorrectionModeAvailable(mode))
             }
         }
         .opacity(disabled ? 0.55 : 1.0)
@@ -405,6 +405,7 @@ private struct ModeChipRow: View {
 
     private func shortLabel(for mode: CorrectionMode) -> String {
         switch mode {
+        case .fast:              return "Fast"
         case .clean:             return "Clean"
         case .polish:            return "Polish"
         case .polishPlus:        return "Polish+"

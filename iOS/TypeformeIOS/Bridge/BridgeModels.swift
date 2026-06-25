@@ -300,7 +300,7 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
     }
 
     var enabledSources: [RecognitionSource] {
-        RecognitionSource.normalizedSources(enabledRecognitionSources)
+        RecognitionSource.recognizedSources(enabledRecognitionSources)
     }
 
     func isRecognitionSourceEnabled(_ source: RecognitionSource) -> Bool {
@@ -315,8 +315,15 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
         isRecognitionSourceEnabled(.nvidiaNemotron)
     }
 
+    var supportsFastMode: Bool {
+        isRecognitionSourceEnabled(.qwen)
+    }
+
     var livePreviewSourceOptions: [VoiceLivePreviewSource] {
-        VoiceLivePreviewSource.options(forRecognitionSources: enabledSources)
+        VoiceLivePreviewSource.options(
+            forRecognitionSources: enabledSources,
+            correctionMode: correctionMode
+        )
     }
 
     var livePreviewPickerOptions: [VoiceLivePreviewSource] {
@@ -324,7 +331,7 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
     }
 
     func isLivePreviewSourceEnabled(_ source: VoiceLivePreviewSource) -> Bool {
-        source.isEnabled(forRecognitionSources: enabledSources)
+        source.isEnabled(forRecognitionSources: enabledSources, correctionMode: correctionMode)
     }
 
     var editableSnapshot: BridgeSettingsEditableSnapshot {
@@ -489,7 +496,7 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
     }
 
     mutating func normalize() {
-        enabledRecognitionSources = RecognitionSource.normalizedSources(enabledRecognitionSources).map(\.rawValue)
+        enabledRecognitionSources = RecognitionSource.recognizedSources(enabledRecognitionSources).map(\.rawValue)
         asrModelIDsByRecognitionSource = BridgeSettingsNormalization.normalizedASRModelIDs(
             currentModelIDs: asrModelIDsByRecognitionSource,
             incomingModelIDs: asrModelIDsByRecognitionSource,
@@ -504,6 +511,9 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
         correctionColdTimeoutMs = Self.clampedCorrectionColdTimeoutMs(correctionColdTimeoutMs)
         externalLLMBaseURL = externalLLMBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         externalLLMModel = externalLLMModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !correctionMode.isAvailable(enabledRecognitionSources: enabledSources) {
+            correctionMode = .polish
+        }
         livePreviewSource = normalizedLivePreviewSource(rawValue: livePreviewSource).rawValue
         userDictionary = DictionaryEntry.normalizedEntries(userDictionary)
     }
@@ -559,7 +569,9 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
         } else {
             sources.removeAll { $0 == source }
         }
-        enabledRecognitionSources = RecognitionSource.normalizedSources(sources.map(\.rawValue)).map(\.rawValue)
+        let resolvedSources = RecognitionSource.recognizedSources(sources.map(\.rawValue))
+        guard !resolvedSources.isEmpty else { return }
+        enabledRecognitionSources = resolvedSources.map(\.rawValue)
         normalize()
     }
 

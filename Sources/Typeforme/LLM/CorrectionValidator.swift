@@ -53,6 +53,8 @@ enum CorrectionValidator {
             .map(\.count)
             .max() ?? request.rawTranscript.count
         switch request.correctionMode {
+        case .fast:
+            return max(80, baseline)
         case .clean:
             return max(80, baseline * 3)
         case .polish:

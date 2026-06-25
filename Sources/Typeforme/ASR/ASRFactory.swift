@@ -12,6 +12,10 @@ final class ASRFactory {
         MultiSourceASRService(sources: AppSettings.enabledRecognitionSources)
     }
 
+    func get(sources: [RecognitionSource]) -> ASRService {
+        MultiSourceASRService(sources: sources)
+    }
+
     func preloadCachedActiveModel() async {
         let sources = AppSettings.enabledRecognitionSources
         async let qwen: Void = preloadQwenLlamaIfEnabled(sources)

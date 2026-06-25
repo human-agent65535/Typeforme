@@ -7,5 +7,6 @@ struct BridgeServiceTests {
         #expect(BridgeService.resultReadyMessage(correctionStatus: "ok", okMessage: "Refine complete") == "Refine complete")
         #expect(BridgeService.resultReadyMessage(correctionStatus: "timeout", okMessage: "Refine complete") == "Without refine")
         #expect(BridgeService.resultReadyMessage(correctionStatus: "fallback", okMessage: "Refine complete") == "Without refine")
+        #expect(BridgeService.resultReadyMessage(correctionStatus: "skipped_fast_mode", okMessage: "Refine complete") == "Fast transcript ready")
     }
 }

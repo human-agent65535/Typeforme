@@ -28,8 +28,11 @@ final class ClientBridgeSettingsSync {
     }
 
     static func applyServerDefaults(_ settings: BridgeSettingsPayload) {
-        if CorrectionMode(rawValue: settings.correctionMode) != nil {
-            UserDefaults.standard.set(settings.correctionMode, forKey: AppSettings.Keys.correctionMode)
+        let sources = settings.enabledSources
+        AppSettings.setEnabledRecognitionSources(sources)
+        if let mode = CorrectionMode(rawValue: settings.correctionMode) {
+            let resolvedMode = mode.isAvailable(enabledRecognitionSources: sources) ? mode : CorrectionMode.polish
+            UserDefaults.standard.set(resolvedMode.rawValue, forKey: AppSettings.Keys.correctionMode)
         }
         AppSettings.setClientSettingsRevision(settings.settingsRevision)
 

@@ -4,7 +4,7 @@ import UIKit
 struct ContentView: View {
     @Environment(AppState.self) private var state
     @State private var showingPairing = false
-    @State private var showingMacSettings = false
+    @State private var showingDictationSettings = false
     @State private var showingKeyboardSettings = false
     @State private var showingKeyboardGuide = false
     @State private var rawTranscriptExpanded = false
@@ -36,9 +36,9 @@ struct ContentView: View {
                                 Label("Pairing", systemImage: "qrcode.viewfinder")
                             }
                             Button {
-                                showingMacSettings = true
+                                showingDictationSettings = true
                             } label: {
-                                Label("Mac Settings", systemImage: "desktopcomputer")
+                                Label("Dictation Settings", systemImage: "slider.horizontal.3")
                             }
                             .disabled(!state.isConfigured)
                             Button {
@@ -68,7 +68,7 @@ struct ContentView: View {
                         }
                     )
                 }
-                .sheet(isPresented: $showingMacSettings) {
+                .sheet(isPresented: $showingDictationSettings) {
                     NavigationStack {
                         MacSettingsView {
                             showingPairing = true
@@ -821,7 +821,7 @@ private struct ModeChipsRow: View {
                     ModeChip(
                         mode: mode,
                         isSelected: state.correctionMode == mode,
-                        isDisabled: state.isBusy
+                        isDisabled: state.isBusy || !state.isCorrectionModeAvailable(mode)
                     ) {
                         Task { await state.applyCorrectionMode(mode) }
                     }
@@ -1018,7 +1018,6 @@ private struct KeyboardSettingsView: View {
             } footer: {
                 Text("Chinese self-learning controls Rime's user dictionary. Touch learning adapts per-key tap offsets when on; when off, text keys use fixed midpoint hit routing.")
             }
-            LivePreviewSettingsSection()
             Section {
                 Picker("Host audio session", selection: hostAudioSessionLengthBinding) {
                     ForEach(HostAudioSessionLength.allCases) { length in
@@ -1154,6 +1153,7 @@ private struct LivePreviewSettingsSection: View {
     var body: some View {
         Section {
             Toggle("Live Preview", isOn: livePreviewBinding)
+                .disabled(state.isBusy || !state.correctionMode.allowsLivePreview)
             Picker("Preview Source", selection: livePreviewSourceBinding) {
                 ForEach(sourceOptions) { source in
                     Text(sourceTitle(source))
@@ -1162,7 +1162,7 @@ private struct LivePreviewSettingsSection: View {
                 }
             }
             .pickerStyle(.menu)
-            .disabled(!state.keyboardLivePreviewEnabled || state.isBusy)
+            .disabled(!state.keyboardLivePreviewEnabled || state.isBusy || !state.correctionMode.allowsLivePreview)
             if state.keyboardLivePreviewSource == .appleSpeech {
                 Picker("Preview Recognition", selection: livePreviewRecognitionModeBinding) {
                     ForEach(KeyboardLivePreviewRecognitionMode.allCases) { mode in
@@ -1170,13 +1170,13 @@ private struct LivePreviewSettingsSection: View {
                     }
                 }
                 .pickerStyle(.menu)
-                .disabled(!state.keyboardLivePreviewEnabled || state.isBusy)
+                .disabled(!state.keyboardLivePreviewEnabled || state.isBusy || !state.correctionMode.allowsLivePreview)
             } else {
                 LabeledContent("Preview Recognition") {
                     Text("Server-side")
                         .foregroundStyle(.secondary)
                 }
-                .disabled(!state.keyboardLivePreviewEnabled)
+                .disabled(!state.keyboardLivePreviewEnabled || !state.correctionMode.allowsLivePreview)
             }
         } header: {
             Text(title)
@@ -1190,7 +1190,10 @@ private struct LivePreviewSettingsSection: View {
     }
 
     private var livePreviewFooter: LocalizedStringKey {
-        state.keyboardLivePreviewSource == .serverNemotron
+        if !state.correctionMode.allowsLivePreview {
+            return "Fast disables live preview until Qwen streaming is available."
+        }
+        return state.keyboardLivePreviewSource == .serverNemotron
             ? "Server Nemotron runs on the Mac. Apple Speech recognition mode only applies to Apple Speech."
             : "Apple Speech is local. Server uses Mac."
     }
@@ -1420,7 +1423,7 @@ private struct KeyboardGuideView: View {
                 GuideStepRow(
                     icon: "desktopcomputer",
                     title: "Pair Typeforme on Mac",
-                    detail: "Paste the pairing JSON from the Mac app, then refresh Mac Settings so iOS has the current languages and default mode."
+                    detail: "Paste the pairing JSON from the Mac app, then refresh Dictation Settings so iOS has current Mac capabilities and languages."
                 )
                 GuideStepRow(
                     icon: "keyboard",
@@ -1445,13 +1448,18 @@ private struct KeyboardGuideView: View {
                     title: "Command edit",
                     detail: "Press the wand and speak an instruction like make this shorter, translate this, or turn it into bullets. With no selection, it targets the current input text."
                 )
+                GuideStepRow(
+                    icon: "bolt.fill",
+                    title: "Fast",
+                    detail: "Fast inserts the Qwen transcript directly and skips refine. It appears only when Qwen ASR is enabled on the paired Mac."
+                )
             }
 
             Section("Refine Buttons") {
                 GuideStepRow(
                     icon: "sparkles",
                     title: "Refine existing text",
-                    detail: "Clean, Polish, Polish+, Structure+, and Formal+ use the selected text first, then the current visible input text."
+                    detail: "Clean, Polish, Polish+, Structure+, and Formal+ use the selected text first, then the current visible input text. Fast bypasses refine."
                 )
                 GuideStepRow(
                     icon: "exclamationmark.triangle",
@@ -1654,7 +1662,26 @@ private struct MacSettingsView: View {
     var body: some View {
         List {
             if let draft {
-                Section("Speech") {
+                Section {
+                    Picker("Default Mode", selection: defaultCorrectionModeBinding) {
+                        ForEach(CorrectionMode.allCases) { mode in
+                            Text(correctionModeTitle(mode)).tag(mode)
+                                .disabled(!state.isCorrectionModeAvailable(mode))
+                        }
+                    }
+                    .pickerStyle(.menu)
+                } header: {
+                    Text("Default Mode")
+                } footer: {
+                    Text("Applies to this iPhone and the Typeforme keyboard. Fast requires Qwen ASR enabled on the Mac.")
+                }
+
+                LivePreviewSettingsSection(
+                    title: "Live Preview",
+                    serverNemotronAvailable: draft.supportsServerNemotronPreview
+                )
+
+                Section {
                     ForEach(draft.recognitionSourceOptions) { option in
                         if let source = RecognitionSource(rawValue: option.id) {
                             Toggle(isOn: recognitionSourceBinding(source)) {
@@ -1663,6 +1690,10 @@ private struct MacSettingsView: View {
                                     source: source
                                 )
                             }
+                            .disabled(
+                                draft.isRecognitionSourceEnabled(source)
+                                    && isRecognitionSourceLockedOn(source, draft: draft)
+                            )
                         }
                     }
 
@@ -1700,24 +1731,13 @@ private struct MacSettingsView: View {
                             .lineLimit(1)
                         }
                     }
+                } header: {
+                    Text("Mac ASR")
+                } footer: {
+                    Text("Affects the paired Mac Bridge. Qwen cannot be disabled while Fast is selected.")
                 }
 
                 Section {
-                    Picker("Preview Source", selection: macLivePreviewSourceBinding) {
-                        ForEach(draft.livePreviewPickerOptions) { source in
-                            Text(macLivePreviewSourceTitle(source, draft: draft))
-                                .tag(source.rawValue)
-                                .disabled(!draft.isLivePreviewSourceEnabled(source))
-                        }
-                    }
-                    .pickerStyle(.menu)
-                } header: {
-                    Text("Mac Live Preview")
-                } footer: {
-                    Text("Preview follows enabled ASR sources.")
-                }
-
-                Section("Refine") {
                     Picker("Engine", selection: correctionBackendBinding) {
                         ForEach(draft.correctionBackendOptions) { option in
                             Text(option.displayName).tag(option.id)
@@ -1753,13 +1773,6 @@ private struct MacSettingsView: View {
                         range: BridgeMacSettingsPayload.correctionColdTimeoutSecondsRange
                     )
 
-                    Picker("Mode", selection: correctionModeBinding) {
-                        ForEach(CorrectionMode.allCases) { mode in
-                            Text(mode.title).tag(mode)
-                        }
-                    }
-                    .pickerStyle(.menu)
-
                     Picker("Numbers", selection: numberOutputPreferenceBinding) {
                         ForEach(NumberOutputPreference.allCases) { preference in
                             Text(preference.title).tag(preference)
@@ -1773,6 +1786,10 @@ private struct MacSettingsView: View {
                         }
                     }
                     .pickerStyle(.menu)
+                } header: {
+                    Text("Mac Refine Engine")
+                } footer: {
+                    Text("Used by Clean, Polish, Polish+, Structure+, and Formal+. Fast skips refine.")
                 }
 
                 Section("Vocabulary") {
@@ -1805,7 +1822,7 @@ private struct MacSettingsView: View {
                 Section {
                     HStack {
                         ProgressView()
-                        Text("Loading Mac settings")
+                        Text("Loading dictation settings")
                     }
                 }
             }
@@ -1849,7 +1866,7 @@ private struct MacSettingsView: View {
                 }
             }
         }
-        .navigationTitle("Mac Settings")
+        .navigationTitle("Dictation Settings")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             // Decimal pads have no return key; without this the only way to
@@ -1935,10 +1952,34 @@ private struct MacSettingsView: View {
         Binding {
             draft?.isRecognitionSourceEnabled(source) ?? false
         } set: { value in
+            guard !isRecognitionSourceLockedOn(source, draft: draft, nextValue: value) else { return }
             updateDraft(normalize: true) { draft in
                 draft.setRecognitionSource(source, enabled: value)
             }
         }
+    }
+
+    private func isRecognitionSourceLockedOn(
+        _ source: RecognitionSource,
+        draft: BridgeMacSettingsPayload?,
+        nextValue: Bool = false
+    ) -> Bool {
+        guard source == .qwen, nextValue == false else { return false }
+        return state.config.correctionMode.requiresQwenASR || draft?.correctionMode.requiresQwenASR == true
+    }
+
+    private var defaultCorrectionModeBinding: Binding<CorrectionMode> {
+        Binding {
+            state.config.correctionMode
+        } set: { mode in
+            state.setDefaultCorrectionMode(mode)
+        }
+    }
+
+    private func correctionModeTitle(_ mode: CorrectionMode) -> String {
+        state.isCorrectionModeAvailable(mode)
+            ? mode.title
+            : "\(mode.title) - \(NSLocalizedString("Requires Qwen", comment: "Disabled Fast mode suffix"))"
     }
 
     private func asrModelBinding(_ source: RecognitionSource) -> Binding<String> {
@@ -1950,28 +1991,6 @@ private struct MacSettingsView: View {
                 draft.asrModelIDsByRecognitionSource[source.rawValue] = value
             }
         }
-    }
-
-    private var macLivePreviewSourceBinding: Binding<String> {
-        Binding {
-            draft?.livePreviewSource ?? VoiceLivePreviewSource.off.rawValue
-        } set: { value in
-            updateDraft(normalize: true) { draft in
-                guard let source = VoiceLivePreviewSource(rawValue: value),
-                      draft.isLivePreviewSourceEnabled(source)
-                else { return }
-                draft.livePreviewSource = value
-            }
-        }
-    }
-
-    private func macLivePreviewSourceTitle(
-        _ source: VoiceLivePreviewSource,
-        draft: BridgeMacSettingsPayload
-    ) -> String {
-        draft.isLivePreviewSourceEnabled(source)
-            ? source.title
-            : "\(source.title) - \(NSLocalizedString("Source off", comment: "Disabled live preview source suffix"))"
     }
 
     private var correctionBackendBinding: Binding<String> {
@@ -2034,16 +2053,6 @@ private struct MacSettingsView: View {
         } set: { value in
             updateDraft { draft in
                 draft.correctionColdTimeoutMs = BridgeMacSettingsPayload.correctionColdTimeoutMs(fromSeconds: value)
-            }
-        }
-    }
-
-    private var correctionModeBinding: Binding<CorrectionMode> {
-        Binding {
-            draft?.correctionMode ?? .polish
-        } set: { value in
-            updateDraft { draft in
-                draft.correctionMode = value
             }
         }
     }

@@ -30,6 +30,7 @@ private extension CorrectionMode {
         case .polishPlus:    return NSLocalizedString("Polish+", comment: "Correction mode")
         case .structurePlus: return NSLocalizedString("Structure+", comment: "Correction mode")
         case .formalPlus:    return NSLocalizedString("Formal+", comment: "Correction mode")
+        case .fast:          return NSLocalizedString("Fast", comment: "Correction mode")
         }
     }
 }
@@ -1937,6 +1938,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         guard let rawValue,
               let defaultMode = CorrectionMode(rawValue: rawValue)
         else { return }
+        guard isCorrectionModeAvailable(defaultMode) else {
+            if pendingDefaultCorrectionMode == defaultMode {
+                pendingDefaultCorrectionMode = nil
+            }
+            return
+        }
         if pendingDefaultCorrectionMode == defaultMode {
             pendingDefaultCorrectionMode = nil
         }
@@ -1948,11 +1955,38 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func currentDefaultCorrectionMode() -> CorrectionMode {
-        pendingDefaultCorrectionMode ?? defaultCorrectionModeFromHost() ?? .polish
+        if let pendingDefaultCorrectionMode, isCorrectionModeAvailable(pendingDefaultCorrectionMode) {
+            return pendingDefaultCorrectionMode
+        }
+        return defaultCorrectionModeFromHost() ?? .polish
     }
 
     private func defaultCorrectionModeFromHost() -> CorrectionMode? {
-        hostKeyboardDefaultsPayload()?.correctionMode
+        guard let payload = hostKeyboardDefaultsPayload(),
+              isCorrectionModeAvailable(payload.correctionMode, payload: payload)
+        else { return nil }
+        return payload.correctionMode
+    }
+
+    private func isCorrectionModeAvailable(_ mode: CorrectionMode) -> Bool {
+        guard let payload = hostKeyboardDefaultsPayload() else {
+            return !mode.requiresQwenASR
+        }
+        return isCorrectionModeAvailable(mode, payload: payload)
+    }
+
+    private func isCorrectionModeAvailable(_ mode: CorrectionMode, payload: KeyboardDefaultsPayload) -> Bool {
+        !mode.requiresQwenASR || payload.supportsFastMode
+    }
+
+    private var correctionModeOptions: [CorrectionMode] {
+        let payload = hostKeyboardDefaultsPayload()
+        return CorrectionMode.allCases.filter { mode in
+            if let payload {
+                return isCorrectionModeAvailable(mode, payload: payload)
+            }
+            return !mode.requiresQwenASR
+        }
     }
 
     private func refreshKeyboardPreferencesFromHost(
@@ -1981,6 +2015,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         rimeProfile.learningEnabled = payload.rimeLearningEnabled
         rimeProfile.correctionEnabled = payload.rimeCorrectionEnabled
         isTouchLearningEnabled = payload.touchLearningEnabled
+        if !isCorrectionModeAvailable(correctionMode, payload: payload) {
+            correctionMode = .polish
+            pendingDefaultCorrectionMode = nil
+            lastCorrectionModeButtonSignature = ""
+        }
         if previousTouchLearningEnabled && !isTouchLearningEnabled {
             pendingTextTouchSample = nil
             pendingTextTouchCorrection = nil
@@ -2072,6 +2111,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let payload = KeyboardDefaultsPayload(
             bridgeToken: KeyboardSharedDefaults.makeBridgeToken(),
             correctionMode: correctionMode,
+            supportsFastMode: false,
             autoCapitalizationEnabled: isAutoCapitalizationEnabled,
             characterPreviewEnabled: isCharacterPreviewEnabled,
             chineseInputEnabled: isChineseInputEnabled,
@@ -6026,21 +6066,24 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             correctionMode.rawValue,
             isEnabled ? "enabled" : "disabled",
             isKeyboardDark ? "dark" : "light",
+            correctionModeOptions.map(\.rawValue).joined(separator: ","),
         ].joined(separator: ":")
         guard signature != lastCorrectionModeButtonSignature else { return }
         lastCorrectionModeButtonSignature = signature
         for item in correctionModeButtons {
+            let isAvailable = isCorrectionModeAvailable(item.preset)
             let isSelected = item.preset == correctionMode
             let configuration = correctionModeButtonConfiguration(title: item.preset.title, selected: isSelected)
             item.button.configuration = configuration
+            item.button.isHidden = !isAvailable
             // Configuration recreates internal layout — re-apply line-wrap
             // constraints so "Structure+" doesn't wrap after each refresh.
             item.button.titleLabel?.numberOfLines = 1
             item.button.titleLabel?.lineBreakMode = .byTruncatingTail
             item.button.titleLabel?.adjustsFontSizeToFitWidth = true
             item.button.titleLabel?.minimumScaleFactor = 0.7
-            item.button.isEnabled = isEnabled
-            item.button.alpha = isEnabled ? 1 : 0.45
+            item.button.isEnabled = isEnabled && isAvailable
+            item.button.alpha = isEnabled && isAvailable ? 1 : 0.45
             item.button.accessibilityTraits = isSelected ? [.button, .selected] : .button
         }
         applyCorrectionTriggerConfiguration(isEnabled: isEnabled)
@@ -6146,6 +6189,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func rewriteCurrentInputOrPasteboard(using preset: CorrectionMode) {
+        guard isCorrectionModeAvailable(preset) else { return }
         guard hasFullAccess else {
             openHostForFullAccessSetup()
             return

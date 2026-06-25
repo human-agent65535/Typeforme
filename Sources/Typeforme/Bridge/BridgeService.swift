@@ -116,12 +116,18 @@ final class BridgeService {
     }
 
     func updateSettings(_ request: BridgeSettingsUpdateRequest) async throws -> BridgeSettingsPayload {
-        let oldSources = AppSettings.enabledRecognitionSources
+        let oldSources = AppSettings.configuredRecognitionSources
         let oldQwenASRModelID = AppSettings.asrQwenLlamaModelID
         let sources = try resolveRecognitionSources(request.enabledRecognitionSources) ?? oldSources
+        let settingsCorrectionMode = try resolveSettingsCorrectionMode(request.correctionMode) ?? AppSettings.correctionMode
+        try validateCorrectionModeAvailable(settingsCorrectionMode, sources: sources)
         let requestedLivePreviewSource: VoiceLivePreviewSource?
         if let rawLivePreviewSource = request.livePreviewSource {
-            requestedLivePreviewSource = try resolveLivePreviewSource(rawLivePreviewSource, sources: sources)
+            requestedLivePreviewSource = try resolveLivePreviewSource(
+                rawLivePreviewSource,
+                sources: sources,
+                correctionMode: settingsCorrectionMode
+            )
         } else {
             requestedLivePreviewSource = nil
         }
@@ -132,9 +138,7 @@ final class BridgeService {
         )
 
         if request.enabledRecognitionSources != nil {
-            UserDefaults.standard.set(sources.contains(.qwen), forKey: AppSettings.Keys.asrQwenEnabled)
-            UserDefaults.standard.set(sources.contains(.nvidiaNemotron), forKey: AppSettings.Keys.asrNvidiaNemotronEnabled)
-            UserDefaults.standard.set(sources.contains(.appleSpeech), forKey: AppSettings.Keys.asrAppleSpeechEnabled)
+            AppSettings.setEnabledRecognitionSources(sources)
         }
 
         if let modelIDs = request.asrModelIDsByRecognitionSource {
@@ -199,21 +203,18 @@ final class BridgeService {
         if let rawModel = request.externalLLMModel {
             UserDefaults.standard.set(rawModel.trimmingCharacters(in: .whitespacesAndNewlines), forKey: AppSettings.Keys.externalLLMModel)
         }
+        if request.correctionMode != nil {
+            UserDefaults.standard.set(settingsCorrectionMode.rawValue, forKey: AppSettings.Keys.correctionMode)
+        }
         if let requestedLivePreviewSource {
             applyLivePreviewSource(requestedLivePreviewSource)
-        } else if request.enabledRecognitionSources != nil {
+        } else if request.enabledRecognitionSources != nil || request.correctionMode != nil {
             let livePreviewSource = BridgeSettingsPayload.normalizedLivePreviewSource(
                 AppSettings.voiceLivePreviewSource,
-                sources: sources
+                sources: sources,
+                correctionMode: settingsCorrectionMode
             )
             applyLivePreviewSource(livePreviewSource)
-        }
-
-        if let rawMode = request.correctionMode {
-            guard let mode = CorrectionMode(rawValue: rawMode) else {
-                throw BridgeServiceError.invalidRequest("Unknown correction mode: \(rawMode)")
-            }
-            UserDefaults.standard.set(mode.rawValue, forKey: AppSettings.Keys.correctionMode)
         }
         if let rawPreference = request.numberOutputPreference {
             guard let preference = NumberOutputPreference(rawValue: rawPreference) else {
@@ -236,7 +237,7 @@ final class BridgeService {
         }
 
         UserDefaults.standard.synchronize()
-        let newSources = AppSettings.enabledRecognitionSources
+        let newSources = AppSettings.configuredRecognitionSources
         let newQwenASRModelID = AppSettings.asrQwenLlamaModelID
         Task { @MainActor in
             if (oldSources.contains(.qwen) && !newSources.contains(.qwen))
@@ -252,6 +253,10 @@ final class BridgeService {
 
     func startLivePreview(_ request: BridgeLivePreviewStartRequest) async throws -> BridgeLivePreviewStartResponse {
         pruneExpiredLivePreviewSessions()
+        let correctionMode = try resolveCorrectionMode(request.correctionMode)
+        guard correctionMode.allowsLivePreview else {
+            throw BridgeServiceError.invalidRequest("Live preview is not available in Fast mode")
+        }
         guard AppSettings.enabledRecognitionSources.contains(.nvidiaNemotron) else {
             throw BridgeServiceError.invalidRequest("NVIDIA Nemotron ASR is not enabled")
         }
@@ -355,8 +360,14 @@ final class BridgeService {
         pruneExpiredSessions()
         let start = Date()
         let jobID = BridgeClientJobID.normalized(request.clientJobID)
-        let languageIDs = resolveLanguageIDs(ids: request.languageIDs, mode: request.languageMode)
         let correctionMode = try resolveCorrectionMode(request.correctionMode)
+        try validateCorrectionModeAvailable(correctionMode)
+        let transcriptionSources = recognitionSources(for: correctionMode)
+        let languageIDs = resolveLanguageIDs(
+            ids: request.languageIDs,
+            mode: request.languageMode,
+            sources: transcriptionSources
+        )
         let audioURL = try await writeAudio(request)
         defer { try? FileManager.default.removeItem(at: audioURL) }
         await publishJobStatus(
@@ -387,7 +398,10 @@ final class BridgeService {
                 stage: .transcribing,
                 message: "Transcribing audio"
             )
-            let asrResult = try await ASRFactory.shared.get().transcribeResult(audioFileURL: audioURL, languageIDs: languageIDs)
+            let asrResult = try await ASRFactory.shared.get(sources: transcriptionSources).transcribeResult(
+                audioFileURL: audioURL,
+                languageIDs: languageIDs
+            )
             raw = asrResult.text
             asrHypotheses = Self.combinedASRHypotheses(
                 candidates: asrResult.hypotheses.map(Optional.some)
@@ -463,6 +477,59 @@ final class BridgeService {
             alternateTranscripts: combinedAlternateTranscripts,
             asrHypotheses: asrHypotheses
         )
+
+        if !correctionMode.usesRefine {
+            let correction = skippedFastCorrectionOutput(rawTranscript: trimmed)
+            let correctionLatencyMs = 0
+            DebugLogStore.recordCorrection(
+                debugLog,
+                mode: correctionMode,
+                text: correction.result.text,
+                status: correction.status,
+                error: correction.error,
+                latencyMs: correctionLatencyMs,
+                request: editRequest,
+                timeoutMs: AppSettings.correctionTimeoutMs
+            )
+            let sessionID = UUID().uuidString
+            storeSession(BridgeSession(
+                id: sessionID,
+                rawTranscript: trimmed,
+                languageIDs: languageIDs,
+                correctionMode: correctionMode,
+                appName: request.appName,
+                bundleID: request.bundleID,
+                appCategory: appCategory,
+                contextBefore: contextBefore,
+                contextAfter: contextAfter,
+                createdAt: Date()
+            ))
+            let response = BridgeDictateResponse(
+                sessionID: sessionID,
+                text: correction.result.text,
+                correctionMode: correctionMode.rawValue,
+                languageIDs: languageIDs,
+                latencyMs: elapsedMs(since: start),
+                transcriptionLatencyMs: transcriptionLatencyMs,
+                correctionLatencyMs: correctionLatencyMs,
+                rawTranscript: request.includeRawTranscript == true ? trimmed : nil,
+                asrWarning: asrWarning,
+                correctionStatus: correction.status,
+                correctionError: correction.error
+            )
+            await publishJobStatus(
+                jobID: jobID,
+                stage: .resultReady,
+                message: Self.resultReadyMessage(correctionStatus: correction.status, okMessage: "Refine complete"),
+                rawTranscriptLength: trimmed.count,
+                text: correction.result.text,
+                latencyMs: response.latencyMs,
+                transcriptionLatencyMs: transcriptionLatencyMs,
+                refineLatencyMs: correctionLatencyMs,
+                warning: asrWarning
+            )
+            return response
+        }
 
         let correctionStarted = Date()
         let correction: BridgeCorrectionOutput
@@ -579,6 +646,7 @@ final class BridgeService {
         let jobID = BridgeClientJobID.normalized(request.clientJobID)
         let session = request.sessionID.flatMap { sessions[$0] }
         let correctionMode = try resolveCorrectionMode(request.correctionMode ?? session?.correctionMode.rawValue)
+        try validateCorrectionModeAvailable(correctionMode)
         let providedRawTranscript = request.rawTranscript?.trimmingCharacters(in: .whitespacesAndNewlines)
         let rawTranscript = session?.rawTranscript ?? providedRawTranscript
         guard let rawTranscript, !rawTranscript.isEmpty else {
@@ -598,6 +666,44 @@ final class BridgeService {
             bundleID: bundleID,
             defaultCategory: session?.appCategory ?? .unknown
         )
+
+        if !correctionMode.usesRefine {
+            let correction = skippedFastCorrectionOutput(rawTranscript: rawTranscript)
+            let sessionID = session?.id ?? UUID().uuidString
+            storeSession(BridgeSession(
+                id: sessionID,
+                rawTranscript: rawTranscript,
+                languageIDs: languageIDs,
+                correctionMode: correctionMode,
+                appName: appName,
+                bundleID: bundleID,
+                appCategory: appCategory,
+                contextBefore: contextBefore,
+                contextAfter: contextAfter,
+                createdAt: Date()
+            ))
+            let response = BridgeRefineResponse(
+                sessionID: sessionID,
+                text: correction.result.text,
+                correctionMode: correctionMode.rawValue,
+                languageIDs: languageIDs,
+                latencyMs: elapsedMs(since: start),
+                correctionLatencyMs: 0,
+                correctionStatus: correction.status,
+                correctionError: correction.error
+            )
+            await publishJobStatus(
+                jobID: jobID,
+                stage: .resultReady,
+                message: Self.resultReadyMessage(correctionStatus: correction.status, okMessage: "Refine complete"),
+                rawTranscriptLength: rawTranscript.count,
+                text: correction.result.text,
+                latencyMs: response.latencyMs,
+                refineLatencyMs: 0,
+                error: correction.error
+            )
+            return response
+        }
 
         let correctionStarted = Date()
         let correction: BridgeCorrectionOutput
@@ -715,7 +821,18 @@ final class BridgeService {
 
     static func resultReadyMessage(correctionStatus: String, okMessage: String) -> String {
         let normalized = correctionStatus.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if normalized == "skipped_fast_mode" {
+            return "Fast transcript ready"
+        }
         return normalized == "ok" ? okMessage : "Without refine"
+    }
+
+    private func skippedFastCorrectionOutput(rawTranscript: String) -> BridgeCorrectionOutput {
+        BridgeCorrectionOutput(
+            result: CorrectionResult(action: .commit, text: rawTranscript, risk: .low),
+            status: "skipped_fast_mode",
+            error: nil
+        )
     }
 
     private func fallbackCorrectionOutput(
@@ -975,6 +1092,27 @@ final class BridgeService {
         return AppSettings.correctionMode
     }
 
+    private func resolveSettingsCorrectionMode(_ rawMode: String?) throws -> CorrectionMode? {
+        guard let rawMode, !rawMode.isEmpty else { return nil }
+        guard let mode = CorrectionMode(rawValue: rawMode) else {
+            throw BridgeServiceError.invalidRequest("Unknown correction mode: \(rawMode)")
+        }
+        return mode
+    }
+
+    private func validateCorrectionModeAvailable(
+        _ mode: CorrectionMode,
+        sources: [RecognitionSource] = AppSettings.configuredRecognitionSources
+    ) throws {
+        guard mode.isAvailable(enabledRecognitionSources: sources) else {
+            throw BridgeServiceError.invalidRequest("Fast mode requires Qwen ASR enabled on Mac")
+        }
+    }
+
+    private func recognitionSources(for correctionMode: CorrectionMode) -> [RecognitionSource] {
+        correctionMode == .fast ? [.qwen] : AppSettings.enabledRecognitionSources
+    }
+
     private func resolveTextEditIntent(_ rawIntent: String?) throws -> TextEditIntent {
         guard let rawIntent, !rawIntent.isEmpty else { return .repairSelection }
         guard let intent = TextEditIntent(rawValue: rawIntent) else {
@@ -983,8 +1121,12 @@ final class BridgeService {
         return intent
     }
 
-    private func resolveLanguageIDs(ids: [String]?, mode: String?) -> [String] {
-        let supportedOptions = ASRLanguageSelection.supportedOptions(for: AppSettings.enabledRecognitionSources)
+    private func resolveLanguageIDs(
+        ids: [String]?,
+        mode: String?,
+        sources: [RecognitionSource] = AppSettings.enabledRecognitionSources
+    ) -> [String] {
+        let supportedOptions = ASRLanguageSelection.supportedOptions(for: sources)
         if let ids, !ids.isEmpty {
             return ASRLanguageSelection.validatedIDs(ids, supportedOptions: supportedOptions)
         }
@@ -1060,13 +1202,17 @@ final class BridgeService {
 
     private func resolveLivePreviewSource(
         _ raw: String,
-        sources: [RecognitionSource]
+        sources: [RecognitionSource],
+        correctionMode: CorrectionMode
     ) throws -> VoiceLivePreviewSource {
         let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let source = VoiceLivePreviewSource(rawValue: value) else {
             throw BridgeServiceError.invalidRequest("Unknown live preview source: \(raw)")
         }
-        guard VoiceLivePreviewSource.options(forRecognitionSources: sources).contains(source) else {
+        guard VoiceLivePreviewSource.options(
+            forRecognitionSources: sources,
+            correctionMode: correctionMode
+        ).contains(source) else {
             throw BridgeServiceError.invalidRequest("Live preview source is not enabled: \(raw)")
         }
         return source
