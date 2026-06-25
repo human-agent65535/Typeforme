@@ -56,10 +56,8 @@ enum RecognitionSource: String, CaseIterable, Codable, Identifiable, Sendable {
 
     var supportsLivePreview: Bool {
         switch self {
-        case .nvidiaNemotron, .appleSpeech:
+        case .qwen, .nvidiaNemotron, .appleSpeech:
             return true
-        case .qwen:
-            return false
         }
     }
 

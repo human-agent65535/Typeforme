@@ -46,14 +46,14 @@ final class DictationCoordinator: ObservableObject {
     private var liveSpeechRecognizer: SFSpeechRecognizer?
     private var liveSpeechRequest: SFSpeechAudioBufferRecognitionRequest?
     private var liveSpeechTask: SFSpeechRecognitionTask?
-    private var nvidiaLivePreviewSession: NvidiaNemotronLivePreviewSession?
+    private var asrLivePreviewLease: ASRLivePreviewLease?
 
     private static let errorResetDelay: TimeInterval = 8.0
     private static let successResetDelay: TimeInterval = 1.8
     private static let degradedSuccessResetDelay: TimeInterval = 1.8
     private static let minimumToggleStopInterval: TimeInterval = 0.6
-    private static let nvidiaLivePreviewFinishTimeout: TimeInterval = 4
-    private static let nvidiaLivePreviewResetTimeout: TimeInterval = 2
+    private static let asrLivePreviewFinishTimeout: TimeInterval = 4
+    private static let asrLivePreviewResetTimeout: TimeInterval = 2
     private static let previewWithoutRefineMessage = "Preview without refine"
     private static let insertedWithoutRefineMessage = "Inserted without refine"
 
@@ -803,33 +803,37 @@ final class DictationCoordinator: ObservableObject {
         switch AppSettings.voiceLivePreviewSource {
         case .off:
             return nil
+        case .qwen:
+            return makeASRLivePartialPreviewPCMHandlerIfAvailable(source: .qwen)
         case .appleSpeech:
             return makeAppleSpeechLivePartialPreviewPCMHandlerIfAvailable()
         case .nvidiaNemotron:
-            return makeNvidiaNemotronLivePartialPreviewPCMHandlerIfAvailable()
+            return makeASRLivePartialPreviewPCMHandlerIfAvailable(source: .nvidiaNemotron)
         }
     }
 
-    private func makeNvidiaNemotronLivePartialPreviewPCMHandlerIfAvailable() -> ((AVAudioPCMBuffer) -> Void)? {
-        guard AppSettings.enabledRecognitionSources.contains(.nvidiaNemotron) else {
-            return nil
-        }
-
+    private func makeASRLivePartialPreviewPCMHandlerIfAvailable(
+        source: VoiceLivePreviewSource
+    ) -> ((AVAudioPCMBuffer) -> Void)? {
         let displaysLivePartial = activeTextEditIntent != .command
         do {
-            let languageIDs = ASRLanguageSelection.effectiveIDs(AppSettings.asrLanguageIDs, for: .nvidiaNemotron)
-            let session = try NvidiaNemotronWarmPool.shared.takeOrStart(
-                languageIDs: languageIDs,
+            let lease = try ASRLivePreviewLeaseFactory.take(
+                source: source,
+                requestedLanguageIDs: AppSettings.asrLanguageIDs,
                 diagnosticID: UUID().uuidString
             ) { [weak self] text in
                 Task { @MainActor [weak self] in
                     self?.applyLivePartialPreview(text, displaysLivePartial: displaysLivePartial)
                 }
             }
-            nvidiaLivePreviewSession = session
-            return makeNvidiaLivePreviewPCMHandler(session: session)
+            guard let handler = makeASRLivePreviewPCMHandler(session: lease.session) else {
+                lease.returnIdle(reason: "mac_preview_unsupported_session")
+                return nil
+            }
+            asrLivePreviewLease = lease
+            return handler
         } catch {
-            Log.asr.notice("Nemotron live preview unavailable: \(error.localizedDescription, privacy: .public)")
+            Log.asr.notice("ASR live preview unavailable: \(error.localizedDescription, privacy: .public)")
             return nil
         }
     }
@@ -904,22 +908,21 @@ final class DictationCoordinator: ObservableObject {
     /// `livePartialTranscript` on screen until the Mac final replaces it.
     func endLivePartialPreviewAudio() {
         liveSpeechRequest?.endAudio()
-        if let session = nvidiaLivePreviewSession {
-            nvidiaLivePreviewSession = nil
-            let languageIDs = AppSettings.asrLanguageIDs
+        if let lease = asrLivePreviewLease {
+            asrLivePreviewLease = nil
+            if lease.session is QwenLlamaLivePreviewSession {
+                lease.returnIdle(reason: "mac_preview_finished")
+                return
+            }
             Task { @MainActor in
-                let completed = await session.finishInputAndWaitForFinal(
-                    timeout: Self.nvidiaLivePreviewFinishTimeout
+                let completed = await lease.session.finishInputAndWaitForFinal(
+                    timeout: Self.asrLivePreviewFinishTimeout
                 )
                 if completed {
-                    NvidiaNemotronWarmPool.shared.returnIdle(
-                        session,
-                        languageIDs: languageIDs,
-                        reason: "mac_preview_finished"
-                    )
+                    lease.returnIdle(reason: "mac_preview_finished")
                 } else {
-                    session.terminate(reason: "mac_preview_finish_timeout")
-                    NvidiaNemotronWarmPool.shared.preload(languageIDs: languageIDs)
+                    lease.session.terminate(reason: "mac_preview_finish_timeout")
+                    lease.preloadReplacement()
                 }
             }
         }
@@ -931,22 +934,24 @@ final class DictationCoordinator: ObservableObject {
         liveSpeechTask = nil
         liveSpeechRequest = nil
         liveSpeechRecognizer = nil
-        if let session = nvidiaLivePreviewSession {
-            nvidiaLivePreviewSession = nil
-            let languageIDs = AppSettings.asrLanguageIDs
+        if let lease = asrLivePreviewLease {
+            asrLivePreviewLease = nil
+            if lease.session is QwenLlamaLivePreviewSession {
+                lease.returnIdle(reason: "mac_preview_cancelled")
+                if clearText {
+                    livePartialTranscript = ""
+                }
+                return
+            }
             Task { @MainActor in
-                let reset = await session.cancelInputAndWaitForReset(
-                    timeout: Self.nvidiaLivePreviewResetTimeout
+                let reset = await lease.session.cancelInputAndWaitForReset(
+                    timeout: Self.asrLivePreviewResetTimeout
                 )
                 if reset {
-                    NvidiaNemotronWarmPool.shared.returnIdle(
-                        session,
-                        languageIDs: languageIDs,
-                        reason: "mac_preview_cancelled"
-                    )
+                    lease.returnIdle(reason: "mac_preview_cancelled")
                 } else {
-                    session.terminate(reason: "mac_preview_cancel_timeout")
-                    NvidiaNemotronWarmPool.shared.preload(languageIDs: languageIDs)
+                    lease.session.terminate(reason: "mac_preview_cancel_timeout")
+                    lease.preloadReplacement()
                 }
             }
         }
@@ -1312,12 +1317,20 @@ final class DictationCoordinator: ObservableObject {
     }
 }
 
-private func makeNvidiaLivePreviewPCMHandler(
-    session: NvidiaNemotronLivePreviewSession
-) -> (AVAudioPCMBuffer) -> Void {
-    { [weak session] buffer in
-        session?.append(buffer)
+private func makeASRLivePreviewPCMHandler(
+    session: any ASRLivePreviewSession
+) -> ((AVAudioPCMBuffer) -> Void)? {
+    if let session = session as? NvidiaNemotronLivePreviewSession {
+        return { [weak session] buffer in
+            session?.append(buffer)
+        }
     }
+    if let session = session as? QwenLlamaLivePreviewSession {
+        return { [weak session] buffer in
+            session?.append(buffer)
+        }
+    }
+    return nil
 }
 
 private func makeAppleSpeechLivePreviewPCMHandler(

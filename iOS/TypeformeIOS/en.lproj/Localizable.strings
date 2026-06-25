@@ -214,8 +214,9 @@
 "This preview setting is local to the iPhone keyboard and applies immediately. It does not change the Mac live transcript setting." = "This preview setting is local to the iPhone keyboard and applies immediately. It does not change the Mac live transcript setting.";
 "This preview setting is saved to the paired Mac when you tap Done. It does not change the iPhone keyboard preview." = "This preview setting is saved to the paired Mac when you tap Done. It does not change the iPhone keyboard preview.";
 "Apple Speech is local. Server uses Mac." = "Apple Speech is local. Server uses Mac.";
+"Server ASR" = "Server ASR";
 "Server-side" = "Server-side";
-"Server Nemotron runs on the Mac. Apple Speech recognition mode only applies to Apple Speech." = "Server Nemotron runs on the Mac. Apple Speech recognition mode only applies to Apple Speech.";
+"Server ASR runs on the Mac. Apple Speech recognition mode only applies to Apple Speech." = "Server ASR runs on the Mac. Apple Speech recognition mode only applies to Apple Speech.";
 "Preview follows enabled ASR sources." = "Preview follows enabled ASR sources.";
 "Source off" = "Source off";
 "High quality / slower" = "High quality / slower";

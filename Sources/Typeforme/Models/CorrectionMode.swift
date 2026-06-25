@@ -30,7 +30,7 @@ enum CorrectionMode: String, Codable, CaseIterable, Identifiable, Sendable {
     }
 
     var allowsLivePreview: Bool {
-        self != .fast
+        true
     }
 
     static var promptEditableCases: [CorrectionMode] {
@@ -40,7 +40,7 @@ enum CorrectionMode: String, Codable, CaseIterable, Identifiable, Sendable {
     var helpText: String {
         switch self {
         case .fast:
-            return "Use Qwen ASR on Mac and insert the transcript directly. Requires Qwen ASR to be enabled; skips refine and live preview."
+            return "Use Qwen ASR on Mac and insert the transcript directly. Requires Qwen ASR to be enabled and skips refine."
         case .clean:
             return "Fix punctuation, ASR mistakes, repeated words, and meaningless speech noise without rewriting."
         case .polish:

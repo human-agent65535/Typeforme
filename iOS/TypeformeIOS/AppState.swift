@@ -278,7 +278,7 @@ enum KeyboardLivePreviewSource: String, CaseIterable, Identifiable {
         case .appleSpeech:
             return NSLocalizedString("Apple Speech", comment: "Apple Speech live preview source")
         case .serverNemotron:
-            return NSLocalizedString("Server Nemotron", comment: "Server-side Nemotron live preview source")
+            return NSLocalizedString("Server ASR", comment: "Server-side ASR live preview source")
         }
     }
 }
@@ -560,7 +560,7 @@ final class AppState {
         guard correctionMode.allowsLivePreview else { return false }
         switch source {
         case .appleSpeech:
-            return true
+            return correctionMode.usesRefine
         case .serverNemotron:
             return macSettings?.supportsServerNemotronPreview == true
         }
@@ -2255,6 +2255,10 @@ final class AppState {
             appLog.debug("live preview skipped: disabled")
             return false
         }
+        guard isKeyboardLivePreviewSourceEnabled(keyboardLivePreviewSource) else {
+            appLog.debug("live preview skipped: source disabled")
+            return false
+        }
         switch keyboardLivePreviewSource {
         case .appleSpeech:
             return startAppleSpeechLivePreviewIfAvailable(generation: generation)
@@ -2351,11 +2355,11 @@ final class AppState {
     @discardableResult
     private func startServerNemotronLivePreviewIfAvailable(generation: UInt64) -> Bool {
         guard isKeyboardLivePreviewSourceEnabled(.serverNemotron) else {
-            appLog.debug("server live preview skipped: Nemotron ASR source disabled")
+            appLog.debug("server live preview skipped: server ASR preview disabled")
             return false
         }
         guard macSettings?.supportsServerNemotronPreview == true else {
-            appLog.debug("server live preview skipped: Mac Nemotron source is not enabled")
+            appLog.debug("server live preview skipped: Mac server ASR preview is not enabled")
             return false
         }
         guard let baseURL = routeStatus.activeURL else {

@@ -2,6 +2,7 @@ import Foundation
 
 enum VoiceLivePreviewSource: String, CaseIterable, Identifiable {
     case off
+    case qwen = "qwen3-asr-llama"
     case nvidiaNemotron = "nvidia-nemotron"
     case appleSpeech = "apple-speech"
 
@@ -11,6 +12,8 @@ enum VoiceLivePreviewSource: String, CaseIterable, Identifiable {
         switch self {
         case .off:
             return "Off"
+        case .qwen:
+            return "Qwen3-ASR"
         case .nvidiaNemotron:
             return "NVIDIA Nemotron 3.5"
         case .appleSpeech:
@@ -22,6 +25,8 @@ enum VoiceLivePreviewSource: String, CaseIterable, Identifiable {
         switch self {
         case .off:
             return "No live transcript while recording."
+        case .qwen:
+            return "Shows rolling-window preview from Qwen3-ASR."
         case .nvidiaNemotron:
             return "Shows interim text from Nemotron."
         case .appleSpeech:
@@ -31,6 +36,7 @@ enum VoiceLivePreviewSource: String, CaseIterable, Identifiable {
 
     static let pickerOptions: [VoiceLivePreviewSource] = [
         .off,
+        .qwen,
         .nvidiaNemotron,
         .appleSpeech,
     ]
@@ -39,8 +45,11 @@ enum VoiceLivePreviewSource: String, CaseIterable, Identifiable {
         forRecognitionSources sources: [RecognitionSource],
         correctionMode: CorrectionMode = .polish
     ) -> [VoiceLivePreviewSource] {
-        guard correctionMode.allowsLivePreview else { return [.off] }
         var options: [VoiceLivePreviewSource] = [.off]
+        if sources.contains(.qwen) {
+            options.append(.qwen)
+        }
+        guard correctionMode.usesRefine else { return options }
         if sources.contains(.nvidiaNemotron) {
             options.append(.nvidiaNemotron)
         }

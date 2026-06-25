@@ -1194,13 +1194,11 @@ struct DictationInputSettingsView: View {
     }
 
     private var previewHelpText: String {
-        selectedCorrectionMode.allowsLivePreview
-            ? "Preview follows enabled ASR sources."
-            : "Fast disables live preview until Qwen streaming is available."
+        "Preview follows enabled ASR sources."
     }
 
     private var previewDisabledReason: String {
-        selectedCorrectionMode.allowsLivePreview ? "Source off" : "Fast mode"
+        "Source off"
     }
 
     private var selectedCorrectionMode: CorrectionMode {

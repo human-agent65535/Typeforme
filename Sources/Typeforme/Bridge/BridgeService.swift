@@ -272,13 +272,21 @@ final class BridgeService {
 
         let id = UUID().uuidString
         let requestedLanguageIDs = resolveLivePreviewLanguageIDs(ids: request.languageIDs, mode: request.languageMode)
+        let previewSource = BridgeSettingsPayload.normalizedLivePreviewSource(
+            AppSettings.voiceLivePreviewSource,
+            sources: AppSettings.enabledRecognitionSources,
+            correctionMode: correctionMode
+        )
+        guard previewSource != .off else {
+            throw BridgeServiceError.invalidRequest("Live preview is off")
+        }
         Log.bridge.notice(
-            "Bridge live preview start session=\(Self.logID(id), privacy: .public)"
+            "Bridge live preview start session=\(Self.logID(id), privacy: .public) source=\(previewSource.rawValue, privacy: .public)"
         )
         let lease: ASRLivePreviewLease
         do {
             lease = try ASRLivePreviewLeaseFactory.take(
-                source: .nvidiaNemotron,
+                source: previewSource,
                 requestedLanguageIDs: requestedLanguageIDs,
                 diagnosticID: id
             ) { [weak self] text in

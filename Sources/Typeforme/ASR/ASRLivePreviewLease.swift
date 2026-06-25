@@ -52,6 +52,12 @@ enum ASRLivePreviewLeaseFactory {
         onTranscript: @escaping (String) -> Void
     ) throws -> ASRLivePreviewLease {
         switch source {
+        case .qwen:
+            return try takeQwen(
+                requestedLanguageIDs: requestedLanguageIDs,
+                diagnosticID: diagnosticID,
+                onTranscript: onTranscript
+            )
         case .nvidiaNemotron:
             return try takeNvidiaNemotron(
                 requestedLanguageIDs: requestedLanguageIDs,
@@ -63,6 +69,47 @@ enum ASRLivePreviewLeaseFactory {
         case .appleSpeech:
             throw ASRLivePreviewLeaseError.unavailable("Apple Speech live preview is local-only")
         }
+    }
+
+    private static func takeQwen(
+        requestedLanguageIDs: [String],
+        diagnosticID: String,
+        onTranscript: @escaping (String) -> Void
+    ) throws -> ASRLivePreviewLease {
+        guard AppSettings.enabledRecognitionSources.contains(.qwen) else {
+            throw ASRLivePreviewLeaseError.unavailable("Qwen3-ASR is not enabled")
+        }
+        let languageIDs = ASRLanguageSelection.validatedIDs(
+            requestedLanguageIDs,
+            supportedOptions: ASRLanguageSelection.qwenASRSupportedLanguages
+        )
+        guard !languageIDs.isEmpty else {
+            throw ASRLivePreviewLeaseError.unavailable(
+                "Qwen3-ASR does not support the selected live preview languages"
+            )
+        }
+        guard let service = ASRFactory.shared.qwenLlamaServiceAfterInstall() else {
+            throw ASRLivePreviewLeaseError.unavailable("Bundled llama-server binary not found")
+        }
+        let session = try QwenLlamaLivePreviewSession.start(
+            service: service,
+            languageIDs: languageIDs,
+            diagnosticID: diagnosticID,
+            onTranscript: onTranscript
+        )
+        return ASRLivePreviewLease(
+            provider: session.provider,
+            languageIDs: languageIDs,
+            session: session,
+            returnIdleHandler: { reason in
+                session.terminate(reason: reason)
+            },
+            preloadReplacementHandler: {
+                Task {
+                    await ASRFactory.shared.preloadQwenLlama()
+                }
+            }
+        )
     }
 
     private static func takeNvidiaNemotron(

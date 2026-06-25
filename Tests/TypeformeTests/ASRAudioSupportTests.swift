@@ -66,6 +66,40 @@ struct ASRAudioSupportTests {
         #expect(data[44..<50].allSatisfy { $0 == 0 })
     }
 
+    @Test func qwenPreviewFloat32WAVIs16kMonoPCM() throws {
+        var pcm = Data()
+        for sample in [-1.0, 0.0, 0.5, 1.0] as [Float] {
+            var bits = sample.bitPattern.littleEndian
+            withUnsafeBytes(of: &bits) { pcm.append(contentsOf: $0) }
+        }
+
+        let url = try QwenLlamaASRService.writePCM16kMonoFloat32WAVFile(pcm)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let data = try Data(contentsOf: url)
+        #expect(ascii(data, 0..<4) == "RIFF")
+        #expect(ascii(data, 8..<12) == "WAVE")
+        #expect(littleEndianUInt16(data, offset: 20) == 1)
+        #expect(littleEndianUInt16(data, offset: 22) == 1)
+        #expect(littleEndianUInt32(data, offset: 24) == 16_000)
+        #expect(littleEndianUInt16(data, offset: 34) == 16)
+        #expect(littleEndianUInt32(data, offset: 40) == 8)
+        #expect(littleEndianUInt16(data, offset: 44) == UInt16(bitPattern: Int16.min + 1))
+        #expect(littleEndianUInt16(data, offset: 46) == 0)
+        #expect(littleEndianUInt16(data, offset: 48) == UInt16(bitPattern: 16_384))
+        #expect(littleEndianUInt16(data, offset: 50) == UInt16(bitPattern: Int16.max))
+    }
+
+    @Test func qwenLivePreviewUsesEightSecondRollingWindow() {
+        #expect(QwenLlamaLivePreviewSession.rollingWindowStartSample(totalSamples: 24_000) == 0)
+        #expect(QwenLlamaLivePreviewSession.rollingWindowStartSample(totalSamples: 128_000) == 0)
+        #expect(QwenLlamaLivePreviewSession.rollingWindowStartSample(totalSamples: 160_000) == 32_000)
+        #expect(!QwenLlamaLivePreviewSession.shouldRequestPreview(totalSamples: 23_999, lastRequestedSamples: 0))
+        #expect(QwenLlamaLivePreviewSession.shouldRequestPreview(totalSamples: 24_000, lastRequestedSamples: 0))
+        #expect(!QwenLlamaLivePreviewSession.shouldRequestPreview(totalSamples: 32_000, lastRequestedSamples: 24_000))
+        #expect(QwenLlamaLivePreviewSession.shouldRequestPreview(totalSamples: 40_000, lastRequestedSamples: 24_000))
+    }
+
     @Test func nvidiaNemotronTargetLanguageUsesAutoForMixedSelection() {
         #expect(NvidiaNemotronASRService.targetLanguage(for: ["en-US"]) == "en-US")
         #expect(NvidiaNemotronASRService.targetLanguage(for: ["ja"]) == "ja-JP")

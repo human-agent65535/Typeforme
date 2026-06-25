@@ -45,7 +45,7 @@ struct BridgeWireModelsTests {
         #expect(RecognitionSource.rawValue(for: [.qwen, .appleSpeech]) == "qwen3-asr-llama,apple-speech")
         #expect(RecognitionSource.qwen.hasModelConfiguration)
         #expect(!RecognitionSource.appleSpeech.hasModelConfiguration)
-        #expect(!RecognitionSource.qwen.supportsLivePreview)
+        #expect(RecognitionSource.qwen.supportsLivePreview)
         #expect(RecognitionSource.nvidiaNemotron.supportsLivePreview)
         #expect(RecognitionSource.appleSpeech.supportsLivePreview)
     }
@@ -199,6 +199,29 @@ struct BridgeWireModelsTests {
         #expect(payload.enabledSources == [.appleSpeech])
         #expect(!payload.supportsFastMode)
         #expect(payload.correctionMode == CorrectionMode.polish.rawValue)
+    }
+
+    @Test func bridgeSettingsPayloadReportsServerASRPreviewForQwenAndNemotron() {
+        var payload = BridgeSettingsPayload.current()
+
+        payload.enabledRecognitionSources = [RecognitionSource.qwen.rawValue]
+        payload.livePreviewSource = VoiceLivePreviewSource.qwen.rawValue
+        #expect(payload.supportsServerNemotronPreview)
+
+        payload.enabledRecognitionSources = [RecognitionSource.nvidiaNemotron.rawValue]
+        payload.livePreviewSource = VoiceLivePreviewSource.nvidiaNemotron.rawValue
+        #expect(payload.supportsServerNemotronPreview)
+
+        payload.enabledRecognitionSources = [RecognitionSource.qwen.rawValue, RecognitionSource.nvidiaNemotron.rawValue]
+        payload.livePreviewSource = VoiceLivePreviewSource.appleSpeech.rawValue
+        #expect(!payload.supportsServerNemotronPreview)
+
+        payload.livePreviewSource = VoiceLivePreviewSource.off.rawValue
+        #expect(!payload.supportsServerNemotronPreview)
+
+        payload.enabledRecognitionSources = [RecognitionSource.appleSpeech.rawValue]
+        payload.livePreviewSource = VoiceLivePreviewSource.qwen.rawValue
+        #expect(!payload.supportsServerNemotronPreview)
     }
 
     @Test func editableSnapshotNormalizesUserDictionaryForComparison() {

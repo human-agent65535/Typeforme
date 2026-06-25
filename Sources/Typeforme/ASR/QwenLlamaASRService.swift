@@ -96,6 +96,40 @@ final class QwenLlamaASRService: ASRService {
         await server.stop()
     }
 
+    func transcribeLivePreviewPCM16kMonoFloat32Data(
+        _ pcmData: Data,
+        languageIDs: [String],
+        timeout: TimeInterval,
+        maxTokens: Int
+    ) async throws -> String {
+        guard !Task.isCancelled else { throw CancellationError() }
+        let supportedLanguageIDs = ASRLanguageSelection.validatedIDs(
+            languageIDs,
+            supportedOptions: ASRLanguageSelection.qwenASRSupportedLanguages
+        )
+        let port: Int
+        do {
+            port = try await server.ensureRunning()
+        } catch {
+            throw ASRAudioSupportError.httpStatus(503, error.localizedDescription)
+        }
+        let model = (AppSettings.asrQwenLlamaModelPath as NSString).lastPathComponent
+        return try await runPreviewRequest {
+            let audioURL = try Self.writePCM16kMonoFloat32WAVFile(pcmData)
+            defer { try? FileManager.default.removeItem(at: audioURL) }
+            guard !Task.isCancelled else { throw CancellationError() }
+            return try await Self.llamaChat(
+                audioFileURL: audioURL,
+                languageIDs: supportedLanguageIDs,
+                port: port,
+                timeout: timeout,
+                maxTokens: maxTokens,
+                model: model.isEmpty ? "qwen3-asr" : model,
+                allowEmptyTranscript: true
+            )
+        }
+    }
+
     static func chatCompletionsEndpoint(port: Int) -> URL {
         URL(string: "http://127.0.0.1:\(port)/v1/chat/completions")!
     }
@@ -343,7 +377,11 @@ final class QwenLlamaASRService: ASRService {
     }
 
     private func runUserRequest<T>(_ operation: () async throws -> T) async throws -> T {
+        let cancelledPreview = await QwenLlamaLivePreviewTaskRegistry.shared.cancelAll()
         let cancelledWarmup = await warmupState.beginUserRequest()
+        if cancelledPreview {
+            Log.asr.notice("Qwen3-ASR live preview cancelled for user transcription")
+        }
         if cancelledWarmup {
             Log.asr.notice("Qwen3-ASR GGUF audio warmup cancelled for user transcription")
         }
@@ -353,6 +391,20 @@ final class QwenLlamaASRService: ASRService {
             return result
         } catch {
             await warmupState.finishUserRequest()
+            throw error
+        }
+    }
+
+    private func runPreviewRequest<T>(_ operation: () async throws -> T) async throws -> T {
+        guard await warmupState.beginPreviewRequest() else {
+            throw CancellationError()
+        }
+        do {
+            let result = try await operation()
+            await warmupState.finishPreviewRequest()
+            return result
+        } catch {
+            await warmupState.finishPreviewRequest()
             throw error
         }
     }
@@ -372,6 +424,42 @@ final class QwenLlamaASRService: ASRService {
         let clampedSampleCount = max(1, sampleCount)
         let url = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("typeforme-qwen-asr-warmup-\(UUID().uuidString).wav")
+        let samples = Data(count: clampedSampleCount * MemoryLayout<Int16>.size)
+        try writePCM16kMonoInt16WAVFile(samples, sampleCount: clampedSampleCount, to: url)
+        return url
+    }
+
+    static func writePCM16kMonoFloat32WAVFile(_ pcmData: Data) throws -> URL {
+        guard !pcmData.isEmpty,
+              pcmData.count % MemoryLayout<Float>.size == 0
+        else {
+            throw ASRAudioSupportError.audioConversionFailed("Qwen preview PCM must be non-empty Float32 samples")
+        }
+        let sampleCount = pcmData.count / MemoryLayout<Float>.size
+        var int16Data = Data(count: sampleCount * MemoryLayout<Int16>.size)
+        pcmData.withUnsafeBytes { inputBuffer in
+            int16Data.withUnsafeMutableBytes { outputBuffer in
+                let input = inputBuffer.bindMemory(to: UInt32.self)
+                let output = outputBuffer.bindMemory(to: Int16.self)
+                for index in 0..<sampleCount {
+                    let value = Float(bitPattern: UInt32(littleEndian: input[index]))
+                    let clamped = max(-1, min(1, value))
+                    output[index] = Int16((clamped * Float(Int16.max)).rounded()).littleEndian
+                }
+            }
+        }
+        let url = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("typeforme-qwen-asr-preview-\(UUID().uuidString).wav")
+        try writePCM16kMonoInt16WAVFile(int16Data, sampleCount: sampleCount, to: url)
+        return url
+    }
+
+    private static func writePCM16kMonoInt16WAVFile(
+        _ pcmData: Data,
+        sampleCount: Int,
+        to url: URL
+    ) throws {
+        let clampedSampleCount = max(1, sampleCount)
         var data = Data()
 
         func appendASCII(_ value: String) {
@@ -403,9 +491,13 @@ final class QwenLlamaASRService: ASRService {
         appendUInt16LE(16)
         appendASCII("data")
         appendUInt32LE(UInt32(audioByteCount))
-        data.append(Data(count: audioByteCount))
+        if pcmData.count >= audioByteCount {
+            data.append(pcmData.prefix(audioByteCount))
+        } else {
+            data.append(pcmData)
+            data.append(Data(count: audioByteCount - pcmData.count))
+        }
         try data.write(to: url, options: .atomic)
-        return url
     }
 
     private static func elapsedMS(since date: Date) -> Int {
@@ -496,10 +588,11 @@ private actor QwenLlamaWarmupState {
     private var warmingID: UUID?
     private var warmingTask: Task<QwenLlamaWarmupOutcome, Never>?
     private var userRequestCount = 0
+    private var previewRequestCount = 0
 
     func beginWarmup(key: String) -> QwenLlamaWarmupStart {
-        guard userRequestCount == 0 else {
-            return .skipped("user transcription is active")
+        guard userRequestCount == 0, previewRequestCount == 0 else {
+            return .skipped("user transcription or live preview is active")
         }
         if warmingKey == key {
             if let warmingTask {
@@ -521,7 +614,8 @@ private actor QwenLlamaWarmupState {
     ) -> Bool {
         guard warmingKey == ticket.key,
               warmingID == ticket.id,
-              userRequestCount == 0
+              userRequestCount == 0,
+              previewRequestCount == 0
         else {
             task.cancel()
             return false
@@ -549,6 +643,20 @@ private actor QwenLlamaWarmupState {
 
     func finishUserRequest() {
         userRequestCount = max(0, userRequestCount - 1)
+    }
+
+    func beginPreviewRequest() -> Bool {
+        guard userRequestCount == 0 else { return false }
+        warmingTask?.cancel()
+        warmingKey = nil
+        warmingID = nil
+        warmingTask = nil
+        previewRequestCount += 1
+        return true
+    }
+
+    func finishPreviewRequest() {
+        previewRequestCount = max(0, previewRequestCount - 1)
     }
 }
 

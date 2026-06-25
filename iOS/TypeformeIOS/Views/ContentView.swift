@@ -1190,11 +1190,8 @@ private struct LivePreviewSettingsSection: View {
     }
 
     private var livePreviewFooter: LocalizedStringKey {
-        if !state.correctionMode.allowsLivePreview {
-            return "Fast disables live preview until Qwen streaming is available."
-        }
         return state.keyboardLivePreviewSource == .serverNemotron
-            ? "Server Nemotron runs on the Mac. Apple Speech recognition mode only applies to Apple Speech."
+            ? "Server ASR runs on the Mac. Apple Speech recognition mode only applies to Apple Speech."
             : "Apple Speech is local. Server uses Mac."
     }
 

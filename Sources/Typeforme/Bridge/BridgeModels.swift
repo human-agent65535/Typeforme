@@ -159,7 +159,17 @@ struct BridgeSettingsPayload: Codable, Sendable {
     }
 
     var supportsServerNemotronPreview: Bool {
-        isRecognitionSourceEnabled(.nvidiaNemotron)
+        guard let source = VoiceLivePreviewSource(rawValue: livePreviewSource) else {
+            return false
+        }
+        switch source {
+        case .qwen:
+            return isRecognitionSourceEnabled(.qwen)
+        case .nvidiaNemotron:
+            return isRecognitionSourceEnabled(.nvidiaNemotron)
+        case .off, .appleSpeech:
+            return false
+        }
     }
 
     var supportsFastMode: Bool {
