@@ -10,8 +10,10 @@ struct BridgeWireModelsTests {
         #expect(BridgeAPIEndpoint.dictate.methodAndPath == "POST /v1/dictate")
         #expect(BridgeAPIEndpoint.refine.methodAndPath == "POST /v1/refine")
         #expect(BridgeAPIEndpoint.editText.methodAndPath == "POST /v1/edit-text")
-        #expect(BridgeAPIEndpoint.jobEvents(jobID: "ios_1").path == "/v1/jobs/ios_1/events")
+        #expect(BridgeRequestEndpoint.jobEvents.methodAndPath == "WS /v1/jobs/:jobID/events")
+        #expect(BridgeAPIEndpoint.jobEvents(jobID: "ios_1").methodAndPath == "WS /v1/jobs/ios_1/events")
         #expect(BridgeRequestEndpoint.livePreviewSocket.methodAndPath == "WS /v1/live-preview/:sessionID/socket")
+        #expect(BridgeAPIEndpoint.livePreviewSocket(sessionID: "preview_1").methodAndPath == "WS /v1/live-preview/preview_1/socket")
     }
 
     @Test func bridgeClientIdentityHeadersUseSharedNames() {

@@ -64,6 +64,28 @@ private actor BridgeLivePreviewWebSocketWriter {
     }
 }
 
+private actor BridgeJobStatusWebSocketWriter {
+    private var sentTerminal = false
+
+    func send(
+        _ event: BridgeJobStatusEvent,
+        outbound: WebSocketOutboundWriter
+    ) async throws {
+        guard !sentTerminal else { return }
+        if event.stage.isTerminal {
+            sentTerminal = true
+        }
+        let data = try BridgeJSON.encodeSorted(event)
+        guard let json = String(data: data, encoding: .utf8) else {
+            throw BridgeServiceError.invalidRequest("Could not encode job WebSocket event")
+        }
+        try await outbound.write(.text(json))
+        Log.bridge.debug(
+            "Bridge job event socket send job=\(String(event.jobID.prefix(8)), privacy: .public) stage=\(event.stage.rawValue, privacy: .public) text_chars=\(event.text?.count ?? 0, privacy: .public) raw_chars=\(event.rawTranscript?.count ?? 0, privacy: .public)"
+        )
+    }
+}
+
 private extension HTTPField.Name {
     static let typeformeClientID = Self(BridgeClientIdentityHeaders.id)!
     static let typeformeClientName = Self(BridgeClientIdentityHeaders.name)!
@@ -88,6 +110,7 @@ final class BridgeHTTPServer: @unchecked Sendable {
     private static let maxMultipartHeaderBytes = 16 * 1024
     private static let maxMultipartFieldBytes = 1 * 1024 * 1024
     private static let maxLivePreviewSocketMessageBytes = BridgeLivePreviewOpusDecoder.maxPacketBytes
+    private static let maxJobEventsSocketMessageBytes = 1 * 1024
     private static let restartSettleDelay: UInt64 = 150_000_000
 
     @MainActor
@@ -314,15 +337,29 @@ final class BridgeHTTPServer: @unchecked Sendable {
             }
         }
 
-        router.get("v1/jobs/:jobID/events") { request, context async -> Response in
-            await Self.authorizedRecordedRequest(
-                .jobEvents,
-                request: request,
-                context: context
-            ) {
-                let jobID = try context.parameters.require("jobID")
-                return Self.jobEventsResponse(jobID: jobID)
+        router.ws("v1/jobs/:jobID/events") { request, context async throws -> RouterShouldUpgrade in
+            guard Self.isAuthorized(request) else {
+                Self.recordRequest(.jobEvents, request: request, context: context, statusCode: 404, startedAt: Date())
+                return .dontUpgrade
             }
+            guard Self.hasClientIdentity(request) else {
+                Self.recordRequest(.jobEvents, request: request, context: context, statusCode: 400, startedAt: Date())
+                return .dontUpgrade
+            }
+            let jobID = try context.parameters.require("jobID")
+            guard BridgeClientJobID.normalized(jobID) != nil else {
+                Self.recordRequest(.jobEvents, request: request, context: context, statusCode: 400, startedAt: Date())
+                return .dontUpgrade
+            }
+            Self.recordRequest(.jobEvents, request: request, context: context, statusCode: 200, startedAt: Date())
+            return .upgrade()
+        } onUpgrade: { inbound, outbound, context in
+            let jobID = try context.requestContext.parameters.require("jobID")
+            try await Self.handleJobEventsSocket(
+                jobID: jobID,
+                inbound: inbound,
+                outbound: outbound
+            )
         }
 
         router.post("v1/live-preview/start") { request, context async -> Response in
@@ -610,6 +647,49 @@ final class BridgeHTTPServer: @unchecked Sendable {
         return try BridgeJSON.decode(T.self, from: Data(body.readableBytesView))
     }
 
+    private static func handleJobEventsSocket(
+        jobID: String,
+        inbound: WebSocketInboundStream,
+        outbound: WebSocketOutboundWriter
+    ) async throws {
+        guard let safeJobID = BridgeClientJobID.normalized(jobID) else {
+            throw BridgeServiceError.invalidRequest("Invalid job id")
+        }
+        let writer = BridgeJobStatusWebSocketWriter()
+        let socketOpenedAt = Date()
+        let socketLogID = String(safeJobID.prefix(8))
+        Log.bridge.notice("Bridge job event socket opened job=\(socketLogID, privacy: .public)")
+
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            group.addTask {
+                let stream = await BridgeJobStatusCenter.shared.subscribe(jobID: safeJobID)
+                for await event in stream {
+                    try await writer.send(event, outbound: outbound)
+                    if event.stage.isTerminal {
+                        return
+                    }
+                }
+            }
+
+            group.addTask {
+                do {
+                    for try await _ in inbound.messages(maxSize: Self.maxJobEventsSocketMessageBytes) {}
+                    Log.bridge.notice(
+                        "Bridge job event socket closed by peer job=\(socketLogID, privacy: .public) elapsed_ms=\(Self.elapsedMS(since: socketOpenedAt), privacy: .public)"
+                    )
+                } catch {
+                    Log.bridge.notice(
+                        "Bridge job event socket error job=\(socketLogID, privacy: .public) elapsed_ms=\(Self.elapsedMS(since: socketOpenedAt), privacy: .public) error=\(error.localizedDescription, privacy: .public)"
+                    )
+                    throw error
+                }
+            }
+
+            guard try await group.next() != nil else { return }
+            group.cancelAll()
+        }
+    }
+
     private static func handleLivePreviewSocket(
         sessionID: String,
         service: BridgeService,
@@ -709,35 +789,6 @@ final class BridgeHTTPServer: @unchecked Sendable {
             headers: headers,
             body: .init(byteBuffer: ByteBuffer(bytes: data))
         )
-    }
-
-    private static func jobEventsResponse(jobID: String) -> Response {
-        var headers = HTTPFields()
-        headers[.contentType] = "text/event-stream; charset=utf-8"
-        headers[.cacheControl] = "no-store"
-        if let bufferingHeader = HTTPField.Name("X-Accel-Buffering") {
-            headers[bufferingHeader] = "no"
-        }
-
-        let body = ResponseBody { writer in
-            let stream = await BridgeJobStatusCenter.shared.subscribe(jobID: jobID)
-            try await writer.write(ByteBuffer(string: ": typeforme job status\n\n"))
-            for await event in stream {
-                guard let data = try? BridgeJSON.encodeSorted(event),
-                      let json = String(data: data, encoding: .utf8)
-                else {
-                    continue
-                }
-                var payload = "event: \(event.stage.rawValue)\n"
-                payload += "data: \(json)\n\n"
-                try await writer.write(ByteBuffer(string: payload))
-                if event.stage.isTerminal {
-                    break
-                }
-            }
-            try await writer.finish(nil)
-        }
-        return Response(status: .ok, headers: headers, body: body)
     }
 
     private static func errorResponse(_ error: Error) -> Response {

@@ -2,113 +2,96 @@ import Foundation
 
 /// Keyboard-side client for the host's loopback WebSocket bridge.
 ///
-/// Status polls run at ~8Hz while recording; dialing a fresh connection per
-/// poll cost a TCP connect, WS upgrade, and HMAC hello round trip for every
-/// sample. Status requests therefore reuse one verified connection — the host
-/// keeps its side open after each response. Commands stay on dedicated
-/// connections so a poll and a command can never interleave on one socket;
-/// the actor's busy flag covers the remaining reentrancy window.
+/// Status is a host-pushed stream. Commands stay on dedicated connections so
+/// command acks never interleave with pushed status frames.
 actor KeyboardLocalClient {
     private let url = URL(string: "ws://127.0.0.1:18082/keyboard")!
     private let session = URLSession(configuration: .ephemeral)
-    private var pooledTask: URLSessionWebSocketTask?
-    private var pooledBridgeToken: String?
-    private var isPooledTaskBusy = false
+    private var statusStreamTask: URLSessionWebSocketTask?
+    private var statusStreamReceiveTask: Task<Void, Never>?
+    private var statusStreamBridgeToken: String?
+    private var statusStreamGeneration: UInt64 = 0
     /// Bumped by shutdown(). In-flight sends snapshot this at entry so a
-    /// failure caused by shutdown cancelling the pooled socket is not
+    /// failure caused by shutdown cancelling the status socket is not
     /// "healed" by a fresh dial, and a socket dialed across a shutdown is
-    /// never re-pooled.
+    /// never kept alive.
     private var shutdownGeneration: UInt64 = 0
 
-    func status(bridgeToken: String?, timeout: TimeInterval = 0.45) async throws -> KeyboardBridgeStatus {
-        try await send(action: .status, command: nil, bridgeToken: bridgeToken, timeout: timeout, reusesConnection: true)
+    func startStatusStream(
+        bridgeToken: String?,
+        onStatus: @escaping @Sendable (KeyboardBridgeStatus) async -> Void,
+        onFailure: @escaping @Sendable (Error) async -> Void
+    ) {
+        guard let bridgeToken,
+              !bridgeToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else {
+            stopStatusStream()
+            Task { await onFailure(URLError(.userAuthenticationRequired)) }
+            return
+        }
+
+        if statusStreamTask != nil, statusStreamBridgeToken == bridgeToken {
+            return
+        }
+
+        stopStatusStream()
+        statusStreamGeneration &+= 1
+        let generation = statusStreamGeneration
+        let shutdownAtStart = shutdownGeneration
+        var urlRequest = URLRequest(url: url)
+        urlRequest.timeoutInterval = 1.0
+        let task = session.webSocketTask(with: urlRequest)
+        task.maximumMessageSize = 1 * 1024 * 1024
+        statusStreamTask = task
+        statusStreamBridgeToken = bridgeToken
+        task.resume()
+
+        statusStreamReceiveTask = Task { [weak self, task, bridgeToken] in
+            do {
+                try await keyboardBridgeStatusStream(
+                    on: task,
+                    bridgeToken: bridgeToken,
+                    onStatus: onStatus
+                )
+            } catch is CancellationError {
+                return
+            } catch {
+                guard let self else { return }
+                let shouldReport = await self.finishStatusStream(
+                    generation: generation,
+                    task: task,
+                    shutdownAtStart: shutdownAtStart
+                )
+                if shouldReport {
+                    await onFailure(error)
+                }
+            }
+        }
     }
 
     func send(_ command: KeyboardBridgeCommand, bridgeToken: String?, timeout: TimeInterval) async throws -> KeyboardBridgeStatus {
-        try await send(action: .command, command: command, bridgeToken: bridgeToken, timeout: timeout, reusesConnection: false)
-    }
-
-    /// Closes the pooled status connection. Called when status polling stops
-    /// or the keyboard disappears; the host drops its side on cancel.
-    func shutdown() {
-        shutdownGeneration &+= 1
-        discardPooledTask()
-    }
-
-    private func send(
-        action: KeyboardLocalBridgeRequest.Action,
-        command: KeyboardBridgeCommand?,
-        bridgeToken: String?,
-        timeout: TimeInterval,
-        reusesConnection: Bool
-    ) async throws -> KeyboardBridgeStatus {
         guard let bridgeToken,
               !bridgeToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else {
             throw URLError(.userAuthenticationRequired)
         }
-        let request: KeyboardLocalBridgeRequest
-        switch action {
-        case .status:
-            request = .status(bridgeToken: bridgeToken)
-        case .command:
-            guard let command else { throw URLError(.badURL) }
-            request = .command(command, bridgeToken: bridgeToken)
-        }
+        let request = KeyboardLocalBridgeRequest.command(command, bridgeToken: bridgeToken)
         let generation = shutdownGeneration
-
-        if reusesConnection,
-           let task = pooledTask,
-           pooledBridgeToken == bridgeToken,
-           !isPooledTaskBusy {
-            isPooledTaskBusy = true
-            defer { isPooledTaskBusy = false }
-            do {
-                return try await keyboardBridgeRoundTrip(request, on: task, verifyHelloWith: nil, timeout: timeout)
-            } catch {
-                // Stale pooled socket (host listener restarted, timeout, close
-                // mid-flight). Drop it and fall through to a fresh dial so one
-                // dead connection never surfaces as a failed poll. Actors are
-                // reentrant across awaits, so an overlapping call may have
-                // replaced the pooled slot already — only tear down the slot
-                // when it still holds this socket.
-                if pooledTask === task {
-                    discardPooledTask()
-                } else {
-                    task.cancel(with: .normalClosure, reason: nil)
-                }
-                // A failure caused by shutdown() cancelling this socket must
-                // not fall through to a fresh dial — that would resurrect the
-                // connection stopStatusPolling just asked us to close.
-                guard shutdownGeneration == generation else { throw error }
-            }
-        }
-
         var urlRequest = URLRequest(url: url)
         urlRequest.timeoutInterval = timeout
         let task = session.webSocketTask(with: urlRequest)
         task.maximumMessageSize = 1 * 1024 * 1024
         task.resume()
         do {
-            let status = try await keyboardBridgeRoundTrip(
+            let status = try await keyboardBridgeCommandRoundTrip(
                 request,
                 on: task,
                 verifyHelloWith: bridgeToken,
                 timeout: timeout
             )
-            // Don't pool across a shutdown: the poll result is still valid,
-            // but the connection must not outlive stopStatusPolling.
-            if reusesConnection, shutdownGeneration == generation {
-                // Actor reentrancy: an overlapping call may have pooled its
-                // own socket while this one awaited. Never hold two — close
-                // the previous occupant before taking the slot.
-                if let existing = pooledTask, existing !== task {
-                    existing.cancel(with: .normalClosure, reason: nil)
-                }
-                pooledTask = task
-                pooledBridgeToken = bridgeToken
-            } else {
-                task.cancel(with: .normalClosure, reason: nil)
+            task.cancel(with: .normalClosure, reason: nil)
+            guard shutdownGeneration == generation else {
+                throw URLError(.cancelled)
             }
             return status
         } catch {
@@ -117,31 +100,68 @@ actor KeyboardLocalClient {
         }
     }
 
-    private func discardPooledTask() {
-        pooledTask?.cancel(with: .normalClosure, reason: nil)
-        pooledTask = nil
-        pooledBridgeToken = nil
-        isPooledTaskBusy = false
+    /// Closes the pushed status stream. Called when the keyboard disappears;
+    /// the host drops its side on cancel.
+    func shutdown() {
+        shutdownGeneration &+= 1
+        stopStatusStream()
+    }
+
+    private func stopStatusStream() {
+        statusStreamReceiveTask?.cancel()
+        statusStreamReceiveTask = nil
+        statusStreamTask?.cancel(with: .normalClosure, reason: nil)
+        statusStreamTask = nil
+        statusStreamBridgeToken = nil
+    }
+
+    private func finishStatusStream(
+        generation: UInt64,
+        task: URLSessionWebSocketTask,
+        shutdownAtStart: UInt64
+    ) -> Bool {
+        guard statusStreamGeneration == generation,
+              statusStreamTask === task
+        else {
+            task.cancel(with: .normalClosure, reason: nil)
+            return false
+        }
+        stopStatusStream()
+        return shutdownGeneration == shutdownAtStart
     }
 }
 
-/// One request/response exchange. `verifyHelloWith` carries the bridge token
-/// when the connection is fresh and the server's hello frame must still be
-/// verified; nil for a pooled connection that already passed verification.
-private func keyboardBridgeRoundTrip(
+private func keyboardBridgeStatusStream(
+    on task: URLSessionWebSocketTask,
+    bridgeToken: String,
+    onStatus: @escaping @Sendable (KeyboardBridgeStatus) async -> Void
+) async throws {
+    let helloData = try messageData(try await task.receive())
+    let hello = try JSONDecoder().decode(KeyboardLocalBridgeHello.self, from: helloData)
+    guard KeyboardLocalBridgeAuth.verifyServerHello(hello, bridgeToken: bridgeToken) else {
+        throw URLError(.userAuthenticationRequired)
+    }
+    let payload = try JSONEncoder().encode(KeyboardLocalBridgeRequest.status(bridgeToken: bridgeToken))
+    try await task.send(.data(payload))
+    while !Task.isCancelled {
+        let message = try await task.receive()
+        let status = try JSONDecoder().decode(KeyboardBridgeStatus.self, from: try messageData(message))
+        await onStatus(status)
+    }
+}
+
+private func keyboardBridgeCommandRoundTrip(
     _ request: KeyboardLocalBridgeRequest,
     on task: URLSessionWebSocketTask,
-    verifyHelloWith helloBridgeToken: String?,
+    verifyHelloWith helloBridgeToken: String,
     timeout: TimeInterval
 ) async throws -> KeyboardBridgeStatus {
     try await withThrowingTaskGroup(of: KeyboardBridgeStatus.self) { group in
         group.addTask {
-            if let helloBridgeToken {
-                let helloData = try messageData(try await task.receive())
-                let hello = try JSONDecoder().decode(KeyboardLocalBridgeHello.self, from: helloData)
-                guard KeyboardLocalBridgeAuth.verifyServerHello(hello, bridgeToken: helloBridgeToken) else {
-                    throw URLError(.userAuthenticationRequired)
-                }
+            let helloData = try messageData(try await task.receive())
+            let hello = try JSONDecoder().decode(KeyboardLocalBridgeHello.self, from: helloData)
+            guard KeyboardLocalBridgeAuth.verifyServerHello(hello, bridgeToken: helloBridgeToken) else {
+                throw URLError(.userAuthenticationRequired)
             }
             let payload = try JSONEncoder().encode(request)
             try await task.send(.data(payload))

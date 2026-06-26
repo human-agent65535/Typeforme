@@ -587,7 +587,7 @@ enum VoiceInputMode: String, CaseIterable, Identifiable, Codable {
     }
 }
 
-enum KeyboardBridgeCommandAction: String, Codable {
+enum KeyboardBridgeCommandAction: String, Codable, Sendable {
     case start
     case stop
     case cancel
@@ -595,7 +595,7 @@ enum KeyboardBridgeCommandAction: String, Codable {
     case refineText = "refine_text"
 }
 
-struct KeyboardTextEditContext: Codable, Equatable {
+struct KeyboardTextEditContext: Codable, Equatable, Sendable {
     let intent: TextEditIntent
     let contextBefore: String
     let targetText: String
@@ -609,7 +609,7 @@ struct KeyboardTextEditContext: Codable, Equatable {
     }
 }
 
-struct KeyboardDictationContext: Codable, Equatable {
+struct KeyboardDictationContext: Codable, Equatable, Sendable {
     let contextBefore: String
     let contextAfter: String
 
@@ -619,7 +619,7 @@ struct KeyboardDictationContext: Codable, Equatable {
     }
 }
 
-struct KeyboardBridgeCommand: Codable, Equatable {
+struct KeyboardBridgeCommand: Codable, Equatable, Sendable {
     static let maxAge: TimeInterval = 60
 
     let id: String
@@ -707,13 +707,13 @@ struct KeyboardHostHandoff: Codable, Equatable {
     }
 }
 
-struct KeyboardLocalBridgeHello: Codable, Equatable {
+struct KeyboardLocalBridgeHello: Codable, Equatable, Sendable {
     let version: Int
     let nonce: String
     let proof: String
 }
 
-struct KeyboardLocalBridgeProof: Codable, Equatable {
+struct KeyboardLocalBridgeProof: Codable, Equatable, Sendable {
     let nonce: String
     let proof: String
 }
@@ -784,8 +784,8 @@ enum KeyboardLocalBridgeAuth {
     }
 }
 
-struct KeyboardLocalBridgeRequest: Codable, Equatable {
-    enum Action: String, Codable {
+struct KeyboardLocalBridgeRequest: Codable, Equatable, Sendable {
+    enum Action: String, Codable, Sendable {
         case status
         case command
     }
@@ -817,7 +817,7 @@ struct KeyboardLocalBridgeRequest: Codable, Equatable {
     }
 }
 
-enum KeyboardBridgeState: String, Codable {
+enum KeyboardBridgeState: String, Codable, Sendable {
     case idle
     case standby
     case recording
@@ -826,12 +826,12 @@ enum KeyboardBridgeState: String, Codable {
     case error
 }
 
-enum KeyboardBridgeProcessingStage: String, Codable, Equatable {
+enum KeyboardBridgeProcessingStage: String, Codable, Equatable, Sendable {
     case transcribing
     case refining
 }
 
-struct KeyboardBridgeStatus: Codable, Equatable {
+struct KeyboardBridgeStatus: Codable, Equatable, Sendable {
     let commandID: String?
     let state: KeyboardBridgeState
     let message: String
@@ -964,7 +964,7 @@ struct KeyboardBridgeStatus: Codable, Equatable {
             rawTranscriptLength: rawTranscriptLength,
             defaultCorrectionMode: defaultCorrectionMode,
             audioLevel: nil,
-            livePartialTranscript: livePartialTranscript,
+            livePartialTranscript: nil,
             backendReachable: backendReachable,
             processingStage: processingStage,
             correctionTimeoutMs: correctionTimeoutMs,

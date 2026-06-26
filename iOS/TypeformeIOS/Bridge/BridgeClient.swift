@@ -162,7 +162,51 @@ struct BridgeClient: Sendable {
             let endpoint = BridgeAPIEndpoint.livePreviewSocket(sessionID: encodedSessionID)
             request = try http.makeRequest(
                 path: endpoint.path,
-                method: endpoint.method,
+                method: "GET",
+                timeout: timeout,
+                accept: "application/json",
+                acceptEncoding: nil
+            )
+        } catch {
+            throw mapHTTPError(error)
+        }
+        guard let url = request.url,
+              var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        else {
+            throw BridgeClientError.invalidURL
+        }
+        switch components.scheme?.lowercased() {
+        case "http":
+            components.scheme = "ws"
+        case "https":
+            components.scheme = "wss"
+        default:
+            throw BridgeClientError.invalidURL
+        }
+        guard let webSocketURL = components.url else {
+            throw BridgeClientError.invalidURL
+        }
+        request.url = webSocketURL
+        let task = URLSession.shared.webSocketTask(with: request)
+        task.maximumMessageSize = 512 * 1024
+        return task
+    }
+
+    func jobEventsWebSocketTask(
+        jobID: String,
+        timeout: TimeInterval = 60
+    ) throws -> URLSessionWebSocketTask {
+        guard let safeJobID = BridgeClientJobID.normalized(jobID),
+              let encodedJobID = safeJobID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed)
+        else {
+            throw BridgeClientError.invalidURL
+        }
+        var request: URLRequest
+        do {
+            let endpoint = BridgeAPIEndpoint.jobEvents(jobID: encodedJobID)
+            request = try http.makeRequest(
+                path: endpoint.path,
+                method: "GET",
                 timeout: timeout,
                 accept: "application/json",
                 acceptEncoding: nil
@@ -304,64 +348,34 @@ struct BridgeClient: Sendable {
         jobID: String,
         onEvent: @Sendable (BridgeJobStatusEvent) async -> Void
     ) async throws -> Bool {
-        guard let safeJobID = BridgeClientJobID.normalized(jobID),
-              let encodedJobID = safeJobID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed)
-        else {
-            throw BridgeClientError.invalidURL
-        }
-        let request: URLRequest
-        do {
-            let endpoint = BridgeAPIEndpoint.jobEvents(jobID: encodedJobID)
-            request = try http.makeRequest(
-                path: endpoint.path,
-                method: endpoint.method,
-                timeout: 60,
-                accept: "text/event-stream",
-                acceptEncoding: nil
-            )
-        } catch {
-            throw mapHTTPError(error)
-        }
-
-        let (bytes, response) = try await URLSession.shared.bytes(for: request)
-        guard let http = response as? HTTPURLResponse else {
-            throw BridgeClientError.invalidResponse
-        }
-        guard http.statusCode != 401 && http.statusCode != 403 && http.statusCode != 404 else {
-            throw BridgeClientError.unauthorizedOrUnavailable
-        }
-        guard (200..<300).contains(http.statusCode) else {
-            throw BridgeClientError.server("HTTP \(http.statusCode)")
-        }
-
-        var dataLines: [String] = []
-        for try await rawLine in bytes.lines {
-            try Task.checkCancellation()
-            let line = rawLine.trimmingCharacters(in: CharacterSet(charactersIn: "\r"))
-            if line.isEmpty {
-                guard !dataLines.isEmpty else { continue }
-                let dataText = dataLines.joined(separator: "\n")
-                dataLines.removeAll(keepingCapacity: true)
-                guard let data = dataText.data(using: .utf8),
-                      let event = try? JSONDecoder().decode(BridgeJobStatusEvent.self, from: data)
-                else {
-                    continue
-                }
+        let task = try jobEventsWebSocketTask(jobID: jobID)
+        return try await withTaskCancellationHandler(operation: {
+            task.resume()
+            defer { task.cancel(with: .normalClosure, reason: nil) }
+            while !Task.isCancelled {
+                let event = try Self.decodeJobStatusEvent(try await task.receive())
                 await onEvent(event)
                 if event.stage.isTerminal {
                     return true
                 }
-                continue
             }
-            if line.hasPrefix(":") {
-                continue
-            }
-            if line.hasPrefix("data:") {
-                let value = line.dropFirst(5)
-                dataLines.append(String(value).trimmingCharacters(in: .whitespaces))
-            }
+            return false
+        }, onCancel: {
+            task.cancel(with: .normalClosure, reason: nil)
+        })
+    }
+
+    private static func decodeJobStatusEvent(_ message: URLSessionWebSocketTask.Message) throws -> BridgeJobStatusEvent {
+        let data: Data
+        switch message {
+        case .data(let payload):
+            data = payload
+        case .string(let text):
+            data = Data(text.utf8)
+        @unknown default:
+            throw BridgeClientError.invalidResponse
         }
-        return false
+        return try JSONDecoder().decode(BridgeJobStatusEvent.self, from: data)
     }
 
     private func request<T: Decodable, Body: Encodable>(

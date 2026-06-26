@@ -2,7 +2,7 @@ import AVFoundation
 import Foundation
 
 /// Keeps the host app alive in the background so the keyboard extension's
-/// local bridge poll to `KeyboardLocalServer` always reaches a live process.
+/// local bridge stream to `KeyboardLocalServer` always reaches a live process.
 /// iOS keeps any app with `UIBackgroundModes = audio` alive while audio is
 /// actively being routed; we feed an `AVAudioPlayerNode` a zero-filled
 /// looping PCM buffer at 0.001 mixer volume.

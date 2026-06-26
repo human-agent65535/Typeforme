@@ -1139,6 +1139,7 @@ final class DictationCoordinator: ObservableObject {
             let appCategory = AppCategory.from(bundleID: snapshot?.bundleID)
             let resolved = try await RemoteBridgeClient.resolvedFromSettings(probeAllEndpoints: false)
             let client = resolved.client
+            let dictateJobID = Self.bridgeJobID(prefix: "mac_dictate", sessionID: sessionID)
             let response = try await client.dictate(
                 audioURL: audioURL,
                 languageIDs: AppSettings.clientLanguageIDs,
@@ -1147,7 +1148,15 @@ final class DictationCoordinator: ObservableObject {
                 appCategory: appCategory,
                 contextBefore: activeDictationContextBefore,
                 contextAfter: activeDictationContextAfter,
-                includeRawTranscript: true
+                includeRawTranscript: true,
+                clientJobID: dictateJobID,
+                onJobEvent: { [weak self] event in
+                    await self?.applyRemoteBridgeJobStatus(
+                        event,
+                        sessionID: sessionID,
+                        token: cancelToken
+                    )
+                }
             )
             try await ensureActive(sessionID: sessionID, token: cancelToken)
 
@@ -1367,6 +1376,36 @@ final class DictationCoordinator: ObservableObject {
         } catch {
             reportError("Refine failed: \(error.localizedDescription)")
             scheduleAutoReset(after: Self.errorResetDelay)
+        }
+    }
+
+    private static func bridgeJobID(prefix: String, sessionID: UUID) -> String {
+        "\(prefix)_\(sessionID.uuidString.lowercased())"
+    }
+
+    private func applyRemoteBridgeJobStatus(
+        _ event: BridgeJobStatusEvent,
+        sessionID: UUID,
+        token: CommitCancellationToken
+    ) async {
+        guard await isActive(sessionID: sessionID, token: token) else { return }
+        if event.stage == .transcriptReady,
+           let raw = event.rawTranscript?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !raw.isEmpty {
+            lastTranscript = raw
+            livePartialTranscript = raw
+        }
+        switch event.stage {
+        case .transcriptReady, .refining:
+            if state == .transcribing {
+                transition(to: .correcting)
+            }
+        case .failed:
+            if state == .transcribing || state == .correcting {
+                lastWarning = event.error?.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        case .audioReceived, .transcribing, .resultReady:
+            break
         }
     }
 

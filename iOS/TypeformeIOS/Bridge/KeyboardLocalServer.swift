@@ -13,6 +13,7 @@ final class KeyboardLocalServer: @unchecked Sendable {
     private let stateLock = NSLock()
     private var listener: NWListener?
     private var activeConnections: [ObjectIdentifier: NWConnection] = [:]
+    private var activeStatusStreams: [ObjectIdentifier: NWConnection] = [:]
     private var activeTasks: [UUID: Task<Void, Never>] = [:]
     private var generation: UInt = 0
 
@@ -56,6 +57,7 @@ final class KeyboardLocalServer: @unchecked Sendable {
         generation += 1
         let connections = Array(activeConnections.values)
         activeConnections.removeAll()
+        activeStatusStreams.removeAll()
         let tasks = Array(activeTasks.values)
         activeTasks.removeAll()
         stateLock.unlock()
@@ -127,6 +129,16 @@ final class KeyboardLocalServer: @unchecked Sendable {
         storeTask(task, id: taskID, generation: generation)
     }
 
+    func publishStatus(_ status: KeyboardBridgeStatus) {
+        queue.async { [weak self] in
+            guard let self else { return }
+            let streams = self.statusStreamSnapshot()
+            for connection in streams {
+                self.send(status, connection: connection, closeAfterSend: false)
+            }
+        }
+    }
+
     private func receiveMessage(from connection: NWConnection, generation: UInt, expectedToken: String) {
         connection.receiveMessage { [weak self] data, _, _, error in
             guard let self else {
@@ -175,10 +187,20 @@ final class KeyboardLocalServer: @unchecked Sendable {
                     return
                 }
                 if authorized {
-                    self.send(status, connection: connection, keepAliveGeneration: generation, expectedToken: expectedToken)
+                    switch request.action {
+                    case .status:
+                        guard self.registerStatusStream(connection, generation: generation) else {
+                            connection.cancel()
+                            self.removeTask(taskID)
+                            return
+                        }
+                        self.send(status, connection: connection, closeAfterSend: false)
+                    case .command:
+                        self.send(status, connection: connection, closeAfterSend: true)
+                    }
                 } else {
                     // Unauthorized peers get the error frame and a close —
-                    // never a persistent connection.
+                    // never a status stream.
                     self.send(status, connection: connection)
                 }
                 self.removeTask(taskID)
@@ -224,20 +246,14 @@ final class KeyboardLocalServer: @unchecked Sendable {
         })
     }
 
-    /// Sends one status frame. With `keepAliveGeneration`/`expectedToken` the
-    /// connection stays open and waits for the next request — the keyboard
-    /// reuses one socket for its ~8Hz recording status polls, so closing
-    /// after every response cost a TCP connect + WS upgrade + HMAC hello per
-    /// sample. Keep-alive is only granted to requests that passed HMAC
-    /// authorization; transport errors, oversize/undecodable frames, and
-    /// unauthorized requests pass nil and close. Authorized exchanges whose
-    /// handler reports an `.error` *status* (busy, expired command) do keep
-    /// the connection — the error is application state, not protocol failure.
+    /// Sends one status frame. Status requests subscribe to a push stream and
+    /// keep the socket open; command requests are acknowledged on a dedicated
+    /// socket and then closed so command acks never interleave with pushed
+    /// status frames.
     private func send(
         _ status: KeyboardBridgeStatus,
         connection: NWConnection,
-        keepAliveGeneration: UInt? = nil,
-        expectedToken: String? = nil
+        closeAfterSend: Bool = true
     ) {
         guard let data = try? JSONEncoder().encode(status) else {
             connection.cancel()
@@ -245,18 +261,29 @@ final class KeyboardLocalServer: @unchecked Sendable {
         }
         let metadata = NWProtocolWebSocket.Metadata(opcode: .binary)
         let context = NWConnection.ContentContext(identifier: "keyboard-bridge-status", metadata: [metadata])
-        connection.send(content: data, contentContext: context, isComplete: true, completion: .contentProcessed { [weak self] error in
-            guard let self,
-                  error == nil,
-                  let keepAliveGeneration,
-                  let expectedToken,
-                  self.isCurrentGeneration(keepAliveGeneration)
-            else {
+        connection.send(content: data, contentContext: context, isComplete: true, completion: .contentProcessed { error in
+            guard error == nil, !closeAfterSend else {
                 connection.cancel()
                 return
             }
-            self.receiveMessage(from: connection, generation: keepAliveGeneration, expectedToken: expectedToken)
         })
+    }
+
+    private func registerStatusStream(_ connection: NWConnection, generation: UInt) -> Bool {
+        let id = ObjectIdentifier(connection)
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        guard generation == self.generation, listener != nil, activeConnections[id] != nil else {
+            return false
+        }
+        activeStatusStreams[id] = connection
+        return true
+    }
+
+    private func statusStreamSnapshot() -> [NWConnection] {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return Array(activeStatusStreams.values)
     }
 
     private func storeTask(_ task: Task<Void, Never>, id: UUID, generation: UInt) {
@@ -278,6 +305,7 @@ final class KeyboardLocalServer: @unchecked Sendable {
     private func removeConnection(_ id: ObjectIdentifier) {
         stateLock.lock()
         activeConnections[id] = nil
+        activeStatusStreams[id] = nil
         stateLock.unlock()
     }
 

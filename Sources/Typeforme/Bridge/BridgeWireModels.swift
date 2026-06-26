@@ -90,16 +90,16 @@ enum BridgeAPIEndpoint {
     static let refine = BridgeAPIRoute(method: "POST", path: "/v1/refine")
     static let editText = BridgeAPIRoute(method: "POST", path: "/v1/edit-text")
 
-    static let jobEventsTemplate = BridgeAPIRoute(method: "GET", path: "/v1/jobs/:jobID/events")
+    static let jobEventsTemplate = BridgeAPIRoute(method: "WS", path: "/v1/jobs/:jobID/events")
     static let livePreviewSocketTemplate = BridgeAPIRoute(method: "WS", path: "/v1/live-preview/:sessionID/socket")
     static let livePreviewFinishTemplate = BridgeAPIRoute(method: "POST", path: "/v1/live-preview/:sessionID/finish")
 
     static func jobEvents(jobID: String) -> BridgeAPIRoute {
-        BridgeAPIRoute(method: "GET", path: "/v1/jobs/\(jobID)/events")
+        BridgeAPIRoute(method: "WS", path: "/v1/jobs/\(jobID)/events")
     }
 
     static func livePreviewSocket(sessionID: String) -> BridgeAPIRoute {
-        BridgeAPIRoute(method: "GET", path: "/v1/live-preview/\(sessionID)/socket")
+        BridgeAPIRoute(method: "WS", path: "/v1/live-preview/\(sessionID)/socket")
     }
 
     static func livePreviewFinish(sessionID: String) -> BridgeAPIRoute {

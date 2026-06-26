@@ -325,8 +325,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private var lastPresentationGateLogKey = ""
     private var orbContainerHeightConstraint: NSLayoutConstraint?
     private var textKeyboardContainerHeightConstraint: NSLayoutConstraint?
-    private var statusTimer: Timer?
-    private var statusTimerInterval: TimeInterval = 0
     private var lastStatusSignature = ""
     private var lastMissingAudioLevelLogAt: TimeInterval = 0
     private var bridgeStatus: KeyboardBridgeStatus? {
@@ -334,7 +332,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             // Local/Darwin-only statuses do not know Mac route reachability.
             // Keep the last host-probed value until a host status explicitly
             // updates it, so the readiness dot does not flicker green between
-            // failed-route polls.
+            // failed-route status frames.
             guard let status = bridgeStatus,
                   status.state != .idle,
                   status.backendReachable == nil,
@@ -404,14 +402,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private var hostWakeResetTask: Task<Void, Never>?
     private var deleteRepeatTask: Task<Void, Never>?
     private var bridgeProbeTask: Task<Void, Never>?
-    private var statusRefreshTask: Task<Void, Never>?
-    private var statusRefreshGeneration: UInt64 = 0
-    private var statusRefreshStartedAt: TimeInterval = 0
+    private var statusStreamGeneration: UInt64 = 0
+    private var statusStreamBridgeToken: String?
     private var refineTimeoutTask: Task<Void, Never>?
     private var refineTimeoutGeneration: UInt64 = 0
     private var refineTimeoutKey: String?
     private var lastSlowUpdateUILogAt: TimeInterval = 0
-    private var lastStatusRefreshFailureLogAt: TimeInterval = 0
+    private var lastStatusStreamFailureLogAt: TimeInterval = 0
     private var bridgeCommandTasks: [String: Task<Void, Never>] = [:]
     private var styleRewriteTask: Task<Void, Never>?
     private var styleConfigureTask: Task<Void, Never>?
@@ -437,11 +434,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private static let textRewriteContextExpansionMaxSteps = 40
     private static let textTouchCorrectionWindow: TimeInterval = 2.25
     private static let textTouchPositiveTTL: TimeInterval = 12
-    private static let statusRefreshStaleTimeout: TimeInterval = 1.0
-    private static let fastStatusPollingInterval: TimeInterval = 0.12
     private static let defaultCorrectionTimeoutMs = 1500
     private static let refineTimeoutTransportGrace: TimeInterval = 0.65
-    private static let refineTimeoutStatusFetchTimeout: TimeInterval = 0.9
     private static let sharedStatusSnapshotMaxAge: TimeInterval = 30
     private static let sharedActiveStatusSnapshotMaxAge: TimeInterval = 3
     private static let sharedStandbyLivenessSnapshotMaxAge: TimeInterval = 8
@@ -1877,13 +1871,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         scheduledHostOpenTask?.cancel()
         scheduledStopTask?.cancel()
         hostWakeResetTask?.cancel()
-        stopStatusPolling()
+        stopBridgeStatusStream()
         textTouchLearner.flush()
         chineseLearningRecorder.flush()
         rimeInput.onStateChange = nil
         keyboardDarwinObservers.forEach { $0.stopObserving() }
         bridgeProbeTask?.cancel()
-        cancelStatusRefresh()
         cancelRefineTimeoutWatchdog()
         cancelBridgeCommandTasks()
         styleRewriteTask?.cancel()
@@ -1912,7 +1905,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         textToolbarStatusText = nil
         bridgeProbeTask?.cancel()
         bridgeProbeTask = nil
-        cancelStatusRefresh()
+        stopBridgeStatusStream()
         cancelRefineTimeoutWatchdog()
         cancelActiveRecordingForKeyboardDismissal()
         cancelBridgeCommandTasks()
@@ -1922,7 +1915,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         styleConfigureTask?.cancel()
         styleConfigureTask = nil
         cancelScheduledHostOpen()
-        stopStatusPolling()
         keyboardDarwinObservers.forEach { $0.stopObserving() }
         keyboardDarwinObservers = []
         voicePrint.isActive = false
@@ -4820,14 +4812,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             stopPulseRings()
         }
 
-        if let desiredInterval = statusPollingInterval(for: currentBridgeStatus?.state) {
-            if statusTimer == nil || abs(statusTimerInterval - desiredInterval) > 0.01 {
-                stopStatusPolling()
-                startStatusPolling(interval: desiredInterval)
-            }
-        } else if statusTimer != nil {
-            stopStatusPolling()
-        }
         if isRecordingState {
             if recordingElapsedTimer == nil {
                 // applyBridgeStatus skips updateUI when only audioLevel moves,
@@ -5592,73 +5576,76 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         target: TextRewriteTarget?,
         continuesAfterRelease: Bool
     ) {
-        kbLog.debug("probeBridgeThenBeginDictation: checking local keyboard server")
+        kbLog.debug("probeBridgeThenBeginDictation: waiting for local keyboard status stream")
+        let probeStartedAt = Date().timeIntervalSince1970
         isStartRequestInFlight = true
         shouldStopWhenStartCompletes = false
         shouldCancelWhenStartCompletes = false
-        bridgeStatus = KeyboardBridgeStatus(state: .standby, message: "Checking Typeforme")
-        lastBridgeContactAt = Date().timeIntervalSince1970
         updateUI()
+        refreshBridgeStatus()
 
         bridgeProbeTask?.cancel()
-        let bridgeToken = hostKeyboardBridgeToken
         bridgeProbeTask = Task { [weak self] in
             guard let self else { return }
-            do {
-                let status = try await localClient.status(bridgeToken: bridgeToken, timeout: 0.9)
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
                 guard !Task.isCancelled else { return }
-                await MainActor.run {
-                    guard !Task.isCancelled else { return }
-                    self.isStartRequestInFlight = false
-                    self.bridgeStatus = status
-                    self.lastBridgeContactAt = Date().timeIntervalSince1970
-
-                    guard status.state != .idle else {
-                        guard self.shouldContinueAfterBridgeProbe(continuesAfterRelease: continuesAfterRelease) else {
-                            self.updateUI()
-                            return
-                        }
-                        self.openHostForDictation()
-                        return
-                    }
-
-                    if status.state == .recording {
-                        if self.inputMode == .tap {
-                            self.tapRecordingActive = false
-                            self.sendBridgeCommand(.stop)
-                        } else if !self.isVoicePressActive {
-                            if self.shouldCancelWhenStartCompletes {
-                                self.shouldCancelWhenStartCompletes = false
-                                self.sendBridgeCommand(.cancel)
-                            } else if self.shouldStopWhenStartCompletes {
-                                self.shouldStopWhenStartCompletes = false
-                                self.stopDictationAfterMinimumHoldIfNeeded()
-                            } else {
-                                self.updateUI()
-                            }
-                        } else {
-                            self.updateUI()
-                        }
-                        return
-                    }
-
-                    guard self.shouldContinueAfterBridgeProbe(continuesAfterRelease: continuesAfterRelease) else {
-                        self.updateUI()
-                        return
-                    }
-                    self.startDictationCommand(textEditContext: textEditContext, target: target)
-                }
-            } catch {
-                guard !Task.isCancelled else { return }
-                await MainActor.run {
-                    guard !Task.isCancelled else { return }
-                    self.isStartRequestInFlight = false
+                self.isStartRequestInFlight = false
+                let hasFreshDarwinSignal = self.lastDarwinAwakeAt >= probeStartedAt
+                let hasFreshStatusFrame = self.lastBridgeContactAt >= probeStartedAt
+                guard hasFreshDarwinSignal || hasFreshStatusFrame else {
                     guard self.shouldContinueAfterBridgeProbe(continuesAfterRelease: continuesAfterRelease) else {
                         self.updateUI()
                         return
                     }
                     self.openHostForDictation()
+                    return
                 }
+
+                guard let status = self.currentBridgeStatus, hasFreshStatusFrame else {
+                    guard self.shouldContinueAfterBridgeProbe(continuesAfterRelease: continuesAfterRelease) else {
+                        self.updateUI()
+                        return
+                    }
+                    self.startDictationCommand(textEditContext: textEditContext, target: target)
+                    return
+                }
+
+                guard status.state != .idle else {
+                    guard self.shouldContinueAfterBridgeProbe(continuesAfterRelease: continuesAfterRelease) else {
+                        self.updateUI()
+                        return
+                    }
+                    self.openHostForDictation()
+                    return
+                }
+
+                if status.state == .recording {
+                    if self.inputMode == .tap {
+                        self.tapRecordingActive = false
+                        self.sendBridgeCommand(.stop)
+                    } else if !self.isVoicePressActive {
+                        if self.shouldCancelWhenStartCompletes {
+                            self.shouldCancelWhenStartCompletes = false
+                            self.sendBridgeCommand(.cancel)
+                        } else if self.shouldStopWhenStartCompletes {
+                            self.shouldStopWhenStartCompletes = false
+                            self.stopDictationAfterMinimumHoldIfNeeded()
+                        } else {
+                            self.updateUI()
+                        }
+                    } else {
+                        self.updateUI()
+                    }
+                    return
+                }
+
+                guard self.shouldContinueAfterBridgeProbe(continuesAfterRelease: continuesAfterRelease) else {
+                    self.updateUI()
+                    return
+                }
+                self.startDictationCommand(textEditContext: textEditContext, target: target)
             }
         }
     }
@@ -9266,7 +9253,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     private func finishConsumedLivePartialPreviewSubmit(commandID: String) {
         cancelRefineTimeoutWatchdog()
-        cancelStatusRefresh()
+        stopBridgeStatusStream()
         pendingStopCommandID = nil
         activeRecordingCommandID = nil
         activeRecordingTextEditIntent = nil
@@ -10036,8 +10023,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         case .idle, .standby, .error:
             return age <= Self.sharedStatusSnapshotMaxAge
         case .result:
-            // Shared snapshots redact resultText. Applying that as a real result
-            // would mark the command complete before the local status API can
+            // Shared snapshots redact text payloads. Applying one as a real
+            // result would mark the command complete before the status stream can
             // deliver the text that replaces the live preview.
             guard age <= Self.sharedStatusSnapshotMaxAge,
                   let commandID = status.commandID,
@@ -10190,7 +10177,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     /// `backendReachable == nil` (never probed this host session) maps to
     /// green per the agreed UX — the orb's failure path will reveal a real
     /// outage if the optimism is wrong, and the dot will flip amber on the
-    /// next poll cycle. Avoids flashing amber on every cold keyboard open.
+    /// next status stream update. Avoids flashing amber on every cold keyboard open.
     private var readyDotColor: UIColor {
         guard hasFullAccess else { return .systemRed }
         guard isBridgeAwake else { return .systemGray3 }
@@ -10519,7 +10506,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     private func scheduleHostOpenIfStartStalls() {
         cancelScheduledHostOpen()
-        let delay: UInt64 = currentBridgeStatus?.state == .standby
+        // `.standby` can be a local optimistic command state. Only give the
+        // host the long startup window after a real Darwin signal confirmed the
+        // containing app is awake; otherwise open it promptly.
+        let delay: UInt64 = lastDarwinAwakeAt > 0 && currentBridgeStatus?.state == .standby
             ? 2_500_000_000
             : 650_000_000
         scheduledHostOpenTask = Task { [weak self] in
@@ -10546,36 +10536,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         bridgeCommandTasks.removeAll()
     }
 
-    private func startStatusPolling(interval: TimeInterval = 0.35) {
-        stopStatusPolling()
-        statusTimerInterval = interval
-        statusTimer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.refreshBridgeStatus(captureSelection: false)
-            }
-        }
-        if let statusTimer {
-            RunLoop.current.add(statusTimer, forMode: .common)
-        }
-    }
-
-    private func stopStatusPolling() {
-        statusTimer?.invalidate()
-        statusTimer = nil
-        statusTimerInterval = 0
-        // Polling is the only consumer of the pooled bridge connection; close
-        // it so the host isn't left holding an idle socket between sessions.
+    private func stopBridgeStatusStream() {
+        statusStreamGeneration &+= 1
+        statusStreamBridgeToken = nil
         let client = localClient
         Task {
             await client.shutdown()
         }
-    }
-
-    private func cancelStatusRefresh() {
-        statusRefreshGeneration &+= 1
-        statusRefreshTask?.cancel()
-        statusRefreshTask = nil
-        statusRefreshStartedAt = 0
     }
 
     private func cancelRefineTimeoutWatchdog() {
@@ -10627,51 +10594,14 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         key: String,
         generation: UInt64
     ) async {
-        guard isCurrentRefineTimeout(commandID: commandID, statusUpdatedAt: statusUpdatedAt, key: key, generation: generation)
-        else { return }
-
-        var sharedSnapshotShowsResult = false
-        if let snapshot = freshSharedStatusSnapshot(matching: commandID) {
-            switch snapshot.state {
-            case .result:
-                sharedSnapshotShowsResult = true
-            case .error:
-                applyBridgeStatus(snapshot, recordsLiveContact: false)
-                return
-            case .idle, .standby, .recording, .sending:
-                break
-            }
-        }
-
-        do {
-            await localClient.shutdown()
-            let status = try await localClient.status(
-                bridgeToken: hostKeyboardBridgeToken,
-                timeout: Self.refineTimeoutStatusFetchTimeout
-            )
-            guard isCurrentRefineTimeout(commandID: commandID, statusUpdatedAt: statusUpdatedAt, key: key, generation: generation)
-            else { return }
-            applyBridgeStatus(status)
-            guard let current = currentBridgeStatus,
-                  current.state == .sending,
-                  current.commandID == commandID,
-                  current.processingStage == .refining
-            else { return }
-        } catch {
-            kbLog.notice("refine timeout status reconciliation failed: \(error.localizedDescription, privacy: .public)")
-        }
-
         guard isCurrentRefineTimeout(commandID: commandID, statusUpdatedAt: statusUpdatedAt, key: key, generation: generation),
               let current = currentBridgeStatus
         else { return }
-        let timeoutMessage = sharedSnapshotShowsResult
-            ? NSLocalizedString("Result ready, but keyboard delivery timed out.", comment: "Keyboard bridge timeout after host produced a result")
-            : NSLocalizedString("Refine timed out.", comment: "Keyboard bridge timeout while refining")
         applyBridgeStatus(
             KeyboardBridgeStatus(
                 commandID: commandID,
                 state: .error,
-                message: timeoutMessage,
+                message: NSLocalizedString("Refine timed out.", comment: "Keyboard bridge timeout while refining"),
                 audioDurationSeconds: current.audioDurationSeconds,
                 audioByteCount: current.audioByteCount,
                 rawTranscriptLength: current.rawTranscriptLength,
@@ -10698,30 +10628,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
               current.processingStage == .refining
         else { return false }
         return abs(current.updatedAt - statusUpdatedAt) < 0.001
-    }
-
-    private func freshSharedStatusSnapshot(matching commandID: String) -> KeyboardBridgeStatus? {
-        guard let status = KeyboardSharedDefaults.loadStatusSnapshot(),
-              status.commandID == commandID
-        else { return nil }
-        let age = Date().timeIntervalSince1970 - status.updatedAt
-        guard age >= 0, age <= Self.sharedStatusSnapshotMaxAge else { return nil }
-        return status
-    }
-
-    private func statusPollingInterval(for state: KeyboardBridgeState?) -> TimeInterval? {
-        switch state {
-        case .some(.recording), .some(.sending):
-            // Host stages can move Recording → Transcribing → Result in a few
-            // hundred ms; keep this cadence fast enough not to skip feedback.
-            return Self.fastStatusPollingInterval
-        case .some(.idle), .some(.standby):
-            return nil
-        case .some(.result), .some(.error):
-            return nil
-        case .none:
-            return nil
-        }
     }
 
     private func scheduleSessionStatusChallengeTimeout(sentAt: TimeInterval) {
@@ -10783,62 +10689,52 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     private func refreshBridgeStatus(captureSelection: Bool = true) {
         guard hasFullAccess else {
-            cancelStatusRefresh()
+            stopBridgeStatusStream()
             return
-        }
-        let now = Date().timeIntervalSince1970
-        if statusRefreshTask != nil {
-            guard now - statusRefreshStartedAt >= Self.statusRefreshStaleTimeout else { return }
-            cancelStatusRefresh()
         }
         if captureSelection {
             refreshSelectionSnapshot()
         }
         let bridgeToken = hostKeyboardBridgeToken
-        statusRefreshGeneration &+= 1
-        let generation = statusRefreshGeneration
-        statusRefreshStartedAt = now
-        statusRefreshTask = Task { [weak self] in
-            guard let self else { return }
-            do {
-                let status = try await localClient.status(bridgeToken: bridgeToken)
-                guard !Task.isCancelled else { return }
-                await MainActor.run {
-                    guard !Task.isCancelled,
-                          self.statusRefreshGeneration == generation
-                    else { return }
-                    self.statusRefreshTask = nil
-                    self.statusRefreshStartedAt = 0
-                    self.applyBridgeStatus(status)
-                }
-            } catch {
-                guard !Task.isCancelled else { return }
-                await MainActor.run {
-                    guard !Task.isCancelled,
-                          self.statusRefreshGeneration == generation
-                    else { return }
-                    self.statusRefreshTask = nil
-                    self.statusRefreshStartedAt = 0
-                    if self.currentBridgeStatus?.state == .sending,
-                       self.applySharedBridgeStatusSnapshot() {
-                        return
+        guard statusStreamBridgeToken != bridgeToken else { return }
+        statusStreamGeneration &+= 1
+        let generation = statusStreamGeneration
+        statusStreamBridgeToken = bridgeToken
+        let client = localClient
+        Task { [weak self] in
+            await client.startStatusStream(
+                bridgeToken: bridgeToken,
+                onStatus: { [weak self] status in
+                    await MainActor.run {
+                        guard let self,
+                              self.statusStreamGeneration == generation
+                        else { return }
+                        self.applyBridgeStatus(status)
                     }
-                    let hadRecentBridgeContact = self.lastBridgeContactAt > 0
-                    self.lastBridgeContactAt = 0
-                    self.logStatusRefreshFailureIfNeeded(error)
-                    if hadRecentBridgeContact {
-                        self.updateUI()
+                },
+                onFailure: { [weak self] error in
+                    await MainActor.run {
+                        guard let self,
+                              self.statusStreamGeneration == generation
+                        else { return }
+                        self.statusStreamBridgeToken = nil
+                        let hadRecentBridgeContact = self.lastBridgeContactAt > 0
+                        self.lastBridgeContactAt = 0
+                        self.logStatusStreamFailureIfNeeded(error)
+                        if hadRecentBridgeContact {
+                            self.updateUI()
+                        }
                     }
                 }
-            }
+            )
         }
     }
 
-    private func logStatusRefreshFailureIfNeeded(_ error: Error) {
+    private func logStatusStreamFailureIfNeeded(_ error: Error) {
         let now = Date().timeIntervalSince1970
-        guard now - lastStatusRefreshFailureLogAt >= 2 else { return }
-        lastStatusRefreshFailureLogAt = now
-        kbLog.notice("status refresh failed: \(error.localizedDescription, privacy: .public)")
+        guard now - lastStatusStreamFailureLogAt >= 2 else { return }
+        lastStatusStreamFailureLogAt = now
+        kbLog.notice("status stream failed: \(error.localizedDescription, privacy: .public)")
     }
 
     private func beginInsertedFlash() {
@@ -10894,7 +10790,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             beginInsertedFlash()
         }
         // Live partial preview owns only the marked text it created. Rime
-        // composition also uses marked text; bridge idle polls must not clear
+        // composition also uses marked text; bridge idle frames must not clear
         // the user's in-progress Pinyin preedit.
         let partial = status.livePartialTranscript?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let suppressesPartialPreview = suppressesLivePartialPreview(for: status)

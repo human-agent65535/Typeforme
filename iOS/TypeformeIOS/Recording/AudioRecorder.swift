@@ -500,9 +500,8 @@ final class AudioRecorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
     private func startMetering() {
         stopMetering()
         level = 0
-        // 20Hz sampling — fine-grained enough that the keyboard, which polls
-        // ~8Hz during recording, always has a recent reading without spending
-        // CPU on a CADisplayLink-rate update.
+        // 20Hz sampling gives the keyboard status stream a recent reading
+        // without spending CPU on a CADisplayLink-rate update.
         let timer = Timer(timeInterval: 1.0 / 20.0, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.sampleLevel()

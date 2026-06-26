@@ -428,6 +428,7 @@ final class AppState {
     private var initialRenderDelayTask: Task<Void, Never>?
     @ObservationIgnored private var recorderPreWarmTask: Task<Void, Never>?
     private var bridgeRefiningStatusTask: Task<Void, Never>?
+    @ObservationIgnored private var keyboardStatusAudioLevelTask: Task<Void, Never>?
     /// Live-preview transcript fed by the selected preview source while the
     /// user is recording (and held until the Mac final result replaces it).
     /// Empty string = no preview surfaced (unsupported language, denied
@@ -636,6 +637,7 @@ final class AppState {
         hostAudioSessionExpiryTask?.cancel()
         keyboardStandbyRefreshTask?.cancel()
         recorderPreWarmTask?.cancel()
+        keyboardStatusAudioLevelTask?.cancel()
         networkPathMonitor.cancel()
         for token in lifecycleObservers {
             NotificationCenter.default.removeObserver(token)
@@ -1671,7 +1673,7 @@ final class AppState {
                     rawTranscriptLength: spokenTranscript.count
                 )
             }
-            notifyKeyboardResultReady()
+            notifyKeyboardTranscriptionReady()
             KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.dictationStopped)
             if resultCommandID != nil {
                 scheduleKeyboardStandbyRefresh()
@@ -1762,7 +1764,7 @@ final class AppState {
                 correctionLatencyMs: response.correctionLatencyMs ?? response.latencyMs,
                 totalLatencyMs: response.latencyMs
             )
-            notifyKeyboardResultReady()
+            notifyKeyboardTranscriptionReady()
             errorMessage = nil
             applyCorrectionMetadata(
                 status: response.correctionStatus,
@@ -2029,6 +2031,7 @@ final class AppState {
             hostAudioSessionExpiryTask = nil
             keyboardStandbyRefreshTask?.cancel()
             keyboardStandbyRefreshTask = nil
+            stopKeyboardStatusAudioLevelPush()
             keyboardServer.stop()
             standbyKeeper.stop()
             keyboardAudioSession.stop()
@@ -2696,7 +2699,7 @@ final class AppState {
     }
 
     /// Called when ANY keyboard → host signal arrives (local bridge connect,
-    /// status poll, command). Setting this flag is the only way the host
+    /// status stream subscription, command). Setting this flag is the only way the host
     /// learns the keyboard is enabled + has Full Access, since iOS does not
     /// expose Full Access state to the containing app.
     @MainActor
@@ -3175,7 +3178,7 @@ final class AppState {
         }
     }
 
-    private func notifyKeyboardResultReady() {
+    private func notifyKeyboardTranscriptionReady() {
         KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.transcriptionReady)
     }
 
@@ -3194,7 +3197,7 @@ final class AppState {
         // ready dot treats `nil` optimistically (assume reachable) so a
         // fresh-keyboard cold start doesn't flash amber before the first
         // probe lands. A real failure flips this to `false` and the dot
-        // turns amber on the next poll.
+        // turns amber on the next status stream update.
         let reachable: Bool? = {
             switch routeStatus.activeKind {
             case .local, .cloud: return true
@@ -3249,6 +3252,8 @@ final class AppState {
 
     private func setKeyboardBridgeStatus(_ status: KeyboardBridgeStatus, persistSnapshot: Bool = true) {
         keyboardBridgeStatus = status
+        keyboardServer.publishStatus(status)
+        updateKeyboardStatusAudioLevelPush(for: status)
         guard persistSnapshot else { return }
         KeyboardSharedDefaults.saveStatusSnapshot(status)
     }
@@ -3261,13 +3266,40 @@ final class AppState {
         guard keyboardBridgeStatus.state == .recording || keyboardBridgeStatus.state == .sending else { return }
         let next = livePartialTranscript.isEmpty ? nil : livePartialTranscript
         guard keyboardBridgeStatus.livePartialTranscript != next else { return }
-        // Partials reach the keyboard through its live status poll; writing a
+        // Partials reach the keyboard through its live status stream; writing a
         // shared-defaults snapshot per speech hypothesis is main-actor disk
         // traffic several times a second with no reader that needs it.
         setKeyboardBridgeStatus(
             keyboardBridgeStatus.withLivePartialTranscript(next),
             persistSnapshot: false
         )
+    }
+
+    private func updateKeyboardStatusAudioLevelPush(for status: KeyboardBridgeStatus) {
+        guard status.state == .recording else {
+            stopKeyboardStatusAudioLevelPush()
+            return
+        }
+        guard keyboardStatusAudioLevelTask == nil else { return }
+        keyboardStatusAudioLevelTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                guard self.keyboardBridgeStatus.state == .recording else {
+                    self.stopKeyboardStatusAudioLevelPush()
+                    return
+                }
+                let level = self.keyboardAudioSession.isRecording
+                    ? self.keyboardAudioSession.level
+                    : self.recorder.level
+                self.keyboardServer.publishStatus(self.keyboardBridgeStatus.withAudioLevel(level))
+                try? await Task.sleep(nanoseconds: 50_000_000)
+            }
+        }
+    }
+
+    private func stopKeyboardStatusAudioLevelPush() {
+        keyboardStatusAudioLevelTask?.cancel()
+        keyboardStatusAudioLevelTask = nil
     }
 
     private func cancelActiveRecordingWithoutSending(
@@ -3412,6 +3444,9 @@ final class AppState {
                 rawTranscriptLength: transcriptLength,
                 processingStage: keyboardProcessingStage
             )
+            if event.stage == .transcriptReady {
+                notifyKeyboardTranscriptionReady()
+            }
         }
     }
 
