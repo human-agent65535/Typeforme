@@ -9444,8 +9444,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             return true
         }
         kbLog.notice(
-            "skipped result commit because live preview is no longer in host input command_id=\(preview.commandID, privacy: .public) preview_chars=\(preview.text.count, privacy: .public) final_chars=\(finalText.count, privacy: .public)"
+            "live preview missing before final result; inserting final command_id=\(preview.commandID, privacy: .public) preview_chars=\(preview.text.count, privacy: .public) final_chars=\(finalText.count, privacy: .public)"
         )
+        commitTextReplacingMarkedText(finalText)
         activeMarkedText = ""
         activeMarkedTextOwner = nil
         return true
@@ -10015,8 +10016,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         case .idle, .standby, .error:
             return age <= Self.sharedStatusSnapshotMaxAge
         case .result:
+            // Shared snapshots redact resultText. Applying that as a real result
+            // would mark the command complete before the local status API can
+            // deliver the text that replaces the live preview.
             guard age <= Self.sharedStatusSnapshotMaxAge,
-                  let commandID = status.commandID
+                  let commandID = status.commandID,
+                  status.resultText?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
             else { return false }
             return expectedRecordingResultCommandIDs().contains(commandID)
                 || styleRewriteCommandID == commandID

@@ -3299,6 +3299,8 @@ final class AppState {
            let raw = event.rawTranscript?.trimmingCharacters(in: .whitespacesAndNewlines),
            !raw.isEmpty {
             rawTranscript = raw
+            livePartialTranscript = raw
+            publishLivePartialTranscriptToKeyboard()
         }
 
         let stageMessage: String?
