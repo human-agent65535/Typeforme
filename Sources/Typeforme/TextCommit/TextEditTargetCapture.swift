@@ -61,6 +61,10 @@ enum TextEditTargetCapture {
     }
 
     static func currentSelectedText(in appSnapshot: FrontmostAppSnapshot?) -> String? {
+        currentSelection(in: appSnapshot)?.text
+    }
+
+    static func currentSelection(in appSnapshot: FrontmostAppSnapshot?) -> (text: String, range: CFRange?)? {
         guard AppPermissions.accessibilityTrusted else { return nil }
         guard let appSnapshot else { return nil }
         let app = AXUIElementCreateApplication(appSnapshot.pid)
@@ -68,7 +72,34 @@ enum TextEditTargetCapture {
         guard let focused = focusedElement(in: app) else { return nil }
         AXUIElementSetMessagingTimeout(focused, 0.25)
         guard !isSecureTextElement(focused) else { return nil }
-        return stringAttribute(kAXSelectedTextAttribute, from: focused)
+        guard let text = stringAttribute(kAXSelectedTextAttribute, from: focused) else { return nil }
+        return (text, selectedRange(in: focused))
+    }
+
+    static func selectionStillMatches(_ target: TextEditTargetSnapshot, in appSnapshot: FrontmostAppSnapshot?) -> Bool {
+        guard AppPermissions.accessibilityTrusted else { return false }
+        guard let appSnapshot else { return false }
+        guard let focused = currentFocusedElement(in: appSnapshot),
+              sameElement(focused, target.element),
+              !isSecureTextElement(focused),
+              let currentText = stringAttribute(kAXSelectedTextAttribute, from: focused),
+              currentText == target.targetText,
+              let capturedRange = target.targetRange,
+              let currentRange = selectedRange(in: focused),
+              sameRange(currentRange, capturedRange)
+        else { return false }
+        return true
+    }
+
+    static func focusedValueStillMatches(_ target: TextEditTargetSnapshot, in appSnapshot: FrontmostAppSnapshot?) -> Bool {
+        guard AppPermissions.accessibilityTrusted else { return false }
+        guard let appSnapshot else { return false }
+        guard let focused = currentFocusedElement(in: appSnapshot),
+              sameElement(focused, target.element),
+              !isSecureTextElement(focused),
+              stringAttribute(kAXValueAttribute, from: focused) == target.targetText
+        else { return false }
+        return true
     }
 
     @MainActor
@@ -107,6 +138,35 @@ enum TextEditTargetCapture {
             return nil
         }
         return range
+    }
+
+    private static func currentFocusedElement(in appSnapshot: FrontmostAppSnapshot) -> AXUIElement? {
+        let app = AXUIElementCreateApplication(appSnapshot.pid)
+        AXUIElementSetMessagingTimeout(app, 0.25)
+        guard let focused = focusedElement(in: app) else { return nil }
+        AXUIElementSetMessagingTimeout(focused, 0.25)
+        return focused
+    }
+
+    private static func sameElement(_ lhs: AXUIElement, _ rhs: AXUIElement) -> Bool {
+        if CFEqual(lhs, rhs) { return true }
+        var lhsPID = pid_t()
+        var rhsPID = pid_t()
+        guard AXUIElementGetPid(lhs, &lhsPID) == .success,
+              AXUIElementGetPid(rhs, &rhsPID) == .success,
+              lhsPID == rhsPID
+        else { return false }
+        guard let lhsIdentifier = stringAttribute(kAXIdentifierAttribute, from: lhs),
+              let rhsIdentifier = stringAttribute(kAXIdentifierAttribute, from: rhs),
+              !lhsIdentifier.isEmpty,
+              lhsIdentifier == rhsIdentifier
+        else { return false }
+        return stringAttribute(kAXRoleAttribute, from: lhs) == stringAttribute(kAXRoleAttribute, from: rhs)
+            && stringAttribute(kAXSubroleAttribute, from: lhs) == stringAttribute(kAXSubroleAttribute, from: rhs)
+    }
+
+    private static func sameRange(_ lhs: CFRange, _ rhs: CFRange) -> Bool {
+        lhs.location == rhs.location && lhs.length == rhs.length
     }
 
     private static func focusedElement(in app: AXUIElement) -> AXUIElement? {

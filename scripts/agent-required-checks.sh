@@ -61,8 +61,8 @@ print_changed_files() {
 
 macos_pattern='^(Sources/Typeforme/|Tests/TypeformeTests/|Package.swift|Resources/)'
 ios_pattern='^(iOS/TypeformeIOS/|iOS/TypeformeKeyboard/|iOS/Shared/|iOS/TypeformeIOS\.xcodeproj/|Sources/Typeforme/Bridge/BridgeProtocolModels\.swift|Sources/Typeforme/Bridge/BridgeMultipart\.swift|Sources/Typeforme/Models/(ASRLanguageSelection|CorrectionMode|OutputPreferences)\.swift)'
-shell_pattern='(^|/)scripts/[^/]+\.sh$'
-deployable_metadata_pattern='^(Resources/Info\.plist|iOS/TypeformeIOS\.xcodeproj/project\.pbxproj|iOS/TypeformeIOS/Info\.plist|iOS/TypeformeKeyboard/Info\.plist|iOS/TypeformeIOS/Assets\.xcassets/|iOS/TypeformeIOS/.*\.entitlements|iOS/TypeformeKeyboard/.*\.entitlements)'
+shell_pattern='(^|/)scripts/.*\.sh$'
+deployable_version_pattern='^(Resources/|Sources/Typeforme/|iOS/TypeformeIOS/|iOS/TypeformeKeyboard/|iOS/Shared/|iOS/TypeformeIOS\.xcodeproj/project\.pbxproj)'
 ios_behavior_file_pattern='^(iOS/TypeformeIOS/|iOS/TypeformeKeyboard/|iOS/Shared/)'
 ios_high_risk_diff_pattern='AVAudioSession|StandbyAudioSession|StandbyKeeper|KeyboardDarwinBridge|KeyboardDarwinNotificationName|handleOpenURL|openHostApp|typeforme://|microphone|requestStartDictation|requestStopDictation|dictationStarted|dictationStopped|sessionStarted|sessionEnded|KeyboardLocal(Server|Client)|KeyboardHostHandoff'
 
@@ -81,7 +81,7 @@ fi
 if matches_any_file "$shell_pattern"; then
     needs_shell_syntax=1
 fi
-if matches_any_file "$deployable_metadata_pattern"; then
+if matches_any_file "$deployable_version_pattern"; then
     needs_version_review=1
 fi
 if diff_matches_in_files "$ios_behavior_file_pattern" "$ios_high_risk_diff_pattern"; then

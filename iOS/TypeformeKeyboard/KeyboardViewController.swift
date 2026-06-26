@@ -6243,20 +6243,15 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             || currentBridgeStatus?.state == .recording
         guard shouldCancel else { return }
 
-        kbLog.notice("keyboard disappearing during dictation; preserving host recording")
+        kbLog.notice("keyboard disappearing during dictation; canceling host recording")
         cancelScheduledStop()
-        isStartRequestInFlight = false
         shouldStopWhenStartCompletes = false
-        shouldCancelWhenStartCompletes = false
         isVoicePressActive = false
         isCommandPressActive = false
         tapRecordingActive = false
-        activeRecordingCommandID = nil
-        activeRecordingTextEditIntent = nil
-        activeRecordingTextTarget = nil
-        pendingStopCommandID = nil
-        livePartialPreviewState = nil
         cancelScheduledHostOpen()
+        shouldCancelWhenStartCompletes = isStartRequestInFlight
+        sendBridgeCommand(.cancel)
     }
 
     private func cancelActiveHoldRecording() {
@@ -9443,13 +9438,38 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         if replaceAnchoredLivePartialPreview(preview, with: finalText) {
             return true
         }
+        guard shouldInsertFinalAtCurrentLivePreviewAnchor(preview) else {
+            kbLog.notice(
+                "skipped live preview final insert because anchor was missing command_id=\(preview.commandID, privacy: .public) preview_chars=\(preview.text.count, privacy: .public) final_chars=\(finalText.count, privacy: .public)"
+            )
+            activeMarkedText = ""
+            activeMarkedTextOwner = nil
+            return false
+        }
         kbLog.notice(
-            "live preview missing before final result; inserting final command_id=\(preview.commandID, privacy: .public) preview_chars=\(preview.text.count, privacy: .public) final_chars=\(finalText.count, privacy: .public)"
+            "live preview missing before final result; inserting final at current anchor command_id=\(preview.commandID, privacy: .public) preview_chars=\(preview.text.count, privacy: .public) final_chars=\(finalText.count, privacy: .public)"
         )
         commitTextReplacingMarkedText(finalText)
         activeMarkedText = ""
         activeMarkedTextOwner = nil
         return true
+    }
+
+    private func shouldInsertFinalAtCurrentLivePreviewAnchor(_ preview: LivePartialPreviewState) -> Bool {
+        let before = textDocumentProxy.documentContextBeforeInput ?? ""
+        let after = textDocumentProxy.documentContextAfterInput ?? ""
+        let currentText = before + after
+        if !preview.text.isEmpty, currentText.contains(preview.text) {
+            return false
+        }
+        if currentText.isEmpty {
+            return preview.contextBefore.isEmpty && preview.contextAfter.isEmpty
+        }
+        guard !preview.contextBefore.isEmpty || !preview.contextAfter.isEmpty else {
+            return false
+        }
+        return livePartialContextBeforeMatches(before, anchorBefore: preview.contextBefore)
+            && livePartialContextAfterMatches(after, anchorAfter: preview.contextAfter)
     }
 
     private func shouldSkipResultCommitForConsumedLivePartial() -> Bool {
@@ -10300,7 +10320,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         if action != .configure {
             if action == .start || action == .stop || action == .cancel {
                 if action == .start, command.textEditContext == nil {
-                    sendDarwinBridgeCommand(.start, commandID: command.id)
+                    sendDarwinBridgeCommand(command)
                     return
                 }
                 sendLocalBridgeCommand(command)
@@ -10380,12 +10400,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                     guard !Task.isCancelled else { return }
                     self.bridgeCommandTasks[command.id] = nil
                     if command.action == .stop || command.action == .cancel {
-                        self.sendDarwinBridgeCommand(command.action, commandID: command.id)
+                        self.sendDarwinBridgeCommand(command)
                         return
                     }
                     if command.action == .start {
                         if command.textEditContext == nil {
-                            self.sendDarwinBridgeCommand(.start, commandID: command.id)
+                            self.sendDarwinBridgeCommand(command)
                             return
                         }
                         self.isStartRequestInFlight = false
@@ -10408,6 +10428,17 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func sendDarwinBridgeCommand(_ action: KeyboardBridgeCommandAction, commandID: String) {
+        let command = KeyboardBridgeCommand(
+            id: commandID,
+            action: action,
+            correctionMode: correctionMode.rawValue
+        )
+        sendDarwinBridgeCommand(command)
+    }
+
+    private func sendDarwinBridgeCommand(_ command: KeyboardBridgeCommand) {
+        let action = command.action
+        let commandID = command.id
         if action == .start || action == .stop {
             if action == .start, inputMode == .tap {
                 tapRecordingActive = true
@@ -10428,6 +10459,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
         switch action {
         case .start:
+            guard KeyboardSharedDefaults.saveDarwinCommand(command) else {
+                isStartRequestInFlight = false
+                openHostForDictation()
+                return
+            }
             if postAuthenticatedKeyboardRequest(KeyboardDarwinNotificationName.requestStartDictation) {
                 scheduleHostOpenIfStartStalls()
             } else {
@@ -10435,6 +10471,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 openHostForDictation()
             }
         case .stop:
+            _ = KeyboardSharedDefaults.saveDarwinCommand(command)
             if !postAuthenticatedKeyboardRequest(KeyboardDarwinNotificationName.requestStopDictation) {
                 pendingStopCommandID = nil
                 bridgeStatus = KeyboardBridgeStatus(commandID: commandID, state: .error, message: "Open Typeforme once to prepare dictation.")
@@ -10449,6 +10486,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             activeRecordingTextTarget = nil
             livePartialPreviewState = nil
             cancelScheduledHostOpen()
+            _ = KeyboardSharedDefaults.saveDarwinCommand(command)
             _ = postAuthenticatedKeyboardRequest(KeyboardDarwinNotificationName.requestCancelDictation)
         case .configure, .refineText:
             break

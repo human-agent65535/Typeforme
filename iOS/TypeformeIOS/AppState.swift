@@ -1839,11 +1839,13 @@ final class AppState {
 
             if source == "keyboard", action == "setup", reason == "full_access" {
                 markKeyboardFullAccessRequired()
-            } else if source == "keyboard",
-               let handoffID,
-               let handoff = KeyboardSharedDefaults.consumeHostHandoff(id: handoffID, now: now),
-               handoff.action == action {
-                keyboardHandoff = handoff
+            } else if source == "keyboard", let handoffID {
+                if let handoff = await consumeKeyboardHostHandoff(id: handoffID, action: action) {
+                    keyboardHandoff = handoff
+                } else {
+                    appLog.notice("handleOpenURL: rejected unauthenticated keyboard handoff action=\(action, privacy: .public), has_handoff=true")
+                    return
+                }
             } else if source == "keyboard" {
                 appLog.notice("handleOpenURL: rejected unauthenticated keyboard handoff action=\(action, privacy: .public), has_handoff=\((handoffID?.isEmpty == false), privacy: .public)")
                 return
@@ -1869,6 +1871,26 @@ final class AppState {
             appLog.notice("handleOpenURL: rejected unauthenticated standby action")
             return
         }
+    }
+
+    private func consumeKeyboardHostHandoff(id: String, action: String) async -> KeyboardHostHandoff? {
+        for attempt in 0..<4 {
+            if attempt > 0 {
+                try? await Task.sleep(nanoseconds: 50_000_000)
+            }
+            guard let handoff = KeyboardSharedDefaults.consumeHostHandoff(
+                id: id,
+                now: Date().timeIntervalSince1970
+            ) else {
+                continue
+            }
+            guard handoff.action == action else {
+                appLog.notice("consumeKeyboardHostHandoff: action mismatch expected=\(action, privacy: .public) actual=\(handoff.action, privacy: .public)")
+                return nil
+            }
+            return handoff
+        }
+        return nil
     }
 
     private func handleKeyboardHostHandoff(
@@ -2752,25 +2774,39 @@ final class AppState {
                     guard let self else { return }
                     self.markKeyboardEverContacted()
                     guard self.keyboardStandbyEnabled || self.keyboardAudioSession.isRecording else { return }
-                    self.clearKeyboardCaptureContext()
+                    let command = KeyboardSharedDefaults.consumeDarwinCommand(action: .start)
+                    if let command {
+                        if let requestedMode = CorrectionMode(rawValue: command.correctionMode) {
+                            self.applyKeyboardDefaultCorrectionMode(requestedMode)
+                        }
+                        self.activeKeyboardTextEditContext = command.textEditContext
+                        self.activeKeyboardDictationContext = command.dictationContext
+                    } else {
+                        self.clearKeyboardCaptureContext()
+                    }
                     self.keyboardCaptureStartedFromKeyboard = true
-                    await self.startKeyboardRecording(commandID: nil, allowSessionStart: true)
+                    await self.startKeyboardRecording(commandID: command?.id, allowSessionStart: true)
                 }
             },
             KeyboardDarwinBridge.observe(requestStopName) { [weak self] in
                 Task { @MainActor [weak self] in
                     guard let self else { return }
                     guard self.keyboardStandbyEnabled || self.keyboardAudioSession.isRecording else { return }
-                    await self.stopAndSend(keyboardCommandID: nil)
+                    let command = KeyboardSharedDefaults.consumeDarwinCommand(action: .stop)
+                    await self.stopAndSend(keyboardCommandID: command?.id)
                 }
             },
             KeyboardDarwinBridge.observe(requestCancelName) { [weak self] in
                 Task { @MainActor [weak self] in
                     guard let self else { return }
+                    let command = KeyboardSharedDefaults.consumeDarwinCommand(action: .cancel)
+                    if let command {
+                        self.rememberCanceledKeyboardCommand(command.id)
+                    }
                     self.clearKeyboardCaptureContext()
                     await self.cancelActiveRecordingWithoutSending(
                         hostFailureMessage: nil,
-                        keyboardCommandID: nil,
+                        keyboardCommandID: command?.id,
                         keyboardMessage: "Ready",
                         resumeKeyboardStandby: true
                     )
@@ -2805,6 +2841,10 @@ final class AppState {
                 clearKeyboardCaptureContext()
                 publishKeyboardStatus(.standby, commandID: command.id, message: "Ready")
                 KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.dictationStopped)
+                return keyboardBridgeStatus
+            }
+            guard phase == .recording || phase.allowsRecordingStart else {
+                publishKeyboardBusyStatus(for: command.id)
                 return keyboardBridgeStatus
             }
             if let requestedMode = CorrectionMode(rawValue: command.correctionMode) {
@@ -2984,6 +3024,10 @@ final class AppState {
             activeKeyboardRecordingCommandID = commandID
         }
         if keyboardAudioSession.isRecording {
+            guard phase == .recording else {
+                publishKeyboardBusyStatus(for: commandID)
+                return
+            }
             keyboardCaptureStartedFromKeyboard = true
             publishKeyboardStatus(.recording, commandID: commandID, message: "Recording")
             KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.dictationStarted)
@@ -3053,6 +3097,23 @@ final class AppState {
             KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.dictationStopped)
             await resumeKeyboardStandbyAfterCommand()
         }
+    }
+
+    private func publishKeyboardBusyStatus(for commandID: String?) {
+        let state: KeyboardBridgeState
+        switch keyboardBridgeStatus.state {
+        case .recording, .sending:
+            state = keyboardBridgeStatus.state
+        default:
+            state = phase == .recording ? .recording : .sending
+        }
+        let message = keyboardBridgeStatus.message.trimmingCharacters(in: .whitespacesAndNewlines)
+        publishKeyboardStatus(
+            state,
+            commandID: keyboardBridgeStatus.commandID ?? commandID,
+            message: message.isEmpty ? phase.label : message,
+            processingStage: keyboardBridgeStatus.processingStage
+        )
     }
 
     private func resumeKeyboardStandbyAfterCommand(retryCount: Int = 0) async {

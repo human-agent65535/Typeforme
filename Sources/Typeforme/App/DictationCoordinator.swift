@@ -371,49 +371,45 @@ final class DictationCoordinator: ObservableObject {
                 transition(to: .correcting)
                 do {
                     let spokenInstruction: String
-                    if !selectedCorrectionMode.usesRefine {
-                        spokenInstruction = trimmed
+                    let request = buildCorrectionRequest(
+                        rawTranscript: trimmed,
+                        correctionModeOverride: .clean,
+                        alternateTranscripts: alternateTranscripts,
+                        asrHypotheses: asrHypotheses,
+                        sourceHypotheses: asrResult.sourceHypotheses
+                    )
+                    let correctionStarted = Date()
+                    do {
+                        let result = try await corrector.correct(request, timeoutMs: AppSettings.correctionTimeoutMs)
+                        try await ensureActive(sessionID: sessionID, token: cancelToken)
+                        let normalizedResult = normalizeResult(result, correctionMode: request.correctionMode)
+                        spokenInstruction = normalizedResult.text.trimmingCharacters(in: .whitespacesAndNewlines)
                         lastWarning = asrWarning
-                    } else {
-                        let request = buildCorrectionRequest(
-                            rawTranscript: trimmed,
-                            alternateTranscripts: alternateTranscripts,
-                            asrHypotheses: asrHypotheses,
-                            sourceHypotheses: asrResult.sourceHypotheses
-                        )
-                        let correctionStarted = Date()
-                        do {
-                            let result = try await corrector.correct(request, timeoutMs: AppSettings.correctionTimeoutMs)
-                            try await ensureActive(sessionID: sessionID, token: cancelToken)
-                            let normalizedResult = normalizeResult(result, correctionMode: request.correctionMode)
-                            spokenInstruction = normalizedResult.text.trimmingCharacters(in: .whitespacesAndNewlines)
-                            lastWarning = asrWarning
-                        } catch {
-                            if error is CancellationError {
-                                throw error
-                            }
-                            try await ensureActive(sessionID: sessionID, token: cancelToken)
-                            let statusLabel = Self.refineFailureStatus(for: error)
-                            let fallbackResult = normalizeResult(
-                                CorrectionResult(action: .commit, text: trimmed, risk: .medium),
-                                correctionMode: request.correctionMode
-                            )
-                            spokenInstruction = fallbackResult.text.trimmingCharacters(in: .whitespacesAndNewlines)
-                            lastWarning = Self.combinedWarning([
-                                Self.previewWithoutRefineMessage(for: statusLabel),
-                                asrWarning,
-                            ])
-                            DebugLogStore.recordCorrection(
-                                debugLog,
-                                mode: request.correctionMode,
-                                text: fallbackResult.text,
-                                status: statusLabel,
-                                error: error.localizedDescription,
-                                latencyMs: elapsedMs(since: correctionStarted),
-                                request: request,
-                                timeoutMs: AppSettings.correctionTimeoutMs
-                            )
+                    } catch {
+                        if error is CancellationError {
+                            throw error
                         }
+                        try await ensureActive(sessionID: sessionID, token: cancelToken)
+                        let statusLabel = Self.refineFailureStatus(for: error)
+                        let fallbackResult = normalizeResult(
+                            CorrectionResult(action: .commit, text: trimmed, risk: .medium),
+                            correctionMode: request.correctionMode
+                        )
+                        spokenInstruction = fallbackResult.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                        lastWarning = Self.combinedWarning([
+                            Self.previewWithoutRefineMessage(for: statusLabel),
+                            asrWarning,
+                        ])
+                        DebugLogStore.recordCorrection(
+                            debugLog,
+                            mode: request.correctionMode,
+                            text: fallbackResult.text,
+                            status: statusLabel,
+                            error: error.localizedDescription,
+                            latencyMs: elapsedMs(since: correctionStarted),
+                            request: request,
+                            timeoutMs: AppSettings.correctionTimeoutMs
+                        )
                     }
                     guard !spokenInstruction.isEmpty else {
                         reportError("Dictation produced an empty edit command")

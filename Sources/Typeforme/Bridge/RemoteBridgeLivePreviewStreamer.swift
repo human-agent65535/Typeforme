@@ -358,7 +358,8 @@ final class RemoteBridgeLivePreviewStreamer: @unchecked Sendable {
     private func handleLivePreviewEventOnAudioQueue(_ event: BridgeLivePreviewEvent) {
         guard event.sessionID == sessionID else { return }
         eventCount += 1
-        if let text = event.text?.trimmingCharacters(in: .whitespacesAndNewlines),
+        if !suppressSocketResult,
+           let text = event.text?.trimmingCharacters(in: .whitespacesAndNewlines),
            !text.isEmpty,
            event.isFinal || text != lastTranscript {
             lastTranscript = text

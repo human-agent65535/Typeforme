@@ -47,9 +47,15 @@ struct AppleSpeechASRService: ASRService {
         request: SFSpeechURLRecognitionRequest
     ) async throws -> String {
         let taskBox = SpeechRecognitionTaskBox()
+        let continuationStore = SpeechRecognitionContinuationStore()
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 let resumeBox = SpeechRecognitionContinuationBox(continuation)
+                continuationStore.set(resumeBox)
+                guard !Task.isCancelled else {
+                    resumeBox.resume(.failure(CancellationError()))
+                    return
+                }
                 taskBox.task = recognizer.recognitionTask(with: request) { result, error in
                     if let error {
                         resumeBox.resume(.failure(error))
@@ -61,6 +67,7 @@ struct AppleSpeechASRService: ASRService {
             }
         } onCancel: {
             taskBox.cancel()
+            continuationStore.cancel()
         }
     }
 }
@@ -80,6 +87,22 @@ private final class SpeechRecognitionTaskBox: @unchecked Sendable {
 
     func cancel() {
         lock.withLock { _task?.cancel() }
+    }
+}
+
+private final class SpeechRecognitionContinuationStore: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: SpeechRecognitionContinuationBox?
+
+    func set(_ continuation: SpeechRecognitionContinuationBox) {
+        lock.withLock {
+            self.continuation = continuation
+        }
+    }
+
+    func cancel() {
+        let continuation = lock.withLock { self.continuation }
+        continuation?.resume(.failure(CancellationError()))
     }
 }
 

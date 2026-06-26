@@ -333,11 +333,7 @@ private struct NvidiaASRProcessResult: Sendable {
     let stderr: String
 
     var errorDetail: String {
-        stderr
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .components(separatedBy: .newlines)
-            .suffix(6)
-            .joined(separator: "\n")
+        NvidiaNemotronHelperLogSanitizer.publicErrorSummary(stderr: stderr, exitCode: exitCode)
     }
 }
 

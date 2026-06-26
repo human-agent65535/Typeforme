@@ -34,7 +34,7 @@ enum TextEditValidator {
         return result
     }
 
-    private static func validate(_ result: TextEditResult, for request: TextEditRequest) throws {
+    static func validate(_ result: TextEditResult, for request: TextEditRequest) throws {
         let cap = maxOutputCharacters(for: request)
         try ModelJSONOutputValidator.validateText(
             result.text,

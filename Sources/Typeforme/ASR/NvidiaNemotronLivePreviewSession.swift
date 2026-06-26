@@ -503,7 +503,9 @@ final class NvidiaNemotronLivePreviewSession: ASRLivePreviewSession, @unchecked 
                 .trimmingCharacters(in: .whitespacesAndNewlines),
                   !message.isEmpty
             else { continue }
-            Log.asr.notice("Nemotron live preview: \(message, privacy: .public)")
+            Log.asr.notice(
+                "Nemotron live preview stderr \(NvidiaNemotronHelperLogSanitizer.publicStderrLineSummary(message), privacy: .public)"
+            )
             if message.hasPrefix("typeforme-nemotron-asr ready ") {
                 lock.lock()
                 ready = true

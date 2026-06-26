@@ -83,8 +83,7 @@ final class PasteboardTextCommitter: TextCommitter {
 
         switch target.kind {
         case .selection:
-            let current = TextEditTargetCapture.currentSelectedText(in: appSnapshot) ?? ""
-            guard current == target.targetText else {
+            guard TextEditTargetCapture.selectionStillMatches(target, in: appSnapshot) else {
                 Self.copyForManualPaste(text)
                 throw TextCommitterError.selectionChanged
             }
@@ -97,8 +96,7 @@ final class PasteboardTextCommitter: TextCommitter {
                 throw error
             }
         case .focusedValue:
-            let current = TextEditTargetCapture.currentValue(of: target) ?? ""
-            guard current == target.targetText else {
+            guard TextEditTargetCapture.focusedValueStillMatches(target, in: appSnapshot) else {
                 Self.copyForManualPaste(text)
                 throw TextCommitterError.selectionChanged
             }

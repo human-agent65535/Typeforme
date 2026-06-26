@@ -43,12 +43,6 @@ enum IOSRecordingAudioSession {
         try? session.setPreferredInputNumberOfChannels(1)
     }
 
-    static func configureActiveSessionCategoryEventually(purpose: Purpose) {
-        Task.detached(priority: .userInitiated) {
-            try? configureActiveSessionCategory(purpose: purpose)
-        }
-    }
-
     static func activateKeyboardRecording(reuseActiveSession: Bool = false) async throws {
         do {
             try activate(reuseActiveSession: reuseActiveSession, purpose: .keyboardRecording)
@@ -972,7 +966,7 @@ final class StandbyAudioSession: ObservableObject {
             if shouldInterruptOtherAudio {
                 recordingDidActivateCaptureCategory = true
                 recordingShouldYieldOtherAudio = true
-                IOSRecordingAudioSession.configureActiveSessionCategoryEventually(purpose: .keyboardRecording)
+                try? IOSRecordingAudioSession.configureActiveSessionCategory(purpose: .keyboardRecording)
             }
             currentFormat = currentFormat ?? engine.inputNode.outputFormat(forBus: 0)
             needsEngineRestart = false
@@ -1017,7 +1011,7 @@ final class StandbyAudioSession: ObservableObject {
             currentFormat = nil
             needsEngineRestart = true
             IOSRecordingAudioSession.deactivateAndNotifyOthers()
-            KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.sessionStarted)
+            KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.sessionEnded)
             return
         }
         guard isActive else {
@@ -1029,7 +1023,7 @@ final class StandbyAudioSession: ObservableObject {
             currentFormat = currentFormat ?? engine.inputNode.outputFormat(forBus: 0)
             needsEngineRestart = false
             if shouldRestoreStandbyCategory {
-                IOSRecordingAudioSession.configureActiveSessionCategoryEventually(purpose: .standby)
+                try? IOSRecordingAudioSession.configureActiveSessionCategory(purpose: .standby)
             }
             KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.sessionStarted)
             return

@@ -413,7 +413,8 @@ final class BridgeLivePreviewStreamer: @unchecked Sendable {
         bridgeLivePreviewLog.debug(
             "server live preview event session=\(self.logSessionID, privacy: .public) final=\(event.isFinal, privacy: .public) event_count=\(self.eventCount, privacy: .public) text_chars=\(event.text?.count ?? 0, privacy: .public) sent_audio_ms=\(self.sentAudioMS, privacy: .public) server_age_ms=\(Self.serverAgeMS(event.updatedAt), privacy: .public) elapsed_ms=\(self.elapsedMS, privacy: .public)"
         )
-        if let text = event.text?.trimmingCharacters(in: .whitespacesAndNewlines),
+        if !suppressSocketResult,
+           let text = event.text?.trimmingCharacters(in: .whitespacesAndNewlines),
            !text.isEmpty,
            event.isFinal || text != lastTranscript {
             lastTranscript = text

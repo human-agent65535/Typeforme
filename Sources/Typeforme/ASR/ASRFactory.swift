@@ -250,6 +250,8 @@ private struct AutoInstallingNvidiaNemotronASRService: ASRService {
 }
 
 private struct MultiSourceASRService: ASRService {
+    private static let postSuccessCollectionGraceSeconds: TimeInterval = 2
+
     let sources: [RecognitionSource]
 
     func transcribe(audioFileURL: URL, languageIDs: [String]) async throws -> String {
@@ -270,19 +272,47 @@ private struct MultiSourceASRService: ASRService {
         }
 
         var attempts: [ASRSourceAttemptResult] = []
-        await withTaskGroup(of: ASRSourceAttemptResult.self) { group in
+        let timeoutSeconds = Self.unifiedAttemptTimeoutSeconds(for: enabledSources)
+        await withTaskGroup(of: ASRSourceTaskEvent.self) { group in
+            var pendingSourceCount = 0
+            var didSchedulePostSuccessGrace = false
             for (index, source) in enabledSources.enumerated() {
+                pendingSourceCount += 1
                 group.addTask {
-                    await Self.attempt(
-                        source: source,
-                        index: index,
-                        audioFileURL: canonicalAudioURL,
-                        selectedLanguageIDs: selectedLanguageIDs
+                    .attempt(
+                        await Self.attempt(
+                            source: source,
+                            index: index,
+                            audioFileURL: canonicalAudioURL,
+                            selectedLanguageIDs: selectedLanguageIDs,
+                            timeoutSeconds: timeoutSeconds
+                        )
                     )
                 }
             }
-            for await attempt in group {
-                attempts.append(attempt)
+            while pendingSourceCount > 0 {
+                guard let event = await group.next() else { break }
+                switch event {
+                case .attempt(let attempt):
+                    pendingSourceCount -= 1
+                    attempts.append(attempt)
+                    if pendingSourceCount == 0 {
+                        group.cancelAll()
+                    } else if attempt.hasUsableText, !didSchedulePostSuccessGrace {
+                        didSchedulePostSuccessGrace = true
+                        group.addTask {
+                            try? await Task.sleep(
+                                nanoseconds: UInt64(Self.postSuccessCollectionGraceSeconds * 1_000_000_000)
+                            )
+                            return .postSuccessGraceElapsed
+                        }
+                    }
+                case .postSuccessGraceElapsed:
+                    if attempts.contains(where: { $0.hasUsableText }), pendingSourceCount > 0 {
+                        group.cancelAll()
+                        pendingSourceCount = 0
+                    }
+                }
             }
         }
 
@@ -321,7 +351,8 @@ private struct MultiSourceASRService: ASRService {
         source: RecognitionSource,
         index: Int,
         audioFileURL: URL,
-        selectedLanguageIDs: [String]
+        selectedLanguageIDs: [String],
+        timeoutSeconds: TimeInterval
     ) async -> ASRSourceAttemptResult {
         let effectiveLanguageIDs = ASRLanguageSelection.effectiveIDs(selectedLanguageIDs, for: source)
         guard !effectiveLanguageIDs.isEmpty else {
@@ -334,18 +365,12 @@ private struct MultiSourceASRService: ASRService {
             )
         }
         do {
-            let text: String
-            switch source {
-            case .qwen:
-                text = try await AutoInstallingQwenLlamaASRService()
-                    .transcribe(audioFileURL: audioFileURL, languageIDs: effectiveLanguageIDs)
-            case .nvidiaNemotron:
-                text = try await AutoInstallingNvidiaNemotronASRService()
-                    .transcribe(audioFileURL: audioFileURL, languageIDs: effectiveLanguageIDs)
-            case .appleSpeech:
-                text = try await AppleSpeechASRService()
-                    .transcribe(audioFileURL: audioFileURL, languageIDs: effectiveLanguageIDs)
-            }
+            let text = try await transcribe(
+                source: source,
+                audioFileURL: audioFileURL,
+                languageIDs: effectiveLanguageIDs,
+                timeoutSeconds: timeoutSeconds
+            )
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
             return ASRSourceAttemptResult(
                 source: source,
@@ -364,9 +389,61 @@ private struct MultiSourceASRService: ASRService {
             )
         }
     }
+
+    private static func unifiedAttemptTimeoutSeconds(for sources: [RecognitionSource]) -> TimeInterval {
+        let configured = sources.compactMap { source -> TimeInterval? in
+            switch source {
+            case .qwen:
+                return AppSettings.asrQwenLlamaTimeoutSeconds
+            case .nvidiaNemotron:
+                return AppSettings.asrNvidiaNemotronTimeoutSeconds
+            case .appleSpeech:
+                return nil
+            }
+        }
+        return max(10, configured.max() ?? AppSettings.asrQwenLlamaTimeoutSeconds)
+    }
+
+    private static func transcribe(
+        source: RecognitionSource,
+        audioFileURL: URL,
+        languageIDs: [String],
+        timeoutSeconds: TimeInterval
+    ) async throws -> String {
+        try await withThrowingTaskGroup(of: String.self) { group in
+            defer { group.cancelAll() }
+            group.addTask {
+                switch source {
+                case .qwen:
+                    return try await AutoInstallingQwenLlamaASRService()
+                        .transcribe(audioFileURL: audioFileURL, languageIDs: languageIDs)
+                case .nvidiaNemotron:
+                    return try await AutoInstallingNvidiaNemotronASRService()
+                        .transcribe(audioFileURL: audioFileURL, languageIDs: languageIDs)
+                case .appleSpeech:
+                    return try await AppleSpeechASRService()
+                        .transcribe(audioFileURL: audioFileURL, languageIDs: languageIDs)
+                }
+            }
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(timeoutSeconds * 1_000_000_000))
+                throw ASRAudioSupportError.timeout(seconds: timeoutSeconds)
+            }
+            guard let result = try await group.next() else {
+                throw ASRAudioSupportError.emptyTranscript
+            }
+            group.cancelAll()
+            return result
+        }
+    }
 }
 
-private struct ASRSourceAttemptResult {
+private enum ASRSourceTaskEvent: Sendable {
+    case attempt(ASRSourceAttemptResult)
+    case postSuccessGraceElapsed
+}
+
+private struct ASRSourceAttemptResult: Sendable {
     let source: RecognitionSource
     let index: Int
     let status: String
@@ -376,6 +453,11 @@ private struct ASRSourceAttemptResult {
     var successText: String? {
         guard status == "ok" else { return nil }
         return text
+    }
+
+    var hasUsableText: Bool {
+        guard let successText else { return false }
+        return !successText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     var modelOutput: ASRTranscriptModelOutput {

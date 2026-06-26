@@ -30,7 +30,7 @@
 	<string>$(TYPEFORME_KEYBOARD_BUNDLE_IDENTIFIER)</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
-		<key>NSAllowsArbitraryLoadsInLocalNetworking</key>
+		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
 	<key>NSExtension</key>

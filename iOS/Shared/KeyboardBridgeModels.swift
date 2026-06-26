@@ -60,6 +60,7 @@ enum KeyboardSharedDefaults {
     static let keyboardDefaultsKey = "keyboard.defaults.v3"
     private static let keyboardStatusKey = "keyboard.status.v1"
     private static let hostHandoffKey = "keyboard.host-handoff.v1"
+    private static let darwinCommandKey = "keyboard.darwin-command.v1"
     private static let hostForegroundKey = "keyboard.host-foreground.v1"
     private static let touchLearningStatsKey = "keyboard.touchLearningStats.v1"
     private static let chineseLearningKey = "keyboard.chineseLearning.v1"
@@ -151,7 +152,7 @@ enum KeyboardSharedDefaults {
 
     @discardableResult
     static func saveHostHandoff(_ handoff: KeyboardHostHandoff) -> Bool {
-        saveCodable(handoff, key: hostHandoffKey)
+        saveCodable(handoff, key: hostHandoffKey, flush: true)
     }
 
     static func consumeHostHandoff(id: String, now: TimeInterval = Date().timeIntervalSince1970) -> KeyboardHostHandoff? {
@@ -173,6 +174,26 @@ enum KeyboardSharedDefaults {
         return handoff
     }
 
+    @discardableResult
+    static func saveDarwinCommand(_ command: KeyboardBridgeCommand) -> Bool {
+        saveCodable(command, key: darwinCommandKey, flush: true)
+    }
+
+    static func consumeDarwinCommand(
+        action: KeyboardBridgeCommandAction,
+        now: TimeInterval = Date().timeIntervalSince1970
+    ) -> KeyboardBridgeCommand? {
+        guard let defaults = suite(),
+              let command = loadCodable(KeyboardBridgeCommand.self, key: darwinCommandKey)
+        else { return nil }
+        guard command.action == action, command.isFresh(now: now) else {
+            defaults.removeObject(forKey: darwinCommandKey)
+            return nil
+        }
+        defaults.removeObject(forKey: darwinCommandKey)
+        return command
+    }
+
     private static func loadCodable<T: Decodable>(_ type: T.Type, key: String) -> T? {
         guard let defaults = suite(),
               let text = defaults.string(forKey: key),
@@ -182,16 +203,19 @@ enum KeyboardSharedDefaults {
     }
 
     @discardableResult
-    private static func saveCodable<T: Encodable>(_ value: T, key: String) -> Bool {
+    private static func saveCodable<T: Encodable>(_ value: T, key: String, flush: Bool = false) -> Bool {
         guard let data = try? JSONEncoder().encode(value),
               let text = String(data: data, encoding: .utf8),
               let defaults = suite()
         else { return false }
-        // No synchronize(): cfprefsd propagates App Group writes across
-        // processes on its own, and synchronize() is a blocking XPC round
-        // trip on the caller's thread (status snapshots save on the host
-        // main actor during dictation).
         defaults.set(text, forKey: key)
+        if flush {
+            // One-shot handoff/command payloads are consumed immediately by the
+            // other process after a URL open or Darwin notification. Pay the
+            // blocking flush cost only for those control-plane writes; high-rate
+            // status snapshots keep the default async propagation.
+            defaults.synchronize()
+        }
         return true
     }
 }
@@ -596,6 +620,8 @@ struct KeyboardDictationContext: Codable, Equatable {
 }
 
 struct KeyboardBridgeCommand: Codable, Equatable {
+    static let maxAge: TimeInterval = 60
+
     let id: String
     let action: KeyboardBridgeCommandAction
     let correctionMode: String
@@ -630,6 +656,10 @@ struct KeyboardBridgeCommand: Codable, Equatable {
         case textEditContext = "text_edit_context"
         case dictationContext = "dictation_context"
         case createdAt
+    }
+
+    func isFresh(now: TimeInterval = Date().timeIntervalSince1970) -> Bool {
+        now - createdAt < Self.maxAge
     }
 }
 

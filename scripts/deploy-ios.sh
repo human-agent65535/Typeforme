@@ -49,6 +49,14 @@ add_build_setting_from_env() {
     fi
 }
 
+reject_identifier_override_from_env() {
+    local name="$1"
+    if env_setting_is_present "$name"; then
+        echo "error: $name must be derived from TYPEFORME_BUNDLE_PREFIX; put local signing overrides in iOS/LocalSigning.xcconfig instead." >&2
+        exit 1
+    fi
+}
+
 export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
 # shellcheck source=scripts/lib/xcode-tools.sh
 . "$ROOT/scripts/lib/xcode-tools.sh"
@@ -176,13 +184,12 @@ if [ -n "$TEAM" ]; then
     echo "→ Overriding project DEVELOPMENT_TEAM with TEAM=$TEAM"
     BUILD_ARGS+=(DEVELOPMENT_TEAM="$TEAM")
 fi
-# Only command-line override identifiers when the user explicitly supplied
-# them via the environment or .env. Otherwise, let Typeforme.xcconfig and the
-# ignored LocalSigning.xcconfig provide the effective bundle/app-group settings.
+# Keep deploy-time identifiers derived from TYPEFORME_BUNDLE_PREFIX. Full
+# bundle/app-group overrides belong in ignored xcconfig, not the environment.
 add_build_setting_from_env TYPEFORME_BUNDLE_PREFIX
-add_build_setting_from_env TYPEFORME_HOST_BUNDLE_IDENTIFIER
-add_build_setting_from_env TYPEFORME_KEYBOARD_BUNDLE_IDENTIFIER
-add_build_setting_from_env TYPEFORME_APP_GROUP_IDENTIFIER
+reject_identifier_override_from_env TYPEFORME_HOST_BUNDLE_IDENTIFIER
+reject_identifier_override_from_env TYPEFORME_KEYBOARD_BUNDLE_IDENTIFIER
+reject_identifier_override_from_env TYPEFORME_APP_GROUP_IDENTIFIER
 
 XCODEBUILD_ARGS=(
     -project "$PROJECT"

@@ -378,6 +378,12 @@ final class BridgeService {
         pruneExpiredSessions()
         let start = Date()
         let jobID = BridgeClientJobID.normalized(request.clientJobID)
+        var audioURLToCleanup = request.audioFileURL
+        defer {
+            if let audioURLToCleanup {
+                try? FileManager.default.removeItem(at: audioURLToCleanup)
+            }
+        }
         let correctionMode = try resolveCorrectionMode(request.correctionMode)
         try validateCorrectionModeAvailable(correctionMode)
         let requestedLanguageIDs = resolveLanguageIDs(
@@ -389,7 +395,7 @@ final class BridgeService {
         let transcriptionSources = fastRoute.map { [$0.source] } ?? recognitionSources(for: correctionMode)
         let languageIDs = fastRoute?.languageIDs ?? requestedLanguageIDs
         let audioURL = try await writeAudio(request)
-        defer { try? FileManager.default.removeItem(at: audioURL) }
+        audioURLToCleanup = audioURL
         await publishJobStatus(
             jobID: jobID,
             stage: .audioReceived,

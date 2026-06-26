@@ -292,7 +292,21 @@ struct RemoteBridgeClient {
             json: payload,
             timeout: 45
         )
-        try validate(response)
+        let validationRequest = TextEditRequest(
+            intent: intent,
+            contextBefore: contextBefore,
+            targetText: targetText,
+            contextAfter: contextAfter,
+            spokenInstruction: spokenInstruction,
+            languageIDs: languageIDs,
+            frontmostAppName: appSnapshot?.localizedName,
+            frontmostBundleID: appSnapshot?.bundleID,
+            appCategory: appCategory,
+            numberOutputPreference: AppSettings.numberOutputPreference,
+            punctuationPreference: AppSettings.punctuationPreference,
+            userDictionary: []
+        )
+        try validate(response, request: validationRequest)
         return response
     }
 
@@ -318,6 +332,20 @@ struct RemoteBridgeClient {
             status: response.editStatus,
             error: response.editError
         )
+    }
+
+    private func validate(_ response: BridgeTextEditResponse, request: TextEditRequest) throws {
+        try validate(response)
+        let action: TextEditAction
+        if let rawAction = response.action {
+            guard let parsed = TextEditAction(rawValue: rawAction) else {
+                throw RemoteBridgeClientError.correctionFailed("Remote edit returned an invalid action")
+            }
+            action = parsed
+        } else {
+            action = .replaceTarget
+        }
+        try TextEditValidator.validate(TextEditResult(action: action, text: response.text), for: request)
     }
 
     static func validateTextResponse(text: String, status: String?, error: String?) throws {
