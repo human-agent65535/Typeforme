@@ -188,13 +188,15 @@ final class KeyboardLocalServer: @unchecked Sendable {
                 }
                 if authorized {
                     switch request.action {
-                    case .status:
+                    case .statusStream:
                         guard self.registerStatusStream(connection, generation: generation) else {
                             connection.cancel()
                             self.removeTask(taskID)
                             return
                         }
                         self.send(status, connection: connection, closeAfterSend: false)
+                    case .statusSnapshot:
+                        self.send(status, connection: connection, closeAfterSend: true)
                     case .command:
                         self.send(status, connection: connection, closeAfterSend: true)
                     }
@@ -214,7 +216,7 @@ final class KeyboardLocalServer: @unchecked Sendable {
             return KeyboardBridgeStatus(state: .error, message: "Keyboard bridge unauthorized")
         }
         switch request.action {
-        case .status:
+        case .statusStream, .statusSnapshot:
             return await statusProvider?() ?? .idle
         case .command:
             guard let command = request.command else {
@@ -246,10 +248,9 @@ final class KeyboardLocalServer: @unchecked Sendable {
         })
     }
 
-    /// Sends one status frame. Status requests subscribe to a push stream and
-    /// keep the socket open; command requests are acknowledged on a dedicated
-    /// socket and then closed so command acks never interleave with pushed
-    /// status frames.
+    /// Sends one status frame. Status stream requests keep the socket open;
+    /// snapshot and command requests close after the single response so command
+    /// acks never interleave with pushed status frames.
     private func send(
         _ status: KeyboardBridgeStatus,
         connection: NWConnection,

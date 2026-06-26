@@ -1139,24 +1139,27 @@ final class DictationCoordinator: ObservableObject {
             let appCategory = AppCategory.from(bundleID: snapshot?.bundleID)
             let resolved = try await RemoteBridgeClient.resolvedFromSettings(probeAllEndpoints: false)
             let client = resolved.client
+            let hasTextEditRequest = activeTextEditTarget != nil && activeTextEditIntent != nil
+            let remoteDictateCorrectionMode: CorrectionMode = hasTextEditRequest ? .clean : selectedCorrectionMode
             let dictateJobID = Self.bridgeJobID(prefix: "mac_dictate", sessionID: sessionID)
+            let remoteJobEventHandler: @Sendable (BridgeJobStatusEvent) async -> Void = { [weak self] event in
+                await self?.applyRemoteBridgeJobStatus(
+                    event,
+                    sessionID: sessionID,
+                    token: cancelToken
+                )
+            }
             let response = try await client.dictate(
                 audioURL: audioURL,
                 languageIDs: AppSettings.clientLanguageIDs,
-                correctionMode: selectedCorrectionMode,
+                correctionMode: remoteDictateCorrectionMode,
                 appSnapshot: snapshot,
                 appCategory: appCategory,
                 contextBefore: activeDictationContextBefore,
                 contextAfter: activeDictationContextAfter,
                 includeRawTranscript: true,
                 clientJobID: dictateJobID,
-                onJobEvent: { [weak self] event in
-                    await self?.applyRemoteBridgeJobStatus(
-                        event,
-                        sessionID: sessionID,
-                        token: cancelToken
-                    )
-                }
+                onJobEvent: remoteJobEventHandler
             )
             try await ensureActive(sessionID: sessionID, token: cancelToken)
 
@@ -1189,7 +1192,9 @@ final class DictationCoordinator: ObservableObject {
                     spokenInstruction: spoken,
                     languageIDs: AppSettings.clientLanguageIDs,
                     appSnapshot: snapshot,
-                    appCategory: AppCategory.from(bundleID: snapshot?.bundleID)
+                    appCategory: AppCategory.from(bundleID: snapshot?.bundleID),
+                    clientJobID: Self.bridgeJobID(prefix: "mac_edit", sessionID: sessionID),
+                    onJobEvent: remoteJobEventHandler
                 )
                 try await ensureActive(sessionID: sessionID, token: cancelToken)
                 DebugLogStore.recordCorrection(
@@ -1292,6 +1297,7 @@ final class DictationCoordinator: ObservableObject {
                 text = sourceText
             } else if AppSettings.processingMode == .client {
                 let resolved = try await RemoteBridgeClient.resolvedFromSettings(probeAllEndpoints: false)
+                let refineJobID = Self.bridgeJobID(prefix: "mac_refine", sessionID: sessionID)
                 let response = try await resolved.client.refine(
                     sessionID: nil,
                     rawTranscript: sourceText,
@@ -1300,7 +1306,15 @@ final class DictationCoordinator: ObservableObject {
                     appSnapshot: snapshot,
                     appCategory: AppCategory.from(bundleID: snapshot?.bundleID),
                     contextBefore: target.contextBefore,
-                    contextAfter: target.contextAfter
+                    contextAfter: target.contextAfter,
+                    clientJobID: refineJobID,
+                    onJobEvent: { [weak self] event in
+                        await self?.applyRemoteBridgeJobStatus(
+                            event,
+                            sessionID: sessionID,
+                            token: cancelToken
+                        )
+                    }
                 )
                 try await ensureActive(sessionID: sessionID, token: cancelToken)
                 lastWarning = Self.isCorrectionDegradedStatus(response.correctionStatus)

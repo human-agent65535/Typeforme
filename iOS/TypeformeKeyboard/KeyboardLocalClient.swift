@@ -20,7 +20,8 @@ actor KeyboardLocalClient {
     func startStatusStream(
         bridgeToken: String?,
         onStatus: @escaping @Sendable (KeyboardBridgeStatus) async -> Void,
-        onFailure: @escaping @Sendable (Error) async -> Void
+        onFailure: @escaping @Sendable (Error) async -> Void,
+        force: Bool = false
     ) {
         guard let bridgeToken,
               !bridgeToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -30,7 +31,7 @@ actor KeyboardLocalClient {
             return
         }
 
-        if statusStreamTask != nil, statusStreamBridgeToken == bridgeToken {
+        if !force, statusStreamTask != nil, statusStreamBridgeToken == bridgeToken {
             return
         }
 
@@ -51,11 +52,13 @@ actor KeyboardLocalClient {
                 try await keyboardBridgeStatusStream(
                     on: task,
                     bridgeToken: bridgeToken,
+                    timeout: 1.5,
                     onStatus: onStatus
                 )
-            } catch is CancellationError {
-                return
             } catch {
+                if error is CancellationError, Task.isCancelled {
+                    return
+                }
                 guard let self else { return }
                 let shouldReport = await self.finishStatusStream(
                     generation: generation,
@@ -66,6 +69,37 @@ actor KeyboardLocalClient {
                     await onFailure(error)
                 }
             }
+        }
+    }
+
+    func statusSnapshot(bridgeToken: String?, timeout: TimeInterval) async throws -> KeyboardBridgeStatus {
+        guard let bridgeToken,
+              !bridgeToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else {
+            throw URLError(.userAuthenticationRequired)
+        }
+        let request = KeyboardLocalBridgeRequest.statusSnapshot(bridgeToken: bridgeToken)
+        let generation = shutdownGeneration
+        var urlRequest = URLRequest(url: url)
+        urlRequest.timeoutInterval = timeout
+        let task = session.webSocketTask(with: urlRequest)
+        task.maximumMessageSize = 1 * 1024 * 1024
+        task.resume()
+        do {
+            let status = try await keyboardBridgeCommandRoundTrip(
+                request,
+                on: task,
+                verifyHelloWith: bridgeToken,
+                timeout: timeout
+            )
+            task.cancel(with: .normalClosure, reason: nil)
+            guard shutdownGeneration == generation else {
+                throw URLError(.cancelled)
+            }
+            return status
+        } catch {
+            task.cancel(with: .normalClosure, reason: nil)
+            throw error
         }
     }
 
@@ -134,19 +168,44 @@ actor KeyboardLocalClient {
 private func keyboardBridgeStatusStream(
     on task: URLSessionWebSocketTask,
     bridgeToken: String,
+    timeout: TimeInterval,
     onStatus: @escaping @Sendable (KeyboardBridgeStatus) async -> Void
 ) async throws {
-    let helloData = try messageData(try await task.receive())
+    let helloData = try messageData(try await receiveMessage(on: task, timeout: timeout))
     let hello = try JSONDecoder().decode(KeyboardLocalBridgeHello.self, from: helloData)
     guard KeyboardLocalBridgeAuth.verifyServerHello(hello, bridgeToken: bridgeToken) else {
         throw URLError(.userAuthenticationRequired)
     }
-    let payload = try JSONEncoder().encode(KeyboardLocalBridgeRequest.status(bridgeToken: bridgeToken))
+    let payload = try JSONEncoder().encode(KeyboardLocalBridgeRequest.statusStream(bridgeToken: bridgeToken))
     try await task.send(.data(payload))
+    let firstMessage = try await receiveMessage(on: task, timeout: timeout)
+    let firstStatus = try JSONDecoder().decode(KeyboardBridgeStatus.self, from: try messageData(firstMessage))
+    await onStatus(firstStatus)
     while !Task.isCancelled {
         let message = try await task.receive()
         let status = try JSONDecoder().decode(KeyboardBridgeStatus.self, from: try messageData(message))
         await onStatus(status)
+    }
+}
+
+private func receiveMessage(
+    on task: URLSessionWebSocketTask,
+    timeout: TimeInterval
+) async throws -> URLSessionWebSocketTask.Message {
+    try await withThrowingTaskGroup(of: URLSessionWebSocketTask.Message.self) { group in
+        group.addTask {
+            try await task.receive()
+        }
+        group.addTask {
+            try await Task.sleep(nanoseconds: UInt64(max(timeout, 0.05) * 1_000_000_000))
+            task.cancel(with: .normalClosure, reason: nil)
+            throw URLError(.timedOut)
+        }
+        guard let message = try await group.next() else {
+            throw URLError(.unknown)
+        }
+        group.cancelAll()
+        return message
     }
 }
 

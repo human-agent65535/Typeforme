@@ -199,8 +199,9 @@ final class QwenLlamaASRService: ASRService {
         } else {
             parts.append("choices=nil")
         }
-        if let message = response.error?.message.prefix(160) {
-            parts.append("error=\(message)")
+        if let error = response.error {
+            parts.append("error=present")
+            parts.append("error_message_chars=\(error.message.count)")
         }
         return parts.joined(separator: " ")
     }

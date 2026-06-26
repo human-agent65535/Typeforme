@@ -2777,18 +2777,24 @@ final class AppState {
                     guard let self else { return }
                     self.markKeyboardEverContacted()
                     guard self.keyboardStandbyEnabled || self.keyboardAudioSession.isRecording else { return }
-                    let command = KeyboardSharedDefaults.consumeDarwinCommand(action: .start)
-                    if let command {
-                        if let requestedMode = CorrectionMode(rawValue: command.correctionMode) {
-                            self.applyKeyboardDefaultCorrectionMode(requestedMode)
-                        }
-                        self.activeKeyboardTextEditContext = command.textEditContext
-                        self.activeKeyboardDictationContext = command.dictationContext
-                    } else {
+                    guard let command = KeyboardSharedDefaults.consumeDarwinCommand(action: .start) else {
                         self.clearKeyboardCaptureContext()
+                        self.publishKeyboardStatus(.error, message: "Keyboard start command expired")
+                        return
                     }
+                    if let requestedMode = CorrectionMode(rawValue: command.correctionMode) {
+                        self.applyKeyboardDefaultCorrectionMode(requestedMode)
+                    }
+                    guard !self.consumeCanceledKeyboardCommand(command.id) else {
+                        self.clearKeyboardCaptureContext()
+                        self.publishKeyboardStatus(.standby, commandID: command.id, message: "Ready")
+                        KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.dictationStopped)
+                        return
+                    }
+                    self.activeKeyboardTextEditContext = command.textEditContext
+                    self.activeKeyboardDictationContext = command.dictationContext
                     self.keyboardCaptureStartedFromKeyboard = true
-                    await self.startKeyboardRecording(commandID: command?.id, allowSessionStart: true)
+                    await self.startKeyboardRecording(commandID: command.id, allowSessionStart: true)
                 }
             },
             KeyboardDarwinBridge.observe(requestStopName) { [weak self] in
@@ -2796,6 +2802,9 @@ final class AppState {
                     guard let self else { return }
                     guard self.keyboardStandbyEnabled || self.keyboardAudioSession.isRecording else { return }
                     let command = KeyboardSharedDefaults.consumeDarwinCommand(action: .stop)
+                    if let command {
+                        self.rememberCanceledKeyboardCommand(command.id)
+                    }
                     await self.stopAndSend(keyboardCommandID: command?.id)
                 }
             },

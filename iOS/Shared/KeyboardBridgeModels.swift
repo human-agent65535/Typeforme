@@ -60,7 +60,6 @@ enum KeyboardSharedDefaults {
     static let keyboardDefaultsKey = "keyboard.defaults.v3"
     private static let keyboardStatusKey = "keyboard.status.v1"
     private static let hostHandoffKey = "keyboard.host-handoff.v1"
-    private static let darwinCommandKey = "keyboard.darwin-command.v1"
     private static let hostForegroundKey = "keyboard.host-foreground.v1"
     private static let touchLearningStatsKey = "keyboard.touchLearningStats.v1"
     private static let chineseLearningKey = "keyboard.chineseLearning.v1"
@@ -176,7 +175,7 @@ enum KeyboardSharedDefaults {
 
     @discardableResult
     static func saveDarwinCommand(_ command: KeyboardBridgeCommand) -> Bool {
-        saveCodable(command, key: darwinCommandKey, flush: true)
+        saveCodable(command, key: darwinCommandKey(for: command.action), flush: true)
     }
 
     static func consumeDarwinCommand(
@@ -184,14 +183,18 @@ enum KeyboardSharedDefaults {
         now: TimeInterval = Date().timeIntervalSince1970
     ) -> KeyboardBridgeCommand? {
         guard let defaults = suite(),
-              let command = loadCodable(KeyboardBridgeCommand.self, key: darwinCommandKey)
+              let command = loadCodable(KeyboardBridgeCommand.self, key: darwinCommandKey(for: action))
         else { return nil }
         guard command.action == action, command.isFresh(now: now) else {
-            defaults.removeObject(forKey: darwinCommandKey)
+            defaults.removeObject(forKey: darwinCommandKey(for: action))
             return nil
         }
-        defaults.removeObject(forKey: darwinCommandKey)
+        defaults.removeObject(forKey: darwinCommandKey(for: action))
         return command
+    }
+
+    private static func darwinCommandKey(for action: KeyboardBridgeCommandAction) -> String {
+        "keyboard.darwin-command.\(action.rawValue).v1"
     }
 
     private static func loadCodable<T: Decodable>(_ type: T.Type, key: String) -> T? {
@@ -786,7 +789,8 @@ enum KeyboardLocalBridgeAuth {
 
 struct KeyboardLocalBridgeRequest: Codable, Equatable, Sendable {
     enum Action: String, Codable, Sendable {
-        case status
+        case statusStream = "status_stream"
+        case statusSnapshot = "status_snapshot"
         case command
     }
 
@@ -794,9 +798,17 @@ struct KeyboardLocalBridgeRequest: Codable, Equatable, Sendable {
     let authentication: KeyboardLocalBridgeProof?
     let command: KeyboardBridgeCommand?
 
-    static func status(bridgeToken: String?) -> KeyboardLocalBridgeRequest {
+    static func statusStream(bridgeToken: String?) -> KeyboardLocalBridgeRequest {
         KeyboardLocalBridgeRequest(
-            action: .status,
+            action: .statusStream,
+            authentication: bridgeToken.flatMap { KeyboardLocalBridgeAuth.makeClientProof(bridgeToken: $0) },
+            command: nil
+        )
+    }
+
+    static func statusSnapshot(bridgeToken: String?) -> KeyboardLocalBridgeRequest {
+        KeyboardLocalBridgeRequest(
+            action: .statusSnapshot,
             authentication: bridgeToken.flatMap { KeyboardLocalBridgeAuth.makeClientProof(bridgeToken: $0) },
             command: nil
         )

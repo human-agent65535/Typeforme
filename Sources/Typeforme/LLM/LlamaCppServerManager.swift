@@ -203,9 +203,9 @@ actor LlamaCppServerManager {
         let proc = Process()
         proc.executableURL = binaryURL
         proc.arguments = args
-        logFileHandle = Self.openLogFile()
-        proc.standardOutput = logFileHandle ?? FileHandle.nullDevice
-        proc.standardError = logFileHandle ?? FileHandle.nullDevice
+        logFileHandle = nil
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = FileHandle.nullDevice
         do {
             try proc.run()
         } catch {

@@ -404,6 +404,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private var bridgeProbeTask: Task<Void, Never>?
     private var statusStreamGeneration: UInt64 = 0
     private var statusStreamBridgeToken: String?
+    private var statusStreamStopTask: Task<Void, Never>?
     private var refineTimeoutTask: Task<Void, Never>?
     private var refineTimeoutGeneration: UInt64 = 0
     private var refineTimeoutKey: String?
@@ -2709,7 +2710,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             KeyboardDarwinBridge.observe(KeyboardDarwinNotificationName.transcriptionReady) { [weak self] in
                 DispatchQueue.main.async {
                     guard let self else { return }
-                    self.refreshBridgeStatus()
+                    self.refreshBridgeStatus(force: true)
+                    self.recoverBridgeStatusSnapshotForActiveCommand()
                 }
             },
             KeyboardDarwinBridge.observe(KeyboardDarwinNotificationName.keyboardDefaultsChanged) { [weak self] in
@@ -7102,18 +7104,27 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         contextBefore: String,
         contextAfter: String
     ) -> Bool {
+        let currentBefore = textDocumentProxy.documentContextBeforeInput ?? ""
+        let currentAfter = textDocumentProxy.documentContextAfterInput ?? ""
+
         if textDocumentProxy.selectedText == original {
+            guard currentBefore == contextBefore,
+                  currentAfter.hasPrefix(contextAfter)
+            else {
+                kbLog.notice("selection replacement skipped: selected text matched but context changed")
+                return false
+            }
             textDocumentProxy.insertText(text)
             return true
         }
 
-        let currentBefore = textDocumentProxy.documentContextBeforeInput ?? ""
-        let currentAfter = textDocumentProxy.documentContextAfterInput ?? ""
-        if currentBefore.hasSuffix(original) {
+        if currentBefore == contextBefore + original,
+           currentAfter.hasPrefix(contextAfter) {
             return replaceTextBeforeCursor(original, with: text)
         }
 
-        if currentBefore == contextBefore, currentAfter.hasPrefix(original) {
+        if currentBefore == contextBefore,
+           currentAfter.hasPrefix(original + contextAfter) {
             return replaceContextText(text, before: "", after: original)
         }
 
@@ -9412,11 +9423,15 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             return true
         }
         if activeMarkedTextOwner == .livePartial,
-           !activeMarkedText.isEmpty {
+           !activeMarkedText.isEmpty,
+           canReplaceActiveLivePartialMarkedText(preview) {
             commitTextReplacingMarkedText(finalText)
             activeMarkedText = ""
             activeMarkedTextOwner = nil
             return true
+        } else if activeMarkedTextOwner == .livePartial {
+            activeMarkedText = ""
+            activeMarkedTextOwner = nil
         }
         if deleteVisibleCommittedLivePartial(preview.text) {
             textDocumentProxy.insertText(finalText)
@@ -9425,32 +9440,22 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         if replaceAnchoredLivePartialPreview(preview, with: finalText) {
             return true
         }
-        guard shouldInsertFinalAtCurrentLivePreviewAnchor(preview) else {
-            kbLog.notice(
-                "skipped live preview final insert because anchor was missing command_id=\(preview.commandID, privacy: .public) preview_chars=\(preview.text.count, privacy: .public) final_chars=\(finalText.count, privacy: .public)"
-            )
-            activeMarkedText = ""
-            activeMarkedTextOwner = nil
-            return false
-        }
         kbLog.notice(
-            "live preview missing before final result; inserting final at current anchor command_id=\(preview.commandID, privacy: .public) preview_chars=\(preview.text.count, privacy: .public) final_chars=\(finalText.count, privacy: .public)"
+            "skipped live preview final insert because anchor was missing command_id=\(preview.commandID, privacy: .public) preview_chars=\(preview.text.count, privacy: .public) final_chars=\(finalText.count, privacy: .public)"
         )
-        commitTextReplacingMarkedText(finalText)
         activeMarkedText = ""
         activeMarkedTextOwner = nil
-        return true
+        return false
     }
 
-    private func shouldInsertFinalAtCurrentLivePreviewAnchor(_ preview: LivePartialPreviewState) -> Bool {
+    private func canReplaceActiveLivePartialMarkedText(_ preview: LivePartialPreviewState) -> Bool {
+        guard activeMarkedTextOwner == .livePartial,
+              !activeMarkedText.isEmpty
+        else { return false }
         let before = textDocumentProxy.documentContextBeforeInput ?? ""
         let after = textDocumentProxy.documentContextAfterInput ?? ""
-        let currentText = before + after
-        if !preview.text.isEmpty, currentText.contains(preview.text) {
-            return false
-        }
-        if currentText.isEmpty {
-            return preview.contextBefore.isEmpty && preview.contextAfter.isEmpty
+        if before.hasSuffix(activeMarkedText) {
+            return true
         }
         guard !preview.contextBefore.isEmpty || !preview.contextAfter.isEmpty else {
             return false
@@ -10540,7 +10545,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         statusStreamGeneration &+= 1
         statusStreamBridgeToken = nil
         let client = localClient
-        Task {
+        statusStreamStopTask = Task {
             await client.shutdown()
         }
     }
@@ -10594,6 +10599,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         key: String,
         generation: UInt64
     ) async {
+        _ = await recoverBridgeStatusSnapshot(expectedCommandID: commandID)
         guard isCurrentRefineTimeout(commandID: commandID, statusUpdatedAt: statusUpdatedAt, key: key, generation: generation),
               let current = currentBridgeStatus
         else { return }
@@ -10687,7 +10693,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.18, execute: workItem)
     }
 
-    private func refreshBridgeStatus(captureSelection: Bool = true) {
+    private func refreshBridgeStatus(captureSelection: Bool = true, force: Bool = false) {
         guard hasFullAccess else {
             stopBridgeStatusStream()
             return
@@ -10696,12 +10702,14 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             refreshSelectionSnapshot()
         }
         let bridgeToken = hostKeyboardBridgeToken
-        guard statusStreamBridgeToken != bridgeToken else { return }
+        guard force || statusStreamBridgeToken != bridgeToken else { return }
         statusStreamGeneration &+= 1
         let generation = statusStreamGeneration
         statusStreamBridgeToken = bridgeToken
         let client = localClient
+        let pendingStop = statusStreamStopTask
         Task { [weak self] in
+            await pendingStop?.value
             await client.startStatusStream(
                 bridgeToken: bridgeToken,
                 onStatus: { [weak self] status in
@@ -10710,24 +10718,97 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                               self.statusStreamGeneration == generation
                         else { return }
                         self.applyBridgeStatus(status)
-                    }
-                },
-                onFailure: { [weak self] error in
-                    await MainActor.run {
-                        guard let self,
-                              self.statusStreamGeneration == generation
-                        else { return }
-                        self.statusStreamBridgeToken = nil
-                        let hadRecentBridgeContact = self.lastBridgeContactAt > 0
-                        self.lastBridgeContactAt = 0
-                        self.logStatusStreamFailureIfNeeded(error)
-                        if hadRecentBridgeContact {
-                            self.updateUI()
-                        }
-                    }
-                }
+	                    }
+	                },
+	                onFailure: { [weak self] error in
+	                    await MainActor.run {
+	                        guard let self,
+	                              self.statusStreamGeneration == generation
+	                        else { return }
+	                        self.statusStreamBridgeToken = nil
+	                        let hadRecentBridgeContact = self.lastBridgeContactAt > 0
+	                        self.lastBridgeContactAt = 0
+	                        self.logStatusStreamFailureIfNeeded(error)
+	                        self.recoverBridgeStatusAfterStreamFailure(generation: generation)
+	                        if hadRecentBridgeContact {
+	                            self.updateUI()
+	                        }
+	                    }
+	                },
+	                force: force
+	            )
+	        }
+	    }
+
+    @MainActor
+    private func recoverBridgeStatusAfterStreamFailure(generation: UInt64) {
+        guard shouldRecoverActiveBridgeStatus else { return }
+        let expectedCommandID = activeBridgeResultCommandID
+        Task { [weak self] in
+            guard let self else { return }
+            _ = await self.recoverBridgeStatusSnapshot(
+                expectedCommandID: expectedCommandID,
+                statusStreamGeneration: generation
             )
+            await MainActor.run {
+                guard self.statusStreamGeneration == generation,
+                      self.shouldRecoverActiveBridgeStatus
+                else { return }
+                self.refreshBridgeStatus(captureSelection: false, force: true)
+            }
         }
+    }
+
+    @MainActor
+    private func recoverBridgeStatusSnapshotForActiveCommand() {
+        let expectedCommandID = activeBridgeResultCommandID
+        Task { [weak self] in
+            _ = await self?.recoverBridgeStatusSnapshot(expectedCommandID: expectedCommandID)
+        }
+    }
+
+    @MainActor
+    private func recoverBridgeStatusSnapshot(
+        expectedCommandID: String?,
+        statusStreamGeneration expectedGeneration: UInt64? = nil
+    ) async -> Bool {
+        guard hasFullAccess else { return false }
+        let bridgeToken = hostKeyboardBridgeToken
+        do {
+            let status = try await localClient.statusSnapshot(bridgeToken: bridgeToken, timeout: 1.2)
+            if let expectedGeneration,
+               statusStreamGeneration != expectedGeneration {
+                return false
+            }
+            if let expectedCommandID,
+               status.commandID != expectedCommandID {
+                return false
+            }
+            applyBridgeStatus(status, recordsLiveContact: true)
+            return true
+        } catch {
+            logStatusStreamFailureIfNeeded(error)
+            return false
+        }
+    }
+
+    private var shouldRecoverActiveBridgeStatus: Bool {
+        guard hasFullAccess else { return false }
+        guard let status = currentBridgeStatus else {
+            return pendingStopCommandID != nil || activeRecordingCommandID != nil || activeRecordingTextTarget != nil
+        }
+        return status.state == .recording || status.state == .sending
+            || pendingStopCommandID != nil
+            || activeRecordingCommandID != nil
+            || activeRecordingTextTarget != nil
+    }
+
+    private var activeBridgeResultCommandID: String? {
+        pendingStopCommandID
+            ?? activeRecordingCommandID
+            ?? activeRecordingTextTarget?.commandID
+            ?? currentBridgeStatus?.commandID
+            ?? styleRewriteCommandID
     }
 
     private func logStatusStreamFailureIfNeeded(_ error: Error) {
