@@ -415,7 +415,7 @@ final class BridgeLivePreviewStreamer: @unchecked Sendable {
         )
         if let text = event.text?.trimmingCharacters(in: .whitespacesAndNewlines),
            !text.isEmpty,
-           text != lastTranscript {
+           event.isFinal || text != lastTranscript {
             lastTranscript = text
             onTranscript(text)
         }

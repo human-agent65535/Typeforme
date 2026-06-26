@@ -1342,6 +1342,11 @@ final class DictationCoordinator: ObservableObject {
         sessionID: UUID,
         cancelToken: CommitCancellationToken
     ) async {
+        guard !result.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            reportError("Refine returned empty text")
+            scheduleAutoReset(after: Self.errorResetDelay)
+            return
+        }
         transition(to: .inserting)
         do {
             try await ensureActive(sessionID: sessionID, token: cancelToken)

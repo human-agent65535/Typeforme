@@ -360,7 +360,7 @@ final class RemoteBridgeLivePreviewStreamer: @unchecked Sendable {
         eventCount += 1
         if let text = event.text?.trimmingCharacters(in: .whitespacesAndNewlines),
            !text.isEmpty,
-           text != lastTranscript {
+           event.isFinal || text != lastTranscript {
             lastTranscript = text
             onTranscript(text)
         }
