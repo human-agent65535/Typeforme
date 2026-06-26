@@ -165,7 +165,7 @@
 "Command edit" = "Command edit";
 "Press the wand and speak an instruction like make this shorter, translate this, or turn it into bullets. With no selection, it targets the current input text." = "Press the wand and speak an instruction like make this shorter, translate this, or turn it into bullets. With no selection, it targets the current input text.";
 "Fast" = "Fast";
-"Fast inserts the Qwen transcript directly and skips refine. It appears only when Qwen ASR is enabled on the paired Mac." = "Fast inserts the Qwen transcript directly and skips refine. It appears only when Qwen ASR is enabled on the paired Mac.";
+"Fast inserts the ASR transcript directly and skips refine. It uses Qwen3-ASR when it is enabled and ready, otherwise Apple Speech." = "Fast inserts the ASR transcript directly and skips refine. It uses Qwen3-ASR when it is enabled and ready, otherwise Apple Speech.";
 "Refine existing text" = "Refine existing text";
 "Clean, Polish, Polish+, Structure+, and Formal+ use the selected text first, then the current visible input text. Fast bypasses refine." = "Clean, Polish, Polish+, Structure+, and Formal+ use the selected text first, then the current visible input text. Fast bypasses refine.";
 "Clean, Polish, Polish+, Structure+, and Formal+ use the selected text first, then the current visible input text." = "Clean, Polish, Polish+, Structure+, and Formal+ use the selected text first, then the current visible input text.";
@@ -174,8 +174,8 @@
 
 // Dictation settings
 "Default Mode" = "Default Mode";
-"Fast requires Qwen ASR enabled on the Mac." = "Fast requires Qwen ASR enabled on the Mac.";
-"Requires Qwen" = "Requires Qwen";
+"Applies to this iPhone and the Typeforme keyboard. Fast skips refine and uses Qwen3-ASR when it is enabled and ready, otherwise Apple Speech." = "Applies to this iPhone and the Typeforme keyboard. Fast skips refine and uses Qwen3-ASR when it is enabled and ready, otherwise Apple Speech.";
+"Affects the paired Mac Bridge. Apple Speech is always available on the Mac." = "Affects the paired Mac Bridge. Apple Speech is always available on the Mac.";
 "Mac ASR" = "Mac ASR";
 "Mac Refine Engine" = "Mac Refine Engine";
 "Loading dictation settings" = "Loading dictation settings";
@@ -218,7 +218,6 @@
 "Server-side" = "Server-side";
 "Server ASR runs on the Mac. Apple Speech recognition mode only applies to Apple Speech." = "Server ASR runs on the Mac. Apple Speech recognition mode only applies to Apple Speech.";
 "No live preview source is available for the current mode." = "No live preview source is available for the current mode.";
-"Qwen3-ASR preview runs on the Mac in Fast mode." = "Qwen3-ASR preview runs on the Mac in Fast mode.";
 "Qwen3-ASR preview runs on the Mac." = "Qwen3-ASR preview runs on the Mac.";
 "NVIDIA Nemotron preview runs on the Mac." = "NVIDIA Nemotron preview runs on the Mac.";
 "Server ASR preview runs on the Mac." = "Server ASR preview runs on the Mac.";

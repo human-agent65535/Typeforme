@@ -25,10 +25,6 @@ enum CorrectionMode: String, Codable, CaseIterable, Identifiable, Sendable {
         self != .fast
     }
 
-    var requiresQwenASR: Bool {
-        self == .fast
-    }
-
     static var promptEditableCases: [CorrectionMode] {
         allCases.filter(\.usesRefine)
     }
@@ -36,7 +32,7 @@ enum CorrectionMode: String, Codable, CaseIterable, Identifiable, Sendable {
     var helpText: String {
         switch self {
         case .fast:
-            return "Use Qwen ASR on Mac and insert the transcript directly. Requires Qwen ASR to be enabled and skips refine."
+            return "Insert the ASR transcript directly and skip refine. Uses Qwen3-ASR when it is enabled and installed; otherwise uses Apple Speech."
         case .clean:
             return "Fix punctuation, ASR mistakes, repeated words, and meaningless speech noise without rewriting."
         case .polish:

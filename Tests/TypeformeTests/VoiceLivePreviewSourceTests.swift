@@ -42,39 +42,39 @@ struct VoiceLivePreviewSourceTests {
         )
     }
 
-    @Test func fastModeOnlyOffersQwenPreview() {
+    @Test func fastModeDoesNotHideConfiguredPreviewSources() {
         #expect(
             VoiceLivePreviewSource.options(
                 forRecognitionSources: [.qwen, .nvidiaNemotron, .appleSpeech],
                 correctionMode: .fast
-            ) == [.off, .qwen]
+            ) == [.off, .qwen, .nvidiaNemotron, .appleSpeech]
         )
         #expect(VoiceLivePreviewSource.qwen.isEnabled(
             forRecognitionSources: [.qwen],
             correctionMode: .fast
         ))
-        #expect(!VoiceLivePreviewSource.appleSpeech.isEnabled(
+        #expect(VoiceLivePreviewSource.appleSpeech.isEnabled(
             forRecognitionSources: [.appleSpeech],
             correctionMode: .fast
         ))
-        #expect(!VoiceLivePreviewSource.nvidiaNemotron.isEnabled(
+        #expect(VoiceLivePreviewSource.nvidiaNemotron.isEnabled(
             forRecognitionSources: [.nvidiaNemotron],
             correctionMode: .fast
         ))
     }
 
-    @Test func fastModeWithoutQwenOnlyOffersOff() {
+    @Test func fastModeWithoutQwenStillOffersAppleAndNemotronPreviewSettings() {
         #expect(
             VoiceLivePreviewSource.options(
                 forRecognitionSources: [.nvidiaNemotron, .appleSpeech],
                 correctionMode: .fast
-            ) == [.off]
+            ) == [.off, .nvidiaNemotron, .appleSpeech]
         )
-        #expect(!VoiceLivePreviewSource.appleSpeech.isEnabled(
+        #expect(VoiceLivePreviewSource.appleSpeech.isEnabled(
             forRecognitionSources: [.appleSpeech],
             correctionMode: .fast
         ))
-        #expect(!VoiceLivePreviewSource.nvidiaNemotron.isEnabled(
+        #expect(VoiceLivePreviewSource.nvidiaNemotron.isEnabled(
             forRecognitionSources: [.nvidiaNemotron],
             correctionMode: .fast
         ))
@@ -97,34 +97,34 @@ struct VoiceLivePreviewSourceTests {
             VoiceLivePreviewSource.clientOptions(
                 forRemoteRecognitionSources: [.nvidiaNemotron],
                 correctionMode: .fast
-            ) == [.off]
+            ) == [.off, .nvidiaNemotron, .appleSpeech]
         )
         #expect(VoiceLivePreviewSource.appleSpeech.isClientEnabled(
             forRemoteRecognitionSources: [],
             correctionMode: .polish
         ))
-        #expect(!VoiceLivePreviewSource.appleSpeech.isClientEnabled(
+        #expect(VoiceLivePreviewSource.appleSpeech.isClientEnabled(
             forRemoteRecognitionSources: [.appleSpeech],
             correctionMode: .fast
         ))
     }
 
-    @Test func bridgeFastPreviewPrefersQwen() {
+    @Test func bridgeFastPreviewDoesNotRewriteConfiguredSource() {
         #expect(BridgeSettingsPayload.bridgeLivePreviewSource(
             configuredSource: .appleSpeech,
             sources: [.qwen, .appleSpeech],
             correctionMode: .fast
-        ) == .qwen)
+        ) == .appleSpeech)
         #expect(BridgeSettingsPayload.bridgeLivePreviewSource(
             configuredSource: .off,
             sources: [.qwen],
             correctionMode: .fast
-        ) == .qwen)
+        ) == .off)
         #expect(BridgeSettingsPayload.bridgeLivePreviewSource(
             configuredSource: .appleSpeech,
             sources: [.appleSpeech],
             correctionMode: .fast
-        ) == .off)
+        ) == .appleSpeech)
         #expect(BridgeSettingsPayload.bridgeLivePreviewSource(
             configuredSource: .appleSpeech,
             sources: [.qwen, .appleSpeech],

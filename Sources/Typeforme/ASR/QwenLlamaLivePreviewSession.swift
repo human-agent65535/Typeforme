@@ -65,7 +65,7 @@ final class QwenLlamaLivePreviewTaskRegistry: @unchecked Sendable {
 final class QwenLlamaLivePreviewSession: ASRLivePreviewSession, @unchecked Sendable {
     static let providerID = RecognitionSource.qwen.rawValue
     private static let outputSampleRate = 16_000.0
-    private static let minimumPreviewSamples = 24_000
+    private static let minimumPreviewSamples = 19_200
     private static let requestStrideSamples = 16_000
     private static let rollingWindowSamples = 8 * 16_000
     private static let requestTimeout: TimeInterval = 12

@@ -92,13 +92,13 @@ struct ASRAudioSupportTests {
     }
 
     @Test func qwenLivePreviewUsesEightSecondRollingWindow() {
-        #expect(QwenLlamaLivePreviewSession.rollingWindowStartSample(totalSamples: 24_000) == 0)
+        #expect(QwenLlamaLivePreviewSession.rollingWindowStartSample(totalSamples: 19_200) == 0)
         #expect(QwenLlamaLivePreviewSession.rollingWindowStartSample(totalSamples: 128_000) == 0)
         #expect(QwenLlamaLivePreviewSession.rollingWindowStartSample(totalSamples: 160_000) == 32_000)
-        #expect(!QwenLlamaLivePreviewSession.shouldRequestPreview(totalSamples: 23_999, lastRequestedSamples: 0))
-        #expect(QwenLlamaLivePreviewSession.shouldRequestPreview(totalSamples: 24_000, lastRequestedSamples: 0))
-        #expect(!QwenLlamaLivePreviewSession.shouldRequestPreview(totalSamples: 32_000, lastRequestedSamples: 24_000))
-        #expect(QwenLlamaLivePreviewSession.shouldRequestPreview(totalSamples: 40_000, lastRequestedSamples: 24_000))
+        #expect(!QwenLlamaLivePreviewSession.shouldRequestPreview(totalSamples: 19_199, lastRequestedSamples: 0))
+        #expect(QwenLlamaLivePreviewSession.shouldRequestPreview(totalSamples: 19_200, lastRequestedSamples: 0))
+        #expect(!QwenLlamaLivePreviewSession.shouldRequestPreview(totalSamples: 27_200, lastRequestedSamples: 19_200))
+        #expect(QwenLlamaLivePreviewSession.shouldRequestPreview(totalSamples: 35_200, lastRequestedSamples: 19_200))
     }
 
     @Test func qwenLivePreviewRegistryCancelsRegisteredAndPendingTasks() async {

@@ -165,7 +165,7 @@
 "Command edit" = "指令编辑";
 "Press the wand and speak an instruction like make this shorter, translate this, or turn it into bullets. With no selection, it targets the current input text." = "点击魔棒后说出指令,例如缩短、翻译或改成项目符号。没有选区时会处理当前输入文本。";
 "Fast" = "Fast";
-"Fast inserts the Qwen transcript directly and skips refine. It appears only when Qwen ASR is enabled on the paired Mac." = "Fast 会直接插入 Qwen 转写并跳过优化。只有配对 Mac 启用 Qwen ASR 时才会出现。";
+"Fast inserts the ASR transcript directly and skips refine. It uses Qwen3-ASR when it is enabled and ready, otherwise Apple Speech." = "Fast 会直接插入 ASR 转写并跳过优化。Qwen3-ASR 已启用且就绪时使用 Qwen,否则使用 Apple Speech。";
 "Refine existing text" = "优化现有文本";
 "Clean, Polish, Polish+, Structure+, and Formal+ use the selected text first, then the current visible input text. Fast bypasses refine." = "Clean、Polish、Polish+、Structure+、Formal+ 会优先使用选中文本,否则使用当前可见输入文本。Fast 会绕过优化。";
 "Clean, Polish, Polish+, Structure+, and Formal+ use the selected text first, then the current visible input text." = "清洁、润色、润色+、结构+、正式+ 会优先使用选中文本,否则使用当前可见输入文本。";
@@ -174,8 +174,8 @@
 
 // 听写设置
 "Default Mode" = "默认模式";
-"Fast requires Qwen ASR enabled on the Mac." = "Fast 需要 Mac 上启用 Qwen ASR。";
-"Requires Qwen" = "需要 Qwen";
+"Applies to this iPhone and the Typeforme keyboard. Fast skips refine and uses Qwen3-ASR when it is enabled and ready, otherwise Apple Speech." = "应用到这台 iPhone 和 Typeforme 键盘。Fast 会跳过优化；Qwen3-ASR 已启用且就绪时使用 Qwen,否则使用 Apple Speech。";
+"Affects the paired Mac Bridge. Apple Speech is always available on the Mac." = "影响配对的 Mac Bridge。Apple Speech 在 Mac 上始终可用。";
 "Mac ASR" = "Mac ASR";
 "Mac Refine Engine" = "Mac 优化引擎";
 "Loading dictation settings" = "正在加载听写设置";
@@ -218,7 +218,6 @@
 "Server-side" = "服务端";
 "Server ASR runs on the Mac. Apple Speech recognition mode only applies to Apple Speech." = "Server ASR 在 Mac 上运行。Apple Speech 识别模式只作用于 Apple Speech。";
 "No live preview source is available for the current mode." = "当前模式没有可用的实时预览源。";
-"Qwen3-ASR preview runs on the Mac in Fast mode." = "Fast 模式下使用 Mac 上的 Qwen3-ASR 预览。";
 "Qwen3-ASR preview runs on the Mac." = "Qwen3-ASR 预览在 Mac 上运行。";
 "NVIDIA Nemotron preview runs on the Mac." = "NVIDIA Nemotron 预览在 Mac 上运行。";
 "Server ASR preview runs on the Mac." = "服务端 ASR 预览在 Mac 上运行。";

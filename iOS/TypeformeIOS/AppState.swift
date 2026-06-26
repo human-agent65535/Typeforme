@@ -573,12 +573,11 @@ final class AppState {
     func isKeyboardLivePreviewSourceEnabled(_ source: KeyboardLivePreviewSource) -> Bool {
         switch source {
         case .appleSpeech:
-            return correctionMode.usesRefine
+            return true
         case .qwen:
             return macSettings?.isRecognitionSourceEnabled(.qwen) == true
         case .nvidiaNemotron:
-            return correctionMode.usesRefine
-                && macSettings?.isRecognitionSourceEnabled(.nvidiaNemotron) == true
+            return macSettings?.isRecognitionSourceEnabled(.nvidiaNemotron) == true
         }
     }
 
@@ -1099,7 +1098,6 @@ final class AppState {
     private func publishKeyboardDefaults(force: Bool = false) {
         keyboardCoordinator.publishDefaults(
             correctionMode: config.correctionMode,
-            supportsFastMode: macSettings?.supportsFastMode == true,
             autoCapitalizationEnabled: keyboardAutoCapitalizationEnabled,
             characterPreviewEnabled: keyboardCharacterPreviewEnabled,
             keySoundEnabled: keyboardKeySoundEnabled,
@@ -2238,6 +2236,12 @@ final class AppState {
         guard keyboardLivePreviewEnabled else {
             appLog.debug("live preview skipped: disabled")
             return false
+        }
+        if correctionMode == .fast {
+            if macSettings?.isRecognitionSourceEnabled(.qwen) == true {
+                return startServerASRLivePreviewIfAvailable(source: .qwen, generation: generation)
+            }
+            return startAppleSpeechLivePreviewIfAvailable(generation: generation)
         }
         guard isKeyboardLivePreviewSourceEnabled(keyboardLivePreviewSource) else {
             appLog.debug("live preview skipped: source disabled")

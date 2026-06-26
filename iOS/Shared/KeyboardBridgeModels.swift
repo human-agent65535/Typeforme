@@ -57,7 +57,7 @@ enum TypeformeBundleConfiguration {
 
 enum KeyboardSharedDefaults {
     static var appGroupIdentifier: String { TypeformeBundleConfiguration.appGroupIdentifier }
-    static let keyboardDefaultsKey = "keyboard.defaults.v2"
+    static let keyboardDefaultsKey = "keyboard.defaults.v3"
     private static let keyboardStatusKey = "keyboard.status.v1"
     private static let hostHandoffKey = "keyboard.host-handoff.v1"
     private static let hostForegroundKey = "keyboard.host-foreground.v1"
@@ -251,12 +251,11 @@ enum KeyboardDefaultTextInputLanguage: String, CaseIterable, Identifiable, Codab
 }
 
 struct KeyboardDefaultsPayload: Codable, Equatable {
-    static let currentVersion = 2
+    static let currentVersion = 3
 
     var version: Int
     var bridgeToken: String
     var correctionMode: CorrectionMode
-    var supportsFastMode: Bool
     var autoCapitalizationEnabled: Bool
     var characterPreviewEnabled: Bool
     var keySoundEnabled: Bool
@@ -278,7 +277,6 @@ struct KeyboardDefaultsPayload: Codable, Equatable {
         version: Int = Self.currentVersion,
         bridgeToken: String,
         correctionMode: CorrectionMode,
-        supportsFastMode: Bool,
         autoCapitalizationEnabled: Bool,
         characterPreviewEnabled: Bool,
         keySoundEnabled: Bool = true,
@@ -300,7 +298,6 @@ struct KeyboardDefaultsPayload: Codable, Equatable {
         self.version = version
         self.bridgeToken = bridgeToken
         self.correctionMode = correctionMode
-        self.supportsFastMode = supportsFastMode
         self.autoCapitalizationEnabled = autoCapitalizationEnabled
         self.characterPreviewEnabled = characterPreviewEnabled
         self.keySoundEnabled = keySoundEnabled
@@ -326,7 +323,6 @@ struct KeyboardDefaultsPayload: Codable, Equatable {
         version = try container.decode(Int.self, forKey: .version)
         bridgeToken = try container.decode(String.self, forKey: .bridgeToken)
         correctionMode = try container.decode(CorrectionMode.self, forKey: .correctionMode)
-        supportsFastMode = try container.decode(Bool.self, forKey: .supportsFastMode)
         autoCapitalizationEnabled = try container.decode(Bool.self, forKey: .autoCapitalizationEnabled)
         characterPreviewEnabled = try container.decode(Bool.self, forKey: .characterPreviewEnabled)
         keySoundEnabled = try container.decode(Bool.self, forKey: .keySoundEnabled)
@@ -358,7 +354,6 @@ struct KeyboardDefaultsPayload: Codable, Equatable {
         case version
         case bridgeToken = "bridge_token"
         case correctionMode = "correction_mode"
-        case supportsFastMode = "supports_fast_mode"
         case autoCapitalizationEnabled = "auto_capitalization_enabled"
         case characterPreviewEnabled = "character_preview_enabled"
         case keySoundEnabled = "key_sound_enabled"

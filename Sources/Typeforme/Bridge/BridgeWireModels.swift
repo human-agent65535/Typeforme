@@ -54,7 +54,7 @@ enum RecognitionSource: String, CaseIterable, Codable, Identifiable, Sendable {
         }
     }
 
-    static let defaultEnabled: [RecognitionSource] = [.qwen]
+    static let defaultEnabled: [RecognitionSource] = [.appleSpeech]
 
     static func recognizedSources(_ raw: [String]) -> [RecognitionSource] {
         var seen = Set<RecognitionSource>()
@@ -76,7 +76,7 @@ enum RecognitionSource: String, CaseIterable, Codable, Identifiable, Sendable {
 
 extension CorrectionMode {
     func isAvailable(enabledRecognitionSources sources: [RecognitionSource]) -> Bool {
-        !requiresQwenASR || sources.contains(.qwen)
+        true
     }
 }
 

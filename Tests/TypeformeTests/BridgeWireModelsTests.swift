@@ -30,7 +30,7 @@ struct BridgeWireModelsTests {
         #expect(RecognitionSource.qwen.displayName == "Qwen3-ASR")
         #expect(RecognitionSource.nvidiaNemotron.displayName == "NVIDIA Nemotron 3.5 ASR")
         #expect(RecognitionSource.appleSpeech.displayName == "Apple Speech")
-        #expect(RecognitionSource.defaultEnabled == [.qwen])
+        #expect(RecognitionSource.defaultEnabled == [.appleSpeech])
         #expect(
             RecognitionSource.normalizedSources([
                 " NVIDIA-NEMOTRON-ASR ",
@@ -41,7 +41,7 @@ struct BridgeWireModelsTests {
         )
         #expect(RecognitionSource.recognizedSources([]) == [])
         #expect(RecognitionSource.recognizedSources(["unknown"]) == [])
-        #expect(RecognitionSource.normalizedSources([]) == [.qwen])
+        #expect(RecognitionSource.normalizedSources([]) == [.appleSpeech])
         #expect(RecognitionSource.rawValue(for: [.qwen, .appleSpeech]) == "qwen3-asr-llama,apple-speech")
         #expect(RecognitionSource.qwen.hasModelConfiguration)
         #expect(!RecognitionSource.appleSpeech.hasModelConfiguration)
@@ -223,24 +223,22 @@ struct BridgeWireModelsTests {
         #expect(request.userDictionary == nil)
     }
 
-    @Test func bridgeSettingsPayloadDoesNotDefaultEmptySourcesToFastSupport() {
+    @Test func bridgeSettingsPayloadNormalizesEmptySourcesToAppleSpeech() {
         var payload = BridgeSettingsPayload.current()
         payload.enabledRecognitionSources = []
         payload.normalize()
 
-        #expect(payload.enabledSources == [])
-        #expect(!payload.supportsFastMode)
+        #expect(payload.enabledSources == [.appleSpeech])
     }
 
-    @Test func bridgeSettingsPayloadClearsFastWhenQwenIsUnavailable() {
+    @Test func bridgeSettingsPayloadKeepsFastWithAppleSpeechOnly() {
         var payload = BridgeSettingsPayload.current()
         payload.enabledRecognitionSources = [RecognitionSource.appleSpeech.rawValue]
         payload.correctionMode = CorrectionMode.fast.rawValue
         payload.normalize()
 
         #expect(payload.enabledSources == [.appleSpeech])
-        #expect(!payload.supportsFastMode)
-        #expect(payload.correctionMode == CorrectionMode.polish.rawValue)
+        #expect(payload.correctionMode == CorrectionMode.fast.rawValue)
     }
 
     @Test func bridgeSettingsPayloadReportsServerASRPreviewForQwenAndNemotron() {

@@ -380,12 +380,14 @@ final class BridgeService {
         let jobID = BridgeClientJobID.normalized(request.clientJobID)
         let correctionMode = try resolveCorrectionMode(request.correctionMode)
         try validateCorrectionModeAvailable(correctionMode)
-        let transcriptionSources = recognitionSources(for: correctionMode)
-        let languageIDs = resolveLanguageIDs(
+        let requestedLanguageIDs = resolveLanguageIDs(
             ids: request.languageIDs,
             mode: request.languageMode,
-            sources: transcriptionSources
+            sources: AppSettings.enabledRecognitionSources
         )
+        let fastRoute = correctionMode == .fast ? FastASRRoute.resolve(languageIDs: requestedLanguageIDs) : nil
+        let transcriptionSources = fastRoute.map { [$0.source] } ?? recognitionSources(for: correctionMode)
+        let languageIDs = fastRoute?.languageIDs ?? requestedLanguageIDs
         let audioURL = try await writeAudio(request)
         defer { try? FileManager.default.removeItem(at: audioURL) }
         await publishJobStatus(
@@ -417,7 +419,9 @@ final class BridgeService {
                 stage: .transcribing,
                 message: "Transcribing audio"
             )
-            let asrResult = try await ASRFactory.shared.get(sources: transcriptionSources).transcribeResult(
+            let asrService = fastRoute.map { ASRFactory.shared.getInstalled(source: $0.source) }
+                ?? ASRFactory.shared.get(sources: transcriptionSources)
+            let asrResult = try await asrService.transcribeResult(
                 audioFileURL: audioURL,
                 languageIDs: languageIDs
             )
@@ -1105,13 +1109,12 @@ final class BridgeService {
         _ mode: CorrectionMode,
         sources: [RecognitionSource] = AppSettings.configuredRecognitionSources
     ) throws {
-        guard mode.isAvailable(enabledRecognitionSources: sources) else {
-            throw BridgeServiceError.invalidRequest("Fast mode requires Qwen ASR enabled on Mac")
-        }
+        _ = mode
+        _ = sources
     }
 
     private func recognitionSources(for correctionMode: CorrectionMode) -> [RecognitionSource] {
-        correctionMode == .fast ? [.qwen] : AppSettings.enabledRecognitionSources
+        correctionMode == .fast ? [FastASRRoute.resolve(languageIDs: AppSettings.asrLanguageIDs).source] : AppSettings.enabledRecognitionSources
     }
 
     private func resolveTextEditIntent(_ rawIntent: String?) throws -> TextEditIntent {
@@ -1199,10 +1202,7 @@ final class BridgeService {
                 sources.append(source)
             }
         }
-        guard !sources.isEmpty else {
-            throw BridgeServiceError.invalidRequest("At least one recognition source must be enabled")
-        }
-        return sources
+        return AppSettings.normalizedServerRecognitionSources(sources)
     }
 
     private func resolveASRModelID(_ raw: String, source: RecognitionSource) throws -> String {

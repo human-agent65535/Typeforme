@@ -16,6 +16,16 @@ final class ASRFactory {
         MultiSourceASRService(sources: sources)
     }
 
+    func getInstalled(source: RecognitionSource) -> ASRService {
+        InstalledSingleSourceASRService(source: source)
+    }
+
+    var isQwenLlamaInstalledForCurrentSettings: Bool {
+        FileManager.default.fileExists(atPath: AppSettings.asrQwenLlamaModelPath)
+            && FileManager.default.fileExists(atPath: AppSettings.asrQwenLlamaMMProjPath)
+            && AppPaths.bundledLlamaServer != nil
+    }
+
     func preloadCachedActiveModel() async {
         let sources = AppSettings.enabledRecognitionSources
         async let qwen: Void = preloadQwenLlamaIfEnabled(sources)
@@ -125,6 +135,11 @@ final class ASRFactory {
         qwenLlamaService()
     }
 
+    func qwenLlamaServiceIfInstalled() -> QwenLlamaASRService? {
+        guard isQwenLlamaInstalledForCurrentSettings else { return nil }
+        return qwenLlamaService()
+    }
+
     private func qwenLlamaService() -> QwenLlamaASRService? {
         guard let binary = AppPaths.bundledLlamaServer else { return nil }
         let modelPath = AppSettings.asrQwenLlamaModelPath
@@ -159,6 +174,36 @@ private struct UnavailableASRService: ASRService {
 
     func transcribe(audioFileURL: URL, languageIDs: [String]) async throws -> String {
         throw ASRAudioSupportError.httpStatus(503, reason)
+    }
+}
+
+private struct InstalledSingleSourceASRService: ASRService {
+    let source: RecognitionSource
+
+    func transcribe(audioFileURL: URL, languageIDs: [String]) async throws -> String {
+        try await transcribeResult(audioFileURL: audioFileURL, languageIDs: languageIDs).text
+    }
+
+    func transcribeResult(audioFileURL: URL, languageIDs: [String]) async throws -> ASRTranscription {
+        let text: String
+        let output: ASRTranscriptModelOutput
+        switch source {
+        case .qwen:
+            guard let service = await ASRFactory.shared.qwenLlamaServiceIfInstalled() else {
+                throw ASRAudioSupportError.httpStatus(503, "Qwen3-ASR model is not installed")
+            }
+            text = try await service.transcribe(audioFileURL: audioFileURL, languageIDs: languageIDs)
+            output = ASRModelOutputFactory.qwen(role: "source", text: text)
+        case .nvidiaNemotron:
+            text = try await AutoInstallingNvidiaNemotronASRService()
+                .transcribe(audioFileURL: audioFileURL, languageIDs: languageIDs)
+            output = ASRModelOutputFactory.nemotron(role: "source", text: text)
+        case .appleSpeech:
+            text = try await AppleSpeechASRService()
+                .transcribe(audioFileURL: audioFileURL, languageIDs: languageIDs)
+            output = ASRModelOutputFactory.appleSpeech(role: "source", text: text)
+        }
+        return ASRTranscription(text: text, hypotheses: [text], modelOutputs: [output])
     }
 }
 

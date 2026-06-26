@@ -168,10 +168,6 @@ struct BridgeSettingsPayload: Codable, Sendable {
         }
     }
 
-    var supportsFastMode: Bool {
-        isRecognitionSourceEnabled(.qwen)
-    }
-
     static let controllableCorrectionBackends: [CorrectionBackendKind] = [
         .qwen35_2B,
         .qwen35_4B,
@@ -277,9 +273,7 @@ struct BridgeSettingsPayload: Codable, Sendable {
             sources: sources
         )
         let configuredCorrectionMode = AppSettings.correctionMode
-        let correctionMode = configuredCorrectionMode.isAvailable(enabledRecognitionSources: sources)
-            ? configuredCorrectionMode
-            : .polish
+        let correctionMode = configuredCorrectionMode
         let correctionBackend = normalizedCorrectionBackend(AppSettings.correctionBackend)
         let livePreviewSource = normalizedLivePreviewSource(
             AppSettings.voiceLivePreviewSource,
@@ -466,15 +460,14 @@ struct BridgeSettingsPayload: Codable, Sendable {
         sources: [RecognitionSource],
         correctionMode: CorrectionMode
     ) -> VoiceLivePreviewSource {
-        if correctionMode == .fast, sources.contains(.qwen) {
-            return .qwen
-        }
         return normalizedLivePreviewSource(source, sources: sources, correctionMode: correctionMode)
     }
 
     mutating func normalize() {
         recognitionSourceOptions = Self.controllableRecognitionSources
-        enabledRecognitionSources = RecognitionSource.recognizedSources(enabledRecognitionSources).map(\.rawValue)
+        enabledRecognitionSources = AppSettings.normalizedServerRecognitionSources(
+            RecognitionSource.recognizedSources(enabledRecognitionSources)
+        ).map(\.rawValue)
 
         asrModelOptionsByRecognitionSource = Self.controllableASRModelOptionsByRecognitionSource
         asrModelIDsByRecognitionSource = BridgeSettingsNormalization.normalizedASRModelIDs(
@@ -498,10 +491,6 @@ struct BridgeSettingsPayload: Codable, Sendable {
         if let mode = CorrectionMode(rawValue: correctionMode) {
             resolvedCorrectionMode = mode
         } else {
-            correctionMode = CorrectionMode.polish.rawValue
-            resolvedCorrectionMode = .polish
-        }
-        if !resolvedCorrectionMode.isAvailable(enabledRecognitionSources: enabledSources) {
             correctionMode = CorrectionMode.polish.rawValue
             resolvedCorrectionMode = .polish
         }
@@ -552,6 +541,7 @@ struct BridgeSettingsPayload: Codable, Sendable {
     }
 
     mutating func setRecognitionSource(_ source: RecognitionSource, enabled: Bool) {
+        guard source != .appleSpeech else { return }
         var sources = enabledSources
         if enabled {
             if !sources.contains(source) {

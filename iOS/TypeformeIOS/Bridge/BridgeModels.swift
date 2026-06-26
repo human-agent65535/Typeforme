@@ -321,10 +321,6 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
         }
     }
 
-    var supportsFastMode: Bool {
-        isRecognitionSourceEnabled(.qwen)
-    }
-
     var livePreviewSourceOptions: [VoiceLivePreviewSource] {
         VoiceLivePreviewSource.options(
             forRecognitionSources: enabledSources,
@@ -502,7 +498,9 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
     }
 
     mutating func normalize() {
-        enabledRecognitionSources = RecognitionSource.recognizedSources(enabledRecognitionSources).map(\.rawValue)
+        enabledRecognitionSources = normalizedServerRecognitionSources(
+            RecognitionSource.recognizedSources(enabledRecognitionSources)
+        ).map(\.rawValue)
         asrModelIDsByRecognitionSource = BridgeSettingsNormalization.normalizedASRModelIDs(
             currentModelIDs: asrModelIDsByRecognitionSource,
             incomingModelIDs: asrModelIDsByRecognitionSource,
@@ -517,9 +515,6 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
         correctionColdTimeoutMs = Self.clampedCorrectionColdTimeoutMs(correctionColdTimeoutMs)
         externalLLMBaseURL = externalLLMBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         externalLLMModel = externalLLMModel.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !correctionMode.isAvailable(enabledRecognitionSources: enabledSources) {
-            correctionMode = .polish
-        }
         livePreviewSource = normalizedLivePreviewSource(rawValue: livePreviewSource).rawValue
         userDictionary = DictionaryEntry.normalizedEntries(userDictionary)
     }
@@ -567,6 +562,7 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
     }
 
     mutating func setRecognitionSource(_ source: RecognitionSource, enabled: Bool) {
+        guard source != .appleSpeech else { return }
         var sources = enabledSources
         if enabled {
             if !sources.contains(source) {
@@ -579,6 +575,10 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
         guard !resolvedSources.isEmpty else { return }
         enabledRecognitionSources = resolvedSources.map(\.rawValue)
         normalize()
+    }
+
+    private func normalizedServerRecognitionSources(_ sources: [RecognitionSource]) -> [RecognitionSource] {
+        RecognitionSource.recognizedSources((sources + [.appleSpeech]).map(\.rawValue))
     }
 
     private static func rimeUserPhrases(from entries: [DictionaryEntry]) -> [String] {

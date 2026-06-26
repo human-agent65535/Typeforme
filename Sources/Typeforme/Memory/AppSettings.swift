@@ -118,7 +118,7 @@ enum AppSettings {
 
             Keys.asrQwenEnabled:    true,
             Keys.asrNvidiaNemotronEnabled: false,
-            Keys.asrAppleSpeechEnabled: false,
+            Keys.asrAppleSpeechEnabled: true,
             Keys.asrLanguageIDs:    ASRLanguageSelection.defaultRawValue,
             Keys.asrNvidiaNemotronTimeoutSec: 300,
             Keys.asrNvidiaNemotronModelID: NvidiaNemotronASRModelCatalog.defaultID,
@@ -308,30 +308,26 @@ enum AppSettings {
         if ud.bool(forKey: Keys.asrNvidiaNemotronEnabled) {
             sources.append(.nvidiaNemotron)
         }
-        if ud.bool(forKey: Keys.asrAppleSpeechEnabled) {
-            sources.append(.appleSpeech)
-        }
-        return sources
+        return normalizedServerRecognitionSources(sources)
     }
 
     static var enabledRecognitionSources: [RecognitionSource] {
-        let sources = configuredRecognitionSources
-        return sources.isEmpty ? RecognitionSource.defaultEnabled : sources
-    }
-
-    static var supportsFastMode: Bool {
-        let sources = processingMode == .client ? clientBridgeEnabledRecognitionSources : configuredRecognitionSources
-        return sources.contains(.qwen)
+        configuredRecognitionSources
     }
 
     static func isCorrectionModeAvailable(_ mode: CorrectionMode) -> Bool {
-        !mode.requiresQwenASR || supportsFastMode
+        true
     }
 
     static func setEnabledRecognitionSources(_ sources: [RecognitionSource]) {
-        ud.set(sources.contains(.qwen), forKey: Keys.asrQwenEnabled)
-        ud.set(sources.contains(.nvidiaNemotron), forKey: Keys.asrNvidiaNemotronEnabled)
-        ud.set(sources.contains(.appleSpeech), forKey: Keys.asrAppleSpeechEnabled)
+        let normalized = normalizedServerRecognitionSources(sources)
+        ud.set(normalized.contains(.qwen), forKey: Keys.asrQwenEnabled)
+        ud.set(normalized.contains(.nvidiaNemotron), forKey: Keys.asrNvidiaNemotronEnabled)
+        ud.set(true, forKey: Keys.asrAppleSpeechEnabled)
+    }
+
+    static func normalizedServerRecognitionSources(_ sources: [RecognitionSource]) -> [RecognitionSource] {
+        RecognitionSource.recognizedSources((sources + [.appleSpeech]).map(\.rawValue))
     }
 
     static var clientBridgeEnabledRecognitionSources: [RecognitionSource] {

@@ -484,11 +484,7 @@ struct ClientServerSettingsView: View {
                                 )
                             }
                             .toggleStyle(.switch)
-                            .disabled(
-                                source == .qwen
-                                    && current.isRecognitionSourceEnabled(.qwen)
-                                    && (CorrectionMode(rawValue: current.correctionMode)?.requiresQwenASR == true)
-                            )
+                            .disabled(source == .appleSpeech)
                         }
                     }
 
@@ -625,26 +621,20 @@ struct ClientServerSettingsView: View {
     }
 
     private func isServerCorrectionModeEnabled(_ mode: CorrectionMode) -> Bool {
-        guard let draft else { return !mode.requiresQwenASR }
-        return mode.isAvailable(enabledRecognitionSources: draft.enabledSources)
+        _ = draft
+        return mode.isAvailable(enabledRecognitionSources: [])
     }
 
     private func visibleRecognitionSourceOptions(for settings: BridgeSettingsPayload) -> [BridgeSettingOption] {
-        guard CorrectionMode(rawValue: settings.correctionMode)?.requiresQwenASR == true else {
-            return settings.recognitionSourceOptions
-        }
-        return settings.recognitionSourceOptions.filter { $0.id == RecognitionSource.qwen.rawValue }
+        settings.recognitionSourceOptions
     }
 
     private func visibleEnabledSources(for settings: BridgeSettingsPayload) -> [RecognitionSource] {
-        guard CorrectionMode(rawValue: settings.correctionMode)?.requiresQwenASR == true else {
-            return settings.enabledSources
-        }
-        return settings.enabledSources.filter { $0 == .qwen }
+        settings.enabledSources
     }
 
     private func serverCorrectionModeTitle(_ mode: CorrectionMode) -> String {
-        isServerCorrectionModeEnabled(mode) ? mode.displayName : "\(mode.displayName) - Requires Qwen"
+        mode.displayName
     }
 
     private var numberOutputPreferenceBinding: Binding<String> {
@@ -831,12 +821,10 @@ struct ClientServerSettingsView: View {
 
     private func serverRecognitionSourceBinding(_ source: RecognitionSource) -> Binding<Bool> {
         Binding {
-            draft?.isRecognitionSourceEnabled(source) ?? false
+            if source == .appleSpeech { return true }
+            return draft?.isRecognitionSourceEnabled(source) ?? false
         } set: { enabled in
-            guard !(source == .qwen
-                    && !enabled
-                    && (draft.flatMap { CorrectionMode(rawValue: $0.correctionMode) }?.requiresQwenASR == true))
-            else { return }
+            guard source != .appleSpeech else { return }
             draft?.setRecognitionSource(source, enabled: enabled)
             normalizeDraft()
         }
@@ -1256,8 +1244,8 @@ struct DictationInputSettingsView: View {
         var sources: [RecognitionSource] = []
         if qwenEnabled { sources.append(.qwen) }
         if nvidiaEnabled { sources.append(.nvidiaNemotron) }
-        if appleSpeechEnabled { sources.append(.appleSpeech) }
-        return sources
+        sources.append(.appleSpeech)
+        return RecognitionSource.recognizedSources(sources.map(\.rawValue))
     }
 
     private var clientBridgeEnabledRecognitionSources: [RecognitionSource] {
@@ -1383,17 +1371,12 @@ struct ASRSettingsView: View {
                         )
                     }
                     .toggleStyle(.switch)
-                    .disabled(source == .qwen && qwenEnabled && selectedCorrectionMode.requiresQwenASR)
+                    .disabled(source == .appleSpeech)
                 }
 
                 Text("Enabled sources run independently. Each source contributes a transcript when it supports at least one selected language.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
-                if selectedCorrectionMode.requiresQwenASR {
-                    Text("Qwen is required while Fast mode is selected.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
 
                 TimelineView(.periodic(from: .now, by: 2)) { _ in
                     if !selectedEnginesInstalled {
@@ -1418,7 +1401,7 @@ struct ASRSettingsView: View {
                 }
             }
 
-            if nvidiaEnabled && !selectedCorrectionMode.requiresQwenASR {
+            if nvidiaEnabled {
                 Section("NVIDIA Nemotron") {
                     Picker("Model", selection: $nvidiaModelID) {
                         ForEach(NvidiaNemotronASRModelCatalog.all) { spec in
@@ -1475,7 +1458,7 @@ struct ASRSettingsView: View {
                         .id(selectedQwenModel.id)
                 }
             }
-            if nvidiaEnabled && !selectedCorrectionMode.requiresQwenASR {
+            if nvidiaEnabled {
                 Section("NVIDIA Nemotron model") {
                     NvidiaNemotronASRModelRow(spec: selectedNvidiaModel)
                         .id(selectedNvidiaModel.id)
@@ -1521,7 +1504,7 @@ struct ASRSettingsView: View {
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
-                    if nvidiaEnabled && !selectedCorrectionMode.requiresQwenASR {
+                    if nvidiaEnabled {
                         IntegerSettingField(
                             title: "Nemotron timeout",
                             value: Binding(
@@ -1578,14 +1561,11 @@ struct ASRSettingsView: View {
     }
 
     private var selectedSources: [RecognitionSource] {
-        if selectedCorrectionMode.requiresQwenASR {
-            return [.qwen]
-        }
         var sources: [RecognitionSource] = []
         if qwenEnabled { sources.append(.qwen) }
         if nvidiaEnabled { sources.append(.nvidiaNemotron) }
-        if appleSpeechEnabled { sources.append(.appleSpeech) }
-        return sources.isEmpty ? RecognitionSource.defaultEnabled : sources
+        sources.append(.appleSpeech)
+        return RecognitionSource.recognizedSources(sources.map(\.rawValue))
     }
 
     private var selectedCorrectionMode: CorrectionMode {
@@ -1593,7 +1573,7 @@ struct ASRSettingsView: View {
     }
 
     private var visibleRecognitionSources: [RecognitionSource] {
-        selectedCorrectionMode.requiresQwenASR ? [.qwen] : RecognitionSource.allCases
+        RecognitionSource.allCases
     }
 
     private func preloadEnabledASRModels() {
@@ -1718,8 +1698,8 @@ struct ASRSettingsView: View {
     }
 
     private func normalizeSources() {
-        if !qwenEnabled && !nvidiaEnabled && !appleSpeechEnabled {
-            qwenEnabled = true
+        if !appleSpeechEnabled {
+            appleSpeechEnabled = true
         }
         let normalizedQwenModelID = QwenASRModelCatalog.spec(for: qwenModelID).id
         if qwenModelID != normalizedQwenModelID {
@@ -1750,21 +1730,18 @@ struct ASRSettingsView: View {
                 case .nvidiaNemotron:
                     return nvidiaEnabled
                 case .appleSpeech:
-                    return appleSpeechEnabled
+                    return true
                 }
             },
             set: { enabled in
                 switch source {
                 case .qwen:
-                    guard enabled || !selectedCorrectionMode.requiresQwenASR else { return }
                     qwenEnabled = enabled
                 case .nvidiaNemotron:
                     nvidiaEnabled = enabled
                 case .appleSpeech:
-                    appleSpeechEnabled = enabled
-                    if enabled {
-                        AppleSpeechLanguageSupport.refreshInBackgroundIfNeeded()
-                    }
+                    appleSpeechEnabled = true
+                    AppleSpeechLanguageSupport.refreshInBackgroundIfNeeded()
                 }
                 normalizeSources()
             }
@@ -1779,7 +1756,10 @@ struct ASRSettingsView: View {
     }
 
     private func refreshAppleSpeechLanguageSupportIfNeeded() {
-        guard appleSpeechEnabled else { return }
+        guard appleSpeechEnabled else {
+            appleSpeechEnabled = true
+            return
+        }
         AppleSpeechLanguageSupport.refreshInBackgroundIfNeeded()
     }
 }
@@ -2660,18 +2640,21 @@ struct CorrectionSettingsView: View {
     }
 
     private func isCorrectionModeEnabled(_ mode: CorrectionMode) -> Bool {
-        mode.isAvailable(enabledRecognitionSources: enabledRecognitionSources)
+        _ = mode
+        return true
     }
 
     private func correctionModeTitle(_ mode: CorrectionMode) -> String {
-        isCorrectionModeEnabled(mode) ? mode.displayName : "\(mode.displayName) - Requires Qwen"
+        mode.displayName
     }
 
     private var enabledRecognitionSources: [RecognitionSource] {
         if processingMode == .client {
             return AppSettings.recognitionSources(fromRaw: clientBridgeEnabledRecognitionSourcesRaw)
         }
-        return qwenEnabled ? [.qwen] : []
+        var sources: [RecognitionSource] = []
+        if qwenEnabled { sources.append(.qwen) }
+        return AppSettings.normalizedServerRecognitionSources(sources)
     }
 
     private var processingMode: ProcessingMode {

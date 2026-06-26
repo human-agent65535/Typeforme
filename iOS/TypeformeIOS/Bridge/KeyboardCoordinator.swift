@@ -15,7 +15,6 @@ final class KeyboardCoordinator {
 
     func publishDefaults(
         correctionMode: CorrectionMode,
-        supportsFastMode: Bool,
         autoCapitalizationEnabled: Bool,
         characterPreviewEnabled: Bool,
         keySoundEnabled: Bool,
@@ -35,7 +34,6 @@ final class KeyboardCoordinator {
         var payload = KeyboardDefaultsPayload(
             bridgeToken: bridgeToken,
             correctionMode: correctionMode,
-            supportsFastMode: supportsFastMode,
             autoCapitalizationEnabled: autoCapitalizationEnabled,
             characterPreviewEnabled: characterPreviewEnabled,
             keySoundEnabled: keySoundEnabled,

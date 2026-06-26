@@ -49,7 +49,6 @@ enum VoiceLivePreviewSource: String, CaseIterable, Identifiable {
         if sources.contains(.qwen) {
             options.append(.qwen)
         }
-        guard correctionMode.usesRefine else { return options }
         if sources.contains(.nvidiaNemotron) {
             options.append(.nvidiaNemotron)
         }
@@ -67,7 +66,6 @@ enum VoiceLivePreviewSource: String, CaseIterable, Identifiable {
         if sources.contains(.qwen) {
             options.append(.qwen)
         }
-        guard correctionMode.usesRefine else { return options }
         if sources.contains(.nvidiaNemotron) {
             options.append(.nvidiaNemotron)
         }
