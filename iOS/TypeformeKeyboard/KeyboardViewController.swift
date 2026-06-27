@@ -8089,7 +8089,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func rimeMarkedText(for state: RimeKeyboardState) -> String {
-        state.visibleCompositionText(preferRawInput: shouldUseRawRimeInputAsMarkedText(state.input))
+        guard allowsRimeMarkedText else { return "" }
+        return state.visibleCompositionText(preferRawInput: shouldUseRawRimeInputAsMarkedText(state.input))
+    }
+
+    private var allowsRimeMarkedText: Bool {
+        textInputLanguage == .chinese
+            && !isRenderedNumericTextKeyboard
     }
 
     private func shouldUseRawRimeInputAsMarkedText(_ input: String) -> Bool {
