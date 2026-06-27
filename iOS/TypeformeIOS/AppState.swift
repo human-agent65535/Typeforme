@@ -627,6 +627,7 @@ final class AppState {
         self.keyboardStandbyEnabled = true
         configureKeyboardServer()
         configureKeyboardDarwinBridge()
+        consumeKeyboardHostIssue()
         installLifecycleObservers()
         startNetworkPathMonitor()
         publishKeyboardDefaults(force: true)
@@ -2720,6 +2721,16 @@ final class AppState {
         UserDefaults.standard.set(true, forKey: Self.keyboardFullAccessRequiredKey)
     }
 
+    private func consumeKeyboardHostIssue() {
+        guard let issue = KeyboardSharedDefaults.consumeKeyboardHostIssue() else { return }
+        let message = issue.message.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !message.isEmpty else { return }
+        errorMessage = message
+        appLog.error(
+            "keyboard issue reported command_id=\(issue.commandID ?? "none", privacy: .public) message=\(message, privacy: .public)"
+        )
+    }
+
     private func clearKeyboardCaptureContext() {
         activeKeyboardTextEditContext = nil
         activeKeyboardDictationContext = nil
@@ -2750,6 +2761,11 @@ final class AppState {
                 self?.markKeyboardFullAccessRequired()
             }
         }
+        let keyboardIssueObserver = KeyboardDarwinBridge.observe(KeyboardDarwinNotificationName.keyboardIssueReported) { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.consumeKeyboardHostIssue()
+            }
+        }
         guard let requestStartName = KeyboardDarwinNotificationName.authenticatedRequest(
             KeyboardDarwinNotificationName.requestStartDictation,
             token: keyboardBridgeToken
@@ -2767,11 +2783,12 @@ final class AppState {
                 token: keyboardBridgeToken
             )
         else {
-            keyboardDarwinObservers = [fullAccessObserver]
+            keyboardDarwinObservers = [fullAccessObserver, keyboardIssueObserver]
             return
         }
         keyboardDarwinObservers = [
             fullAccessObserver,
+            keyboardIssueObserver,
             KeyboardDarwinBridge.observe(requestStartName) { [weak self] in
                 Task { @MainActor [weak self] in
                     guard let self else { return }

@@ -61,6 +61,7 @@ enum KeyboardSharedDefaults {
     private static let keyboardStatusKey = "keyboard.status.v1"
     private static let hostHandoffKey = "keyboard.host-handoff.v1"
     private static let hostForegroundKey = "keyboard.host-foreground.v1"
+    private static let keyboardHostIssueKey = "keyboard.host-issue.v1"
     private static let touchLearningStatsKey = "keyboard.touchLearningStats.v1"
     private static let chineseLearningKey = "keyboard.chineseLearning.v1"
 
@@ -111,6 +112,21 @@ enum KeyboardSharedDefaults {
               timestamp > 0
         else { return false }
         return now - timestamp <= maxAge
+    }
+
+    @discardableResult
+    static func saveKeyboardHostIssue(_ issue: KeyboardHostIssueReport) -> Bool {
+        saveCodable(issue, key: keyboardHostIssueKey, flush: true)
+    }
+
+    static func consumeKeyboardHostIssue(
+        now: TimeInterval = Date().timeIntervalSince1970
+    ) -> KeyboardHostIssueReport? {
+        guard let defaults = suite(),
+              let issue = loadCodable(KeyboardHostIssueReport.self, key: keyboardHostIssueKey)
+        else { return nil }
+        defaults.removeObject(forKey: keyboardHostIssueKey)
+        return issue.isFresh(now: now) ? issue : nil
     }
 
     static func makeBridgeToken() -> String {
@@ -481,6 +497,39 @@ struct KeyboardChineseLearningSnapshot: Codable, Equatable {
     }
 }
 
+struct KeyboardHostIssueReport: Codable, Equatable, Sendable {
+    static let maxAge: TimeInterval = 5 * 60
+
+    let id: String
+    let commandID: String?
+    let message: String
+    let createdAt: TimeInterval
+
+    init(
+        id: String = UUID().uuidString,
+        commandID: String?,
+        message: String,
+        createdAt: TimeInterval = Date().timeIntervalSince1970
+    ) {
+        self.id = id
+        self.commandID = commandID
+        self.message = String(message.trimmingCharacters(in: .whitespacesAndNewlines).prefix(240))
+        self.createdAt = createdAt
+    }
+
+    func isFresh(now: TimeInterval = Date().timeIntervalSince1970) -> Bool {
+        let age = now - createdAt
+        return age >= 0 && age <= Self.maxAge
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case commandID = "command_id"
+        case message
+        case createdAt = "created_at"
+    }
+}
+
 enum KeyboardDarwinNotificationName {
     private static let namespace = TypeformeBundleConfiguration.keyboardNotificationNamespace
     static let transcriptionReady = "\(namespace).transcriptionReady"
@@ -494,6 +543,7 @@ enum KeyboardDarwinNotificationName {
     static let requestCancelDictation = "\(namespace).requestCancelDictation"
     static let keyboardDefaultsChanged = "\(namespace).defaultsChanged"
     static let fullAccessRequired = "\(namespace).fullAccessRequired"
+    static let keyboardIssueReported = "\(namespace).issueReported"
 
     static func authenticatedRequest(_ name: String, token: String?) -> String? {
         guard let token,
