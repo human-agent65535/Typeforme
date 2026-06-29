@@ -2044,7 +2044,7 @@ private struct MacSettingsView: View {
 
     private var asrTimeoutSecondsBinding: Binding<Double> {
         Binding {
-            draft?.asrTimeoutSec ?? 60
+            draft?.asrTimeoutSec ?? 40
         } set: { value in
             updateDraft { draft in
                 draft.asrTimeoutSec = BridgeMacSettingsPayload.clampedASRTimeoutSec(value)

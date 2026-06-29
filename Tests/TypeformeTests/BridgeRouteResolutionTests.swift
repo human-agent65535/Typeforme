@@ -110,7 +110,7 @@ struct BridgeRouteResolutionTests {
 struct BridgeSettingsNormalizationTests {
     @Test func clampsSharedTimeoutRanges() {
         #expect(BridgeSettingsNormalization.clampedASRTimeoutSec(1) == 5)
-        #expect(BridgeSettingsNormalization.clampedASRTimeoutSec(400) == 60)
+        #expect(BridgeSettingsNormalization.clampedASRTimeoutSec(400) == 40)
         #expect(BridgeSettingsNormalization.correctionTimeoutMs(fromSeconds: 0.01) == 100)
         #expect(BridgeSettingsNormalization.correctionColdTimeoutMs(fromSeconds: 90) == 60_000)
     }

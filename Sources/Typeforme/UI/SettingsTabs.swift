@@ -1050,9 +1050,9 @@ struct DictationInputSettingsView: View {
     @AppStorage(AppSettings.Keys.voiceLivePreviewSource) private var voiceLivePreviewSourceRaw: String = VoiceLivePreviewSource.appleSpeech.rawValue
     @AppStorage(AppSettings.Keys.processingMode)       private var processingModeRaw: String = ProcessingMode.client.rawValue
     @AppStorage(AppSettings.Keys.clientBridgeEnabledRecognitionSources) private var clientBridgeEnabledRecognitionSourcesRaw: String = ""
-    @AppStorage(AppSettings.Keys.asrQwenEnabled)       private var qwenEnabled: Bool = true
+    @AppStorage(AppSettings.Keys.asrQwenEnabled)       private var qwenEnabled: Bool = false
     @AppStorage(AppSettings.Keys.asrNvidiaNemotronEnabled) private var nvidiaEnabled: Bool = false
-    @AppStorage(AppSettings.Keys.asrAppleSpeechEnabled) private var appleSpeechEnabled: Bool = false
+    @AppStorage(AppSettings.Keys.asrAppleSpeechEnabled) private var appleSpeechEnabled: Bool = true
     @AppStorage(AppSettings.Keys.correctionMode)       private var correctionModeRaw: String = CorrectionMode.polish.rawValue
     @AppStorage(AppSettings.Keys.soundFeedback)        private var soundFeedback: Bool = true
 
@@ -1345,13 +1345,13 @@ private struct HoldModifierRecorder: View {
 // MARK: - ASR
 
 struct ASRSettingsView: View {
-    @AppStorage(AppSettings.Keys.asrQwenEnabled)     private var qwenEnabled: Bool = true
+    @AppStorage(AppSettings.Keys.asrQwenEnabled)     private var qwenEnabled: Bool = false
     @AppStorage(AppSettings.Keys.asrNvidiaNemotronEnabled) private var nvidiaEnabled: Bool = false
-    @AppStorage(AppSettings.Keys.asrAppleSpeechEnabled) private var appleSpeechEnabled: Bool = false
+    @AppStorage(AppSettings.Keys.asrAppleSpeechEnabled) private var appleSpeechEnabled: Bool = true
     @AppStorage(AppSettings.Keys.asrLanguageIDs)     private var languageIDsRaw: String = ASRLanguageSelection.defaultRawValue
-    @AppStorage(AppSettings.Keys.asrNvidiaNemotronTimeoutSec) private var nvidiaTimeoutSec: Double = 60
+    @AppStorage(AppSettings.Keys.asrNvidiaNemotronTimeoutSec) private var nvidiaTimeoutSec: Double = 40
     @AppStorage(AppSettings.Keys.asrNvidiaNemotronModelID) private var nvidiaModelID: String = NvidiaNemotronASRModelCatalog.defaultID
-    @AppStorage(AppSettings.Keys.asrQwenLlamaTimeoutSec) private var qwenTimeoutSec: Double = 60
+    @AppStorage(AppSettings.Keys.asrQwenLlamaTimeoutSec) private var qwenTimeoutSec: Double = 40
     @AppStorage(AppSettings.Keys.asrQwenLlamaModelID) private var qwenModelID: String = QwenASRModelCatalog.defaultID
     @AppStorage(AppSettings.Keys.asrQwenLlamaMaxTokens) private var qwenMaxTokens: Int = 2048
     @AppStorage(AppSettings.Keys.correctionMode) private var correctionModeRaw: String = CorrectionMode.polish.rawValue
@@ -1494,7 +1494,7 @@ struct ASRSettingsView: View {
                                 nvidiaTimeoutSec = timeout
                             }
                         ),
-                        range: 5...60,
+                        range: 5...40,
                         suffix: "s"
                     )
                     if qwenEnabled {
@@ -2417,7 +2417,7 @@ struct CorrectionSettingsView: View {
     @AppStorage(AppSettings.Keys.correctionMaxTokens)     private var maxTokens: Int = 128
     @AppStorage(AppSettings.Keys.correctionContextSize)   private var contextSize: Int = 4096
     @AppStorage(AppSettings.Keys.correctionMode)   private var correctionModeRaw: String = CorrectionMode.polish.rawValue
-    @AppStorage(AppSettings.Keys.asrQwenEnabled)   private var qwenEnabled: Bool = true
+    @AppStorage(AppSettings.Keys.asrQwenEnabled)   private var qwenEnabled: Bool = false
     @AppStorage(AppSettings.Keys.processingMode)   private var processingModeRaw: String = ProcessingMode.client.rawValue
     @AppStorage(AppSettings.Keys.clientBridgeEnabledRecognitionSources) private var clientBridgeEnabledRecognitionSourcesRaw: String = ""
     @AppStorage(AppSettings.Keys.numberOutputPreference)  private var numberOutputPreferenceRaw: String = NumberOutputPreference.automatic.rawValue
