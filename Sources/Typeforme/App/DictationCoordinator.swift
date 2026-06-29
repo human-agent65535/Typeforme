@@ -35,6 +35,7 @@ final class DictationCoordinator: ObservableObject {
     private var resetTask: Task<Void, Never>?
     private var activeSessionID: UUID?
     private var activeCancelToken: CommitCancellationToken?
+    private var activeBridgeDictateJobID: String?
     private var activeTextEditTarget: TextEditTargetSnapshot?
     private var activeTextEditIntent: TextEditIntent?
     private var activeDictationContextBefore = ""
@@ -49,13 +50,14 @@ final class DictationCoordinator: ObservableObject {
     private var liveSpeechTask: SFSpeechRecognitionTask?
     private var asrLivePreviewLease: ASRLivePreviewLease?
     private var remoteBridgeLivePreviewStreamer: RemoteBridgeLivePreviewStreamer?
+    private var livePreviewFinalSeed: ASRTranscriptionSeed?
     private var activeFastASRRoute: FastASRRoute?
 
     private static let errorResetDelay: TimeInterval = 8.0
     private static let successResetDelay: TimeInterval = 1.8
     private static let degradedSuccessResetDelay: TimeInterval = 1.8
     private static let minimumToggleStopInterval: TimeInterval = 0.6
-    private static let asrLivePreviewFinishTimeout: TimeInterval = 4
+    private static var asrLivePreviewFinishTimeout: TimeInterval { AppSettings.asrTimeoutSeconds }
     private static let asrLivePreviewResetTimeout: TimeInterval = 2
     private static let previewWithoutRefineBaseMessage = "Preview without refine"
     private static let insertedWithoutRefineBaseMessage = "Inserted without refine"
@@ -106,6 +108,7 @@ final class DictationCoordinator: ObservableObject {
         let cancelToken = CommitCancellationToken()
         activeSessionID = sessionID
         activeCancelToken = cancelToken
+        activeBridgeDictateJobID = Self.bridgeJobID(prefix: "mac_dictate", sessionID: sessionID)
         clearPreviewState()
         voicePreviewHUDExpanded = true
         startInProgress = true
@@ -630,7 +633,9 @@ final class DictationCoordinator: ObservableObject {
     private func clearActiveSession() {
         activeSessionID = nil
         activeCancelToken = nil
+        activeBridgeDictateJobID = nil
         activeFastASRRoute = nil
+        livePreviewFinalSeed = nil
     }
 
     private func clearTextEditRequest() {
@@ -647,6 +652,7 @@ final class DictationCoordinator: ObservableObject {
         previewCorrectionMode = nil
         voicePreviewHUDExpanded = false
         lastWarning = nil
+        livePreviewFinalSeed = nil
     }
 
     func reportError(_ message: String) {
@@ -844,10 +850,18 @@ final class DictationCoordinator: ObservableObject {
     }
 
     private func asrService(for correctionMode: CorrectionMode) throws -> ASRService {
+        let reusableSeeds = livePreviewFinalSeed.map { [$0] } ?? []
         if correctionMode == .fast {
-            return ASRFactory.shared.getInstalled(source: fastRouteForCurrentSession().source)
+            let source = fastRouteForCurrentSession().source
+            return ASRFactory.shared.getInstalled(
+                source: source,
+                reusableSeed: reusableSeeds.first { $0.source == source }
+            )
         }
-        return ASRFactory.shared.get(sources: try recognitionSources(for: correctionMode))
+        return ASRFactory.shared.get(
+            sources: try recognitionSources(for: correctionMode),
+            reusableSeeds: reusableSeeds
+        )
     }
 
     private func validateCorrectionModeAvailable(_ correctionMode: CorrectionMode) throws {
@@ -956,6 +970,7 @@ final class DictationCoordinator: ObservableObject {
                 livePreviewSource: source,
                 appSnapshot: snapshot,
                 appCategory: AppCategory.from(bundleID: snapshot?.bundleID),
+                clientJobID: activeBridgeDictateJobID,
                 onTranscript: { [weak self] text in
                     Task { @MainActor [weak self] in
                         self?.applyLivePartialPreview(
@@ -1153,7 +1168,7 @@ final class DictationCoordinator: ObservableObject {
     /// `livePartialTranscript` on screen until final ASR/correction output
     /// replaces it.
     func endLivePartialPreviewAudio() async {
-        remoteBridgeLivePreviewStreamer?.finish()
+        _ = await remoteBridgeLivePreviewStreamer?.finishAndWait(timeout: Self.asrLivePreviewFinishTimeout)
         remoteBridgeLivePreviewStreamer = nil
         liveSpeechRequest?.endAudio()
         if let lease = asrLivePreviewLease {
@@ -1162,12 +1177,23 @@ final class DictationCoordinator: ObservableObject {
                 timeout: Self.asrLivePreviewFinishTimeout
             )
             if completed {
+                cacheLivePreviewFinalSeed(from: lease)
                 lease.returnIdle(reason: "mac_preview_finished")
             } else {
                 lease.session.terminate(reason: "mac_preview_finish_timeout")
                 lease.preloadReplacement()
             }
         }
+    }
+
+    private func cacheLivePreviewFinalSeed(from lease: ASRLivePreviewLease) {
+        guard let source = RecognitionSource(rawValue: lease.provider) else { return }
+        let text = lease.session.currentTranscript()?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !text.isEmpty else { return }
+        livePreviewFinalSeed = ASRTranscriptionSeed(source: source, text: text)
+        Log.asr.notice(
+            "ASR live preview final cached source=\(source.rawValue, privacy: .public) text_chars=\(text.count, privacy: .public)"
+        )
     }
 
     /// Called after a final ASR/correction result owns the display (or on reset / error).
@@ -1233,7 +1259,7 @@ final class DictationCoordinator: ObservableObject {
             let client = resolved.client
             let hasTextEditRequest = activeTextEditTarget != nil && activeTextEditIntent != nil
             let remoteDictateCorrectionMode: CorrectionMode = hasTextEditRequest ? .clean : selectedCorrectionMode
-            let dictateJobID = Self.bridgeJobID(prefix: "mac_dictate", sessionID: sessionID)
+            let dictateJobID = activeBridgeDictateJobID ?? Self.bridgeJobID(prefix: "mac_dictate", sessionID: sessionID)
             let remoteJobEventHandler: @Sendable (BridgeJobStatusEvent) async -> Void = { [weak self] event in
                 await self?.applyRemoteBridgeJobStatus(
                     event,

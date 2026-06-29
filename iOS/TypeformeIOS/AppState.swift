@@ -416,10 +416,12 @@ final class AppState {
     private static let keyboardEverContactedKey = "keyboard.everContacted"
     private static let keyboardFullAccessRequiredKey = "keyboard.fullAccessRequired"
     private static let serverRimeUserPhrasesKey = "server.rimeUserPhrases"
+    private static let livePreviewFinishWaitTimeout: TimeInterval = BridgeSettingsNormalization.asrTimeoutSecondsRange.upperBound + 5
     private var hostHoldReleasePending = false
     private var hostRecordingUsesKeyboardAudioSession = false
     private var keyboardCaptureStartedFromKeyboard = false
     private var activeKeyboardRecordingCommandID: String?
+    private var activeBridgeDictateJobID: String?
     private var queuedKeyboardStopCommandID: String?
     @ObservationIgnored private var hostAudioSessionExpiryTask: Task<Void, Never>?
     @ObservationIgnored private var keyboardStandbyRefreshTask: Task<Void, Never>?
@@ -1184,6 +1186,10 @@ final class AppState {
         }
     }
 
+    private static func newBridgeJobID() -> String {
+        "ios_\(UUID().uuidString.replacingOccurrences(of: "-", with: "_"))"
+    }
+
     private func dictateWithRouteRetry(
         initialBaseURL: URL,
         audioURL: URL,
@@ -1198,9 +1204,10 @@ final class AppState {
         shouldAdvanceToRefineWhenTranscriptionCompletes: Bool,
         recordingInfo: RecordingFileInfo
     ) async throws -> BridgeDictateResponse {
+        let jobID = activeBridgeDictateJobID ?? Self.newBridgeJobID()
+        activeBridgeDictateJobID = jobID
         func dictate(to baseURL: URL) async throws -> BridgeDictateResponse {
             let client = BridgeClient(baseURL: baseURL, token: config.token)
-            let jobID = "ios_\(UUID().uuidString.replacingOccurrences(of: "-", with: "_"))"
             return try await client.dictate(
                 audioURL: audioURL,
                 audioExtension: audioExtension,
@@ -1367,6 +1374,7 @@ final class AppState {
             path = "keyboard-session"
             _ = try await keyboardAudioSession.beginRecording()
             hostRecordingUsesKeyboardAudioSession = true
+            activeBridgeDictateJobID = Self.newBridgeJobID()
             startLivePartialPreviewIfAvailable()
             logSlowHostRecordingStart(
                 startedAt: startedAt,
@@ -1408,6 +1416,7 @@ final class AppState {
         guard !isStopAndSendInFlight else { return }
         isStopAndSendInFlight = true
         defer { isStopAndSendInFlight = false }
+        defer { activeBridgeDictateJobID = nil }
 
         let requestedCorrectionMode = correctionMode
         let keyboardCaptureWasStartedFromKeyboard = keyboardCaptureStartedFromKeyboard
@@ -1458,7 +1467,7 @@ final class AppState {
         // We intentionally do NOT clear livePartialTranscript yet — keep the
         // preview source's latest text visible until preview final or the final
         // committed result replaces it.
-        endLivePartialPreviewAudio()
+        await endLivePartialPreviewAudio()
         hostRecordingUsesKeyboardAudioSession = false
         let keyboardTextEditContext = pendingKeyboardTextEditContext
         let keyboardDictationContext = shouldPublishKeyboardProgress ? activeKeyboardDictationContext : nil
@@ -2413,6 +2422,7 @@ final class AppState {
             languageIDs: activeLanguageIDs,
             correctionMode: correctionMode,
             livePreviewSource: bridgeLivePreviewSource,
+            clientJobID: activeBridgeDictateJobID,
             onTranscript: { [weak self, trace] text in
                 Task { @MainActor [weak self] in
                     guard let self else { return }
@@ -2460,10 +2470,10 @@ final class AppState {
     /// Called when the user stops recording. We close the audio side of the
     /// request/stream so it finalises its last partial, but keep the resulting
     /// text on screen until a final ASR/correction result replaces it.
-    private func endLivePartialPreviewAudio() {
+    private func endLivePartialPreviewAudio() async {
         keyboardAudioSession.onPCMBuffer = nil
         liveSpeechRequestSink?.endAudio()
-        serverLivePreviewStreamer?.finish()
+        _ = await serverLivePreviewStreamer?.finishAndWait(timeout: Self.livePreviewFinishWaitTimeout)
         serverLivePreviewStreamer = nil
     }
 
@@ -2817,6 +2827,7 @@ final class AppState {
         activeKeyboardDictationContext = nil
         keyboardCaptureStartedFromKeyboard = false
         activeKeyboardRecordingCommandID = nil
+        activeBridgeDictateJobID = nil
     }
 
     private func rememberCanceledKeyboardCommand(_ commandID: String) {
@@ -3193,6 +3204,7 @@ final class AppState {
         do {
             _ = try await keyboardAudioSession.beginRecording()
             keyboardCaptureStartedFromKeyboard = true
+            activeBridgeDictateJobID = Self.newBridgeJobID()
             startLivePartialPreviewIfAvailable()
             acquireIdleTimer()
             setPhase(.recording)
@@ -3498,8 +3510,9 @@ final class AppState {
         // current workflow. Plain dictation says Transcribing/Refining; voice
         // commands say Understanding/Editing so the user sees what is actually
         // happening to the selected text.
-        // Same string drives `processingStatusMessage` (host orb detail) and
-        // `publishKeyboardStatus(... message:)` (keyboard top label).
+        // The same string is the detailed stage payload for host processing UI
+        // and keyboard primary/detail surfaces. The keyboard's small top-left
+        // session indicator derives its coarse copy separately.
         if event.stage == .transcriptReady,
            let raw = event.rawTranscript?.trimmingCharacters(in: .whitespacesAndNewlines),
            !raw.isEmpty {

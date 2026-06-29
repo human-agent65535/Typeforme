@@ -15,6 +15,9 @@
 "Restored" = "Restored";
 "Undo unavailable" = "Undo unavailable";
 "Inserted" = "Inserted";
+"Inserted without refine" = "Inserted without refine";
+"Inserted without refine: refine timeout" = "Inserted without refine: refine timeout";
+"Inserted without refine: refine error" = "Inserted without refine: refine error";
 "Issue" = "Issue";
 
 // Voice title labels

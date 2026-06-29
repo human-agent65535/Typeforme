@@ -88,6 +88,7 @@ final class QwenLlamaLivePreviewSession: ASRLivePreviewSession, @unchecked Senda
     private var inputClosed = false
     private var terminated = false
     private var pcmWindow = Data()
+    private var fullPCM = Data()
     private var totalSampleCount = 0
     private var lastRequestedSampleCount = 0
     private var inFlightTask: Task<Void, Never>?
@@ -166,8 +167,33 @@ final class QwenLlamaLivePreviewSession: ASRLivePreviewSession, @unchecked Senda
     }
 
     func finishInputAndWaitForFinal(timeout: TimeInterval) async -> Bool {
-        let task = terminateOnQueue(reason: "finish")
-        return await Self.waitForTaskCompletion(task, timeout: timeout)
+        let snapshot = finishSnapshotOnQueue()
+        await Self.waitForTaskCompletion(snapshot.inFlightTask, timeout: timeout)
+        guard !snapshot.fullPCM.isEmpty else {
+            return currentTranscript()?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        }
+        do {
+            let text = try await snapshot.service.transcribeLivePreviewPCM16kMonoFloat32Data(
+                snapshot.fullPCM,
+                languageIDs: snapshot.languageIDs,
+                timeout: timeout,
+                maxTokens: AppSettings.asrQwenLlamaMaxTokens
+            ).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else {
+                return currentTranscript()?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+            }
+            let handler = storeTranscriptAndGetHandler(text)
+            Log.asr.notice(
+                "Qwen3-ASR live preview final session=\(snapshot.logID, privacy: .public) text_chars=\(text.count, privacy: .public) input_audio_ms=\(snapshot.totalSampleCount * 1_000 / 16_000, privacy: .public) elapsed_ms=\(Self.elapsedMS(since: snapshot.startedAt), privacy: .public)"
+            )
+            handler(text)
+            return true
+        } catch {
+            Log.asr.notice(
+                "Qwen3-ASR live preview final failed session=\(snapshot.logID, privacy: .public) input_audio_ms=\(snapshot.totalSampleCount * 1_000 / 16_000, privacy: .public) elapsed_ms=\(Self.elapsedMS(since: snapshot.startedAt), privacy: .public) error=\(error.localizedDescription, privacy: .public)"
+            )
+            return currentTranscript()?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        }
     }
 
     func cancelInputAndWaitForReset(timeout: TimeInterval) async -> Bool {
@@ -179,6 +205,14 @@ final class QwenLlamaLivePreviewSession: ASRLivePreviewSession, @unchecked Senda
         lock.lock()
         defer { lock.unlock() }
         return lastTranscript
+    }
+
+    private func storeTranscriptAndGetHandler(_ text: String) -> (String) -> Void {
+        lock.lock()
+        lastTranscript = text
+        let handler = onTranscript
+        lock.unlock()
+        return handler
     }
 
     func terminate(reason: String = "terminate") {
@@ -219,6 +253,7 @@ final class QwenLlamaLivePreviewSession: ASRLivePreviewSession, @unchecked Senda
         let sampleCount = data.count / MemoryLayout<Float>.size
         guard sampleCount > 0 else { return }
 
+        fullPCM.append(data)
         pcmWindow.append(data)
         totalSampleCount += sampleCount
         let maxWindowBytes = Self.rollingWindowSamples * MemoryLayout<Float>.size
@@ -337,6 +372,54 @@ final class QwenLlamaLivePreviewSession: ASRLivePreviewSession, @unchecked Senda
         }
     }
 
+    private struct FinishSnapshot {
+        let service: QwenLlamaASRService
+        let languageIDs: [String]
+        let logID: String
+        let startedAt: Date
+        let totalSampleCount: Int
+        let fullPCM: Data
+        let inFlightTask: Task<Void, Never>?
+    }
+
+    private func finishSnapshotOnQueue() -> FinishSnapshot {
+        syncOnQueue {
+            guard !terminated else {
+                return FinishSnapshot(
+                    service: service,
+                    languageIDs: languageIDs,
+                    logID: logID,
+                    startedAt: startedAt,
+                    totalSampleCount: totalSampleCount,
+                    fullPCM: Data(),
+                    inFlightTask: nil
+                )
+            }
+            inputClosed = true
+            terminated = true
+            let task = inFlightTask
+            task?.cancel()
+            inFlightTask = nil
+            inFlightTaskID = nil
+            let snapshot = FinishSnapshot(
+                service: service,
+                languageIDs: languageIDs,
+                logID: logID,
+                startedAt: startedAt,
+                totalSampleCount: totalSampleCount,
+                fullPCM: fullPCM,
+                inFlightTask: task
+            )
+            pcmWindow.removeAll(keepingCapacity: false)
+            fullPCM.removeAll(keepingCapacity: false)
+            converter = nil
+            Log.asr.notice(
+                "Qwen3-ASR live preview finish session=\(self.logID, privacy: .public) input_audio_ms=\(self.totalSampleCount * 1_000 / 16_000, privacy: .public) elapsed_ms=\(Self.elapsedMS(since: self.startedAt), privacy: .public)"
+            )
+            return snapshot
+        }
+    }
+
     @discardableResult
     private func terminateOnQueue(reason: String) -> Task<Void, Never>? {
         syncOnQueue {
@@ -348,6 +431,7 @@ final class QwenLlamaLivePreviewSession: ASRLivePreviewSession, @unchecked Senda
             self.inFlightTask = nil
             self.inFlightTaskID = nil
             self.pcmWindow.removeAll(keepingCapacity: false)
+            self.fullPCM.removeAll(keepingCapacity: false)
             self.converter = nil
             Log.asr.notice(
                 "Qwen3-ASR live preview terminate session=\(self.logID, privacy: .public) reason=\(reason, privacy: .public) input_audio_ms=\(self.totalSampleCount * 1_000 / 16_000, privacy: .public) elapsed_ms=\(Self.elapsedMS(since: self.startedAt), privacy: .public)"

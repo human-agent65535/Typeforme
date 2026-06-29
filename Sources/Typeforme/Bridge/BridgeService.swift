@@ -77,20 +77,29 @@ private struct BridgeCorrectionOutput {
     let error: String?
 }
 
+private struct BridgeLivePreviewFinalSeed {
+    let seed: ASRTranscriptionSeed
+    let sessionID: String
+    let createdAt: Date
+}
+
 @MainActor
 final class BridgeService {
     private let dictionary: UserDictionaryStore
     private let textEditService: TextEditService
     private var sessions: [String: BridgeSession] = [:]
     private var livePreviewSessions: [String: BridgeLivePreviewSession] = [:]
+    private var livePreviewFinalSeedsByClientJobID: [String: BridgeLivePreviewFinalSeed] = [:]
     private var livePreviewPruneTask: Task<Void, Never>?
 
     private static let sessionTTL: TimeInterval = 15 * 60
     private static let maxSessions = 128
     private static let livePreviewSessionTTL: TimeInterval = 3 * 60
-    private static let livePreviewFinishTimeout: TimeInterval = 4
+    private static let livePreviewFinalSeedTTL: TimeInterval = 60
+    private static var livePreviewFinishTimeout: TimeInterval { AppSettings.asrTimeoutSeconds }
     private static let livePreviewPruneIntervalNanoseconds: UInt64 = 30 * 1_000_000_000
     private static let maxLivePreviewSessions = 8
+    private static let maxLivePreviewFinalSeeds = 32
 
     init(dictionary: UserDictionaryStore) {
         self.dictionary = dictionary
@@ -340,6 +349,9 @@ final class BridgeService {
         }
         let transcript = session.process.currentTranscript() ?? session.lastTranscript
         publishLivePreviewEvent(session: session, text: transcript, isFinal: true)
+        if completed {
+            cacheLivePreviewFinalSeed(session: session, text: transcript)
+        }
         livePreviewSessions.removeValue(forKey: sessionID)
         if completed {
             session.returnIdle(reason: "bridge_finished")
@@ -414,8 +426,16 @@ final class BridgeService {
                 stage: .transcribing,
                 message: "Transcribing audio"
             )
-            let asrService = fastRoute.map { ASRFactory.shared.getInstalled(source: $0.source) }
-                ?? ASRFactory.shared.get(sources: transcriptionSources)
+            let reusableSeeds = consumeLivePreviewFinalSeeds(
+                clientJobID: jobID,
+                allowedSources: transcriptionSources
+            )
+            let asrService = fastRoute.map { route in
+                ASRFactory.shared.getInstalled(
+                    source: route.source,
+                    reusableSeed: reusableSeeds.first { seed in seed.source == route.source }
+                )
+            } ?? ASRFactory.shared.get(sources: transcriptionSources, reusableSeeds: reusableSeeds)
             let asrProgressHandler: ASRTranscriptionProgressHandler? = {
                 guard let jobID else { return nil }
                 return { progress in
@@ -1346,6 +1366,7 @@ final class BridgeService {
         for id in overflowIDs {
             removeLivePreviewSession(id: id)
         }
+        pruneExpiredLivePreviewFinalSeeds()
     }
 
     private func recordLivePreviewTranscript(sessionID: String, text: String) {
@@ -1356,6 +1377,64 @@ final class BridgeService {
             "Bridge live preview transcript session=\(Self.logID(sessionID), privacy: .public) text_chars=\(text.count, privacy: .public) elapsed_ms=\(self.elapsedMs(since: session.createdAt), privacy: .public)"
         )
         publishLivePreviewEvent(session: session, text: text, isFinal: false)
+    }
+
+    private func cacheLivePreviewFinalSeed(session: BridgeLivePreviewSession, text: String?) {
+        guard let clientJobID = session.clientJobID else { return }
+        guard let source = Self.recognitionSource(forLivePreviewProvider: session.provider) else { return }
+        let cleaned = text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !cleaned.isEmpty else { return }
+        livePreviewFinalSeedsByClientJobID[clientJobID] = BridgeLivePreviewFinalSeed(
+            seed: ASRTranscriptionSeed(source: source, text: cleaned),
+            sessionID: session.id,
+            createdAt: Date()
+        )
+        pruneExpiredLivePreviewFinalSeeds()
+        Log.bridge.notice(
+            "Bridge live preview cached final seed session=\(Self.logID(session.id), privacy: .public) job=\(Self.logID(clientJobID), privacy: .public) source=\(source.rawValue, privacy: .public) text_chars=\(cleaned.count, privacy: .public)"
+        )
+    }
+
+    private func consumeLivePreviewFinalSeeds(
+        clientJobID: String?,
+        allowedSources: [RecognitionSource]
+    ) -> [ASRTranscriptionSeed] {
+        pruneExpiredLivePreviewFinalSeeds()
+        guard let clientJobID,
+              let cached = livePreviewFinalSeedsByClientJobID.removeValue(forKey: clientJobID),
+              allowedSources.contains(cached.seed.source),
+              cached.seed.isUsable
+        else { return [] }
+        Log.bridge.notice(
+            "Bridge live preview consumed final seed session=\(Self.logID(cached.sessionID), privacy: .public) job=\(Self.logID(clientJobID), privacy: .public) source=\(cached.seed.source.rawValue, privacy: .public) text_chars=\(cached.seed.normalizedText.count, privacy: .public)"
+        )
+        return [cached.seed]
+    }
+
+    private func pruneExpiredLivePreviewFinalSeeds() {
+        let cutoff = Date().addingTimeInterval(-Self.livePreviewFinalSeedTTL)
+        livePreviewFinalSeedsByClientJobID = livePreviewFinalSeedsByClientJobID.filter { $0.value.createdAt >= cutoff }
+        guard livePreviewFinalSeedsByClientJobID.count > Self.maxLivePreviewFinalSeeds else { return }
+        let overflow = livePreviewFinalSeedsByClientJobID.count - Self.maxLivePreviewFinalSeeds
+        let overflowKeys = livePreviewFinalSeedsByClientJobID
+            .sorted { $0.value.createdAt < $1.value.createdAt }
+            .prefix(overflow)
+            .map(\.key)
+        for key in overflowKeys {
+            livePreviewFinalSeedsByClientJobID.removeValue(forKey: key)
+        }
+    }
+
+    private static func recognitionSource(forLivePreviewProvider provider: String) -> RecognitionSource? {
+        if provider == RecognitionSource.qwen.rawValue || provider == VoiceLivePreviewSource.qwen.rawValue {
+            return .qwen
+        }
+        if provider == RecognitionSource.nvidiaNemotron.rawValue
+            || provider == VoiceLivePreviewSource.nvidiaNemotron.rawValue
+            || provider == NvidiaNemotronLivePreviewSession.providerID {
+            return .nvidiaNemotron
+        }
+        return nil
     }
 
     private func removeLivePreviewSession(id: String) {

@@ -15,6 +15,9 @@
 "Restored" = "已还原";
 "Undo unavailable" = "无法撤销";
 "Inserted" = "已插入";
+"Inserted without refine" = "已插入，未优化";
+"Inserted without refine: refine timeout" = "已插入，优化超时";
+"Inserted without refine: refine error" = "已插入，优化失败";
 "Issue" = "异常";
 
 // 球上方的状态标题

@@ -10318,7 +10318,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         if isOpeningHostApp { return NSLocalizedString("Opening Typeforme…", comment: "Voice title when host is launching") }
         switch currentBridgeStatus?.state {
         case .recording: return inputMode.recordingTitle
-        case .sending: return processingVoiceTitle
+        case .sending: return sendingStatusTitle
         case .result: return insertedStatusTitle
         default: return inputMode.idleTitle
         }
@@ -10415,10 +10415,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     /// Top-left status pill is a *bridge session indicator*: a coarse-grained
-    /// view of where the keyboard session is in its lifecycle. Idle/standby
-    /// copy mirrors the readiness dot so gray/orange states are not labeled
-    /// "Ready". While sending, it mirrors the host's live stage label so text
-    /// actions can distinguish plain dictation from command editing.
+    /// view of where the keyboard session is in its lifecycle. Detailed
+    /// processing stages belong to the center voice title / text toolbar.
     private var statusText: String {
         if !hasFullAccess {
             return NSLocalizedString("Full Access", comment: "Status when keyboard full access is missing")
@@ -10433,11 +10431,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         case .recording:
             return Self.recordingStatusText(startedAt: keyboardRecordingStartedAt)
         case .sending:
-            return sendingStatusTitle
+            return processingVoiceTitle
         case .result:
-            return isCurrentResultWithoutRefine
-                ? NSLocalizedString("No refine", comment: "Status after result inserted without refinement")
-                : NSLocalizedString("Inserted", comment: "Status after result inserted")
+            return NSLocalizedString("Inserted", comment: "Status after result inserted")
         case .error:
             return isBridgeAwake
                 ? NSLocalizedString("Issue", comment: "Status when bridge errored")
@@ -10492,6 +10488,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         guard currentBridgeStatus?.state == .result else { return false }
         let message = currentBridgeStatus?.message.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
         return message.contains("without refine")
+            || message.contains("refine timeout")
+            || message.contains("refine error")
     }
 
     private var insertedStatusTitle: String {
@@ -10499,9 +10497,17 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             return NSLocalizedString("Inserted", comment: "Bridge job stage")
         }
         let message = currentBridgeStatus?.message.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return message.isEmpty
-            ? NSLocalizedString("Inserted without refine", comment: "Bridge job stage")
-            : message
+        let normalized = message.lowercased()
+        if normalized.hasPrefix("inserted without refine") {
+            return message
+        }
+        if normalized.contains("refine timeout") {
+            return NSLocalizedString("Inserted without refine: refine timeout", comment: "Bridge result when inserted after refine timeout")
+        }
+        if normalized.contains("refine error") {
+            return NSLocalizedString("Inserted without refine: refine error", comment: "Bridge result when inserted after refine error")
+        }
+        return NSLocalizedString("Inserted without refine", comment: "Bridge result when inserted without refinement")
     }
 
     private func syncKeyboardSettingsToHost() {

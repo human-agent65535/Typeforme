@@ -50,6 +50,19 @@ struct ASRTranscriptionProgress: Sendable, Equatable {
     }
 }
 
+struct ASRTranscriptionSeed: Sendable, Equatable {
+    let source: RecognitionSource
+    let text: String
+
+    var normalizedText: String {
+        text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var isUsable: Bool {
+        !normalizedText.isEmpty
+    }
+}
+
 typealias ASRTranscriptionProgressHandler = @Sendable (ASRTranscriptionProgress) async -> Void
 
 struct ASRTranscriptModelOutput: Sendable {

@@ -17,11 +17,13 @@ final class BridgeLivePreviewStreamer: @unchecked Sendable {
         interleaved: false
     )!
     private static let maxPendingByteCount = 512 * 1024
+    private static let finishRequestTimeout: TimeInterval = BridgeSettingsNormalization.asrTimeoutSecondsRange.upperBound + 5
 
     private let client: BridgeClient
     private let languageIDs: [String]
     private let correctionMode: CorrectionMode
     private let livePreviewSource: VoiceLivePreviewSource
+    private let clientJobID: String?
     private let onTranscript: @Sendable (String) -> Void
     private let onFailure: @Sendable (String) -> Void
     private let audioQueue = DispatchQueue(label: "typeforme.ios.bridge-live-preview.audio")
@@ -49,12 +51,16 @@ final class BridgeLivePreviewStreamer: @unchecked Sendable {
     private var firstQueueLogged = false
     private var firstSendLogged = false
     private var eventCount = 0
+    private var finishWaiters: [CheckedContinuation<String?, Never>] = []
+    private var finishResultText: String?
+    private var finishDidResolve = false
 
     init(
         client: BridgeClient,
         languageIDs: [String],
         correctionMode: CorrectionMode,
         livePreviewSource: VoiceLivePreviewSource,
+        clientJobID: String? = nil,
         onTranscript: @escaping @Sendable (String) -> Void,
         onFailure: @escaping @Sendable (String) -> Void
     ) {
@@ -62,6 +68,7 @@ final class BridgeLivePreviewStreamer: @unchecked Sendable {
         self.languageIDs = languageIDs
         self.correctionMode = correctionMode
         self.livePreviewSource = livePreviewSource
+        self.clientJobID = clientJobID
         self.onTranscript = onTranscript
         self.onFailure = onFailure
     }
@@ -91,6 +98,36 @@ final class BridgeLivePreviewStreamer: @unchecked Sendable {
         }
     }
 
+    func finishAndWait(timeout: TimeInterval) async -> String? {
+        await withTaskGroup(of: FinishWaitResult.self) { group in
+            group.addTask {
+                let text = await withCheckedContinuation { continuation in
+                    self.audioQueue.async {
+                        self.finishOnAudioQueue(waiter: continuation)
+                    }
+                }
+                return .completed(text)
+            }
+            if timeout > 0 {
+                group.addTask {
+                    try? await Task.sleep(nanoseconds: Self.timeoutNanoseconds(timeout))
+                    return .timedOut
+                }
+            }
+            let result = await group.next() ?? .timedOut
+            group.cancelAll()
+            switch result {
+            case .completed(let text):
+                return text
+            case .timedOut:
+                self.audioQueue.async {
+                    self.resolveFinishWaitersOnAudioQueue(text: nil)
+                }
+                return nil
+            }
+        }
+    }
+
     func cancel() {
         audioQueue.async {
             self.cancelOnAudioQueue()
@@ -107,12 +144,14 @@ final class BridgeLivePreviewStreamer: @unchecked Sendable {
         let languageIDs = self.languageIDs
         let correctionMode = self.correctionMode
         let livePreviewSource = self.livePreviewSource
+        let clientJobID = self.clientJobID
         Task {
             do {
                 let response = try await client.startLivePreview(
                     languageIDs: languageIDs,
                     correctionMode: correctionMode,
-                    livePreviewSource: livePreviewSource
+                    livePreviewSource: livePreviewSource,
+                    clientJobID: clientJobID
                 )
                 self.audioQueue.async {
                     self.handleStartResponseOnAudioQueue(response)
@@ -171,7 +210,14 @@ final class BridgeLivePreviewStreamer: @unchecked Sendable {
         flushWebSocketOnAudioQueue()
     }
 
-    private func finishOnAudioQueue() {
+    private func finishOnAudioQueue(waiter: CheckedContinuation<String?, Never>? = nil) {
+        if let waiter {
+            if finishDidResolve {
+                waiter.resume(returning: finishResultText)
+            } else {
+                finishWaiters.append(waiter)
+            }
+        }
         guard !finished else { return }
         do {
             queuePacketsOnAudioQueue(try opusEncoder.finish())
@@ -226,6 +272,7 @@ final class BridgeLivePreviewStreamer: @unchecked Sendable {
 
     private func handleFailureOnAudioQueue(message: String) {
         if finished {
+            resolveFinishWaitersOnAudioQueue(text: nil)
             return
         }
         guard !finished else { return }
@@ -365,6 +412,7 @@ final class BridgeLivePreviewStreamer: @unchecked Sendable {
     private func handleWebSocketSendFailureOnAudioQueue(message: String) {
         sendInFlight = false
         if finished {
+            resolveFinishWaitersOnAudioQueue(text: nil)
             closeWebSocketOnAudioQueue()
             return
         }
@@ -373,6 +421,7 @@ final class BridgeLivePreviewStreamer: @unchecked Sendable {
 
     private func handleWebSocketReceiveFailureOnAudioQueue(message: String) {
         if finished {
+            resolveFinishWaitersOnAudioQueue(text: nil)
             closeWebSocketOnAudioQueue()
             return
         }
@@ -381,15 +430,25 @@ final class BridgeLivePreviewStreamer: @unchecked Sendable {
 
     private func sendFinishRequestOnAudioQueue() {
         clearPendingPackets(keepingCapacity: false)
-        guard let sessionID else { return }
+        guard let sessionID else {
+            resolveFinishWaitersOnAudioQueue(text: nil)
+            return
+        }
         let client = self.client
         Task {
-            if let response = try? await client.finishLivePreview(sessionID: sessionID),
-               let text = response.text?.trimmingCharacters(in: .whitespacesAndNewlines),
-               !text.isEmpty {
-                self.onTranscript(text)
+            var finalText: String?
+            if let response = try? await client.finishLivePreview(
+                sessionID: sessionID,
+                timeout: Self.finishRequestTimeout
+            ) {
+                let text = response.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                if !text.isEmpty {
+                    finalText = text
+                    self.onTranscript(text)
+                }
             }
             self.audioQueue.async {
+                self.resolveFinishWaitersOnAudioQueue(text: finalText)
                 self.closeWebSocketOnAudioQueue()
             }
         }
@@ -421,7 +480,20 @@ final class BridgeLivePreviewStreamer: @unchecked Sendable {
             onTranscript(text)
         }
         if event.isFinal {
+            resolveFinishWaitersOnAudioQueue(text: event.text)
             closeWebSocketOnAudioQueue()
+        }
+    }
+
+    private func resolveFinishWaitersOnAudioQueue(text: String?) {
+        guard !finishDidResolve else { return }
+        let cleaned = text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        finishResultText = cleaned.isEmpty ? nil : cleaned
+        finishDidResolve = true
+        let waiters = finishWaiters
+        finishWaiters.removeAll()
+        for waiter in waiters {
+            waiter.resume(returning: finishResultText)
         }
     }
 
@@ -452,6 +524,15 @@ final class BridgeLivePreviewStreamer: @unchecked Sendable {
             throw BridgeClientError.invalidResponse
         }
         return try JSONDecoder().decode(BridgeLivePreviewEvent.self, from: data)
+    }
+
+    private enum FinishWaitResult: Sendable {
+        case completed(String?)
+        case timedOut
+    }
+
+    private static func timeoutNanoseconds(_ timeout: TimeInterval) -> UInt64 {
+        UInt64(max(0, timeout) * 1_000_000_000)
     }
 
     private func resample(_ mono: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
