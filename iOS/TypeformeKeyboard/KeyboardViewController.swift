@@ -450,6 +450,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private var activeRecordingTextEditIntent: TextEditIntent?
     private var livePartialPreviewState: LivePartialPreviewState?
     private var pendingStopCommandID: String?
+    private var pendingCancelCommandID: String?
     private var recentSelectionTarget: TextRewriteTarget?
     private var recentSelectionCapturedAt: TimeInterval = 0
     private var refineUndoState: RefineUndoState?
@@ -5657,10 +5658,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 let hasFreshDarwinSignal = self.lastDarwinAwakeAt >= probeStartedAt
                 let hasFreshStatusFrame = self.lastBridgeContactAt >= probeStartedAt
                 guard hasFreshDarwinSignal || hasFreshStatusFrame else {
-                    guard self.shouldContinueAfterBridgeProbe(continuesAfterRelease: continuesAfterRelease) else {
-                        self.updateUI()
-                        return
-                    }
                     self.openHostForDictation()
                     return
                 }
@@ -5675,10 +5672,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 }
 
                 guard status.state != .idle else {
-                    guard self.shouldContinueAfterBridgeProbe(continuesAfterRelease: continuesAfterRelease) else {
-                        self.updateUI()
-                        return
-                    }
                     self.openHostForDictation()
                     return
                 }
@@ -6240,6 +6233,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         isStartRequestInFlight = true
         shouldStopWhenStartCompletes = false
         shouldCancelWhenStartCompletes = false
+        pendingCancelCommandID = nil
         let recordingMode = currentDefaultCorrectionMode()
         if correctionMode != recordingMode {
             correctionMode = recordingMode
@@ -10539,6 +10533,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 }
             }
             if command.action == .cancel {
+                pendingCancelCommandID = command.id
                 pendingStopCommandID = nil
                 activeRecordingCommandID = nil
                 activeRecordingTextEditIntent = nil
@@ -10670,6 +10665,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             }
         case .cancel:
             tapRecordingActive = false
+            pendingCancelCommandID = commandID
             pendingStopCommandID = nil
             activeRecordingCommandID = nil
             activeRecordingTextEditIntent = nil
@@ -10705,6 +10701,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         activeRecordingCommandID = nil
         activeRecordingTextEditIntent = nil
         pendingStopCommandID = nil
+        pendingCancelCommandID = nil
     }
 
     private func scheduleHostOpenIfStartStalls() {
@@ -11041,6 +11038,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         if shouldIgnoreRecordingStatusAfterStop(status) {
             return
         }
+        if shouldIgnoreRecordingStatusAfterCancel(status) {
+            return
+        }
         if shouldIgnoreAlreadyInsertedActiveStatus(status) {
             return
         }
@@ -11067,6 +11067,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
         if status.state == .result || status.state == .error || status.state == .idle || status.state == .standby {
             pendingStopCommandID = nil
+            pendingCancelCommandID = nil
         }
         if status.state == .result, currentBridgeStatus?.state != .result, keyboardFocus == .text {
             beginInsertedFlash()
@@ -11214,6 +11215,16 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
               let pendingStopCommandID
         else { return false }
         guard status.commandID == nil || status.commandID == pendingStopCommandID else {
+            return false
+        }
+        return true
+    }
+
+    private func shouldIgnoreRecordingStatusAfterCancel(_ status: KeyboardBridgeStatus) -> Bool {
+        guard status.state == .recording,
+              let pendingCancelCommandID
+        else { return false }
+        guard status.commandID == nil || status.commandID == pendingCancelCommandID else {
             return false
         }
         return true
