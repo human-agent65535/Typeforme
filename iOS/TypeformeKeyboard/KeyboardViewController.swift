@@ -6370,7 +6370,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     @objc private func undoRefineTapped() {
         // While recording, this button morphs into the cancel affordance —
-        // tap mode has no held finger to slide up with.
+        // tap mode has no held finger to slide up with. Keep discard on an
+        // explicit tap only; release-outside would turn normal finger drift
+        // into a hidden cancel gesture.
         if currentBridgeStatus?.state == .recording {
             lightHaptic()
             cancelActiveHoldRecording()
