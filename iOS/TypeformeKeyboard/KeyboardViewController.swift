@@ -115,6 +115,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         static let bottomLanguageKeyWidth: CGFloat = 52
         static let bottomReturnKeyWidth: CGFloat = 92
         static let keyIconPointSize: CGFloat = 15
+        static let letterTitleFontSize: CGFloat = 25
+        static let uppercaseLetterTitleFontSize: CGFloat = 22
         static let compactUtilityTitleFontSize: CGFloat = 18
         static let utilityActionTitleFontSize: CGFloat = 17
         static var utilityLetterSpacerWidth: CGFloat {
@@ -4547,6 +4549,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             of: #"^[A-Za-z]$"#,
             options: .regularExpression
         ) != nil
+        let usesUppercaseLetterTypography = usesSystemLetterTypography && title == title.uppercased()
         let isCompactUtilityTitle = weight == .utility
             && image == nil
             && (title == "123" || title == "ABC" || title == "#+=")
@@ -4575,7 +4578,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             var outgoing = incoming
             let isShortGlyph = title.count <= 2
             outgoing.font = usesSystemLetterTypography
-                ? .systemFont(ofSize: 25, weight: .regular)
+                ? .systemFont(
+                    ofSize: usesUppercaseLetterTypography
+                        ? TextKeyboardLayoutModel.uppercaseLetterTitleFontSize
+                        : TextKeyboardLayoutModel.letterTitleFontSize,
+                    weight: .regular
+                )
                 : (isCompactUtilityTitle
                     ? .systemFont(ofSize: TextKeyboardLayoutModel.compactUtilityTitleFontSize, weight: .regular)
                     : (usesUtilityActionTypography
