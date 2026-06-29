@@ -112,7 +112,21 @@ struct BridgeWireModelsTests {
             transcriptionCompletedSources: 3,
             transcriptionTotalSources: 3
         )
-        let transcriptReady = BridgeJobStatusEvent(
+        let partialTranscriptReady = BridgeJobStatusEvent(
+            jobID: "job-1",
+            stage: .transcriptReady,
+            message: "Transcript ready",
+            transcriptionCompletedSources: 1,
+            transcriptionTotalSources: 3
+        )
+        let finalTranscriptReady = BridgeJobStatusEvent(
+            jobID: "job-1",
+            stage: .transcriptReady,
+            message: "Transcript ready",
+            transcriptionCompletedSources: 3,
+            transcriptionTotalSources: 3
+        )
+        let legacyTranscriptReady = BridgeJobStatusEvent(
             jobID: "job-1",
             stage: .transcriptReady,
             message: "Transcript ready"
@@ -120,7 +134,9 @@ struct BridgeWireModelsTests {
 
         #expect(inProgress.transcriptionReadyForRefine == false)
         #expect(allAttemptsFinished.transcriptionReadyForRefine == true)
-        #expect(transcriptReady.transcriptionReadyForRefine == true)
+        #expect(partialTranscriptReady.transcriptionReadyForRefine == false)
+        #expect(finalTranscriptReady.transcriptionReadyForRefine == true)
+        #expect(legacyTranscriptReady.transcriptionReadyForRefine == true)
     }
 
     @Test func refineRequestEncodesSharedBridgeKeys() throws {

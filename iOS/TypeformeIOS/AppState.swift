@@ -3498,7 +3498,7 @@ final class AppState {
                 rawTranscriptLength: transcriptLength,
                 processingStage: keyboardProcessingStage
             )
-            if event.stage == .transcriptReady {
+            if event.transcriptionReadyForRefine {
                 notifyKeyboardTranscriptionReady()
             }
         }

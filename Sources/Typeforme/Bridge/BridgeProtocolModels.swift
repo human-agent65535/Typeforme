@@ -261,15 +261,16 @@ struct BridgeJobStatusEvent: Codable, Sendable {
     }
 
     var transcriptionReadyForRefine: Bool {
-        if stage == .transcriptReady {
-            return true
+        guard stage == .transcribing || stage == .transcriptReady else { return false }
+        if let completed = transcriptionCompletedSources,
+           let total = transcriptionTotalSources,
+           total > 0 {
+            return completed >= total
         }
-        guard stage == .transcribing,
-              let completed = transcriptionCompletedSources,
-              let total = transcriptionTotalSources,
-              total > 0
-        else { return false }
-        return completed >= total
+        if transcriptionCompletedSources != nil || transcriptionTotalSources != nil {
+            return false
+        }
+        return stage == .transcriptReady
     }
 }
 
