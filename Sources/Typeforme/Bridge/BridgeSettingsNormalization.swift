@@ -6,7 +6,7 @@ protocol BridgeLanguageOptionRepresentable {
 }
 
 enum BridgeSettingsNormalization {
-    static let asrTimeoutSecondsRange: ClosedRange<Double> = 10...300
+    static let asrTimeoutSecondsRange: ClosedRange<Double> = 5...60
     static let correctionTimeoutMillisecondsRange: ClosedRange<Int> = 100...30_000
     static let correctionColdTimeoutMillisecondsRange: ClosedRange<Int> = 1_000...60_000
 

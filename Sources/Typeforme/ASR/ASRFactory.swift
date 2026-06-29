@@ -148,7 +148,7 @@ final class ASRFactory {
             modelPath,
             mmprojPath,
             binary.path,
-            "timeout=\(AppSettings.asrQwenLlamaTimeoutSeconds)",
+            "timeout=\(AppSettings.asrTimeoutSeconds)",
             "maxTokens=\(AppSettings.asrQwenLlamaMaxTokens)",
         ].joined(separator: "|")
         if qwenLlama == nil || qwenLlamaKey != key {
@@ -160,7 +160,7 @@ final class ASRFactory {
                 pidFile: AppPaths.asrLlamaPidFile,
                 requiredFiles: [mmprojPath],
                 extraArguments: ["--mmproj", mmprojPath],
-                coldTimeoutSec: min(max(AppSettings.asrQwenLlamaTimeoutSeconds, 30), 180)
+                coldTimeoutSec: min(max(AppSettings.asrTimeoutSeconds, 30), 180)
             )
             qwenLlama = QwenLlamaASRService(server: server)
             qwenLlamaKey = key
@@ -211,8 +211,10 @@ private struct InstalledSingleSourceASRService: ASRService {
                     .transcribe(audioFileURL: audioFileURL, languageIDs: languageIDs)
                 output = ASRModelOutputFactory.nemotron(role: "source", text: text)
             case .appleSpeech:
-                text = try await AppleSpeechASRService()
-                    .transcribe(audioFileURL: audioFileURL, languageIDs: languageIDs)
+                text = try await Self.transcribeWithTimeout(timeoutSeconds: AppSettings.asrTimeoutSeconds) {
+                    try await AppleSpeechASRService()
+                        .transcribe(audioFileURL: audioFileURL, languageIDs: languageIDs)
+                }
                 output = ASRModelOutputFactory.appleSpeech(role: "source", text: text)
             }
         } catch {
@@ -225,6 +227,27 @@ private struct InstalledSingleSourceASRService: ASRService {
             await progress(ASRTranscriptionProgress(completedSources: 1, totalSources: 1, source: source))
         }
         return ASRTranscription(text: text, hypotheses: [text], modelOutputs: [output])
+    }
+
+    private static func transcribeWithTimeout(
+        timeoutSeconds: TimeInterval,
+        operation: @escaping @Sendable () async throws -> String
+    ) async throws -> String {
+        try await withThrowingTaskGroup(of: String.self) { group in
+            defer { group.cancelAll() }
+            group.addTask {
+                try await operation()
+            }
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(timeoutSeconds * 1_000_000_000))
+                throw ASRAudioSupportError.timeout(seconds: timeoutSeconds)
+            }
+            guard let result = try await group.next() else {
+                throw ASRAudioSupportError.emptyTranscript
+            }
+            group.cancelAll()
+            return result
+        }
     }
 }
 
@@ -436,17 +459,7 @@ private struct MultiSourceASRService: ASRService {
     }
 
     private static func unifiedAttemptTimeoutSeconds(for sources: [RecognitionSource]) -> TimeInterval {
-        let configured = sources.compactMap { source -> TimeInterval? in
-            switch source {
-            case .qwen:
-                return AppSettings.asrQwenLlamaTimeoutSeconds
-            case .nvidiaNemotron:
-                return AppSettings.asrNvidiaNemotronTimeoutSeconds
-            case .appleSpeech:
-                return nil
-            }
-        }
-        return max(10, configured.max() ?? AppSettings.asrQwenLlamaTimeoutSeconds)
+        AppSettings.asrTimeoutSeconds(for: sources)
     }
 
     private static func transcribe(

@@ -1733,13 +1733,11 @@ private struct MacSettingsView: View {
                         }
                     }
 
-                    if visibleEnabledRecognitionSources.contains(where: \.hasModelConfiguration) {
-                        TimeoutSecondsRow(
-                            title: "ASR Timeout",
-                            seconds: asrTimeoutSecondsBinding,
-                            range: BridgeMacSettingsPayload.asrTimeoutSecondsRange
-                        )
-                    }
+                    TimeoutSecondsRow(
+                        title: "ASR Timeout",
+                        seconds: asrTimeoutSecondsBinding,
+                        range: BridgeMacSettingsPayload.asrTimeoutSecondsRange
+                    )
 
                     NavigationLink {
                         LanguageSelectionView(
@@ -2046,7 +2044,7 @@ private struct MacSettingsView: View {
 
     private var asrTimeoutSecondsBinding: Binding<Double> {
         Binding {
-            draft?.asrTimeoutSec ?? 120
+            draft?.asrTimeoutSec ?? 60
         } set: { value in
             updateDraft { draft in
                 draft.asrTimeoutSec = BridgeMacSettingsPayload.clampedASRTimeoutSec(value)

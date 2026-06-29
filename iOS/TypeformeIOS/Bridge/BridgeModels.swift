@@ -421,7 +421,7 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
         languageIDs: [String],
         supportedLanguages: [BridgeLanguageOption],
         supportedLanguagesByRecognitionSource: [String: [BridgeLanguageOption]],
-        asrTimeoutSec: Double = 120,
+        asrTimeoutSec: Double = 60,
         correctionBackend: String,
         correctionBackendOptions: [BridgeSettingOption],
         correctionTimeoutMs: Int = 1500,

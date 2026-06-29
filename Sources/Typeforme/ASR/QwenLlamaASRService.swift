@@ -30,7 +30,7 @@ final class QwenLlamaASRService: ASRService {
                 audioFileURL: audioFileURL,
                 languageIDs: supportedLanguageIDs,
                 port: port,
-                timeout: AppSettings.asrQwenLlamaTimeoutSeconds,
+                timeout: AppSettings.asrTimeoutSeconds,
                 maxTokens: AppSettings.asrQwenLlamaMaxTokens,
                 model: (AppSettings.asrQwenLlamaModelPath as NSString).lastPathComponent
             )

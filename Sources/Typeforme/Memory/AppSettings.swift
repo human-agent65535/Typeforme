@@ -120,9 +120,9 @@ enum AppSettings {
             Keys.asrNvidiaNemotronEnabled: false,
             Keys.asrAppleSpeechEnabled: true,
             Keys.asrLanguageIDs:    ASRLanguageSelection.defaultRawValue,
-            Keys.asrNvidiaNemotronTimeoutSec: 300,
+            Keys.asrNvidiaNemotronTimeoutSec: 60,
             Keys.asrNvidiaNemotronModelID: NvidiaNemotronASRModelCatalog.defaultID,
-            Keys.asrQwenLlamaTimeoutSec: 120,
+            Keys.asrQwenLlamaTimeoutSec: 60,
             Keys.asrQwenLlamaModelID: QwenASRModelCatalog.defaultID,
             Keys.asrQwenLlamaMaxTokens: 2048,
             Keys.asrQwenLlamaModelPath: AppPaths.qwen3ASRGGUFFile.path,
@@ -350,7 +350,16 @@ enum AppSettings {
     }
     static var asrLocale: String                      { ASRLanguageSelection.primaryLanguageID(for: asrLanguageIDs) }
     static var asrNvidiaNemotronTimeoutSeconds: TimeInterval {
-        min(max(10, ud.double(forKey: Keys.asrNvidiaNemotronTimeoutSec)), 300)
+        BridgeSettingsNormalization.clampedASRTimeoutSec(ud.double(forKey: Keys.asrNvidiaNemotronTimeoutSec))
+    }
+    static var asrTimeoutSeconds: TimeInterval {
+        BridgeSettingsNormalization.clampedASRTimeoutSec(
+            max(asrQwenLlamaTimeoutSeconds, asrNvidiaNemotronTimeoutSeconds)
+        )
+    }
+    static func asrTimeoutSeconds(for sources: [RecognitionSource]) -> TimeInterval {
+        _ = sources
+        return asrTimeoutSeconds
     }
     static var asrNvidiaNemotronModelID: String {
         let raw = ud.string(forKey: Keys.asrNvidiaNemotronModelID) ?? NvidiaNemotronASRModelCatalog.defaultID
@@ -365,7 +374,7 @@ enum AppSettings {
         ud.string(forKey: file.urlKey) ?? file.defaultURL
     }
     static var asrQwenLlamaTimeoutSeconds: TimeInterval {
-        max(10, ud.double(forKey: Keys.asrQwenLlamaTimeoutSec))
+        BridgeSettingsNormalization.clampedASRTimeoutSec(ud.double(forKey: Keys.asrQwenLlamaTimeoutSec))
     }
     static var asrQwenLlamaModelPath: String {
         let spec = QwenASRModelCatalog.spec(for: asrQwenLlamaModelID)

@@ -1349,9 +1349,9 @@ struct ASRSettingsView: View {
     @AppStorage(AppSettings.Keys.asrNvidiaNemotronEnabled) private var nvidiaEnabled: Bool = false
     @AppStorage(AppSettings.Keys.asrAppleSpeechEnabled) private var appleSpeechEnabled: Bool = false
     @AppStorage(AppSettings.Keys.asrLanguageIDs)     private var languageIDsRaw: String = ASRLanguageSelection.defaultRawValue
-    @AppStorage(AppSettings.Keys.asrNvidiaNemotronTimeoutSec) private var nvidiaTimeoutSec: Double = 300
+    @AppStorage(AppSettings.Keys.asrNvidiaNemotronTimeoutSec) private var nvidiaTimeoutSec: Double = 60
     @AppStorage(AppSettings.Keys.asrNvidiaNemotronModelID) private var nvidiaModelID: String = NvidiaNemotronASRModelCatalog.defaultID
-    @AppStorage(AppSettings.Keys.asrQwenLlamaTimeoutSec) private var qwenTimeoutSec: Double = 120
+    @AppStorage(AppSettings.Keys.asrQwenLlamaTimeoutSec) private var qwenTimeoutSec: Double = 60
     @AppStorage(AppSettings.Keys.asrQwenLlamaModelID) private var qwenModelID: String = QwenASRModelCatalog.defaultID
     @AppStorage(AppSettings.Keys.asrQwenLlamaMaxTokens) private var qwenMaxTokens: Int = 2048
     @AppStorage(AppSettings.Keys.correctionMode) private var correctionModeRaw: String = CorrectionMode.polish.rawValue
@@ -1484,21 +1484,19 @@ struct ASRSettingsView: View {
                 .buttonStyle(.plain)
 
                 if showAdvanced {
-                    if qwenEnabled || nvidiaEnabled {
-                        IntegerSettingField(
-                            title: "ASR timeout",
-                            value: Binding(
-                                get: { Int(unifiedASRTimeoutSec) },
-                                set: {
-                                    let timeout = Double($0)
-                                    qwenTimeoutSec = timeout
-                                    nvidiaTimeoutSec = timeout
-                                }
-                            ),
-                            range: 10...300,
-                            suffix: "s"
-                        )
-                    }
+                    IntegerSettingField(
+                        title: "ASR timeout",
+                        value: Binding(
+                            get: { Int(unifiedASRTimeoutSec) },
+                            set: {
+                                let timeout = Double($0)
+                                qwenTimeoutSec = timeout
+                                nvidiaTimeoutSec = timeout
+                            }
+                        ),
+                        range: 5...60,
+                        suffix: "s"
+                    )
                     if qwenEnabled {
                         IntegerSettingField(
                             title: "Max transcript tokens",
@@ -1564,10 +1562,7 @@ struct ASRSettingsView: View {
     }
 
     private var unifiedASRTimeoutSec: Double {
-        var values: [Double] = []
-        if qwenEnabled { values.append(qwenTimeoutSec) }
-        if nvidiaEnabled { values.append(nvidiaTimeoutSec) }
-        return BridgeSettingsNormalization.clampedASRTimeoutSec(values.max() ?? qwenTimeoutSec)
+        BridgeSettingsNormalization.clampedASRTimeoutSec(max(qwenTimeoutSec, nvidiaTimeoutSec))
     }
 
     private var selectedCorrectionMode: CorrectionMode {

@@ -30,7 +30,7 @@ final class NvidiaNemotronASRService: ASRService {
         do {
             try session.appendAudioFile(uploadURL)
             let completed = await session.finishInputAndWaitForFinal(
-                timeout: AppSettings.asrNvidiaNemotronTimeoutSeconds
+                timeout: AppSettings.asrTimeoutSeconds
             )
             guard completed else {
                 session.terminate(reason: "asr_timeout")
@@ -38,7 +38,7 @@ final class NvidiaNemotronASRService: ASRService {
                     NvidiaNemotronWarmPool.shared.preload(languageIDs: supportedLanguageIDs)
                 }
                 failureHandled = true
-                throw ASRAudioSupportError.timeout(seconds: AppSettings.asrNvidiaNemotronTimeoutSeconds)
+                throw ASRAudioSupportError.timeout(seconds: AppSettings.asrTimeoutSeconds)
             }
             let text = session.currentTranscript()?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             await MainActor.run {

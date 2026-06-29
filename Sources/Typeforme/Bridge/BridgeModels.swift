@@ -132,17 +132,7 @@ struct BridgeSettingsPayload: Codable, Sendable {
     }
 
     static func currentASRTimeoutSec(for sources: [RecognitionSource] = AppSettings.configuredRecognitionSources) -> Double {
-        let configured = sources.compactMap { source -> Double? in
-            switch source {
-            case .qwen:
-                return AppSettings.asrQwenLlamaTimeoutSeconds
-            case .nvidiaNemotron:
-                return AppSettings.asrNvidiaNemotronTimeoutSeconds
-            case .appleSpeech:
-                return nil
-            }
-        }
-        return clampedASRTimeoutSec(configured.max() ?? AppSettings.asrQwenLlamaTimeoutSeconds)
+        clampedASRTimeoutSec(AppSettings.asrTimeoutSeconds(for: sources))
     }
 
     static var supportedLanguagesByRecognitionSource: [String: [BridgeLanguageOption]] {
