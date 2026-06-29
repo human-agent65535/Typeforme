@@ -23,6 +23,7 @@ final class DictationCoordinator: ObservableObject {
     /// from the first partial until the Mac ASR + correction final replaces
     /// it, then cleared. Empty string = no preview.
     @Published private(set) var livePartialTranscript: String = ""
+    @Published private(set) var transcriptionProgress: ASRTranscriptionProgress?
 
     private let recorder = AudioRecorder()
     private var corrector: CorrectorService { CorrectorFactory.shared.make() }
@@ -328,9 +329,13 @@ final class DictationCoordinator: ObservableObject {
         var didRecordASR = false
         let asrStarted = Date()
         do {
+            let asrProgressHandler: ASRTranscriptionProgressHandler = { [weak self] progress in
+                await self?.applyASRTranscriptionProgress(progress)
+            }
             let asrResult = try await asrService(for: selectedCorrectionMode).transcribeResult(
                 audioFileURL: url,
-                languageIDs: selectedTranscriptionLanguageIDs
+                languageIDs: selectedTranscriptionLanguageIDs,
+                progress: asrProgressHandler
             )
             let raw = asrResult.text
             let asrHypotheses = Self.combinedASRHypotheses(
@@ -573,6 +578,9 @@ final class DictationCoordinator: ObservableObject {
             DictationSoundPlayer.playStop()
         }
         recordingStartedAt = next == .recording ? Date() : nil
+        if next != .transcribing {
+            transcriptionProgress = nil
+        }
         // Live preview lives only across the active in-flight states
         // (recording/transcribing/correcting/inserting). Any transition out of
         // those — to preview/success/idle/error — replaces it with the final
@@ -670,6 +678,7 @@ final class DictationCoordinator: ObservableObject {
         lastWarning = nil
         lastTranscript = ""
         lastCorrected = ""
+        transcriptionProgress = nil
         clearPreviewState()
         voicePreviewHUDExpanded = keepVoicePreviewExpanded
         frontmostSnapshot = nil
@@ -1409,8 +1418,9 @@ final class DictationCoordinator: ObservableObject {
             lastTranscript = raw
             livePartialTranscript = raw
         }
+        applyBridgeTranscriptionProgress(event)
         switch event.stage {
-        case .transcriptReady, .refining:
+        case .refining:
             if state == .transcribing {
                 transition(to: .correcting)
             }
@@ -1418,9 +1428,37 @@ final class DictationCoordinator: ObservableObject {
             if state == .transcribing || state == .correcting {
                 lastWarning = event.error?.trimmingCharacters(in: .whitespacesAndNewlines)
             }
-        case .audioReceived, .transcribing, .resultReady:
+        case .audioReceived, .transcribing, .transcriptReady, .resultReady:
             break
         }
+    }
+
+    private func applyBridgeTranscriptionProgress(_ event: BridgeJobStatusEvent) {
+        guard event.stage == .transcribing || event.stage == .transcriptReady else { return }
+        guard let completed = event.transcriptionCompletedSources,
+              let total = event.transcriptionTotalSources,
+              total > 1
+        else { return }
+        transcriptionProgress = ASRTranscriptionProgress(
+            completedSources: min(max(0, completed), total),
+            totalSources: total,
+            source: nil
+        )
+    }
+
+    private func applyASRTranscriptionProgress(_ progress: ASRTranscriptionProgress) {
+        guard progress.isMultiSource else { return }
+        transcriptionProgress = progress
+    }
+
+    func statusTextWithTranscriptionProgress(_ base: String) -> String {
+        guard state == .transcribing,
+              let progress = transcriptionProgress,
+              progress.totalSources > 1
+        else { return base }
+        let total = progress.totalSources
+        let completed = min(max(0, progress.completedSources), total)
+        return "\(base) (\(completed)/\(total))"
     }
 
     // MARK: - Commit

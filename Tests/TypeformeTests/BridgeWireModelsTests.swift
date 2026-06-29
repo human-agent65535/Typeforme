@@ -78,6 +78,25 @@ struct BridgeWireModelsTests {
         #expect(object["settings_revision"] as? String == "abc")
     }
 
+    @Test func jobStatusEventCarriesOptionalTranscriptionProgress() throws {
+        let event = BridgeJobStatusEvent(
+            jobID: "job-1",
+            stage: .transcribing,
+            message: "Transcribing audio (2/3)",
+            transcriptionCompletedSources: 2,
+            transcriptionTotalSources: 3
+        )
+
+        let object = try encodedJSONObject(event)
+        #expect(object["transcription_completed_sources"] as? Int == 2)
+        #expect(object["transcription_total_sources"] as? Int == 3)
+
+        let legacyPayload = Data(#"{"job_id":"job-1","stage":"transcribing","message":"Transcribing audio","updated_at":1}"#.utf8)
+        let decoded = try JSONDecoder().decode(BridgeJobStatusEvent.self, from: legacyPayload)
+        #expect(decoded.transcriptionCompletedSources == nil)
+        #expect(decoded.transcriptionTotalSources == nil)
+    }
+
     @Test func refineRequestEncodesSharedBridgeKeys() throws {
         let request = BridgeRefineRequest(
             sessionID: "session-1",

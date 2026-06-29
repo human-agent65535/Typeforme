@@ -276,9 +276,10 @@ struct HUDView: View {
             return String(format: NSLocalizedString("Ready · %@", comment: "HUD idle status with hotkey hint"), hotkeyDescription)
         case .recording:    return NSLocalizedString("Recording", comment: "HUD status")
         case .transcribing:
-            return coordinator.isProcessingCommandTextEdit
+            let base = coordinator.isProcessingCommandTextEdit
                 ? NSLocalizedString("Understanding", comment: "HUD status while understanding a voice command")
                 : NSLocalizedString("Transcribing…", comment: "HUD status")
+            return coordinator.statusTextWithTranscriptionProgress(base)
         case .correcting:
             if coordinator.isProcessingCommandTextEdit {
                 return NSLocalizedString("Editing", comment: "HUD status while applying a voice command")
@@ -615,13 +616,15 @@ private struct VoicePreviewActionBar: View {
 
     private var processingStatusText: String {
         if coordinator.isProcessingCommandTextEdit {
-            return coordinator.state == .correcting
+            let base = coordinator.state == .correcting
                 ? NSLocalizedString("Editing", comment: "HUD status while applying a voice command")
                 : NSLocalizedString("Understanding", comment: "HUD status while understanding a voice command")
+            return coordinator.statusTextWithTranscriptionProgress(base)
         }
-        return coordinator.state == .correcting
+        let base = coordinator.state == .correcting
             ? NSLocalizedString("Refining…", comment: "HUD status")
             : NSLocalizedString("Transcribing…", comment: "HUD status")
+        return coordinator.statusTextWithTranscriptionProgress(base)
     }
 
     private var successCluster: some View {

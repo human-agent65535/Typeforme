@@ -129,6 +129,15 @@ private struct BridgeStageLabels {
     let refining: String
     let resultReady: String
 
+    func transcribingMessage(for event: BridgeJobStatusEvent) -> String {
+        guard let completed = event.transcriptionCompletedSources,
+              let total = event.transcriptionTotalSources,
+              total > 1
+        else { return transcribing }
+        let clampedCompleted = min(max(0, completed), total)
+        return "\(transcribing) (\(clampedCompleted)/\(total))"
+    }
+
     static var dictation: BridgeStageLabels {
         BridgeStageLabels(
             transcribing: NSLocalizedString("Transcribing", comment: "Bridge job stage"),
@@ -427,7 +436,7 @@ final class AppState {
     private var transientMessageTask: Task<Void, Never>?
     private var initialRenderDelayTask: Task<Void, Never>?
     @ObservationIgnored private var recorderPreWarmTask: Task<Void, Never>?
-    private var bridgeRefiningStatusTask: Task<Void, Never>?
+    private var bridgeProgressStatusTask: Task<Void, Never>?
     @ObservationIgnored private var keyboardStatusAudioLevelTask: Task<Void, Never>?
     /// Live-preview transcript fed by the selected preview source while the
     /// user is recording (and held until the Mac final result replaces it).
@@ -461,7 +470,7 @@ final class AppState {
     private static let foregroundRouteRefreshTTL: TimeInterval = 20
     private static let networkPathSameSignatureRefreshInterval: TimeInterval = 15
     private static let canceledKeyboardCommandTTL: TimeInterval = 10
-    private static let bridgeRefiningStatusDelay: TimeInterval = 1.2
+    private static let bridgeProgressStatusDelay: TimeInterval = 1.2
     /// How long a `.success` / `.failure` phase sticks before reverting to
     /// `.idle`. Long enough to read, short enough not to block the next press.
     private static let phaseAutoResetDelay: TimeInterval = 2.4
@@ -1534,12 +1543,12 @@ final class AppState {
             )
         }
         do {
-            scheduleBridgeRefiningStatusDelay(
+            scheduleBridgeProgressStatusDelay(
                 keyboardCommandID: effectiveKeyboardCommandID,
-                message: recognitionStageLabels.refining,
+                message: recognitionStageLabels.transcribing,
                 recordingInfo: recordingInfo
             )
-            defer { cancelBridgeRefiningStatusDelay() }
+            defer { cancelBridgeProgressStatusDelay() }
             let dictationContext = keyboardTextEditContext == nil ? keyboardDictationContext : nil
             let response = try await dictateWithRouteRetry(
                 initialBaseURL: baseURL,
@@ -3427,17 +3436,17 @@ final class AppState {
         let keyboardProcessingStage: KeyboardBridgeProcessingStage?
         switch event.stage {
         case .audioReceived:
-            stageMessage = stageLabels.transcribing
+            stageMessage = stageLabels.transcribingMessage(for: event)
             keyboardState = .sending
             keyboardProcessingStage = .transcribing
         case .transcribing:
-            stageMessage = stageLabels.transcribing
+            stageMessage = stageLabels.transcribingMessage(for: event)
             keyboardState = .sending
             keyboardProcessingStage = .transcribing
         case .transcriptReady:
-            stageMessage = stageLabels.refining
+            stageMessage = stageLabels.transcribingMessage(for: event)
             keyboardState = .sending
-            keyboardProcessingStage = .refining
+            keyboardProcessingStage = .transcribing
         case .refining:
             stageMessage = stageLabels.refining
             keyboardState = .sending
@@ -3454,7 +3463,7 @@ final class AppState {
         }
 
         guard let stageMessage else { return }
-        if (event.stage == .transcriptReady || event.stage == .refining), phase == .sending {
+        if event.stage == .refining, phase == .sending {
             setPhase(.refining)
         }
         processingStatusMessage = stageMessage
@@ -3476,16 +3485,15 @@ final class AppState {
         }
     }
 
-    private func scheduleBridgeRefiningStatusDelay(
+    private func scheduleBridgeProgressStatusDelay(
         keyboardCommandID: String?,
         message: String,
         recordingInfo: RecordingFileInfo
     ) {
-        bridgeRefiningStatusTask?.cancel()
-        bridgeRefiningStatusTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: UInt64(Self.bridgeRefiningStatusDelay * 1_000_000_000))
+        bridgeProgressStatusTask?.cancel()
+        bridgeProgressStatusTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(Self.bridgeProgressStatusDelay * 1_000_000_000))
             guard !Task.isCancelled, let self, self.phase == .sending else { return }
-            self.setPhase(.refining)
             self.processingStatusMessage = message
             if let keyboardCommandID {
                 self.publishKeyboardStatus(
@@ -3500,9 +3508,9 @@ final class AppState {
         }
     }
 
-    private func cancelBridgeRefiningStatusDelay() {
-        bridgeRefiningStatusTask?.cancel()
-        bridgeRefiningStatusTask = nil
+    private func cancelBridgeProgressStatusDelay() {
+        bridgeProgressStatusTask?.cancel()
+        bridgeProgressStatusTask = nil
     }
 
     private func applyCorrectionMetadata(
@@ -3592,7 +3600,7 @@ final class AppState {
         }
         if !next.isBusy {
             processingStatusMessage = nil
-            cancelBridgeRefiningStatusDelay()
+            cancelBridgeProgressStatusDelay()
         }
         phaseResetTask?.cancel()
         phaseResetTask = nil
