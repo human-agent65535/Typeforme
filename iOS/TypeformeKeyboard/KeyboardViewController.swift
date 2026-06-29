@@ -336,7 +336,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     private var correctionMode: CorrectionMode = .polish
     private var pendingDefaultCorrectionMode: CorrectionMode?
-    private var inputMode: VoiceInputMode = .hold
+    private var inputMode: VoiceInputMode = .tap
     private var keyboardFocus: KeyboardFocus = .voice
     private var textInputLanguage: TextInputLanguage = .chinese
     private var rimeProfile = RimeKeyboardProfile()
@@ -2709,6 +2709,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                         self.lastBridgeContactAt = Date().timeIntervalSince1970
                         self.updateUI()
                     }
+                    self.refreshBridgeStatus(captureSelection: false, force: true)
                 }
             },
             KeyboardDarwinBridge.observe(KeyboardDarwinNotificationName.sessionEnded) { [weak self] in
@@ -2741,6 +2742,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                         self.applyBridgeStatus(fallbackStatus)
                     }
                     self.finishStartRequestIfNeeded(status: self.currentBridgeStatus ?? fallbackStatus)
+                    self.refreshBridgeStatus(captureSelection: false, force: true)
                 }
             },
             KeyboardDarwinBridge.observe(KeyboardDarwinNotificationName.dictationStopped) { [weak self] in

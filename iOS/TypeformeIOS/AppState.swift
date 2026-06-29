@@ -596,7 +596,7 @@ final class AppState {
         self.config = saved
         self.correctionMode = saved.correctionMode
         self.inputMode = UserDefaults.standard.string(forKey: Self.inputModeKey)
-            .flatMap(VoiceInputMode.init(rawValue:)) ?? .hold
+            .flatMap(VoiceInputMode.init(rawValue:)) ?? .tap
         self.hostAudioSessionLength = UserDefaults.standard.string(forKey: Self.hostAudioSessionLengthKey)
             .flatMap(HostAudioSessionLength.init(rawValue:)) ?? .fifteenMinutes
         self.keyboardAutoCapitalizationEnabled = UserDefaults.standard.object(forKey: Self.keyboardAutoCapitalizationKey)
