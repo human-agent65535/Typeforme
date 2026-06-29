@@ -3,6 +3,7 @@ import Foundation
 enum OpenAICompatibleNoThinkProfile: Equatable {
     case none
     case deepSeekV4
+    case gemma4
     case qwen
 }
 
@@ -10,6 +11,9 @@ enum OpenAICompatibleReasoningHints {
     static func noThinkProfile(model: String, baseURL: String? = nil) -> OpenAICompatibleNoThinkProfile {
         if isDeepSeekV4Model(model) || isDeepSeekV4Endpoint(baseURL: baseURL, model: model) {
             return .deepSeekV4
+        }
+        if GemmaPromptHints.prefersNoThink(model: model) {
+            return .gemma4
         }
         if QwenPromptHints.prefersNoThink(model: model) {
             return .qwen

@@ -29,11 +29,11 @@ enum NumberOutputPreference: String, CaseIterable, Identifiable, Codable, Sendab
     var promptInstruction: String {
         switch self {
         case .automatic:
-            return "Use natural number formatting for the detected language and context."
+            return "natural"
         case .digits:
-            return "Prefer numeric digits for quantities, times, dates, versions, measurements, prices, counts, and settings values. Do not spell out a number when digits are clearer."
+            return "prefer digits for numeric values"
         case .words:
-            return "Prefer written number words when it is natural in the output language. Keep digits for URLs, code, model names, version numbers, file paths, exact IDs, decimals, and technical tokens where spelling out would be wrong."
+            return "prefer words unless digits are exact tokens"
         }
     }
 
@@ -74,11 +74,11 @@ enum PunctuationOutputPreference: String, CaseIterable, Identifiable, Codable, S
     var promptInstruction: String {
         switch self {
         case .normal:
-            return "Use natural punctuation for the output language."
+            return "natural"
         case .english:
-            return "Use ASCII/English punctuation characters instead of full-width Chinese/Japanese punctuation. Keep punctuation inside URLs, file paths, code, model names, and exact technical tokens unchanged."
+            return "ASCII punctuation"
         case .spaces:
-            return "Avoid sentence punctuation; use spaces instead of commas, periods, question marks, exclamation marks, colons, semicolons, and list separators when readable. Keep punctuation inside URLs, file paths, code, model names, decimals, and exact technical tokens unchanged."
+            return "spaces instead of sentence punctuation"
         }
     }
 

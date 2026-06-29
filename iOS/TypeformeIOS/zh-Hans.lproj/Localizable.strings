@@ -81,7 +81,6 @@
 
 // 模式按钮 (与键盘扩展共享)
 "Clean" = "清洁";
-"Polish" = "润色";
 "Polish+" = "润色+";
 "Structure+" = "结构+";
 "Formal+" = "正式+";
@@ -175,11 +174,11 @@
 "If the original target changes before the result returns, Typeforme copies the result instead of guessing." = "结果返回前如果原目标变了,Typeforme 会复制结果,不会猜测替换位置。";
 "Fast" = "Fast";
 "Insert the ASR transcript directly and skip refine." = "直接插入 ASR 转写,跳过优化。";
-"Fix punctuation, casing, spacing, and light ASR noise." = "修正标点、大小写、空格和轻微 ASR 噪声。";
-"Improve readability while keeping the original structure and voice." = "提升可读性,保留原结构和语气。";
-"Rewrite into polished, natural prose." = "改写成自然、流畅的文本。";
-"Turn multi-item content into bullets, steps, plans, or lists." = "把多项内容整理成项目符号、步骤、计划或列表。";
-"Convert casual speech into professional written prose." = "把口语表达转换成专业书面语。";
+"Remove filler words and fix punctuation, spacing, and clear ASR mistakes." = "清除填充词,修正标点、空格和明确的 ASR 错误。";
+"Rewrite naturally while preserving intent and tone." = "在保留意图和语气的前提下自然改写。";
+"Restructure multi-item content while preserving intent." = "在保留意图的前提下重组多项内容。";
+"Rewrite into professional prose while preserving intent." = "在保留意图的前提下改写为专业书面语。";
+"Used by Clean, Polish+, Structure+, and Formal+. Fast skips refine." = "Clean、Polish+、Structure+ 和 Formal+ 会使用优化。Fast 会跳过优化。";
 "Preview can show partial text while you speak. Choose its source in Dictation Settings." = "说话时可显示部分预览文本。可在听写设置里选择预览来源。";
 "More settings" = "更多设置";
 "ASR sources, languages, preview, Chinese input, sound, haptics, and learning live in Settings." = "ASR 来源、语言、预览、中文输入、声音、触感和学习数据都在设置里。";

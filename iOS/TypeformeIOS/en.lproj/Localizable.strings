@@ -81,7 +81,6 @@
 
 // Mode chip labels (also localized inside the keyboard target)
 "Clean" = "Clean";
-"Polish" = "Polish";
 "Polish+" = "Polish+";
 "Structure+" = "Structure+";
 "Formal+" = "Formal+";
@@ -175,11 +174,11 @@
 "If the original target changes before the result returns, Typeforme copies the result instead of guessing." = "If the original target changes before the result returns, Typeforme copies the result instead of guessing.";
 "Fast" = "Fast";
 "Insert the ASR transcript directly and skip refine." = "Insert the ASR transcript directly and skip refine.";
-"Fix punctuation, casing, spacing, and light ASR noise." = "Fix punctuation, casing, spacing, and light ASR noise.";
-"Improve readability while keeping the original structure and voice." = "Improve readability while keeping the original structure and voice.";
-"Rewrite into polished, natural prose." = "Rewrite into polished, natural prose.";
-"Turn multi-item content into bullets, steps, plans, or lists." = "Turn multi-item content into bullets, steps, plans, or lists.";
-"Convert casual speech into professional written prose." = "Convert casual speech into professional written prose.";
+"Remove filler words and fix punctuation, spacing, and clear ASR mistakes." = "Remove filler words and fix punctuation, spacing, and clear ASR mistakes.";
+"Rewrite naturally while preserving intent and tone." = "Rewrite naturally while preserving intent and tone.";
+"Restructure multi-item content while preserving intent." = "Restructure multi-item content while preserving intent.";
+"Rewrite into professional prose while preserving intent." = "Rewrite into professional prose while preserving intent.";
+"Used by Clean, Polish+, Structure+, and Formal+. Fast skips refine." = "Used by Clean, Polish+, Structure+, and Formal+. Fast skips refine.";
 "Preview can show partial text while you speak. Choose its source in Dictation Settings." = "Preview can show partial text while you speak. Choose its source in Dictation Settings.";
 "More settings" = "More settings";
 "ASR sources, languages, preview, Chinese input, sound, haptics, and learning live in Settings." = "ASR sources, languages, preview, Chinese input, sound, haptics, and learning live in Settings.";

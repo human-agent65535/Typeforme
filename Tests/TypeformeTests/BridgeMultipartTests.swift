@@ -26,7 +26,7 @@ struct BridgeMultipartTests {
         let multipart = try RemoteBridgeClient.multipartDictateBody(
             audioURL: url,
             languageIDs: ["zh-CN", "en-US"],
-            correctionMode: CorrectionMode.polish.rawValue,
+            correctionMode: CorrectionMode.polishPlus.rawValue,
             appName: "Notes",
             bundleID: "com.apple.Notes",
             appCategory: "chat",
@@ -64,7 +64,7 @@ struct BridgeMultipartTests {
         let multipart = try RemoteBridgeClient.multipartDictateBodyFile(
             audioURL: url,
             languageIDs: ["zh-CN", "en-US"],
-            correctionMode: CorrectionMode.polish.rawValue,
+            correctionMode: CorrectionMode.polishPlus.rawValue,
             appName: "Notes",
             bundleID: "com.apple.Notes",
             appCategory: "chat",
@@ -159,7 +159,7 @@ struct BridgeMultipartTests {
             audioBytes: audioBytes,
             fields: [
                 ("audio_extension", "flac"),
-                ("correction_mode", CorrectionMode.polish.rawValue),
+                ("correction_mode", CorrectionMode.polishPlus.rawValue),
             ]
         )
         let audioDirectory = FileManager.default.temporaryDirectory
@@ -178,7 +178,7 @@ struct BridgeMultipartTests {
             boundary: boundary,
             audioBytes: audioBytes,
             fields: [
-                ("correction_mode", CorrectionMode.polish.rawValue),
+                ("correction_mode", CorrectionMode.polishPlus.rawValue),
             ],
             audioFirst: false
         )
@@ -201,7 +201,7 @@ struct BridgeMultipartTests {
             contentType: "audio/mp4",
             fields: [
                 ("audio_extension", "m4a"),
-                ("correction_mode", CorrectionMode.polish.rawValue),
+                ("correction_mode", CorrectionMode.polishPlus.rawValue),
             ],
             audioFirst: false
         )
@@ -224,7 +224,7 @@ struct BridgeMultipartTests {
             contentType: "audio/mp4",
             fields: [
                 ("audio_extension", "flac"),
-                ("correction_mode", CorrectionMode.polish.rawValue),
+                ("correction_mode", CorrectionMode.polishPlus.rawValue),
             ],
             audioFirst: false
         )
@@ -247,7 +247,7 @@ struct BridgeMultipartTests {
             contentType: "audio/x-caf",
             fields: [
                 ("audio_extension", "caf"),
-                ("correction_mode", CorrectionMode.polish.rawValue),
+                ("correction_mode", CorrectionMode.polishPlus.rawValue),
             ],
             audioFirst: false
         )
@@ -269,7 +269,7 @@ struct BridgeMultipartTests {
             contentType: "audio/x-caf",
             fields: [
                 ("audio_extension", "flac"),
-                ("correction_mode", CorrectionMode.polish.rawValue),
+                ("correction_mode", CorrectionMode.polishPlus.rawValue),
             ],
             audioFirst: false
         )
@@ -289,7 +289,7 @@ struct BridgeMultipartTests {
             audioBytes: Data("AUDIOBYTES".utf8),
             fields: [
                 ("audio_extension", "flac"),
-                ("correction_mode", CorrectionMode.polish.rawValue),
+                ("correction_mode", CorrectionMode.polishPlus.rawValue),
             ],
             audioFirst: false
         )
@@ -312,7 +312,7 @@ struct BridgeMultipartTests {
             try RemoteBridgeClient.multipartDictateBody(
                 audioURL: url,
                 languageIDs: ["zh-CN"],
-                correctionMode: CorrectionMode.polish.rawValue,
+                correctionMode: CorrectionMode.polishPlus.rawValue,
                 appName: "Notes",
                 bundleID: "com.apple.Notes",
                 appCategory: "chat",

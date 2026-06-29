@@ -3,7 +3,6 @@ import Foundation
 enum CorrectionMode: String, Codable, CaseIterable, Identifiable, Sendable {
     case fast = "fast"
     case clean = "clean"
-    case polish = "polish"
     case polishPlus = "polish_plus"
     case structurePlus = "structure_plus"
     case formalPlus = "formal_plus"
@@ -14,7 +13,6 @@ enum CorrectionMode: String, Codable, CaseIterable, Identifiable, Sendable {
         switch self {
         case .fast:              return "Fast"
         case .clean:             return "Clean"
-        case .polish:            return "Polish"
         case .polishPlus:        return "Polish+"
         case .structurePlus:     return "Structure+"
         case .formalPlus:        return "Formal+"
@@ -35,14 +33,12 @@ enum CorrectionMode: String, Codable, CaseIterable, Identifiable, Sendable {
             return "Insert the ASR transcript directly and skip refine. Uses Qwen3-ASR when it is enabled and installed; otherwise uses Apple Speech."
         case .clean:
             return "Fix punctuation, ASR mistakes, repeated words, and meaningless speech noise without rewriting."
-        case .polish:
-            return "Improve readability with limited wording changes while keeping the original structure and voice."
         case .polishPlus:
-            return "Resolve the full transcript into polished, natural, logically clear text."
+            return "Rewrite into natural text while preserving the original intent, tone, and ambiguity."
         case .structurePlus:
-            return "Resolve the full transcript into an actionable note, request, or list."
+            return "Restructure the transcript into an actionable note, request, or list while preserving intent."
         case .formalPlus:
-            return "Resolve the full transcript into polished professional prose."
+            return "Rewrite into professional prose while preserving intent."
         }
     }
 }

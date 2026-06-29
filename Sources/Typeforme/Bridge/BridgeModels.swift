@@ -481,8 +481,8 @@ struct BridgeSettingsPayload: Codable, Sendable {
         if let mode = CorrectionMode(rawValue: correctionMode) {
             resolvedCorrectionMode = mode
         } else {
-            correctionMode = CorrectionMode.polish.rawValue
-            resolvedCorrectionMode = .polish
+            correctionMode = CorrectionMode.polishPlus.rawValue
+            resolvedCorrectionMode = .polishPlus
         }
         numberOutputPreference = NumberOutputPreference.normalized(numberOutputPreference).rawValue
         punctuationPreference = PunctuationOutputPreference.normalized(punctuationPreference).rawValue

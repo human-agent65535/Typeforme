@@ -35,9 +35,8 @@ struct LocaleTextNormalizerTests {
 
     @Test func promptInstructionPreservesSelectedLanguageSegments() {
         let prompt = LocaleTextNormalizer.promptInstruction(for: ["vi", "zh-CN"])
-        #expect(prompt.contains("do not translate between selected languages"))
-        #expect(prompt.contains("Preserve natural code-switching"))
-        #expect(prompt.contains("preserve language-specific diacritics"))
-        #expect(prompt.contains("avoid archaic, literary, or word-for-word calques"))
+        #expect(prompt.contains("do not translate"))
+        #expect(prompt.contains("Preserve code-switching"))
+        #expect(prompt.contains("Chinese script: Simplified"))
     }
 }

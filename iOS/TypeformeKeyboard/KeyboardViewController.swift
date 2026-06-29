@@ -26,7 +26,6 @@ private extension CorrectionMode {
     var title: String {
         switch self {
         case .clean:         return NSLocalizedString("Clean", comment: "Correction mode")
-        case .polish:        return NSLocalizedString("Polish", comment: "Correction mode")
         case .polishPlus:    return NSLocalizedString("Polish+", comment: "Correction mode")
         case .structurePlus: return NSLocalizedString("Structure+", comment: "Correction mode")
         case .formalPlus:    return NSLocalizedString("Formal+", comment: "Correction mode")
@@ -337,7 +336,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private let keyboardTouchTraceEnabledKey = "keyboard.touchTraceEnabled"
     private let keyPressOverlayTag = 0x74797065
 
-    private var correctionMode: CorrectionMode = .polish
+    private var correctionMode: CorrectionMode = .polishPlus
     private var pendingDefaultCorrectionMode: CorrectionMode?
     private var inputMode: VoiceInputMode = .tap
     private var keyboardFocus: KeyboardFocus = .voice
@@ -2014,7 +2013,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func loadState() {
-        correctionMode = defaultCorrectionModeFromHost() ?? .polish
+        correctionMode = defaultCorrectionModeFromHost() ?? .polishPlus
         defaults.removeObject(forKey: "keyboard.correctionMode")
         if let raw = defaults.string(forKey: inputModeKey),
            let saved = VoiceInputMode(rawValue: raw) {
@@ -2081,7 +2080,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         if let pendingDefaultCorrectionMode {
             return pendingDefaultCorrectionMode
         }
-        return defaultCorrectionModeFromHost() ?? .polish
+        return defaultCorrectionModeFromHost() ?? .polishPlus
     }
 
     private func defaultCorrectionModeFromHost() -> CorrectionMode? {
@@ -3482,7 +3481,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
         // Preset picker — opens the same correctionPopover as the voice-mode
         // correctionModeTrigger, so text-mode users have on-demand access to
-        // the 5 style chips (Clean / Polish / Polish+ / Structure+ / Formal+)
+        // the 4 style chips (Clean / Polish+ / Structure+ / Formal+)
         // without having to dictate first. Paint-brush icon distinguishes it
         // from the wand (wand = free-form voice command, picker = preset).
         configureToolbarIconButton(textStylePickerButton, image: "paintbrush")

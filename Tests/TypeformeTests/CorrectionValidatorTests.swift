@@ -37,58 +37,52 @@ struct CorrectionValidatorTests {
         )
     }
 
-    @Test func markdownFenceRejected() {
+    @Test func markdownFenceIsTreatedAsText() throws {
         let result = CorrectionResult(action: .commit, text: "ok ```fenced```", risk: .low)
-        #expect(throws: CorrectionValidationError.self) {
-            try CorrectionValidator.validate(result, for: makeRequest(raw: "ok"))
-        }
+        try CorrectionValidator.validate(result, for: makeRequest(raw: "ok"))
     }
 
-    @Test func thinkTagRejected() {
+    @Test func thinkTagIsTreatedAsText() throws {
         let result = CorrectionResult(action: .commit, text: "ok <think>internal</think>", risk: .low)
-        #expect(throws: CorrectionValidationError.self) {
-            try CorrectionValidator.validate(result, for: makeRequest(raw: "ok"))
-        }
+        try CorrectionValidator.validate(result, for: makeRequest(raw: "ok"))
     }
 
-    @Test func jsonLookingRejected() {
+    @Test func jsonLookingTextIsTreatedAsText() throws {
         let result = CorrectionResult(action: .commit, text: "{\"a\":1}", risk: .low)
-        #expect(throws: CorrectionValidationError.self) {
-            try CorrectionValidator.validate(result, for: makeRequest(raw: "ok"))
-        }
+        try CorrectionValidator.validate(result, for: makeRequest(raw: "ok"))
     }
 
-    @Test func parseAndValidateHappyPath() throws {
+    @Test func parseAndValidateTreatsRawOutputAsText() throws {
         let raw = "{\"action\":\"commit\",\"text\":\"hello world\",\"risk\":\"low\"}"
         let result = try CorrectionValidator.parseAndValidate(rawOutput: raw, for: makeRequest(raw: "hi there"))
         #expect(result.action == .commit)
-        #expect(result.text == "hello world")
+        #expect(result.text == raw)
         #expect(result.risk == .low)
     }
 
-    @Test func parseTextOnlyJSONDefaultsInternalFields() throws {
+    @Test func parseTextOnlyJSONIsNotSpecial() throws {
         let raw = "{\"text\":\"hello world\"}"
         let result = try CorrectionValidator.parseAndValidate(rawOutput: raw, for: makeRequest(raw: "hi there"))
         #expect(result.action == .commit)
-        #expect(result.text == "hello world")
+        #expect(result.text == raw)
         #expect(result.risk == .low)
     }
 
-    @Test func parseStripsThinkBlock() throws {
+    @Test func parseKeepsThinkBlockAsText() throws {
         let raw = "<think>let me think</think>\n{\"action\":\"commit\",\"text\":\"ok\",\"risk\":\"low\"}"
         let result = try CorrectionValidator.parseAndValidate(rawOutput: raw, for: makeRequest(raw: "ok"))
-        #expect(result.text == "ok")
+        #expect(result.text == raw)
     }
 
-    @Test func parseExtractsJSONFromFences() throws {
+    @Test func parseKeepsFencedJSONAsText() throws {
         let raw = "```json\n{\"action\":\"commit\",\"text\":\"ok\",\"risk\":\"low\"}\n```"
         let result = try CorrectionValidator.parseAndValidate(rawOutput: raw, for: makeRequest(raw: "ok"))
-        #expect(result.text == "ok")
+        #expect(result.text == raw)
     }
 
     // MARK: - Helper
 
-    private func makeRequest(raw: String, correctionMode: CorrectionMode = .polish) -> CorrectionRequest {
+    private func makeRequest(raw: String, correctionMode: CorrectionMode = .polishPlus) -> CorrectionRequest {
         CorrectionRequest(
             correctionMode: correctionMode,
             frontmostAppName: nil, frontmostBundleID: nil,

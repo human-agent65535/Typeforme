@@ -25,7 +25,7 @@ struct EvalSample {
     init(
         name: String,
         task: EvalTask = .correction,
-        correctionMode: String = "polish",
+        correctionMode: String = "polish_plus",
         rawTranscript: String = "",
         contextBefore: String = "",
         contextAfter: String = "",
@@ -103,7 +103,7 @@ let samples = [
     EvalSample(name: "correction_mixed_vi_zh_no_translate", rawTranscript: "xin chào 今天测试一下越南语和中文混合输入 不要翻译"),
     EvalSample(name: "correction_latin_script_not_translated", rawTranscript: "bộ phát thanh là cây kéo gì?"),
     EvalSample(name: "correction_numbers_units", rawTranscript: "把 timeout 从 1500 ms 改成 3000 ms"),
-    EvalSample(name: "correction_polish_preserves_edit_intent", rawTranscript: "明天买苹果两个梨子不要了香蕉一个改两个"),
+    EvalSample(name: "correction_polish_preserves_edit_intent", rawTranscript: "明天买两个苹果一个梨算了梨不要了香蕉从一个改成两个"),
     EvalSample(name: "correction_new_transcript_scope_with_context", rawTranscript: "第二句只写 server latency 和 total latency 要分开显示", contextBefore: "第一句已经写好：host app 第一次打开会白屏。"),
 
     // Refine / correction modes.
@@ -119,10 +119,10 @@ let samples = [
     EvalSample(name: "refine_preserve_uncertainty", correctionMode: "polish_plus", rawTranscript: "我不确定这个模型是不是会过度改写"),
     EvalSample(name: "refine_no_added_fact", correctionMode: "polish_plus", rawTranscript: "这个测试样例只有两个事实 A 和 B"),
     EvalSample(name: "refine_deploy_steps", correctionMode: "structure_plus", rawTranscript: "先 deploy 到 iOS 然后看 debug log"),
-    EvalSample(name: "refine_spacing_technical_tokens", correctionMode: "polish", rawTranscript: "今天看一下 server latency 和 total latency"),
+    EvalSample(name: "refine_spacing_technical_tokens", correctionMode: "polish_plus", rawTranscript: "今天看一下 server latency 和 total latency"),
     EvalSample(name: "refine_question_preserved", correctionMode: "formal_plus", rawTranscript: "这个 correction 和 refine 是一起做的吗"),
-    EvalSample(name: "refine_japanese_target", correctionMode: "polish", rawTranscript: "この機能は便利だけど UI が少し重い"),
-    EvalSample(name: "refine_vietnamese_target", correctionMode: "polish", rawTranscript: "ứng dụng này mở hơi chậm nhưng server vẫn ổn"),
+    EvalSample(name: "refine_japanese_target", correctionMode: "polish_plus", rawTranscript: "この機能は便利だけど UI が少し重い"),
+    EvalSample(name: "refine_vietnamese_target", correctionMode: "polish_plus", rawTranscript: "ứng dụng này mở hơi chậm nhưng server vẫn ổn"),
     EvalSample(name: "refine_polish_plus_preserves_label", correctionMode: "polish_plus", rawTranscript: "这个 Polish+ 结果应该更自然 但不要把 Polish+ 名字改掉"),
     EvalSample(name: "refine_structured_debug_metrics", correctionMode: "structure_plus", rawTranscript: "host 里显示 server total transcription latency correction latency"),
 

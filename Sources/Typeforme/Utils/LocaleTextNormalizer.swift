@@ -18,14 +18,14 @@ enum LocaleTextNormalizer {
 
     static func promptInstruction(for languageIDs: [String]) -> String {
         let languageNames = ASRLanguageSelection.displayNames(for: languageIDs).joined(separator: ", ")
-        let languageScope = "Expected languages: \(languageNames). Preserve natural code-switching among these languages. Preserve each selected-language segment in its original language and script; do not translate between selected languages. Treat unrelated languages as ASR errors only when the local context makes that clear; otherwise preserve the user's words."
+        let languageScope = "Expected: \(languageNames). Preserve code-switching; do not translate."
         switch ASRLanguageSelection.scriptPreference(for: languageIDs) {
         case .simplified:
-            return languageScope + " When output contains Chinese, use Simplified Chinese. " + languageStyleGuidance(for: languageIDs)
+            return languageScope + " Chinese script: Simplified."
         case .traditional:
-            return languageScope + " When output contains Chinese, use Traditional Chinese. " + languageStyleGuidance(for: languageIDs)
+            return languageScope + " Chinese script: Traditional."
         case .preserve:
-            return languageScope + " Preserve the detected script for Chinese unless the selected languages imply a clear user preference. " + languageStyleGuidance(for: languageIDs)
+            return languageScope + " Preserve detected Chinese script."
         }
     }
 

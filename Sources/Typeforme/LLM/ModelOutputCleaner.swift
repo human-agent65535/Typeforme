@@ -10,6 +10,13 @@ enum ModelOutputCleaner {
         return noFences.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    static func stripLeadingEmptyThinkBlock(_ raw: String) -> String {
+        let range = NSRange(raw.startIndex..<raw.endIndex, in: raw)
+        return leadingEmptyThinkBlockRegex
+            .stringByReplacingMatches(in: raw, range: range, withTemplate: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     /// Returns the first balanced `{ ... }` substring, respecting quoted strings
     /// and backslash escapes. Returns nil if no balanced object exists.
     static func extractFirstJSONObject(_ s: String) -> String? {
@@ -57,5 +64,6 @@ enum ModelOutputCleaner {
     }
 
     private static let thinkBlockRegex = try! NSRegularExpression(pattern: "<think>[\\s\\S]*?</think>")
+    private static let leadingEmptyThinkBlockRegex = try! NSRegularExpression(pattern: #"^\s*<think>\s*</think>\s*"#)
     private static let codeFenceRegex = try! NSRegularExpression(pattern: "```[a-zA-Z0-9_+\\-]*\\n?|```")
 }

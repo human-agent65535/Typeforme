@@ -145,7 +145,7 @@ struct BridgeWireModelsTests {
             rawTranscript: "hello",
             clientJobID: "ios_job_1",
             languageIDs: ["en-US"],
-            correctionMode: CorrectionMode.polish.rawValue,
+            correctionMode: CorrectionMode.polishPlus.rawValue,
             appName: "Notes",
             bundleID: "com.apple.Notes",
             appCategory: "chat",
@@ -158,7 +158,7 @@ struct BridgeWireModelsTests {
         #expect(object["raw_transcript"] as? String == "hello")
         #expect(object["client_job_id"] as? String == "ios_job_1")
         #expect(object["language_ids"] as? [String] == ["en-US"])
-        #expect(object["correction_mode"] as? String == CorrectionMode.polish.rawValue)
+        #expect(object["correction_mode"] as? String == CorrectionMode.polishPlus.rawValue)
         #expect(object["app_name"] as? String == "Notes")
         #expect(object["bundle_id"] as? String == "com.apple.Notes")
         #expect(object["app_category"] as? String == "chat")
@@ -171,7 +171,7 @@ struct BridgeWireModelsTests {
             clientJobID: "ios_preview_1",
             languageIDs: ["en-US"],
             languageMode: "custom",
-            correctionMode: CorrectionMode.polish.rawValue,
+            correctionMode: CorrectionMode.polishPlus.rawValue,
             livePreviewSource: VoiceLivePreviewSource.qwen.rawValue,
             appName: "Notes",
             bundleID: "com.apple.Notes",
@@ -182,7 +182,7 @@ struct BridgeWireModelsTests {
         #expect(object["client_job_id"] as? String == "ios_preview_1")
         #expect(object["language_ids"] as? [String] == ["en-US"])
         #expect(object["language_mode"] as? String == "custom")
-        #expect(object["correction_mode"] as? String == CorrectionMode.polish.rawValue)
+        #expect(object["correction_mode"] as? String == CorrectionMode.polishPlus.rawValue)
         #expect(object["live_preview_source"] as? String == VoiceLivePreviewSource.qwen.rawValue)
         #expect(object["app_name"] as? String == "Notes")
         #expect(object["bundle_id"] as? String == "com.apple.Notes")
@@ -245,7 +245,7 @@ struct BridgeWireModelsTests {
             externalLLMBaseURL: "http://127.0.0.1:1234",
             externalLLMModel: "qwen",
             livePreviewSource: VoiceLivePreviewSource.off.rawValue,
-            correctionMode: CorrectionMode.polish.rawValue,
+            correctionMode: CorrectionMode.polishPlus.rawValue,
             numberOutputPreference: NumberOutputPreference.automatic.rawValue,
             punctuationPreference: PunctuationOutputPreference.normal.rawValue,
             autoCommit: true,
@@ -266,7 +266,7 @@ struct BridgeWireModelsTests {
         #expect(object["external_llm_base_url"] as? String == "http://127.0.0.1:1234")
         #expect(object["external_llm_model"] as? String == "qwen")
         #expect(object["live_preview_source"] as? String == VoiceLivePreviewSource.off.rawValue)
-        #expect(object["correction_mode"] as? String == CorrectionMode.polish.rawValue)
+        #expect(object["correction_mode"] as? String == CorrectionMode.polishPlus.rawValue)
         #expect(object["number_output_preference"] as? String == NumberOutputPreference.automatic.rawValue)
         #expect(object["punctuation_preference"] as? String == PunctuationOutputPreference.normal.rawValue)
         #expect(object["auto_commit"] as? Bool == true)
@@ -341,7 +341,7 @@ struct BridgeWireModelsTests {
             externalLLMBaseURL: nil,
             externalLLMModel: nil,
             livePreviewSource: VoiceLivePreviewSource.off.rawValue,
-            correctionMode: CorrectionMode.polish.rawValue,
+            correctionMode: CorrectionMode.polishPlus.rawValue,
             numberOutputPreference: NumberOutputPreference.automatic.rawValue,
             punctuationPreference: PunctuationOutputPreference.normal.rawValue,
             autoCommit: true,

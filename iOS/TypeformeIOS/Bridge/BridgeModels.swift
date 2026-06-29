@@ -82,7 +82,7 @@ struct UserPreferences: Codable, Equatable {
     init(
         languageIDs: [String] = ["zh-CN", "en-US"],
         supportedLanguages: [BridgeLanguageOption] = BridgeLanguageOption.allLanguages,
-        correctionMode: CorrectionMode = .polish
+        correctionMode: CorrectionMode = .polishPlus
     ) {
         self.supportedLanguages = supportedLanguages
         self.languageIDs = ASRLanguageSelection.validatedIDs(
@@ -108,7 +108,7 @@ extension BridgePairingPayload {
     func config(
         languageIDs: [String] = ["zh-CN", "en-US"],
         supportedLanguages: [BridgeLanguageOption] = BridgeLanguageOption.allLanguages,
-        correctionMode: CorrectionMode = .polish
+        correctionMode: CorrectionMode = .polishPlus
     ) -> PairingConfig {
         let localCandidates = localBridgeURLCandidates
         return PairingConfig(
@@ -167,7 +167,7 @@ struct PairingConfig: Codable, Equatable {
         token: "",
         languageIDs: ["zh-CN", "en-US"],
         supportedLanguages: BridgeLanguageOption.allLanguages,
-        correctionMode: .polish
+        correctionMode: .polishPlus
     )
 
     enum CodingKeys: String, CodingKey {

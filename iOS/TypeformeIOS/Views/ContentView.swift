@@ -1477,27 +1477,22 @@ private struct KeyboardGuideView: View {
                 GuideStepRow(
                     icon: "checkmark.circle",
                     title: "Clean",
-                    detail: "Fix punctuation, casing, spacing, and light ASR noise."
-                )
-                GuideStepRow(
-                    icon: "paintbrush",
-                    title: "Polish",
-                    detail: "Improve readability while keeping the original structure and voice."
+                    detail: "Remove filler words and fix punctuation, spacing, and clear ASR mistakes."
                 )
                 GuideStepRow(
                     icon: "paintbrush.fill",
                     title: "Polish+",
-                    detail: "Rewrite into polished, natural prose."
+                    detail: "Rewrite naturally while preserving intent and tone."
                 )
                 GuideStepRow(
                     icon: "list.bullet.rectangle",
                     title: "Structure+",
-                    detail: "Turn multi-item content into bullets, steps, plans, or lists."
+                    detail: "Restructure multi-item content while preserving intent."
                 )
                 GuideStepRow(
                     icon: "doc.text",
                     title: "Formal+",
-                    detail: "Convert casual speech into professional written prose."
+                    detail: "Rewrite into professional prose while preserving intent."
                 )
             } header: {
                 Text("Modes")
@@ -1814,7 +1809,7 @@ private struct MacSettingsView: View {
                 } header: {
                     Text("Mac Refine Engine")
                 } footer: {
-                    Text("Used by Clean, Polish, Polish+, Structure+, and Formal+. Fast skips refine.")
+                    Text("Used by Clean, Polish+, Structure+, and Formal+. Fast skips refine.")
                 }
 
                 Section("Vocabulary") {

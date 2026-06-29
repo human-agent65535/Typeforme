@@ -43,7 +43,7 @@ enum VoiceLivePreviewSource: String, CaseIterable, Identifiable {
 
     static func options(
         forRecognitionSources sources: [RecognitionSource],
-        correctionMode: CorrectionMode = .polish
+        correctionMode: CorrectionMode = .polishPlus
     ) -> [VoiceLivePreviewSource] {
         var options: [VoiceLivePreviewSource] = [.off]
         if sources.contains(.qwen) {
@@ -60,7 +60,7 @@ enum VoiceLivePreviewSource: String, CaseIterable, Identifiable {
 
     static func clientOptions(
         forRemoteRecognitionSources sources: [RecognitionSource],
-        correctionMode: CorrectionMode = .polish
+        correctionMode: CorrectionMode = .polishPlus
     ) -> [VoiceLivePreviewSource] {
         var options: [VoiceLivePreviewSource] = [.off]
         if sources.contains(.qwen) {
@@ -75,14 +75,14 @@ enum VoiceLivePreviewSource: String, CaseIterable, Identifiable {
 
     func isEnabled(
         forRecognitionSources sources: [RecognitionSource],
-        correctionMode: CorrectionMode = .polish
+        correctionMode: CorrectionMode = .polishPlus
     ) -> Bool {
         Self.options(forRecognitionSources: sources, correctionMode: correctionMode).contains(self)
     }
 
     func isClientEnabled(
         forRemoteRecognitionSources sources: [RecognitionSource],
-        correctionMode: CorrectionMode = .polish
+        correctionMode: CorrectionMode = .polishPlus
     ) -> Bool {
         Self.clientOptions(forRemoteRecognitionSources: sources, correctionMode: correctionMode).contains(self)
     }

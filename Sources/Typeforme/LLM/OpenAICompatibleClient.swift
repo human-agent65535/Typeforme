@@ -219,9 +219,11 @@ enum OpenAICompatibleClient {
         else {
             throw OpenAICompatibleClientError.invalidResponse("unexpected /v1/chat/completions response shape")
         }
-        if let content = first.message?.content ?? first.text,
-           !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return content
+        if let content = first.message?.content ?? first.text {
+            let cleaned = ModelOutputCleaner.stripLeadingEmptyThinkBlock(content)
+            if !cleaned.isEmpty {
+                return cleaned
+            }
         }
         if first.message?.reasoningContent?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
             throw OpenAICompatibleClientError.requestFailed("model returned reasoning without final content")

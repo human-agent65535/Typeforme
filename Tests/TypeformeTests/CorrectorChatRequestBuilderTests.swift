@@ -59,6 +59,23 @@ struct CorrectorChatRequestBuilderTests {
         #expect(kwargs.enableThinking == false)
     }
 
+    @Test func addsGemma4NoThinkHints() throws {
+        let body = CorrectorChatRequestBuilder.body(
+            model: "google/gemma-4-31b-qat",
+            system: "system",
+            user: "user",
+            maxTokens: 128
+        )
+        let kwargs = try #require(body.chatTemplateKwargs)
+
+        #expect(body.messages.count == 3)
+        #expect(body.messages[1].content == "user")
+        #expect(!body.messages[1].content.contains("/no_think"))
+        #expect(body.messages.last?.content == GemmaPromptHints.noThinkAssistantPrefill)
+        #expect(body.thinking == nil)
+        #expect(kwargs.enableThinking == false)
+    }
+
     @Test func doesNotAddQwenSpecificHintsForOtherModels() throws {
         let body = CorrectorChatRequestBuilder.body(
             model: "llama-3.1",

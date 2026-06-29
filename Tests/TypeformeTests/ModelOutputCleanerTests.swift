@@ -15,6 +15,16 @@ struct ModelOutputCleanerTests {
         #expect(ModelOutputCleaner.clean(input) == "final")
     }
 
+    @Test func stripsLeadingEmptyThinkPrefillOnly() {
+        let input = "<think>\n\n</think>\n\nfinal answer"
+        #expect(ModelOutputCleaner.stripLeadingEmptyThinkBlock(input) == "final answer")
+    }
+
+    @Test func keepsNonEmptyThinkTextInNarrowPrefillCleaner() {
+        let input = "<think>internal reasoning</think>\nfinal answer"
+        #expect(ModelOutputCleaner.stripLeadingEmptyThinkBlock(input) == input)
+    }
+
     @Test func stripsCodeFences() {
         let input = "```json\n{\"a\":1}\n```"
         let cleaned = ModelOutputCleaner.clean(input)

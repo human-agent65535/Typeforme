@@ -408,7 +408,6 @@ private struct ModeChipRow: View {
         switch mode {
         case .fast:              return "Fast"
         case .clean:             return "Clean"
-        case .polish:            return "Polish"
         case .polishPlus:        return "Polish+"
         case .structurePlus:     return "Structure+"
         case .formalPlus:        return "Formal+"

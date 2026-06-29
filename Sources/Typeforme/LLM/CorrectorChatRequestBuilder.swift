@@ -28,7 +28,7 @@ enum CorrectorChatRequestBuilder {
                     content: message["content"] ?? ""
                 )
             }
-        let templateKwargs = noThinkProfile == .qwen
+        let templateKwargs = noThinkProfile == .qwen || noThinkProfile == .gemma4
             ? OpenAIChatTemplateKwargs(enableThinking: false)
             : nil
         let thinking = noThinkProfile == .deepSeekV4
@@ -58,12 +58,15 @@ enum CorrectorChatRequestBuilder {
         model: String,
         noThinkProfile: OpenAICompatibleNoThinkProfile
     ) -> [[String: String]] {
-        guard noThinkProfile == .qwen else {
-            return [
-                ["role": "system", "content": system],
-                ["role": "user", "content": user],
-            ]
+        if noThinkProfile == .qwen {
+            return QwenPromptHints.openAIChatMessages(system: system, user: user, model: model)
         }
-        return QwenPromptHints.openAIChatMessages(system: system, user: user, model: model)
+        if noThinkProfile == .gemma4 {
+            return GemmaPromptHints.openAIChatMessages(system: system, user: user, model: model)
+        }
+        return [
+            ["role": "system", "content": system],
+            ["role": "user", "content": user],
+        ]
     }
 }

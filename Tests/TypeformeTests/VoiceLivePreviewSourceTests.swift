@@ -84,13 +84,13 @@ struct VoiceLivePreviewSourceTests {
         #expect(
             VoiceLivePreviewSource.clientOptions(
                 forRemoteRecognitionSources: [],
-                correctionMode: .polish
+                correctionMode: .polishPlus
             ) == [.off, .appleSpeech]
         )
         #expect(
             VoiceLivePreviewSource.clientOptions(
                 forRemoteRecognitionSources: [.qwen, .nvidiaNemotron],
-                correctionMode: .polish
+                correctionMode: .polishPlus
             ) == [.off, .qwen, .nvidiaNemotron, .appleSpeech]
         )
         #expect(
@@ -101,7 +101,7 @@ struct VoiceLivePreviewSourceTests {
         )
         #expect(VoiceLivePreviewSource.appleSpeech.isClientEnabled(
             forRemoteRecognitionSources: [],
-            correctionMode: .polish
+            correctionMode: .polishPlus
         ))
         #expect(VoiceLivePreviewSource.appleSpeech.isClientEnabled(
             forRemoteRecognitionSources: [.appleSpeech],
@@ -128,7 +128,7 @@ struct VoiceLivePreviewSourceTests {
         #expect(BridgeSettingsPayload.bridgeLivePreviewSource(
             configuredSource: .appleSpeech,
             sources: [.qwen, .appleSpeech],
-            correctionMode: .polish
+            correctionMode: .polishPlus
         ) == .appleSpeech)
     }
 }

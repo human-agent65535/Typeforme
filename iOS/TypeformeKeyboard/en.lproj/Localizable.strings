@@ -50,7 +50,6 @@
 
 // Correction mode chip labels
 "Clean" = "Clean";
-"Polish" = "Polish";
 "Polish+" = "Polish+";
 "Structure+" = "Structure+";
 "Formal+" = "Formal+";

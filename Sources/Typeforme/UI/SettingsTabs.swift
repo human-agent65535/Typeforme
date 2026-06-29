@@ -610,7 +610,7 @@ struct ClientServerSettingsView: View {
 
     private var correctionModeBinding: Binding<String> {
         Binding {
-            draft?.correctionMode ?? CorrectionMode.polish.rawValue
+            draft?.correctionMode ?? CorrectionMode.polishPlus.rawValue
         } set: { value in
             guard let mode = CorrectionMode(rawValue: value),
                   isServerCorrectionModeEnabled(mode)
@@ -1053,7 +1053,7 @@ struct DictationInputSettingsView: View {
     @AppStorage(AppSettings.Keys.asrQwenEnabled)       private var qwenEnabled: Bool = false
     @AppStorage(AppSettings.Keys.asrNvidiaNemotronEnabled) private var nvidiaEnabled: Bool = false
     @AppStorage(AppSettings.Keys.asrAppleSpeechEnabled) private var appleSpeechEnabled: Bool = true
-    @AppStorage(AppSettings.Keys.correctionMode)       private var correctionModeRaw: String = CorrectionMode.polish.rawValue
+    @AppStorage(AppSettings.Keys.correctionMode)       private var correctionModeRaw: String = CorrectionMode.polishPlus.rawValue
     @AppStorage(AppSettings.Keys.soundFeedback)        private var soundFeedback: Bool = true
 
     var body: some View {
@@ -1233,7 +1233,7 @@ struct DictationInputSettingsView: View {
     }
 
     private var selectedCorrectionMode: CorrectionMode {
-        CorrectionMode(rawValue: correctionModeRaw) ?? .polish
+        CorrectionMode(rawValue: correctionModeRaw) ?? .polishPlus
     }
 
     private var processingMode: ProcessingMode {
@@ -1354,7 +1354,7 @@ struct ASRSettingsView: View {
     @AppStorage(AppSettings.Keys.asrQwenLlamaTimeoutSec) private var qwenTimeoutSec: Double = 40
     @AppStorage(AppSettings.Keys.asrQwenLlamaModelID) private var qwenModelID: String = QwenASRModelCatalog.defaultID
     @AppStorage(AppSettings.Keys.asrQwenLlamaMaxTokens) private var qwenMaxTokens: Int = 2048
-    @AppStorage(AppSettings.Keys.correctionMode) private var correctionModeRaw: String = CorrectionMode.polish.rawValue
+    @AppStorage(AppSettings.Keys.correctionMode) private var correctionModeRaw: String = CorrectionMode.polishPlus.rawValue
     @State private var showAllLanguages = false
     @State private var showAdvanced = false
     @State private var appleSpeechLanguageSupportRevision = 0
@@ -1566,7 +1566,7 @@ struct ASRSettingsView: View {
     }
 
     private var selectedCorrectionMode: CorrectionMode {
-        CorrectionMode(rawValue: correctionModeRaw) ?? .polish
+        CorrectionMode(rawValue: correctionModeRaw) ?? .polishPlus
     }
 
     private var visibleRecognitionSources: [RecognitionSource] {
@@ -2416,7 +2416,7 @@ struct CorrectionSettingsView: View {
     @AppStorage(AppSettings.Keys.correctionColdTimeoutMs) private var coldTimeoutMs: Int = 8000
     @AppStorage(AppSettings.Keys.correctionMaxTokens)     private var maxTokens: Int = 128
     @AppStorage(AppSettings.Keys.correctionContextSize)   private var contextSize: Int = 4096
-    @AppStorage(AppSettings.Keys.correctionMode)   private var correctionModeRaw: String = CorrectionMode.polish.rawValue
+    @AppStorage(AppSettings.Keys.correctionMode)   private var correctionModeRaw: String = CorrectionMode.polishPlus.rawValue
     @AppStorage(AppSettings.Keys.asrQwenEnabled)   private var qwenEnabled: Bool = false
     @AppStorage(AppSettings.Keys.processingMode)   private var processingModeRaw: String = ProcessingMode.client.rawValue
     @AppStorage(AppSettings.Keys.clientBridgeEnabledRecognitionSources) private var clientBridgeEnabledRecognitionSourcesRaw: String = ""
@@ -2622,7 +2622,7 @@ struct CorrectionSettingsView: View {
     }
 
     private var correctionModeDescription: String {
-        (CorrectionMode(rawValue: correctionModeRaw) ?? .polish).helpText
+        (CorrectionMode(rawValue: correctionModeRaw) ?? .polishPlus).helpText
     }
 
     private var correctionModeBinding: Binding<String> {
@@ -3017,7 +3017,7 @@ private struct ModelDownloadRow: View {
 /// In-app editor for the base system prompt and per-mode addendum.
 struct PromptsSettingsView: View {
     @AppStorage(AppSettings.Keys.promptAdditionalSystem) private var additionalSystemPrompt: String = ""
-    @State private var correctionMode: CorrectionMode = .polish
+    @State private var correctionMode: CorrectionMode = .polishPlus
     @State private var systemPromptText: String = ""
     @State private var originalSystemPromptText: String = ""
     @State private var systemHasOverride: Bool = false

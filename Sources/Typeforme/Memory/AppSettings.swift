@@ -135,7 +135,7 @@ enum AppSettings {
             Keys.correctionColdTimeoutMs: 8000,
             Keys.correctionMaxTokens:     128,
             Keys.correctionContextSize:   4096,
-            Keys.correctionMode:   CorrectionMode.polish.rawValue,
+            Keys.correctionMode:   CorrectionMode.polishPlus.rawValue,
             Keys.correctionAutoCommit:    true,
             Keys.numberOutputPreference:  NumberOutputPreference.automatic.rawValue,
             Keys.punctuationPreference:   PunctuationOutputPreference.normal.rawValue,
@@ -412,7 +412,7 @@ enum AppSettings {
     static var correctionMaxTokens: Int     { max(16, ud.integer(forKey: Keys.correctionMaxTokens)) }
     static var correctionContextSize: Int   { max(512, ud.integer(forKey: Keys.correctionContextSize)) }
     static var correctionMode: CorrectionMode {
-        rawSetting(forKey: Keys.correctionMode, default: .polish)
+        rawSetting(forKey: Keys.correctionMode, default: .polishPlus)
     }
     static var autoCommit: Bool         { ud.bool(forKey: Keys.correctionAutoCommit) }
     static var numberOutputPreference: NumberOutputPreference {
