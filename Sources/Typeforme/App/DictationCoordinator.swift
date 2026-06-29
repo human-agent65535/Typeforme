@@ -1236,7 +1236,9 @@ final class DictationCoordinator: ObservableObject {
                 return
             }
 
-            transition(to: .correcting)
+            if selectedCorrectionMode.usesRefine {
+                transition(to: .correcting)
+            }
             let result = normalizeResult(
                 CorrectionResult(action: .commit, text: response.text, risk: .low),
                 correctionMode: selectedCorrectionMode
