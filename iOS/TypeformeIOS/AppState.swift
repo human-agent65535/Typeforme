@@ -2461,7 +2461,7 @@ final class AppState {
 
     /// Called when the user stops recording. We close the audio side of the
     /// request/stream so it finalises its last partial, but keep the resulting
-    /// text on screen until the Mac final result replaces it.
+    /// text on screen until a final ASR/correction result replaces it.
     private func endLivePartialPreviewAudio() {
         keyboardAudioSession.onPCMBuffer = nil
         liveSpeechRequestSink?.endAudio()
@@ -2469,9 +2469,15 @@ final class AppState {
         serverLivePreviewStreamer = nil
     }
 
-    /// Called after the Mac final result is applied. Tears down the preview
-    /// source and clears the on-screen partial — the keyboard / host now show
-    /// the Mac final text.
+    private func applyASRFinalPreview(_ rawText: String) {
+        let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        teardownLivePartialPreview(clearText: false)
+        livePartialTranscript = text
+    }
+
+    /// Called after a final ASR/correction result owns the display. Tears down
+    /// the preview source and optionally clears the on-screen partial.
     private func teardownLivePartialPreview(clearText: Bool) {
         _ = nextLivePreviewGeneration()
         keyboardAudioSession.onPCMBuffer = nil
@@ -3442,6 +3448,7 @@ final class AppState {
            let raw = event.rawTranscript?.trimmingCharacters(in: .whitespacesAndNewlines),
            !raw.isEmpty {
             rawTranscript = raw
+            applyASRFinalPreview(raw)
         }
 
         let shouldPresentRefine = event.stage == .refining

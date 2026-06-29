@@ -376,6 +376,8 @@ final class DictationCoordinator: ObservableObject {
                 return
             }
 
+            applyASRFinalPreview(trimmed, displaysLivePartial: activeTextEditIntent != .command)
+
             if let editTarget = activeTextEditTarget,
                let editIntent = activeTextEditIntent {
                 transition(to: .correcting)
@@ -1071,10 +1073,19 @@ final class DictationCoordinator: ObservableObject {
         }
     }
 
+    private func applyASRFinalPreview(_ rawText: String, displaysLivePartial: Bool) {
+        let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        teardownLivePartialPreview(clearText: false)
+        if displaysLivePartial {
+            livePartialTranscript = text
+        }
+    }
+
     /// Called when stopDictation() pulls the audio file. Closes the audio side
     /// of the request so the recognizer finalises its last partial. We keep
-    /// `livePartialTranscript` on screen until preview final or the final
-    /// committed result replaces it.
+    /// `livePartialTranscript` on screen until final ASR/correction output
+    /// replaces it.
     func endLivePartialPreviewAudio() async {
         remoteBridgeLivePreviewStreamer?.finish()
         remoteBridgeLivePreviewStreamer = nil
@@ -1093,7 +1104,7 @@ final class DictationCoordinator: ObservableObject {
         }
     }
 
-    /// Called after the Mac final result is applied (or on reset / error).
+    /// Called after a final ASR/correction result owns the display (or on reset / error).
     func teardownLivePartialPreview(clearText: Bool) {
         remoteBridgeLivePreviewStreamer?.cancel()
         remoteBridgeLivePreviewStreamer = nil
@@ -1190,6 +1201,9 @@ final class DictationCoordinator: ObservableObject {
                 alternateTranscripts: []
             )
             lastTranscript = raw.isEmpty ? response.text : raw
+            if !raw.isEmpty {
+                applyASRFinalPreview(raw, displaysLivePartial: activeTextEditIntent != .command)
+            }
 
             if let editTarget = activeTextEditTarget,
                let editIntent = activeTextEditIntent {
@@ -1427,6 +1441,7 @@ final class DictationCoordinator: ObservableObject {
            let raw = event.rawTranscript?.trimmingCharacters(in: .whitespacesAndNewlines),
            !raw.isEmpty {
             lastTranscript = raw
+            applyASRFinalPreview(raw, displaysLivePartial: activeTextEditIntent != .command)
         }
         applyBridgeTranscriptionProgress(event)
         if shouldAdvanceToCorrectionWhenTranscriptionCompletes,
