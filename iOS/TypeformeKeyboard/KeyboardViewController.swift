@@ -108,14 +108,15 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private struct TextKeyboardLayoutModel {
         static let keyHorizontalGap: CGFloat = 6
         static let keyVerticalGap: CGFloat = 11
-        static let utilityKeyWidthMultiplier: CGFloat = 1.34
+        static let utilityKeyWidthMultiplier: CGFloat = 1.22
         static let utilityLetterGap: CGFloat = 44.0 / 3.0
         static let bottomModeKeyWidth: CGFloat = 50
         static let bottomGlobeKeyWidth: CGFloat = 50
         static let bottomLanguageKeyWidth: CGFloat = 52
-        static let bottomReturnKeyWidth: CGFloat = 108
-        static let keyIconPointSize: CGFloat = 16
-        static let compactUtilityTitleFontSize: CGFloat = 20
+        static let bottomReturnKeyWidth: CGFloat = 92
+        static let keyIconPointSize: CGFloat = 15
+        static let compactUtilityTitleFontSize: CGFloat = 18
+        static let utilityActionTitleFontSize: CGFloat = 17
         static var utilityLetterSpacerWidth: CGFloat {
             max(0, utilityLetterGap - keyHorizontalGap * 2)
         }
@@ -4549,6 +4550,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let isCompactUtilityTitle = weight == .utility
             && image == nil
             && (title == "123" || title == "ABC" || title == "#+=")
+        let usesUtilityActionTypography = weight == .utility
+            && image == nil
+            && !isCompactUtilityTitle
         configuration.title = title
         configuration.image = image.flatMap { UIImage(systemName: $0) }
         if image != nil {
@@ -4574,7 +4578,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 ? .systemFont(ofSize: 25, weight: .regular)
                 : (isCompactUtilityTitle
                     ? .systemFont(ofSize: TextKeyboardLayoutModel.compactUtilityTitleFontSize, weight: .regular)
-                    : .systemFont(ofSize: isShortGlyph ? 22 : 15, weight: isShortGlyph ? .regular : .medium))
+                    : (usesUtilityActionTypography
+                        ? .systemFont(ofSize: isShortGlyph ? TextKeyboardLayoutModel.utilityActionTitleFontSize : 14, weight: .medium)
+                        : .systemFont(ofSize: isShortGlyph ? 22 : 15, weight: isShortGlyph ? .regular : .medium)))
             return outgoing
         }
         return configuration
