@@ -259,6 +259,18 @@ struct BridgeJobStatusEvent: Codable, Sendable {
         self.error = error
         self.updatedAt = updatedAt
     }
+
+    var transcriptionReadyForRefine: Bool {
+        if stage == .transcriptReady {
+            return true
+        }
+        guard stage == .transcribing,
+              let completed = transcriptionCompletedSources,
+              let total = transcriptionTotalSources,
+              total > 0
+        else { return false }
+        return completed >= total
+    }
 }
 
 struct BridgeLivePreviewStartRequest: Codable, Sendable {

@@ -97,6 +97,32 @@ struct BridgeWireModelsTests {
         #expect(decoded.transcriptionTotalSources == nil)
     }
 
+    @Test func jobStatusEventMarksTranscriptionReadyForRefineOnlyWhenASRIsComplete() {
+        let inProgress = BridgeJobStatusEvent(
+            jobID: "job-1",
+            stage: .transcribing,
+            message: "Transcribing audio (2/3)",
+            transcriptionCompletedSources: 2,
+            transcriptionTotalSources: 3
+        )
+        let allAttemptsFinished = BridgeJobStatusEvent(
+            jobID: "job-1",
+            stage: .transcribing,
+            message: "Transcribing audio (3/3)",
+            transcriptionCompletedSources: 3,
+            transcriptionTotalSources: 3
+        )
+        let transcriptReady = BridgeJobStatusEvent(
+            jobID: "job-1",
+            stage: .transcriptReady,
+            message: "Transcript ready"
+        )
+
+        #expect(inProgress.transcriptionReadyForRefine == false)
+        #expect(allAttemptsFinished.transcriptionReadyForRefine == true)
+        #expect(transcriptReady.transcriptionReadyForRefine == true)
+    }
+
     @Test func refineRequestEncodesSharedBridgeKeys() throws {
         let request = BridgeRefineRequest(
             sessionID: "session-1",

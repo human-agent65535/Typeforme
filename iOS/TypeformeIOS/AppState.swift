@@ -1195,6 +1195,7 @@ final class AppState {
         includeRawTranscript: Bool,
         keyboardCommandID: String?,
         stageLabels: BridgeStageLabels,
+        shouldAdvanceToRefineWhenTranscriptionCompletes: Bool,
         recordingInfo: RecordingFileInfo
     ) async throws -> BridgeDictateResponse {
         func dictate(to baseURL: URL) async throws -> BridgeDictateResponse {
@@ -1215,6 +1216,7 @@ final class AppState {
                             event,
                             keyboardCommandID: keyboardCommandID,
                             stageLabels: stageLabels,
+                            shouldAdvanceToRefineWhenTranscriptionCompletes: shouldAdvanceToRefineWhenTranscriptionCompletes,
                             recordingInfo: recordingInfo
                         )
                     }
@@ -1454,7 +1456,8 @@ final class AppState {
         }
         // Close the live preview audio side so it finalizes its last partial.
         // We intentionally do NOT clear livePartialTranscript yet — keep the
-        // user's preview visible until Mac returns the final text.
+        // preview source's latest text visible until preview final or the final
+        // committed result replaces it.
         endLivePartialPreviewAudio()
         hostRecordingUsesKeyboardAudioSession = false
         let keyboardTextEditContext = pendingKeyboardTextEditContext
@@ -1561,6 +1564,8 @@ final class AppState {
                 includeRawTranscript: true,
                 keyboardCommandID: effectiveKeyboardCommandID,
                 stageLabels: recognitionStageLabels,
+                shouldAdvanceToRefineWhenTranscriptionCompletes: requestedCorrectionMode.usesRefine
+                    || keyboardTextEditContext != nil,
                 recordingInfo: recordingInfo
             )
             let client = BridgeClient(baseURL: routeStatus.activeURL ?? baseURL, token: config.token)
@@ -1607,6 +1612,7 @@ final class AppState {
                             event,
                             keyboardCommandID: effectiveKeyboardCommandID,
                             stageLabels: editingStageLabels,
+                            shouldAdvanceToRefineWhenTranscriptionCompletes: true,
                             recordingInfo: recordingInfo
                         )
                     }
@@ -1641,7 +1647,7 @@ final class AppState {
             if !shouldPublishKeyboardProgress {
                 resultText = text
             }
-            // Mac final result is now the source of truth; preview is done.
+            // Final committed result is now the source of truth; preview is done.
             teardownLivePartialPreview(clearText: true)
             lastGeneratedResultText = text
             if keyboardTextEditContext == nil {
@@ -1755,7 +1761,11 @@ final class AppState {
                 correctionMode: newMode,
                 clientJobID: refineJobID,
                 onJobEvent: { [weak self] event in
-                    await self?.applyBridgeJobStatus(event, keyboardCommandID: nil)
+                    await self?.applyBridgeJobStatus(
+                        event,
+                        keyboardCommandID: nil,
+                        shouldAdvanceToRefineWhenTranscriptionCompletes: true
+                    )
                 }
             )
             let text = response.text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -3007,7 +3017,11 @@ final class AppState {
                 correctionMode: requestedCorrectionMode,
                 clientJobID: refineJobID,
                 onJobEvent: { [weak self] event in
-                    await self?.applyBridgeJobStatus(event, keyboardCommandID: keyboardCommandID)
+                    await self?.applyBridgeJobStatus(
+                        event,
+                        keyboardCommandID: keyboardCommandID,
+                        shouldAdvanceToRefineWhenTranscriptionCompletes: true
+                    )
                 }
             )
             let text = response.text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -3411,6 +3425,7 @@ final class AppState {
         _ event: BridgeJobStatusEvent,
         keyboardCommandID: String?,
         stageLabels: BridgeStageLabels = .dictation,
+        shouldAdvanceToRefineWhenTranscriptionCompletes: Bool = true,
         recordingInfo: RecordingFileInfo? = nil
     ) {
         guard phase.isBusy else { return }
@@ -3427,10 +3442,10 @@ final class AppState {
            let raw = event.rawTranscript?.trimmingCharacters(in: .whitespacesAndNewlines),
            !raw.isEmpty {
             rawTranscript = raw
-            livePartialTranscript = raw
-            publishLivePartialTranscriptToKeyboard()
         }
 
+        let shouldPresentRefine = event.stage == .refining
+            || (shouldAdvanceToRefineWhenTranscriptionCompletes && event.transcriptionReadyForRefine)
         let stageMessage: String?
         let keyboardState: KeyboardBridgeState
         let keyboardProcessingStage: KeyboardBridgeProcessingStage?
@@ -3440,13 +3455,17 @@ final class AppState {
             keyboardState = .sending
             keyboardProcessingStage = .transcribing
         case .transcribing:
-            stageMessage = stageLabels.transcribingMessage(for: event)
+            stageMessage = shouldPresentRefine
+                ? stageLabels.refining
+                : stageLabels.transcribingMessage(for: event)
             keyboardState = .sending
-            keyboardProcessingStage = .transcribing
+            keyboardProcessingStage = shouldPresentRefine ? .refining : .transcribing
         case .transcriptReady:
-            stageMessage = stageLabels.transcribingMessage(for: event)
+            stageMessage = shouldPresentRefine
+                ? stageLabels.refining
+                : stageLabels.transcribingMessage(for: event)
             keyboardState = .sending
-            keyboardProcessingStage = .transcribing
+            keyboardProcessingStage = shouldPresentRefine ? .refining : .transcribing
         case .refining:
             stageMessage = stageLabels.refining
             keyboardState = .sending
@@ -3463,7 +3482,7 @@ final class AppState {
         }
 
         guard let stageMessage else { return }
-        if event.stage == .refining, phase == .sending {
+        if shouldPresentRefine, phase == .sending {
             setPhase(.refining)
         }
         processingStatusMessage = stageMessage

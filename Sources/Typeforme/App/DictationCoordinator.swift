@@ -329,8 +329,13 @@ final class DictationCoordinator: ObservableObject {
         var didRecordASR = false
         let asrStarted = Date()
         do {
+            let shouldAdvanceToCorrectionWhenASRCompletes = selectedCorrectionMode.usesRefine
+                || activeTextEditTarget != nil
             let asrProgressHandler: ASRTranscriptionProgressHandler = { [weak self] progress in
-                await self?.applyASRTranscriptionProgress(progress)
+                await self?.applyASRTranscriptionProgress(
+                    progress,
+                    shouldAdvanceToCorrectionWhenComplete: shouldAdvanceToCorrectionWhenASRCompletes
+                )
             }
             let asrResult = try await asrService(for: selectedCorrectionMode).transcribeResult(
                 audioFileURL: url,
@@ -1068,7 +1073,8 @@ final class DictationCoordinator: ObservableObject {
 
     /// Called when stopDictation() pulls the audio file. Closes the audio side
     /// of the request so the recognizer finalises its last partial. We keep
-    /// `livePartialTranscript` on screen until the Mac final replaces it.
+    /// `livePartialTranscript` on screen until preview final or the final
+    /// committed result replaces it.
     func endLivePartialPreviewAudio() async {
         remoteBridgeLivePreviewStreamer?.finish()
         remoteBridgeLivePreviewStreamer = nil
@@ -1155,7 +1161,8 @@ final class DictationCoordinator: ObservableObject {
                 await self?.applyRemoteBridgeJobStatus(
                     event,
                     sessionID: sessionID,
-                    token: cancelToken
+                    token: cancelToken,
+                    shouldAdvanceToCorrectionWhenTranscriptionCompletes: remoteDictateCorrectionMode.usesRefine
                 )
             }
             let response = try await client.dictate(
@@ -1321,7 +1328,8 @@ final class DictationCoordinator: ObservableObject {
                         await self?.applyRemoteBridgeJobStatus(
                             event,
                             sessionID: sessionID,
-                            token: cancelToken
+                            token: cancelToken,
+                            shouldAdvanceToCorrectionWhenTranscriptionCompletes: true
                         )
                     }
                 )
@@ -1409,16 +1417,21 @@ final class DictationCoordinator: ObservableObject {
     private func applyRemoteBridgeJobStatus(
         _ event: BridgeJobStatusEvent,
         sessionID: UUID,
-        token: CommitCancellationToken
+        token: CommitCancellationToken,
+        shouldAdvanceToCorrectionWhenTranscriptionCompletes: Bool
     ) async {
         guard await isActive(sessionID: sessionID, token: token) else { return }
         if event.stage == .transcriptReady,
            let raw = event.rawTranscript?.trimmingCharacters(in: .whitespacesAndNewlines),
            !raw.isEmpty {
             lastTranscript = raw
-            livePartialTranscript = raw
         }
         applyBridgeTranscriptionProgress(event)
+        if shouldAdvanceToCorrectionWhenTranscriptionCompletes,
+           event.transcriptionReadyForRefine,
+           state == .transcribing {
+            transition(to: .correcting)
+        }
         switch event.stage {
         case .refining:
             if state == .transcribing {
@@ -1446,9 +1459,17 @@ final class DictationCoordinator: ObservableObject {
         )
     }
 
-    private func applyASRTranscriptionProgress(_ progress: ASRTranscriptionProgress) {
+    private func applyASRTranscriptionProgress(
+        _ progress: ASRTranscriptionProgress,
+        shouldAdvanceToCorrectionWhenComplete: Bool
+    ) {
         guard progress.isMultiSource else { return }
         transcriptionProgress = progress
+        if shouldAdvanceToCorrectionWhenComplete,
+           progress.completedSources >= progress.totalSources,
+           state == .transcribing {
+            transition(to: .correcting)
+        }
     }
 
     func statusTextWithTranscriptionProgress(_ base: String) -> String {
