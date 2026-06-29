@@ -185,23 +185,44 @@ private struct InstalledSingleSourceASRService: ASRService {
     }
 
     func transcribeResult(audioFileURL: URL, languageIDs: [String]) async throws -> ASRTranscription {
+        try await transcribeResult(audioFileURL: audioFileURL, languageIDs: languageIDs, progress: nil)
+    }
+
+    func transcribeResult(
+        audioFileURL: URL,
+        languageIDs: [String],
+        progress: ASRTranscriptionProgressHandler?
+    ) async throws -> ASRTranscription {
+        if let progress {
+            await progress(ASRTranscriptionProgress(completedSources: 0, totalSources: 1, source: source))
+        }
         let text: String
         let output: ASRTranscriptModelOutput
-        switch source {
-        case .qwen:
-            guard let service = await ASRFactory.shared.qwenLlamaServiceIfInstalled() else {
-                throw ASRAudioSupportError.httpStatus(503, "Qwen3-ASR model is not installed")
+        do {
+            switch source {
+            case .qwen:
+                guard let service = await ASRFactory.shared.qwenLlamaServiceIfInstalled() else {
+                    throw ASRAudioSupportError.httpStatus(503, "Qwen3-ASR model is not installed")
+                }
+                text = try await service.transcribe(audioFileURL: audioFileURL, languageIDs: languageIDs)
+                output = ASRModelOutputFactory.qwen(role: "source", text: text)
+            case .nvidiaNemotron:
+                text = try await AutoInstallingNvidiaNemotronASRService()
+                    .transcribe(audioFileURL: audioFileURL, languageIDs: languageIDs)
+                output = ASRModelOutputFactory.nemotron(role: "source", text: text)
+            case .appleSpeech:
+                text = try await AppleSpeechASRService()
+                    .transcribe(audioFileURL: audioFileURL, languageIDs: languageIDs)
+                output = ASRModelOutputFactory.appleSpeech(role: "source", text: text)
             }
-            text = try await service.transcribe(audioFileURL: audioFileURL, languageIDs: languageIDs)
-            output = ASRModelOutputFactory.qwen(role: "source", text: text)
-        case .nvidiaNemotron:
-            text = try await AutoInstallingNvidiaNemotronASRService()
-                .transcribe(audioFileURL: audioFileURL, languageIDs: languageIDs)
-            output = ASRModelOutputFactory.nemotron(role: "source", text: text)
-        case .appleSpeech:
-            text = try await AppleSpeechASRService()
-                .transcribe(audioFileURL: audioFileURL, languageIDs: languageIDs)
-            output = ASRModelOutputFactory.appleSpeech(role: "source", text: text)
+        } catch {
+            if let progress {
+                await progress(ASRTranscriptionProgress(completedSources: 1, totalSources: 1, source: source))
+            }
+            throw error
+        }
+        if let progress {
+            await progress(ASRTranscriptionProgress(completedSources: 1, totalSources: 1, source: source))
         }
         return ASRTranscription(text: text, hypotheses: [text], modelOutputs: [output])
     }
@@ -217,7 +238,21 @@ private struct AutoInstallingQwenLlamaASRService: ASRService {
     }
 
     func transcribeResult(audioFileURL: URL, languageIDs: [String]) async throws -> ASRTranscription {
+        try await transcribeResult(audioFileURL: audioFileURL, languageIDs: languageIDs, progress: nil)
+    }
+
+    func transcribeResult(
+        audioFileURL: URL,
+        languageIDs: [String],
+        progress: ASRTranscriptionProgressHandler?
+    ) async throws -> ASRTranscription {
+        if let progress {
+            await progress(ASRTranscriptionProgress(completedSources: 0, totalSources: 1, source: .qwen))
+        }
         let text = try await transcribe(audioFileURL: audioFileURL, languageIDs: languageIDs)
+        if let progress {
+            await progress(ASRTranscriptionProgress(completedSources: 1, totalSources: 1, source: .qwen))
+        }
         return ASRTranscription(
             text: text,
             hypotheses: [text],
@@ -238,7 +273,21 @@ private struct AutoInstallingNvidiaNemotronASRService: ASRService {
     }
 
     func transcribeResult(audioFileURL: URL, languageIDs: [String]) async throws -> ASRTranscription {
+        try await transcribeResult(audioFileURL: audioFileURL, languageIDs: languageIDs, progress: nil)
+    }
+
+    func transcribeResult(
+        audioFileURL: URL,
+        languageIDs: [String],
+        progress: ASRTranscriptionProgressHandler?
+    ) async throws -> ASRTranscription {
+        if let progress {
+            await progress(ASRTranscriptionProgress(completedSources: 0, totalSources: 1, source: .nvidiaNemotron))
+        }
         let text = try await transcribe(audioFileURL: audioFileURL, languageIDs: languageIDs)
+        if let progress {
+            await progress(ASRTranscriptionProgress(completedSources: 1, totalSources: 1, source: .nvidiaNemotron))
+        }
         return ASRTranscription(
             text: text,
             hypotheses: [text],
@@ -250,8 +299,6 @@ private struct AutoInstallingNvidiaNemotronASRService: ASRService {
 }
 
 private struct MultiSourceASRService: ASRService {
-    private static let postSuccessCollectionGraceSeconds: TimeInterval = 2
-
     let sources: [RecognitionSource]
 
     func transcribe(audioFileURL: URL, languageIDs: [String]) async throws -> String {
@@ -259,6 +306,14 @@ private struct MultiSourceASRService: ASRService {
     }
 
     func transcribeResult(audioFileURL: URL, languageIDs: [String]) async throws -> ASRTranscription {
+        try await transcribeResult(audioFileURL: audioFileURL, languageIDs: languageIDs, progress: nil)
+    }
+
+    func transcribeResult(
+        audioFileURL: URL,
+        languageIDs: [String],
+        progress: ASRTranscriptionProgressHandler?
+    ) async throws -> ASRTranscription {
         let enabledSources = sources.isEmpty ? RecognitionSource.defaultEnabled : sources
         let selectedLanguageIDs = ASRLanguageSelection.validatedIDs(
             languageIDs,
@@ -273,45 +328,35 @@ private struct MultiSourceASRService: ASRService {
 
         var attempts: [ASRSourceAttemptResult] = []
         let timeoutSeconds = Self.unifiedAttemptTimeoutSeconds(for: enabledSources)
-        await withTaskGroup(of: ASRSourceTaskEvent.self) { group in
-            var pendingSourceCount = 0
-            var didSchedulePostSuccessGrace = false
+        if let progress, enabledSources.count > 1 {
+            await progress(ASRTranscriptionProgress(
+                completedSources: 0,
+                totalSources: enabledSources.count,
+                source: nil
+            ))
+        }
+        await withTaskGroup(of: ASRSourceAttemptResult.self) { group in
+            var completedSourceCount = 0
             for (index, source) in enabledSources.enumerated() {
-                pendingSourceCount += 1
                 group.addTask {
-                    .attempt(
-                        await Self.attempt(
-                            source: source,
-                            index: index,
-                            audioFileURL: canonicalAudioURL,
-                            selectedLanguageIDs: selectedLanguageIDs,
-                            timeoutSeconds: timeoutSeconds
-                        )
+                    await Self.attempt(
+                        source: source,
+                        index: index,
+                        audioFileURL: canonicalAudioURL,
+                        selectedLanguageIDs: selectedLanguageIDs,
+                        timeoutSeconds: timeoutSeconds
                     )
                 }
             }
-            while pendingSourceCount > 0 {
-                guard let event = await group.next() else { break }
-                switch event {
-                case .attempt(let attempt):
-                    pendingSourceCount -= 1
-                    attempts.append(attempt)
-                    if pendingSourceCount == 0 {
-                        group.cancelAll()
-                    } else if attempt.hasUsableText, !didSchedulePostSuccessGrace {
-                        didSchedulePostSuccessGrace = true
-                        group.addTask {
-                            try? await Task.sleep(
-                                nanoseconds: UInt64(Self.postSuccessCollectionGraceSeconds * 1_000_000_000)
-                            )
-                            return .postSuccessGraceElapsed
-                        }
-                    }
-                case .postSuccessGraceElapsed:
-                    if attempts.contains(where: { $0.hasUsableText }), pendingSourceCount > 0 {
-                        group.cancelAll()
-                        pendingSourceCount = 0
-                    }
+            while let attempt = await group.next() {
+                completedSourceCount += 1
+                attempts.append(attempt)
+                if let progress, enabledSources.count > 1 {
+                    await progress(ASRTranscriptionProgress(
+                        completedSources: completedSourceCount,
+                        totalSources: enabledSources.count,
+                        source: attempt.source
+                    ))
                 }
             }
         }
@@ -436,11 +481,6 @@ private struct MultiSourceASRService: ASRService {
             return result
         }
     }
-}
-
-private enum ASRSourceTaskEvent: Sendable {
-    case attempt(ASRSourceAttemptResult)
-    case postSuccessGraceElapsed
 }
 
 private struct ASRSourceAttemptResult: Sendable {

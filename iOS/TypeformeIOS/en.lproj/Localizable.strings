@@ -152,25 +152,39 @@
 
 // Keyboard guide
 "Setup" = "Setup";
-"In Any App" = "In Any App";
-"Refine Buttons" = "Refine Buttons";
+"Write Anywhere" = "Write Anywhere";
+"Modes" = "Modes";
+"Preview & Settings" = "Preview & Settings";
 "Pair Typeforme on Mac" = "Pair Typeforme on Mac";
 "Paste the pairing JSON from the Mac app, then refresh Dictation Settings so iOS has current Mac capabilities and languages." = "Paste the pairing JSON from the Mac app, then refresh Dictation Settings so iOS has current Mac capabilities and languages.";
 "Enable the keyboard" = "Enable the keyboard";
 "In iOS Settings, add Typeforme and allow Full Access. The keyboard needs that to talk to the host app." = "In iOS Settings, add Typeforme and allow Full Access. The keyboard needs that to talk to the host app.";
 "Dictate" = "Dictate";
-"Use Hold to Speak or Tap to Speak. Without a text selection, Typeforme inserts the new result at the cursor." = "Use Hold to Speak or Tap to Speak. Without a text selection, Typeforme inserts the new result at the cursor.";
+"Use Hold or Tap on the mic. With no selection, the result inserts at the cursor." = "Use Hold or Tap on the mic. With no selection, the result inserts at the cursor.";
+"Text keyboard" = "Text keyboard";
+"Tap the keyboard or mic button, or swipe sideways, to switch between voice and normal typing." = "Tap the keyboard or mic button, or swipe sideways, to switch between voice and normal typing.";
 "Fix selected text" = "Fix selected text";
-"Select the wrong span first, then press the mic and say the intended replacement. Only that selected span is replaced." = "Select the wrong span first, then press the mic and say the intended replacement. Only that selected span is replaced.";
+"Select text first, then dictate the replacement. Typeforme only replaces that selected span." = "Select text first, then dictate the replacement. Typeforme only replaces that selected span.";
 "Command edit" = "Command edit";
-"Press the wand and speak an instruction like make this shorter, translate this, or turn it into bullets. With no selection, it targets the current input text." = "Press the wand and speak an instruction like make this shorter, translate this, or turn it into bullets. With no selection, it targets the current input text.";
-"Fast" = "Fast";
-"Fast inserts the ASR transcript directly and skips refine. It uses Qwen3-ASR when it is enabled and ready, otherwise Apple Speech." = "Fast inserts the ASR transcript directly and skips refine. It uses Qwen3-ASR when it is enabled and ready, otherwise Apple Speech.";
+"Use the wand to say an edit instruction, like shorten, translate, or turn into bullets." = "Use the wand to say an edit instruction, like shorten, translate, or turn into bullets.";
 "Refine existing text" = "Refine existing text";
-"Clean, Polish, Polish+, Structure+, and Formal+ use the selected text first, then the current visible input text. Fast bypasses refine." = "Clean, Polish, Polish+, Structure+, and Formal+ use the selected text first, then the current visible input text. Fast bypasses refine.";
-"Clean, Polish, Polish+, Structure+, and Formal+ use the selected text first, then the current visible input text." = "Clean, Polish, Polish+, Structure+, and Formal+ use the selected text first, then the current visible input text.";
-"Selection changed" = "Selection changed";
-"If iOS no longer reports the same selection when the result returns, Typeforme copies the result instead of guessing where to paste it." = "If iOS no longer reports the same selection when the result returns, Typeforme copies the result instead of guessing where to paste it.";
+"Use the style picker to rewrite selected text, a recent selection, or nearby input text." = "Use the style picker to rewrite selected text, a recent selection, or nearby input text.";
+"Undo or cancel" = "Undo or cancel";
+"Undo restores the last refine. During recording, the same control cancels instead." = "Undo restores the last refine. During recording, the same control cancels instead.";
+"Result safety" = "Result safety";
+"If the original target changes before the result returns, Typeforme copies the result instead of guessing." = "If the original target changes before the result returns, Typeforme copies the result instead of guessing.";
+"Fast" = "Fast";
+"Insert the ASR transcript directly and skip refine." = "Insert the ASR transcript directly and skip refine.";
+"Fix punctuation, casing, spacing, and light ASR noise." = "Fix punctuation, casing, spacing, and light ASR noise.";
+"Improve readability while keeping the original structure and voice." = "Improve readability while keeping the original structure and voice.";
+"Rewrite into polished, natural prose." = "Rewrite into polished, natural prose.";
+"Turn multi-item content into bullets, steps, plans, or lists." = "Turn multi-item content into bullets, steps, plans, or lists.";
+"Convert casual speech into professional written prose." = "Convert casual speech into professional written prose.";
+"Preview can show partial text while you speak. Choose its source in Dictation Settings." = "Preview can show partial text while you speak. Choose its source in Dictation Settings.";
+"More settings" = "More settings";
+"ASR sources, languages, preview, Chinese input, sound, haptics, and learning live in Settings." = "ASR sources, languages, preview, Chinese input, sound, haptics, and learning live in Settings.";
+"Issues" = "Issues";
+"Keyboard issues are also recorded in the host app, so you can review them after typing." = "Keyboard issues are also recorded in the host app, so you can review them after typing.";
 
 // Dictation settings
 "Default Mode" = "Default Mode";

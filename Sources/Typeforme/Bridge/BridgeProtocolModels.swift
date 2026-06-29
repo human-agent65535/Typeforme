@@ -204,6 +204,8 @@ struct BridgeJobStatusEvent: Codable, Sendable {
     let text: String?
     let latencyMs: Int?
     let transcriptionLatencyMs: Int?
+    let transcriptionCompletedSources: Int?
+    let transcriptionTotalSources: Int?
     let refineLatencyMs: Int?
     let warning: String?
     let error: String?
@@ -218,6 +220,8 @@ struct BridgeJobStatusEvent: Codable, Sendable {
         case text
         case latencyMs = "latency_ms"
         case transcriptionLatencyMs = "transcription_latency_ms"
+        case transcriptionCompletedSources = "transcription_completed_sources"
+        case transcriptionTotalSources = "transcription_total_sources"
         case refineLatencyMs = "refine_latency_ms"
         case warning
         case error
@@ -233,6 +237,8 @@ struct BridgeJobStatusEvent: Codable, Sendable {
         text: String? = nil,
         latencyMs: Int? = nil,
         transcriptionLatencyMs: Int? = nil,
+        transcriptionCompletedSources: Int? = nil,
+        transcriptionTotalSources: Int? = nil,
         refineLatencyMs: Int? = nil,
         warning: String? = nil,
         error: String? = nil,
@@ -246,6 +252,8 @@ struct BridgeJobStatusEvent: Codable, Sendable {
         self.text = text
         self.latencyMs = latencyMs
         self.transcriptionLatencyMs = transcriptionLatencyMs
+        self.transcriptionCompletedSources = transcriptionCompletedSources
+        self.transcriptionTotalSources = transcriptionTotalSources
         self.refineLatencyMs = refineLatencyMs
         self.warning = warning
         self.error = error

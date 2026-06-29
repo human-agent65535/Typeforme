@@ -40,6 +40,18 @@ struct ASRTranscription: Sendable {
     }
 }
 
+struct ASRTranscriptionProgress: Sendable, Equatable {
+    let completedSources: Int
+    let totalSources: Int
+    let source: RecognitionSource?
+
+    var isMultiSource: Bool {
+        totalSources > 1
+    }
+}
+
+typealias ASRTranscriptionProgressHandler = @Sendable (ASRTranscriptionProgress) async -> Void
+
 struct ASRTranscriptModelOutput: Sendable {
     let role: String
     let provider: String
@@ -54,12 +66,32 @@ struct ASRTranscriptModelOutput: Sendable {
 protocol ASRService: Sendable {
     func transcribe(audioFileURL: URL, languageIDs: [String]) async throws -> String
     func transcribeResult(audioFileURL: URL, languageIDs: [String]) async throws -> ASRTranscription
+    func transcribeResult(
+        audioFileURL: URL,
+        languageIDs: [String],
+        progress: ASRTranscriptionProgressHandler?
+    ) async throws -> ASRTranscription
 }
 
 extension ASRService {
     func transcribeResult(audioFileURL: URL, languageIDs: [String]) async throws -> ASRTranscription {
-        ASRTranscription(
-            text: try await transcribe(audioFileURL: audioFileURL, languageIDs: languageIDs)
+        try await transcribeResult(audioFileURL: audioFileURL, languageIDs: languageIDs, progress: nil)
+    }
+
+    func transcribeResult(
+        audioFileURL: URL,
+        languageIDs: [String],
+        progress: ASRTranscriptionProgressHandler?
+    ) async throws -> ASRTranscription {
+        if let progress {
+            await progress(ASRTranscriptionProgress(completedSources: 0, totalSources: 1, source: nil))
+        }
+        let text = try await transcribe(audioFileURL: audioFileURL, languageIDs: languageIDs)
+        if let progress {
+            await progress(ASRTranscriptionProgress(completedSources: 1, totalSources: 1, source: nil))
+        }
+        return ASRTranscription(
+            text: text
         )
     }
 }

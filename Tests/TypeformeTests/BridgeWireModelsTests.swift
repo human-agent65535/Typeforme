@@ -177,7 +177,7 @@ struct BridgeWireModelsTests {
             enabledRecognitionSources: [RecognitionSource.qwen.rawValue],
             asrModelIDsByRecognitionSource: [RecognitionSource.qwen.rawValue: QwenASRModelCatalog.defaultID],
             languageIDs: ["en-US"],
-            asrTimeoutSecByRecognitionSource: [RecognitionSource.qwen.rawValue: 120],
+            asrTimeoutSec: 120,
             correctionBackend: CorrectionBackendKind.qwen35_2B.rawValue,
             correctionTimeoutMs: 1500,
             correctionColdTimeoutMs: 8000,
@@ -198,7 +198,7 @@ struct BridgeWireModelsTests {
         #expect(object["enabled_recognition_sources"] as? [String] == [RecognitionSource.qwen.rawValue])
         #expect((object["asr_model_ids_by_recognition_source"] as? [String: String])?[RecognitionSource.qwen.rawValue] == QwenASRModelCatalog.defaultID)
         #expect(object["language_ids"] as? [String] == ["en-US"])
-        #expect((object["asr_timeout_sec_by_recognition_source"] as? [String: Double])?[RecognitionSource.qwen.rawValue] == 120)
+        #expect(object["asr_timeout_sec"] as? Double == 120)
         #expect(object["correction_backend"] as? String == CorrectionBackendKind.qwen35_2B.rawValue)
         #expect(object["correction_timeout_ms"] as? Int == 1500)
         #expect(object["correction_cold_timeout_ms"] as? Int == 8000)
@@ -273,7 +273,7 @@ struct BridgeWireModelsTests {
             enabledRecognitionSources: [RecognitionSource.qwen.rawValue],
             asrModelIDsByRecognitionSource: [:],
             languageIDs: ["en-US"],
-            asrTimeoutSecByRecognitionSource: [:],
+            asrTimeoutSec: 120,
             correctionBackend: CorrectionBackendKind.qwen35_2B.rawValue,
             correctionTimeoutMs: 1500,
             correctionColdTimeoutMs: 8000,

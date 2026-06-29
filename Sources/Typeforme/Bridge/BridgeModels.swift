@@ -61,7 +61,7 @@ struct BridgeSettingsPayload: Codable, Sendable {
     var languageIDs: [String]
     var supportedLanguages: [BridgeLanguageOption]
     var supportedLanguagesByRecognitionSource: [String: [BridgeLanguageOption]]
-    var asrTimeoutSecByRecognitionSource: [String: Double]
+    var asrTimeoutSec: Double
     var correctionBackend: String
     var correctionBackendOptions: [BridgeSettingOption]
     var correctionTimeoutMs: Int
@@ -87,7 +87,7 @@ struct BridgeSettingsPayload: Codable, Sendable {
         case languageIDs = "language_ids"
         case supportedLanguages = "supported_languages"
         case supportedLanguagesByRecognitionSource = "supported_languages_by_recognition_source"
-        case asrTimeoutSecByRecognitionSource = "asr_timeout_sec_by_recognition_source"
+        case asrTimeoutSec = "asr_timeout_sec"
         case correctionBackend = "correction_backend"
         case correctionBackendOptions = "correction_backend_options"
         case correctionTimeoutMs = "correction_timeout_ms"
@@ -131,11 +131,18 @@ struct BridgeSettingsPayload: Codable, Sendable {
         ]
     }
 
-    static var currentASRTimeoutSecByRecognitionSource: [String: Double] {
-        [
-            RecognitionSource.qwen.rawValue: AppSettings.asrQwenLlamaTimeoutSeconds,
-            RecognitionSource.nvidiaNemotron.rawValue: AppSettings.asrNvidiaNemotronTimeoutSeconds,
-        ]
+    static func currentASRTimeoutSec(for sources: [RecognitionSource] = AppSettings.configuredRecognitionSources) -> Double {
+        let configured = sources.compactMap { source -> Double? in
+            switch source {
+            case .qwen:
+                return AppSettings.asrQwenLlamaTimeoutSeconds
+            case .nvidiaNemotron:
+                return AppSettings.asrNvidiaNemotronTimeoutSeconds
+            case .appleSpeech:
+                return nil
+            }
+        }
+        return clampedASRTimeoutSec(configured.max() ?? AppSettings.asrQwenLlamaTimeoutSeconds)
     }
 
     static var supportedLanguagesByRecognitionSource: [String: [BridgeLanguageOption]] {
@@ -207,7 +214,7 @@ struct BridgeSettingsPayload: Codable, Sendable {
             languageIDs: resolved.languageIDs,
             supportedLanguages: resolved.supportedLanguages,
             supportedLanguagesByRecognitionSource: resolved.supportedBySource,
-            asrTimeoutSecByRecognitionSource: currentASRTimeoutSecByRecognitionSource,
+            asrTimeoutSec: currentASRTimeoutSec(for: resolved.sources),
             correctionBackend: resolved.correctionBackend.rawValue,
             correctionBackendOptions: controllableCorrectionBackends.map {
                 BridgeSettingOption(id: $0.rawValue, displayName: $0.displayName)
@@ -245,7 +252,7 @@ struct BridgeSettingsPayload: Codable, Sendable {
             enabledRecognitionSources: enabledRecognitionSources,
             asrModelIDsByRecognitionSource: asrModelIDsByRecognitionSource,
             languageIDs: languageIDs,
-            asrTimeoutSecByRecognitionSource: asrTimeoutSecByRecognitionSource,
+            asrTimeoutSec: asrTimeoutSec,
             correctionBackend: correctionBackend,
             correctionTimeoutMs: correctionTimeoutMs,
             correctionColdTimeoutMs: correctionColdTimeoutMs,
@@ -316,10 +323,6 @@ struct BridgeSettingsPayload: Codable, Sendable {
     ) -> [BridgeModelStatus] {
         selectedASRModelStatuses(sources: sources)
             + [selectedRefineModelStatus(correctionBackend: correctionBackend)]
-    }
-
-    fileprivate static func currentASRTimeoutSec(sourceID: String) -> Double {
-        currentASRTimeoutSecByRecognitionSource[sourceID] ?? AppSettings.asrQwenLlamaTimeoutSeconds
     }
 
     fileprivate static func currentASRModelID(sourceID: String) -> String {
@@ -477,10 +480,7 @@ struct BridgeSettingsPayload: Codable, Sendable {
             defaultID: Self.defaultASRModelID(sourceID:)
         )
 
-        asrTimeoutSecByRecognitionSource = BridgeSettingsNormalization.normalizedASRTimeoutSeconds(
-            currentTimeouts: Self.currentASRTimeoutSecByRecognitionSource,
-            incomingTimeouts: asrTimeoutSecByRecognitionSource
-        )
+        asrTimeoutSec = Self.clampedASRTimeoutSec(asrTimeoutSec)
 
         supportedLanguagesByRecognitionSource = Self.supportedLanguagesByRecognitionSource
         supportedLanguages = ASRLanguageSelection.supportedOptions(for: enabledSources).map(BridgeLanguageOption.init)
@@ -536,10 +536,6 @@ struct BridgeSettingsPayload: Codable, Sendable {
         asrModelIDsByRecognitionSource[sourceID] ?? Self.defaultASRModelID(sourceID: sourceID)
     }
 
-    func asrTimeoutSec(for sourceID: String) -> Double {
-        asrTimeoutSecByRecognitionSource[sourceID] ?? Self.currentASRTimeoutSec(sourceID: sourceID)
-    }
-
     mutating func setRecognitionSource(_ source: RecognitionSource, enabled: Bool) {
         guard source != .appleSpeech else { return }
         var sources = enabledSources
@@ -589,7 +585,7 @@ private struct BridgeResolvedSettings {
             enabledRecognitionSources: sources.map(\.rawValue),
             asrModelIDsByRecognitionSource: BridgeSettingsPayload.currentASRModelIDsByRecognitionSource,
             languageIDs: languageIDs,
-            asrTimeoutSecByRecognitionSource: BridgeSettingsPayload.currentASRTimeoutSecByRecognitionSource,
+            asrTimeoutSec: BridgeSettingsPayload.currentASRTimeoutSec(for: sources),
             correctionBackend: correctionBackend.rawValue,
             correctionTimeoutMs: AppSettings.correctionTimeoutMs,
             correctionColdTimeoutMs: AppSettings.correctionColdTimeoutMs,
@@ -631,7 +627,7 @@ private struct BridgeSettingsRevisionPayload: Encodable {
         case languageIDs = "language_ids"
         case supportedLanguages = "supported_languages"
         case supportedLanguagesByRecognitionSource = "supported_languages_by_recognition_source"
-        case asrTimeoutSecByRecognitionSource = "asr_timeout_sec_by_recognition_source"
+        case asrTimeoutSec = "asr_timeout_sec"
         case correctionBackend = "correction_backend"
         case correctionBackendOptions = "correction_backend_options"
         case correctionTimeoutMs = "correction_timeout_ms"
@@ -682,7 +678,7 @@ private struct BridgeSettingsRevisionPayload: Encodable {
         try container.encode(editableSnapshot.languageIDs, forKey: .languageIDs)
         try container.encode(supportedLanguages, forKey: .supportedLanguages)
         try container.encode(supportedLanguagesByRecognitionSource, forKey: .supportedLanguagesByRecognitionSource)
-        try container.encode(editableSnapshot.asrTimeoutSecByRecognitionSource, forKey: .asrTimeoutSecByRecognitionSource)
+        try container.encode(editableSnapshot.asrTimeoutSec, forKey: .asrTimeoutSec)
         try container.encode(editableSnapshot.correctionBackend, forKey: .correctionBackend)
         try container.encode(correctionBackendOptions, forKey: .correctionBackendOptions)
         try container.encode(editableSnapshot.correctionTimeoutMs, forKey: .correctionTimeoutMs)

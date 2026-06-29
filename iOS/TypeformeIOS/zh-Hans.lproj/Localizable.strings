@@ -152,25 +152,39 @@
 
 // 键盘指南
 "Setup" = "设置";
-"In Any App" = "在任意 App 中";
-"Refine Buttons" = "优化按钮";
+"Write Anywhere" = "任意 App 输入";
+"Modes" = "模式";
+"Preview & Settings" = "预览与设置";
 "Pair Typeforme on Mac" = "配对 Mac 上的 Typeforme";
 "Paste the pairing JSON from the Mac app, then refresh Dictation Settings so iOS has current Mac capabilities and languages." = "粘贴 Mac app 的配对 JSON,然后刷新听写设置,让 iOS 获取当前 Mac 能力和语言。";
 "Enable the keyboard" = "启用键盘";
 "In iOS Settings, add Typeforme and allow Full Access. The keyboard needs that to talk to the host app." = "在 iOS 设置中添加 Typeforme 并允许完全访问。键盘需要它来连接宿主 app。";
 "Dictate" = "听写";
-"Use Hold to Speak or Tap to Speak. Without a text selection, Typeforme inserts the new result at the cursor." = "使用按住说话或点击说话。没有选中文本时,Typeforme 会在光标处插入新结果。";
+"Use Hold or Tap on the mic. With no selection, the result inserts at the cursor." = "用麦克风按住或点击说话。没有选区时,结果会插入光标处。";
+"Text keyboard" = "文本键盘";
+"Tap the keyboard or mic button, or swipe sideways, to switch between voice and normal typing." = "点击键盘/麦克风按钮,或横向滑动,在语音和普通输入间切换。";
 "Fix selected text" = "修正选中文本";
-"Select the wrong span first, then press the mic and say the intended replacement. Only that selected span is replaced." = "先选中错误片段,再按麦克风说出想替换的内容。只会替换选中的片段。";
+"Select text first, then dictate the replacement. Typeforme only replaces that selected span." = "先选中文本,再听写替换内容。Typeforme 只会替换该选区。";
 "Command edit" = "指令编辑";
-"Press the wand and speak an instruction like make this shorter, translate this, or turn it into bullets. With no selection, it targets the current input text." = "点击魔棒后说出指令,例如缩短、翻译或改成项目符号。没有选区时会处理当前输入文本。";
-"Fast" = "Fast";
-"Fast inserts the ASR transcript directly and skips refine. It uses Qwen3-ASR when it is enabled and ready, otherwise Apple Speech." = "Fast 会直接插入 ASR 转写并跳过优化。Qwen3-ASR 已启用且就绪时使用 Qwen,否则使用 Apple Speech。";
+"Use the wand to say an edit instruction, like shorten, translate, or turn into bullets." = "用魔棒说编辑指令,比如缩短、翻译或改成项目符号。";
 "Refine existing text" = "优化现有文本";
-"Clean, Polish, Polish+, Structure+, and Formal+ use the selected text first, then the current visible input text. Fast bypasses refine." = "Clean、Polish、Polish+、Structure+、Formal+ 会优先使用选中文本,否则使用当前可见输入文本。Fast 会绕过优化。";
-"Clean, Polish, Polish+, Structure+, and Formal+ use the selected text first, then the current visible input text." = "清洁、润色、润色+、结构+、正式+ 会优先使用选中文本,否则使用当前可见输入文本。";
-"Selection changed" = "选区已变化";
-"If iOS no longer reports the same selection when the result returns, Typeforme copies the result instead of guessing where to paste it." = "如果结果返回时 iOS 不再报告同一选区,Typeforme 会复制结果,不会猜测粘贴位置。";
+"Use the style picker to rewrite selected text, a recent selection, or nearby input text." = "用风格选择器改写选区、最近选区或光标附近文本。";
+"Undo or cancel" = "撤销或取消";
+"Undo restores the last refine. During recording, the same control cancels instead." = "撤销可恢复上次优化。录音时同一个按钮会变成取消。";
+"Result safety" = "结果安全";
+"If the original target changes before the result returns, Typeforme copies the result instead of guessing." = "结果返回前如果原目标变了,Typeforme 会复制结果,不会猜测替换位置。";
+"Fast" = "Fast";
+"Insert the ASR transcript directly and skip refine." = "直接插入 ASR 转写,跳过优化。";
+"Fix punctuation, casing, spacing, and light ASR noise." = "修正标点、大小写、空格和轻微 ASR 噪声。";
+"Improve readability while keeping the original structure and voice." = "提升可读性,保留原结构和语气。";
+"Rewrite into polished, natural prose." = "改写成自然、流畅的文本。";
+"Turn multi-item content into bullets, steps, plans, or lists." = "把多项内容整理成项目符号、步骤、计划或列表。";
+"Convert casual speech into professional written prose." = "把口语表达转换成专业书面语。";
+"Preview can show partial text while you speak. Choose its source in Dictation Settings." = "说话时可显示部分预览文本。可在听写设置里选择预览来源。";
+"More settings" = "更多设置";
+"ASR sources, languages, preview, Chinese input, sound, haptics, and learning live in Settings." = "ASR 来源、语言、预览、中文输入、声音、触感和学习数据都在设置里。";
+"Issues" = "问题";
+"Keyboard issues are also recorded in the host app, so you can review them after typing." = "键盘上的问题也会记录到宿主 app,方便输入后查看。";
 
 // 听写设置
 "Default Mode" = "默认模式";

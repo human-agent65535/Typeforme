@@ -1484,16 +1484,22 @@ struct ASRSettingsView: View {
                 .buttonStyle(.plain)
 
                 if showAdvanced {
-                    if qwenEnabled {
+                    if qwenEnabled || nvidiaEnabled {
                         IntegerSettingField(
-                            title: "Qwen timeout",
+                            title: "ASR timeout",
                             value: Binding(
-                                get: { Int(qwenTimeoutSec) },
-                                set: { qwenTimeoutSec = Double($0) }
+                                get: { Int(unifiedASRTimeoutSec) },
+                                set: {
+                                    let timeout = Double($0)
+                                    qwenTimeoutSec = timeout
+                                    nvidiaTimeoutSec = timeout
+                                }
                             ),
                             range: 10...300,
                             suffix: "s"
                         )
+                    }
+                    if qwenEnabled {
                         IntegerSettingField(
                             title: "Max transcript tokens",
                             value: $qwenMaxTokens,
@@ -1503,17 +1509,6 @@ struct ASRSettingsView: View {
                         Text("This caps only Qwen-ASR transcript output. It is not the refine model token limit.")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
-                    }
-                    if nvidiaEnabled {
-                        IntegerSettingField(
-                            title: "Nemotron timeout",
-                            value: Binding(
-                                get: { Int(nvidiaTimeoutSec) },
-                                set: { nvidiaTimeoutSec = Double($0) }
-                            ),
-                            range: 10...300,
-                            suffix: "s"
-                        )
                     }
                 }
             }
@@ -1566,6 +1561,13 @@ struct ASRSettingsView: View {
         if nvidiaEnabled { sources.append(.nvidiaNemotron) }
         sources.append(.appleSpeech)
         return RecognitionSource.recognizedSources(sources.map(\.rawValue))
+    }
+
+    private var unifiedASRTimeoutSec: Double {
+        var values: [Double] = []
+        if qwenEnabled { values.append(qwenTimeoutSec) }
+        if nvidiaEnabled { values.append(nvidiaTimeoutSec) }
+        return BridgeSettingsNormalization.clampedASRTimeoutSec(values.max() ?? qwenTimeoutSec)
     }
 
     private var selectedCorrectionMode: CorrectionMode {

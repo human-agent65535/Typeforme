@@ -181,21 +181,10 @@ final class BridgeService {
             )
         }
 
-        if let timeouts = request.asrTimeoutSecByRecognitionSource {
-            for (sourceID, timeoutSec) in timeouts {
-                guard let source = RecognitionSource(rawValue: sourceID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) else {
-                    throw BridgeServiceError.invalidRequest("Unknown recognition source: \(sourceID)")
-                }
-                let clamped = BridgeSettingsPayload.clampedASRTimeoutSec(timeoutSec)
-                switch source {
-                case .qwen:
-                    UserDefaults.standard.set(Double(clamped), forKey: AppSettings.Keys.asrQwenLlamaTimeoutSec)
-                case .nvidiaNemotron:
-                    UserDefaults.standard.set(Double(clamped), forKey: AppSettings.Keys.asrNvidiaNemotronTimeoutSec)
-                case .appleSpeech:
-                    break
-                }
-            }
+        if let timeoutSec = request.asrTimeoutSec {
+            let clamped = BridgeSettingsPayload.clampedASRTimeoutSec(timeoutSec)
+            UserDefaults.standard.set(Double(clamped), forKey: AppSettings.Keys.asrQwenLlamaTimeoutSec)
+            UserDefaults.standard.set(Double(clamped), forKey: AppSettings.Keys.asrNvidiaNemotronTimeoutSec)
         }
 
         if let rawBackend = request.correctionBackend {
@@ -427,9 +416,25 @@ final class BridgeService {
             )
             let asrService = fastRoute.map { ASRFactory.shared.getInstalled(source: $0.source) }
                 ?? ASRFactory.shared.get(sources: transcriptionSources)
+            let asrProgressHandler: ASRTranscriptionProgressHandler? = {
+                guard let jobID else { return nil }
+                return { progress in
+                    guard progress.isMultiSource else { return }
+                    let total = max(0, progress.totalSources)
+                    let completed = min(max(0, progress.completedSources), total)
+                    await BridgeJobStatusCenter.shared.publish(BridgeJobStatusEvent(
+                        jobID: jobID,
+                        stage: .transcribing,
+                        message: total > 0 ? "Transcribing audio (\(completed)/\(total))" : "Transcribing audio",
+                        transcriptionCompletedSources: completed,
+                        transcriptionTotalSources: total
+                    ))
+                }
+            }()
             let asrResult = try await asrService.transcribeResult(
                 audioFileURL: audioURL,
-                languageIDs: languageIDs
+                languageIDs: languageIDs,
+                progress: asrProgressHandler
             )
             raw = asrResult.text
             asrHypotheses = Self.combinedASRHypotheses(
@@ -492,6 +497,8 @@ final class BridgeService {
             rawTranscript: request.includeRawTranscript == true ? trimmed : nil,
             rawTranscriptLength: trimmed.count,
             transcriptionLatencyMs: transcriptionLatencyMs,
+            transcriptionCompletedSources: transcriptionSources.count > 1 ? transcriptionSources.count : nil,
+            transcriptionTotalSources: transcriptionSources.count > 1 ? transcriptionSources.count : nil,
             warning: asrWarning
         )
         let contextBefore = request.contextBefore ?? ""
@@ -1417,6 +1424,8 @@ final class BridgeService {
         text: String? = nil,
         latencyMs: Int? = nil,
         transcriptionLatencyMs: Int? = nil,
+        transcriptionCompletedSources: Int? = nil,
+        transcriptionTotalSources: Int? = nil,
         refineLatencyMs: Int? = nil,
         warning: String? = nil,
         error: String? = nil
@@ -1431,6 +1440,8 @@ final class BridgeService {
             text: text,
             latencyMs: latencyMs,
             transcriptionLatencyMs: transcriptionLatencyMs,
+            transcriptionCompletedSources: transcriptionCompletedSources,
+            transcriptionTotalSources: transcriptionTotalSources,
             refineLatencyMs: refineLatencyMs,
             warning: warning,
             error: error

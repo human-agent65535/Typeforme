@@ -62,22 +62,6 @@ enum BridgeSettingsNormalization {
         return normalized
     }
 
-    static func normalizedASRTimeoutSeconds(
-        currentTimeouts: [String: Double],
-        incomingTimeouts: [String: Double]
-    ) -> [String: Double] {
-        var normalized = currentTimeouts
-        for (sourceID, timeout) in incomingTimeouts {
-            guard normalized[sourceID] != nil else { continue }
-            normalized[sourceID] = clampedASRTimeoutSec(timeout)
-        }
-        return normalized
-    }
-
-    static func clampedASRTimeoutSeconds(_ timeouts: [String: Double]) -> [String: Double] {
-        timeouts.mapValues(clampedASRTimeoutSec)
-    }
-
     static func orderedUniqueLanguageOptions<Option: BridgeLanguageOptionRepresentable>(
         _ options: [Option]
     ) -> [Option] {

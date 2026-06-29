@@ -1427,74 +1427,98 @@ private struct KeyboardGuideView: View {
                 )
             }
 
-            Section("In Any App") {
+            Section("Write Anywhere") {
                 GuideStepRow(
                     icon: "mic.fill",
                     title: "Dictate",
-                    detail: "Use Hold to Speak or Tap to Speak. Without a text selection, Typeforme inserts the new result at the cursor."
+                    detail: "Use Hold or Tap on the mic. With no selection, the result inserts at the cursor."
+                )
+                GuideStepRow(
+                    icon: "keyboard",
+                    title: "Text keyboard",
+                    detail: "Tap the keyboard or mic button, or swipe sideways, to switch between voice and normal typing."
                 )
                 GuideStepRow(
                     icon: "text.cursor",
                     title: "Fix selected text",
-                    detail: "Select the wrong span first, then press the mic and say the intended replacement. Only that selected span is replaced."
+                    detail: "Select text first, then dictate the replacement. Typeforme only replaces that selected span."
                 )
                 GuideStepRow(
                     icon: "wand.and.stars",
                     title: "Command edit",
-                    detail: "Press the wand and speak an instruction like make this shorter, translate this, or turn it into bullets. With no selection, it targets the current input text."
-                )
-                GuideStepRow(
-                    icon: "bolt.fill",
-                    title: "Fast",
-                    detail: "Fast inserts the ASR transcript directly and skips refine. It uses Qwen3-ASR when it is enabled and ready, otherwise Apple Speech."
+                    detail: "Use the wand to say an edit instruction, like shorten, translate, or turn into bullets."
                 )
             }
 
-            Section("Refine Buttons") {
+            Section("Refine") {
                 GuideStepRow(
-                    icon: "sparkles",
+                    icon: "paintbrush",
                     title: "Refine existing text",
-                    detail: "Clean, Polish, Polish+, Structure+, and Formal+ use the selected text first, then the current visible input text. Fast bypasses refine."
+                    detail: "Use the style picker to rewrite selected text, a recent selection, or nearby input text."
+                )
+                GuideStepRow(
+                    icon: "arrow.uturn.backward",
+                    title: "Undo or cancel",
+                    detail: "Undo restores the last refine. During recording, the same control cancels instead."
                 )
                 GuideStepRow(
                     icon: "exclamationmark.triangle",
-                    title: "Selection changed",
-                    detail: "If iOS no longer reports the same selection when the result returns, Typeforme copies the result instead of guessing where to paste it."
+                    title: "Result safety",
+                    detail: "If the original target changes before the result returns, Typeforme copies the result instead of guessing."
                 )
             }
 
             Section {
                 GuideStepRow(
+                    icon: "bolt.fill",
+                    title: "Fast",
+                    detail: "Insert the ASR transcript directly and skip refine."
+                )
+                GuideStepRow(
                     icon: "checkmark.circle",
                     title: "Clean",
-                    detail: "Lightest touch. Adds punctuation, casing, spacing; drops um/uh/嗯; collapses obvious ASR label fixes like \"hold to steak should be hold to speak\" → \"hold to speak\". Keeps wording, intensifiers (好得很, super well), and order unchanged. Does not invent lists or reorder."
+                    detail: "Fix punctuation, casing, spacing, and light ASR noise."
                 )
                 GuideStepRow(
                     icon: "paintbrush",
                     title: "Polish",
-                    detail: "Clean plus light readability fixes — small grammar/word repairs, sentence merge or split. Preserves the user's voice and any spoken edit intent (cancellations, quantity changes). Does not synthesize the final list state or restructure into bullets."
+                    detail: "Improve readability while keeping the original structure and voice."
                 )
                 GuideStepRow(
                     icon: "paintbrush.fill",
                     title: "Polish+",
-                    detail: "Full prose rewrite. Resolves anchored repairs (A 不对 B / A oh wait B / quantity updates) to the final intended state, reorders preconditions, fixes awkward causal flow. Outputs polished prose, not bullets. Keeps compound intensifiers (好得很, super useful) atomic; never invents structure for short utterances."
+                    detail: "Rewrite into polished, natural prose."
                 )
                 GuideStepRow(
                     icon: "list.bullet.rectangle",
                     title: "Structure+",
-                    detail: "For multi-item content. Produces bullets / numbered lines / label lines for lists, schedules, todos, recipes, multi-step plans. Resolves spoken repairs and cancellations before structuring. A short single-clause utterance stays as prose — no fake structure."
+                    detail: "Turn multi-item content into bullets, steps, plans, or lists."
                 )
                 GuideStepRow(
                     icon: "doc.text",
                     title: "Formal+",
-                    detail: "Lifts casual speech into professional written prose. Drops fillers, fixes register, upgrades word choice. Resolves anchored repairs but preserves intensifiers, degree words, and emphatic constructions (好得很, 累得不得了, super well, really impressed) — does not flatten them. Does not add courtesy or invent business context."
+                    detail: "Convert casual speech into professional written prose."
                 )
             } header: {
-                Text("Refine Modes")
-            } footer: {
-                Text("All five modes preserve the user's meaning, names, numbers, URLs, code, and intentional mixed-language text. Anchored spoken repairs (A 不对 B / A should be B) collapse to the final intended state in every mode.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+                Text("Modes")
+            }
+
+            Section("Preview & Settings") {
+                GuideStepRow(
+                    icon: "waveform",
+                    title: "Live Preview",
+                    detail: "Preview can show partial text while you speak. Choose its source in Dictation Settings."
+                )
+                GuideStepRow(
+                    icon: "slider.horizontal.3",
+                    title: "More settings",
+                    detail: "ASR sources, languages, preview, Chinese input, sound, haptics, and learning live in Settings."
+                )
+                GuideStepRow(
+                    icon: "exclamationmark.bubble",
+                    title: "Issues",
+                    detail: "Keyboard issues are also recorded in the host app, so you can review them after typing."
+                )
             }
         }
         .navigationTitle("Keyboard Guide")
@@ -1503,8 +1527,8 @@ private struct KeyboardGuideView: View {
 
 private struct GuideStepRow: View {
     let icon: String
-    let title: String
-    let detail: String
+    let title: LocalizedStringKey
+    let detail: LocalizedStringKey
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
@@ -1707,10 +1731,12 @@ private struct MacSettingsView: View {
                             }
                             .pickerStyle(.menu)
                         }
+                    }
 
+                    if visibleEnabledRecognitionSources.contains(where: \.hasModelConfiguration) {
                         TimeoutSecondsRow(
-                            title: "\(source.displayName) Timeout",
-                            seconds: asrTimeoutSecondsBinding(source),
+                            title: "ASR Timeout",
+                            seconds: asrTimeoutSecondsBinding,
                             range: BridgeMacSettingsPayload.asrTimeoutSecondsRange
                         )
                     }
@@ -2018,12 +2044,12 @@ private struct MacSettingsView: View {
         backend == "external_openai_compatible" || backend == "external_anthropic_compatible"
     }
 
-    private func asrTimeoutSecondsBinding(_ source: RecognitionSource) -> Binding<Double> {
+    private var asrTimeoutSecondsBinding: Binding<Double> {
         Binding {
-            draft?.asrTimeoutSec(for: source.rawValue) ?? 120
+            draft?.asrTimeoutSec ?? 120
         } set: { value in
             updateDraft { draft in
-                draft.asrTimeoutSecByRecognitionSource[source.rawValue] = BridgeMacSettingsPayload.clampedASRTimeoutSec(value)
+                draft.asrTimeoutSec = BridgeMacSettingsPayload.clampedASRTimeoutSec(value)
             }
         }
     }
