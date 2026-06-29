@@ -10305,7 +10305,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         if isOpeningHostApp { return NSLocalizedString("Opening Typeforme…", comment: "Voice title when host is launching") }
         switch currentBridgeStatus?.state {
         case .recording: return inputMode.recordingTitle
-        case .sending: return sendingStatusTitle
+        case .sending: return processingVoiceTitle
+        case .result: return insertedStatusTitle
         default: return inputMode.idleTitle
         }
     }
@@ -10462,6 +10463,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let message = currentBridgeStatus?.message.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if !message.isEmpty { return message }
         return NSLocalizedString("Transcribing", comment: "Bridge job stage")
+    }
+
+    private var processingVoiceTitle: String {
+        NSLocalizedString("Processing", comment: "Voice title while dictation is processing")
     }
 
     private var stopProcessingStatusTitle: String {

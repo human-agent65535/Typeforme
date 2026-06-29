@@ -19,6 +19,7 @@
 
 // 球上方的状态标题
 "Opening Typeforme…" = "正在打开 Typeforme…";
+"Processing" = "处理中";
 "Transcribing" = "识别中";
 "Release to cancel" = "松手取消";
 "中文键盘" = "中文键盘";

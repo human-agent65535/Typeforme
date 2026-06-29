@@ -19,6 +19,7 @@
 
 // Voice title labels
 "Opening Typeforme…" = "Opening Typeforme…";
+"Processing" = "Processing";
 "Transcribing" = "Transcribing";
 "Release to cancel" = "Release to cancel";
 "中文键盘" = "Chinese keyboard";
