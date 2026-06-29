@@ -465,6 +465,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private var bridgeProbeTask: Task<Void, Never>?
     private var statusStreamGeneration: UInt64 = 0
     private var statusStreamBridgeToken: String?
+    private var lastStatusStreamFrameAt: TimeInterval = 0
     private var statusStreamStopTask: Task<Void, Never>?
     private var refineTimeoutTask: Task<Void, Never>?
     private var refineTimeoutGeneration: UInt64 = 0
@@ -501,6 +502,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private static let sharedStatusSnapshotMaxAge: TimeInterval = 30
     private static let sharedActiveStatusSnapshotMaxAge: TimeInterval = 3
     private static let sharedStandbyLivenessSnapshotMaxAge: TimeInterval = 8
+    private static let statusStreamFreshnessAfterDarwinStart: TimeInterval = 1.0
     private static let textSpaceCursorPointsPerCharacter: CGFloat = 9
     private static let containingAppBundleIdentifier = TypeformeBundleConfiguration.hostBundleIdentifier
     private let deleteRepeatInitialDelay: UInt64 = 450_000_000
@@ -2696,6 +2698,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             KeyboardDarwinBridge.observe(KeyboardDarwinNotificationName.sessionStarted) { [weak self] in
                 DispatchQueue.main.async {
                     guard let self else { return }
+                    let shouldRefreshStatusStream = self.needsStatusStreamRefreshAfterDarwinStart()
                     self.cancelHostWakeResetTask()
                     self.lastDarwinAwakeAt = Date().timeIntervalSince1970
                     if !self.hasActiveKeyboardRecordingOrStopIntent,
@@ -2709,7 +2712,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                         self.lastBridgeContactAt = Date().timeIntervalSince1970
                         self.updateUI()
                     }
-                    self.refreshBridgeStatus(captureSelection: false, force: true)
+                    self.refreshBridgeStatusAfterDarwinStartIfNeeded(shouldRefreshStatusStream)
                 }
             },
             KeyboardDarwinBridge.observe(KeyboardDarwinNotificationName.sessionEnded) { [weak self] in
@@ -2734,6 +2737,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             KeyboardDarwinBridge.observe(KeyboardDarwinNotificationName.dictationStarted) { [weak self] in
                 DispatchQueue.main.async {
                     guard let self else { return }
+                    let shouldRefreshStatusStream = self.needsStatusStreamRefreshAfterDarwinStart()
                     let fallbackStatus = KeyboardBridgeStatus(state: .recording, message: "Recording")
                     self.cancelScheduledHostOpen()
                     self.cancelHostWakeResetTask()
@@ -2742,7 +2746,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                         self.applyBridgeStatus(fallbackStatus)
                     }
                     self.finishStartRequestIfNeeded(status: self.currentBridgeStatus ?? fallbackStatus)
-                    self.refreshBridgeStatus(captureSelection: false, force: true)
+                    self.refreshBridgeStatusAfterDarwinStartIfNeeded(shouldRefreshStatusStream)
                 }
             },
             KeyboardDarwinBridge.observe(KeyboardDarwinNotificationName.dictationStopped) { [weak self] in
@@ -10741,6 +10745,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private func stopBridgeStatusStream() {
         statusStreamGeneration &+= 1
         statusStreamBridgeToken = nil
+        lastStatusStreamFrameAt = 0
         let client = localClient
         statusStreamStopTask = Task {
             await client.shutdown()
@@ -10914,6 +10919,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                         guard let self,
                               self.statusStreamGeneration == generation
                         else { return }
+                        self.lastStatusStreamFrameAt = Date().timeIntervalSince1970
                         self.applyBridgeStatus(status)
 	                    }
 	                },
@@ -10923,6 +10929,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 	                              self.statusStreamGeneration == generation
 	                        else { return }
 	                        self.statusStreamBridgeToken = nil
+	                        self.lastStatusStreamFrameAt = 0
 	                        let hadRecentBridgeContact = self.lastBridgeContactAt > 0
 	                        self.lastBridgeContactAt = 0
 	                        self.logStatusStreamFailureIfNeeded(error)
@@ -10934,8 +10941,20 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 	                },
 	                force: force
 	            )
-	        }
+        }
 	    }
+
+    private func needsStatusStreamRefreshAfterDarwinStart(now: TimeInterval = Date().timeIntervalSince1970) -> Bool {
+        guard hasFullAccess else { return false }
+        guard statusStreamBridgeToken == hostKeyboardBridgeToken else { return true }
+        guard lastStatusStreamFrameAt > 0 else { return true }
+        return now - lastStatusStreamFrameAt > Self.statusStreamFreshnessAfterDarwinStart
+    }
+
+    private func refreshBridgeStatusAfterDarwinStartIfNeeded(_ shouldRefresh: Bool) {
+        guard shouldRefresh else { return }
+        refreshBridgeStatus(captureSelection: false, force: true)
+    }
 
     @MainActor
     private func recoverBridgeStatusAfterStreamFailure(generation: UInt64) {
