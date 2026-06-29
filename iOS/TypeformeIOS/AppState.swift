@@ -3513,6 +3513,7 @@ final class AppState {
         bridgeProgressStatusTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(Self.bridgeProgressStatusDelay * 1_000_000_000))
             guard !Task.isCancelled, let self, self.phase == .sending else { return }
+            guard self.shouldApplyBridgeProgressStatusDelay(keyboardCommandID: keyboardCommandID) else { return }
             self.processingStatusMessage = message
             if let keyboardCommandID {
                 self.publishKeyboardStatus(
@@ -3525,6 +3526,25 @@ final class AppState {
                 )
             }
         }
+    }
+
+    private func shouldApplyBridgeProgressStatusDelay(keyboardCommandID: String?) -> Bool {
+        if Self.hasTranscriptionProgressSuffix(processingStatusMessage) {
+            return false
+        }
+        guard let keyboardCommandID,
+              keyboardBridgeStatus.commandID == keyboardCommandID,
+              keyboardBridgeStatus.state == .sending
+        else { return true }
+        if keyboardBridgeStatus.processingStage == .refining {
+            return false
+        }
+        return !Self.hasTranscriptionProgressSuffix(keyboardBridgeStatus.message)
+    }
+
+    private static func hasTranscriptionProgressSuffix(_ message: String?) -> Bool {
+        let trimmed = message?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.range(of: #"\([0-9]+/[0-9]+\)$"#, options: .regularExpression) != nil
     }
 
     private func cancelBridgeProgressStatusDelay() {
