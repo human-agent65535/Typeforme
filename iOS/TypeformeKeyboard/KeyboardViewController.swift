@@ -11105,6 +11105,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         // the user's in-progress Pinyin preedit.
         let partial = status.livePartialTranscript?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let suppressesPartialPreview = suppressesLivePartialPreview(for: status)
+        let preservesLivePartialAfterRefineTimeout = shouldPreserveLivePartialPreviewAfterRefineTimeout(for: status)
         let showsPartial = !suppressesPartialPreview
             && (status.state == .recording || status.state == .sending)
             && !partial.isEmpty
@@ -11120,7 +11121,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             // .result is handled below — don't clear here or the commit step
             // would have no marked text to replace.
             if status.state != .sending {
-                replaceMarkedText("")
+                if preservesLivePartialAfterRefineTimeout {
+                    _ = commitLivePartialBeforeHostReturnIfNeeded(commandID: status.commandID)
+                } else {
+                    replaceMarkedText("")
+                }
             }
         }
         isApplyingHostBridgeStatus = true
@@ -11189,7 +11194,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         if status.state == .error || status.state == .idle {
             activeRecordingTextTarget = nil
             activeRecordingTextEditIntent = nil
-            livePartialPreviewState = nil
+            if !preservesLivePartialAfterRefineTimeout {
+                livePartialPreviewState = nil
+            }
             recentSelectionTarget = nil
         }
 
@@ -11236,6 +11243,21 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         guard let activeRecordingTextTarget else { return false }
         guard let commandID = status.commandID else { return true }
         return commandID == activeRecordingTextTarget.commandID
+    }
+
+    private func shouldPreserveLivePartialPreviewAfterRefineTimeout(for status: KeyboardBridgeStatus) -> Bool {
+        guard status.state == .error,
+              status.processingStage == .refining,
+              let commandID = status.commandID
+        else { return false }
+        if activeMarkedTextOwner == .livePartial,
+           !activeMarkedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return true
+        }
+        guard let preview = livePartialPreviewState,
+              preview.commandID == commandID
+        else { return false }
+        return !preview.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private func shouldIgnoreRecordingStatusAfterStop(_ status: KeyboardBridgeStatus) -> Bool {
@@ -11322,6 +11344,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
         if currentBridgeStatus?.state == .sending,
            let commandID = currentBridgeStatus?.commandID {
+            ids.insert(commandID)
+        }
+        if let commandID = livePartialPreviewState?.commandID {
             ids.insert(commandID)
         }
         return ids

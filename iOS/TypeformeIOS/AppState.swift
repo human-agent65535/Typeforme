@@ -2365,8 +2365,7 @@ final class AppState {
                                 "live preview first partial: startToPartialMs=\(timing.startToPartialMS, privacy: .public), firstPCMToPartialMs=\(timing.firstPCMToPartialMS ?? -1, privacy: .public), pcmBuffers=\(timing.pcmBufferCount, privacy: .public), chars=\(text.count, privacy: .public)"
                             )
                         }
-                        self.livePartialTranscript = text
-                        self.publishLivePartialTranscriptToKeyboard()
+                        self.updateLivePartialTranscript(text, source: "apple")
                     }
                 }
                 if error != nil {
@@ -2426,8 +2425,7 @@ final class AppState {
                             "server live preview first partial: startToPartialMs=\(timing.startToPartialMS, privacy: .public), firstPCMToPartialMs=\(timing.firstPCMToPartialMS ?? -1, privacy: .public), pcmBuffers=\(timing.pcmBufferCount, privacy: .public), chars=\(cleaned.count, privacy: .public)"
                         )
                     }
-                    self.livePartialTranscript = cleaned
-                    self.publishLivePartialTranscriptToKeyboard()
+                    self.updateLivePartialTranscript(cleaned, source: bridgeLivePreviewSource.rawValue)
                 }
             },
             onFailure: { [weak self] message in
@@ -2474,6 +2472,64 @@ final class AppState {
         guard !text.isEmpty else { return }
         teardownLivePartialPreview(clearText: false)
         livePartialTranscript = text
+    }
+
+    private func updateLivePartialTranscript(_ text: String, source: String) {
+        let candidate = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !candidate.isEmpty else { return }
+        let current = livePartialTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+        if Self.isLikelyLivePartialSuffixRegression(candidate: candidate, current: current) {
+            appLog.debug(
+                "live preview partial ignored source=\(source, privacy: .public) reason=suffix_regression current_chars=\(current.count, privacy: .public) candidate_chars=\(candidate.count, privacy: .public)"
+            )
+            return
+        }
+        guard candidate != current else { return }
+        livePartialTranscript = candidate
+        publishLivePartialTranscriptToKeyboard()
+    }
+
+    private static func isLikelyLivePartialSuffixRegression(candidate: String, current: String) -> Bool {
+        guard candidate.count < current.count else { return false }
+        let normalizedCandidate = livePartialComparisonText(candidate)
+        let normalizedCurrent = livePartialComparisonText(current)
+        guard normalizedCandidate.count >= 4,
+              normalizedCurrent.count > normalizedCandidate.count
+        else { return false }
+        if normalizedCurrent.hasSuffix(normalizedCandidate) {
+            return true
+        }
+        let lengthRatio = Double(normalizedCandidate.count) / Double(normalizedCurrent.count)
+        guard lengthRatio <= 0.75 else { return false }
+        return livePartialTailSimilarity(current: normalizedCurrent, candidate: normalizedCandidate) >= 0.75
+    }
+
+    private static func livePartialComparisonText(_ text: String) -> String {
+        var result = ""
+        let keptScalars = CharacterSet.alphanumerics
+        let ignoredScalars = CharacterSet.whitespacesAndNewlines
+        for scalar in text.unicodeScalars {
+            if ignoredScalars.contains(scalar) {
+                continue
+            }
+            if keptScalars.contains(scalar) {
+                result.append(String(scalar))
+            }
+        }
+        return result.lowercased()
+    }
+
+    private static func livePartialTailSimilarity(current: String, candidate: String) -> Double {
+        let currentCharacters = Array(current)
+        let candidateCharacters = Array(candidate)
+        guard !candidateCharacters.isEmpty,
+              currentCharacters.count >= candidateCharacters.count
+        else { return 0 }
+        let suffix = currentCharacters.suffix(candidateCharacters.count)
+        let matches = zip(suffix, candidateCharacters).reduce(0) { count, pair in
+            count + (pair.0 == pair.1 ? 1 : 0)
+        }
+        return Double(matches) / Double(candidateCharacters.count)
     }
 
     /// Called after a final ASR/correction result owns the display. Tears down

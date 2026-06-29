@@ -958,7 +958,11 @@ final class DictationCoordinator: ObservableObject {
                 appCategory: AppCategory.from(bundleID: snapshot?.bundleID),
                 onTranscript: { [weak self] text in
                     Task { @MainActor [weak self] in
-                        self?.applyLivePartialPreview(text, displaysLivePartial: displaysLivePartial)
+                        self?.applyLivePartialPreview(
+                            text,
+                            displaysLivePartial: displaysLivePartial,
+                            source: source.rawValue
+                        )
                     }
                 },
                 onFailure: { message in
@@ -987,7 +991,11 @@ final class DictationCoordinator: ObservableObject {
                 diagnosticID: UUID().uuidString
             ) { [weak self] text in
                 Task { @MainActor [weak self] in
-                    self?.applyLivePartialPreview(text, displaysLivePartial: displaysLivePartial)
+                    self?.applyLivePartialPreview(
+                        text,
+                        displaysLivePartial: displaysLivePartial,
+                        source: source.rawValue
+                    )
                 }
             }
             guard let handler = makeASRLivePreviewPCMHandler(session: lease.session) else {
@@ -1054,7 +1062,11 @@ final class DictationCoordinator: ObservableObject {
                 guard let self else { return }
                 if let result {
                     let text = result.bestTranscription.formattedString
-                    self.applyLivePartialPreview(text, displaysLivePartial: displaysLivePartial)
+                    self.applyLivePartialPreview(
+                        text,
+                        displaysLivePartial: displaysLivePartial,
+                        source: VoiceLivePreviewSource.appleSpeech.rawValue
+                    )
                 }
                 if error != nil {
                     self.teardownLivePartialPreview(clearText: false)
@@ -1065,12 +1077,66 @@ final class DictationCoordinator: ObservableObject {
         return makeAppleSpeechLivePreviewPCMHandler(request: request)
     }
 
-    private func applyLivePartialPreview(_ rawText: String, displaysLivePartial: Bool) {
+    private func applyLivePartialPreview(
+        _ rawText: String,
+        displaysLivePartial: Bool,
+        source: String
+    ) {
         let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
-        if displaysLivePartial {
-            livePartialTranscript = text
+        guard displaysLivePartial else { return }
+        let current = livePartialTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+        if Self.isLikelyLivePartialSuffixRegression(candidate: text, current: current) {
+            Log.coordinator.debug(
+                "live preview partial ignored source=\(source, privacy: .public) reason=suffix_regression current_chars=\(current.count, privacy: .public) candidate_chars=\(text.count, privacy: .public)"
+            )
+            return
         }
+        guard text != current else { return }
+        livePartialTranscript = text
+    }
+
+    private static func isLikelyLivePartialSuffixRegression(candidate: String, current: String) -> Bool {
+        guard candidate.count < current.count else { return false }
+        let normalizedCandidate = livePartialComparisonText(candidate)
+        let normalizedCurrent = livePartialComparisonText(current)
+        guard normalizedCandidate.count >= 4,
+              normalizedCurrent.count > normalizedCandidate.count
+        else { return false }
+        if normalizedCurrent.hasSuffix(normalizedCandidate) {
+            return true
+        }
+        let lengthRatio = Double(normalizedCandidate.count) / Double(normalizedCurrent.count)
+        guard lengthRatio <= 0.75 else { return false }
+        return livePartialTailSimilarity(current: normalizedCurrent, candidate: normalizedCandidate) >= 0.75
+    }
+
+    private static func livePartialComparisonText(_ text: String) -> String {
+        var result = ""
+        let keptScalars = CharacterSet.alphanumerics
+        let ignoredScalars = CharacterSet.whitespacesAndNewlines
+        for scalar in text.unicodeScalars {
+            if ignoredScalars.contains(scalar) {
+                continue
+            }
+            if keptScalars.contains(scalar) {
+                result.append(String(scalar))
+            }
+        }
+        return result.lowercased()
+    }
+
+    private static func livePartialTailSimilarity(current: String, candidate: String) -> Double {
+        let currentCharacters = Array(current)
+        let candidateCharacters = Array(candidate)
+        guard !candidateCharacters.isEmpty,
+              currentCharacters.count >= candidateCharacters.count
+        else { return 0 }
+        let suffix = currentCharacters.suffix(candidateCharacters.count)
+        let matches = zip(suffix, candidateCharacters).reduce(0) { count, pair in
+            count + (pair.0 == pair.1 ? 1 : 0)
+        }
+        return Double(matches) / Double(candidateCharacters.count)
     }
 
     private func applyASRFinalPreview(_ rawText: String, displaysLivePartial: Bool) {
