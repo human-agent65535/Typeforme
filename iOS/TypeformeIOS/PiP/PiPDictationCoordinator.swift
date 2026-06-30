@@ -37,7 +37,7 @@ final class PiPDictationCoordinator: NSObject, ObservableObject {
     private var presentation = PiPDictationPresentation.ready
     private var frameIndex: Int64 = 0
 
-    private static let frameSize = CGSize(width: 640, height: 360)
+    private static let frameSize = CGSize(width: 480, height: 160)
     private static let frameDuration = CMTime(value: 1, timescale: 2)
     private static let frameInterval: UInt64 = 500_000_000
 
@@ -255,6 +255,8 @@ final class PiPDictationCoordinator: NSObject, ObservableObject {
             return nil
         }
 
+        context.translateBy(x: 0, y: Self.frameSize.height)
+        context.scaleBy(x: 1, y: -1)
         UIGraphicsPushContext(context)
         drawFrame(in: CGRect(origin: .zero, size: Self.frameSize))
         UIGraphicsPopContext()
@@ -265,39 +267,47 @@ final class PiPDictationCoordinator: NSObject, ObservableObject {
         UIColor(red: 0.05, green: 0.06, blue: 0.07, alpha: 1).setFill()
         UIBezierPath(rect: rect).fill()
 
-        let panelRect = rect.insetBy(dx: 48, dy: 42)
+        let panelRect = rect.insetBy(dx: 18, dy: 16)
         UIColor(red: 0.12, green: 0.13, blue: 0.15, alpha: 1).setFill()
-        UIBezierPath(roundedRect: panelRect, cornerRadius: 34).fill()
+        UIBezierPath(roundedRect: panelRect, cornerRadius: 24).fill()
 
         let level = max(0, min(1, CGFloat(audioLevelProvider?() ?? 0)))
-        drawVoiceMark(in: CGRect(x: panelRect.minX + 34, y: panelRect.minY + 58, width: 96, height: 118), level: level)
+        drawVoiceMark(
+            in: CGRect(x: panelRect.minX + 18, y: panelRect.minY + 30, width: 62, height: panelRect.height - 60),
+            level: level
+        )
+
+        let detailParagraph = NSMutableParagraphStyle()
+        detailParagraph.lineBreakMode = .byTruncatingTail
 
         let titleAttributes: [NSAttributedString.Key: Any] = [
-            .font: UIFont.systemFont(ofSize: 44, weight: .bold),
+            .font: UIFont.systemFont(ofSize: 30, weight: .bold),
             .foregroundColor: UIColor.white,
         ]
         let detailAttributes: [NSAttributedString.Key: Any] = [
-            .font: UIFont.systemFont(ofSize: 25, weight: .medium),
+            .font: UIFont.systemFont(ofSize: 18, weight: .medium),
             .foregroundColor: UIColor(white: 0.74, alpha: 1),
+            .paragraphStyle: detailParagraph,
         ]
         let stateAttributes: [NSAttributedString.Key: Any] = [
-            .font: UIFont.monospacedDigitSystemFont(ofSize: 26, weight: .semibold),
+            .font: UIFont.monospacedDigitSystemFont(ofSize: 20, weight: .semibold),
             .foregroundColor: UIColor(red: 0.18, green: 0.72, blue: 1, alpha: 1),
         ]
 
-        let textX = panelRect.minX + 154
+        let textX = panelRect.minX + 100
+        let textWidth = panelRect.maxX - textX - 22
         (presentation.title as NSString).draw(
-            in: CGRect(x: textX, y: panelRect.minY + 62, width: panelRect.width - 190, height: 58),
+            in: CGRect(x: textX, y: panelRect.minY + 24, width: textWidth, height: 36),
             withAttributes: titleAttributes
         )
         (presentation.detail as NSString).draw(
-            in: CGRect(x: textX, y: panelRect.minY + 124, width: panelRect.width - 190, height: 72),
+            in: CGRect(x: textX, y: panelRect.minY + 62, width: textWidth, height: 25),
             withAttributes: detailAttributes
         )
 
         let stateText = currentStateText()
         (stateText as NSString).draw(
-            in: CGRect(x: textX, y: panelRect.maxY - 76, width: panelRect.width - 190, height: 42),
+            in: CGRect(x: textX, y: panelRect.maxY - 38, width: textWidth, height: 26),
             withAttributes: stateAttributes
         )
     }
@@ -305,11 +315,12 @@ final class PiPDictationCoordinator: NSObject, ObservableObject {
     private func drawVoiceMark(in rect: CGRect, level: CGFloat) {
         let centerY = rect.midY
         let barCount = 5
-        let spacing: CGFloat = 10
-        let barWidth: CGFloat = 9
+        let spacing = max(4, rect.width * 0.08)
+        let barWidth = max(5, (rect.width - spacing * CGFloat(barCount - 1)) / CGFloat(barCount))
         let maxHeight = rect.height
-        let baseHeight: CGFloat = 32
-        let startX = rect.midX - CGFloat(barCount - 1) * (barWidth + spacing) / 2
+        let baseHeight = min(22, rect.height * 0.45)
+        let totalWidth = CGFloat(barCount) * barWidth + CGFloat(barCount - 1) * spacing
+        let startX = rect.minX + (rect.width - totalWidth) / 2
         UIColor(red: 0.05, green: 0.55, blue: 1, alpha: 1).setFill()
         for index in 0..<barCount {
             let phase = CGFloat(index) / CGFloat(barCount - 1)

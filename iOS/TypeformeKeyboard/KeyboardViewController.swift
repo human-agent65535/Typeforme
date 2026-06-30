@@ -5691,6 +5691,14 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 }
 
                 guard status.state != .idle else {
+                    if hasFreshDarwinSignal {
+                        guard self.shouldContinueAfterBridgeProbe(continuesAfterRelease: continuesAfterRelease) else {
+                            self.updateUI()
+                            return
+                        }
+                        self.startDictationCommand(textEditContext: textEditContext, target: target)
+                        return
+                    }
                     self.openHostForDictation()
                     return
                 }
@@ -5752,12 +5760,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         activeRecordingTextEditIntent = nil
         activeRecordingTextTarget = nil
         cancelScheduledHostOpen()
-        // Third-party keyboard extensions cannot capture microphone audio. When
-        // the local bridge is not already awake, hand off to the containing app
-        // so it can request and own the microphone session.
+        // Third-party keyboard extensions cannot keep dictation reachable by
+        // themselves. Hand off to the containing app so it can prepare the
+        // selected host-owned capture mode.
         openHostAppForKeyboardAction(
             "microphone",
-            openingMessage: "Opening Typeforme for microphone access."
+            openingMessage: "Opening Typeforme to prepare dictation."
         )
     }
 
@@ -10811,7 +10819,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         if shouldIgnoreAlreadyInsertedActiveStatus(status) {
             return
         }
-        if isStartRequestInFlight && status.state == .standby {
+        if isStartRequestInFlight,
+           status.state == .standby,
+           activeRecordingCommandID != nil {
             return
         }
         if status.state == .recording, currentBridgeStatus?.state != .recording {

@@ -41,7 +41,7 @@
 "Background Mic" = "后台麦克风";
 "PiP" = "画中画";
 "Uses the host app's background microphone session so the keyboard can start dictation without switching screens." = "使用宿主 app 的后台麦克风会话,让键盘无需切屏即可开始听写。";
-"Keeps a visible Typeforme PiP session ready so the keyboard can start dictation without switching apps. The microphone opens only while recording." = "保持一个可见的 Typeforme 画中画会话,让键盘无需切换 app 就能开始听写。麦克风只会在录音时打开。";
+"Typeforme starts a small visible PiP session automatically so the keyboard can start dictation without switching apps. The microphone opens only while recording." = "Typeforme 会自动启动一个小型可见画中画会话,让键盘无需切换 app 就能开始听写。麦克风只会在录音时打开。";
 "Start PiP" = "启动画中画";
 "Stop PiP" = "停止画中画";
 "Picture in Picture is active." = "画中画已开启。";
@@ -53,7 +53,6 @@
 "Picture in Picture stopped." = "画中画已停止。";
 "Picture in Picture stopped" = "画中画已停止";
 "Picture in Picture is unavailable." = "画中画不可用。";
-"Picture in Picture is unavailable. Falling back to Background Mic." = "画中画不可用,将回退到后台麦克风。";
 "Keyboard bridge is unavailable." = "键盘 bridge 不可用。";
 "Open PiP to skip app switching" = "打开画中画以免切换 app";
 "Recording stopped because Picture in Picture closed." = "画中画关闭,录音已停止。";
