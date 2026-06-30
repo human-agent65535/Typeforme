@@ -5793,7 +5793,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             updateUI()
             return
         }
-        if suppressDuplicateHostOpen(source: "keyboard-action:\(action)") { return }
+        if action != "standby",
+           suppressDuplicateHostOpen(source: "keyboard-action:\(action)") {
+            return
+        }
         let requestedCorrectionMode = action == "record" ? currentDefaultCorrectionMode() : correctionMode
         kbLog.notice("openHostAppForKeyboardAction: action=\(action, privacy: .public)")
         let handoff = KeyboardHostHandoff(
@@ -7988,7 +7991,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         textStylePickerButton.isHidden = !showAllIdleIcons
         textUndoButton.isHidden = !(showAllIdleIcons || freshRefineUndoState() != nil)
         textKeyboardSwitchButton.isHidden = !showAllIdleIcons
-        textHostSettingsButton.isHidden = !showAllIdleIcons || isRunningInsideHostApp
+        textHostSettingsButton.isHidden = !showAllIdleIcons
     }
 
     private func updateCandidateScrollViewport() {
