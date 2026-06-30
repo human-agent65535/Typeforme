@@ -934,7 +934,7 @@ private struct KeyboardSettingsView: View {
                         Text(language.title).tag(language)
                     }
                 }
-                Picker("Chinese punctuation", selection: chinesePunctuationBinding) {
+                Picker("Punctuation", selection: chinesePunctuationBinding) {
                     ForEach(KeyboardChinesePunctuationStyle.allCases) { style in
                         Text(style.title).tag(style)
                     }

@@ -7465,7 +7465,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             isAlternateSymbolKeyboard = false
         }
         rebuildTextKeyboardRows()
-        lightHaptic()
     }
 
     @objc private func toggleAlternateSymbolKeyboard() {
@@ -7473,7 +7472,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         clearTransientKeyboardErrorIfShowing()
         isAlternateSymbolKeyboard.toggle()
         rebuildTextKeyboardRows()
-        lightHaptic()
     }
 
     @objc private func togglePhoneSymbolKeyboard() {
@@ -7481,7 +7479,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         clearTransientKeyboardErrorIfShowing()
         isPhoneSymbolKeyboard.toggle()
         rebuildTextKeyboardRows()
-        lightHaptic()
     }
 
     @objc private func toggleTextShift() {
@@ -7520,7 +7517,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         lastShiftTapTime = now
         refreshShiftButtonImage()
         refreshLetterCasing()
-        lightHaptic()
     }
 
     @objc private func toggleTextInputLanguage() {
@@ -7539,7 +7535,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         refreshTextControlTitles()
         rebuildTextKeyboardRows()
         applyTextInputOptionsToRime()
-        lightHaptic()
     }
 
     private func refreshTextControlTitles() {
