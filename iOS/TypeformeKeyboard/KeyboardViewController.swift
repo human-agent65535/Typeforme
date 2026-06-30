@@ -5784,7 +5784,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             openHostForFullAccessSetup(showTextNotice: keyboardFocus == .text)
             return
         }
-        if isRunningInsideHostApp {
+        if isRunningInsideHostApp, action != "standby" {
             kbLog.notice("openHostAppForKeyboardAction: already running inside host app; suppressing self-open")
             cancelHostWakeResetTask()
             openingHostUntil = 0

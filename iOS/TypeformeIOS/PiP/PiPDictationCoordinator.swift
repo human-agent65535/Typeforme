@@ -35,7 +35,6 @@ final class PiPDictationCoordinator: NSObject, ObservableObject {
     private var pictureInPictureController: AVPictureInPictureController?
     private var renderTask: Task<Void, Never>?
     private var presentation = PiPDictationPresentation.ready
-    private var frameIndex: Int64 = 0
 
     private static let frameSize = CGSize(width: 480, height: 160)
     private static let frameDuration = CMTime(value: 1, timescale: 2)
@@ -80,12 +79,15 @@ final class PiPDictationCoordinator: NSObject, ObservableObject {
             return false
         }
 
-        startRendering()
+        displayLayer.flushAndRemoveImage()
         renderCurrentFrame()
+        startRendering()
         let controller = ensureController(for: displayLayer)
 
         // The display layer needs at least one committed frame before PiP can
         // become possible. Give AVKit one render pass before checking.
+        try? await Task.sleep(nanoseconds: 80_000_000)
+        renderCurrentFrame()
         try? await Task.sleep(nanoseconds: 150_000_000)
         refreshCapability()
 
@@ -164,10 +166,11 @@ final class PiPDictationCoordinator: NSObject, ObservableObject {
     }
 
     private func renderCurrentFrame() {
-        guard let displayLayer,
-              displayLayer.status != .failed,
-              let sampleBuffer = makeSampleBuffer()
-        else { return }
+        guard let displayLayer else { return }
+        if displayLayer.status == .failed {
+            displayLayer.flushAndRemoveImage()
+        }
+        guard let sampleBuffer = makeSampleBuffer() else { return }
 
         if displayLayer.isReadyForMoreMediaData {
             displayLayer.enqueue(sampleBuffer)
@@ -189,8 +192,7 @@ final class PiPDictationCoordinator: NSObject, ObservableObject {
             return nil
         }
 
-        let timestamp = CMTimeMultiply(Self.frameDuration, multiplier: Int32(frameIndex))
-        frameIndex += 1
+        let timestamp = CMClockGetTime(CMClockGetHostTimeClock())
         var timing = CMSampleTimingInfo(
             duration: Self.frameDuration,
             presentationTimeStamp: timestamp,
