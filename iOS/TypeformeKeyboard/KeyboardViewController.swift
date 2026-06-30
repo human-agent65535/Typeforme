@@ -1,10 +1,87 @@
 import UIKit
+import SwiftUI
 import Darwin
 import ObjectiveC
 import OSLog
 import QuartzCore
 
 private let kbLog = Logger(subsystem: TypeformeBundleConfiguration.keyboardBundleIdentifier, category: "ui")
+
+@MainActor
+private final class KeyboardHostLinkOpener: ObservableObject {
+    struct Request: Identifiable {
+        let id = UUID()
+        let url: URL
+        let completion: (Bool) -> Void
+    }
+
+    @Published fileprivate var request: Request?
+
+    private var hostController: UIHostingController<KeyboardHostLinkOpenerView>?
+
+    func install(in parent: UIViewController) {
+        guard hostController == nil else { return }
+        let controller = UIHostingController(rootView: KeyboardHostLinkOpenerView(opener: self))
+        controller.view.translatesAutoresizingMaskIntoConstraints = false
+        controller.view.backgroundColor = .clear
+        controller.view.alpha = 0.01
+        controller.view.isUserInteractionEnabled = false
+        controller.view.accessibilityElementsHidden = true
+        parent.addChild(controller)
+        parent.view.addSubview(controller.view)
+        NSLayoutConstraint.activate([
+            controller.view.widthAnchor.constraint(equalToConstant: 1),
+            controller.view.heightAnchor.constraint(equalToConstant: 1),
+            controller.view.leadingAnchor.constraint(equalTo: parent.view.leadingAnchor),
+            controller.view.topAnchor.constraint(equalTo: parent.view.topAnchor),
+        ])
+        controller.didMove(toParent: parent)
+        hostController = controller
+    }
+
+    func open(_ url: URL, completion: @escaping (Bool) -> Void) {
+        guard hostController != nil else {
+            kbLog.notice("openHostApp: SwiftUI link opener unavailable")
+            completion(false)
+            return
+        }
+        request = Request(url: url, completion: completion)
+    }
+
+    fileprivate func finish(_ id: UUID, accepted: Bool) {
+        guard request?.id == id else { return }
+        let completion = request?.completion
+        request = nil
+        completion?(accepted)
+    }
+}
+
+private struct KeyboardHostLinkOpenerView: View {
+    @ObservedObject var opener: KeyboardHostLinkOpener
+    @Environment(\.openURL) private var openURL
+    @State private var handledRequestID: UUID?
+
+    var body: some View {
+        Color.clear
+            .frame(width: 1, height: 1)
+            .onAppear(perform: openPendingRequest)
+            .onChange(of: opener.request?.id) { _, _ in
+                openPendingRequest()
+            }
+    }
+
+    private func openPendingRequest() {
+        guard let request = opener.request,
+              handledRequestID != request.id
+        else { return }
+        handledRequestID = request.id
+        openURL(request.url) { accepted in
+            Task { @MainActor in
+                opener.finish(request.id, accepted: accepted)
+            }
+        }
+    }
+}
 
 fileprivate enum KeyboardTouchTarget {
     case textKey(UIButton)
@@ -335,6 +412,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private let textTouchLearningStatsKey = "keyboard.textTouchGaussianStats.v1"
     private let keyboardTouchTraceEnabledKey = "keyboard.touchTraceEnabled"
     private let keyPressOverlayTag = 0x74797065
+    private let hostLinkOpener = KeyboardHostLinkOpener()
 
     private var correctionMode: CorrectionMode = .polishPlus
     private var pendingDefaultCorrectionMode: CorrectionMode?
@@ -1733,6 +1811,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         loadState()
         syncPrimaryLanguage()
         configureRoot()
+        hostLinkOpener.install(in: self)
         configureKeyPreview()
         configureTopRow()
         configureVoiceButton()
@@ -5905,19 +5984,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func openHostApp(_ url: URL, completion: @escaping @Sendable (Bool) -> Void) {
-        if let extensionContext {
-            kbLog.debug("openHostApp: opening URL via extension context")
-            extensionContext.open(url) { success in
-                DispatchQueue.main.async {
-                    kbLog.debug("openHostApp: extension context open success=\(success, privacy: .public)")
-                    completion(success)
-                }
-            }
-            return
+        kbLog.debug("openHostApp: opening URL via SwiftUI link opener")
+        hostLinkOpener.open(url) { success in
+            kbLog.debug("openHostApp: SwiftUI link opener success=\(success, privacy: .public)")
+            completion(success)
         }
-
-        kbLog.notice("openHostApp: extension context unavailable")
-        completion(false)
     }
 
     private func startDictationCommand(
