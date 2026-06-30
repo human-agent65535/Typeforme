@@ -7715,14 +7715,20 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
 
         if isTextShiftEnabled {
-            commitDisplayedRimeCompositionIfNeeded()
-            clearRefineUndoStateForManualEdit()
-            textDocumentProxy.insertText(character.uppercased())
-            resetShiftIfSticky()
-            renderRefineSuggestionsIfIdle()
+            processChineseRimeTextKey(character.uppercased(), resetShiftAfterInput: true)
             return true
         }
 
+        processChineseRimeTextKey(character)
+        return true
+    }
+
+    private func processChineseRimeTextKey(_ character: String, resetShiftAfterInput: Bool = false) {
+        defer {
+            if resetShiftAfterInput {
+                resetShiftIfSticky()
+            }
+        }
         let processResult = rimeInput.processCharacterIfReady(
             character,
             asciiPunctuation: chinesePunctuationStyle == .english,
@@ -7733,15 +7739,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             pendingRimeCharacters.removeAll()
             pendingRimeDirectTextKeys.removeAll()
             applyRimeState(state)
-            resetShiftIfSticky()
             renderRefineSuggestionsIfIdle()
-            return true
         case .notReady(let state):
             queuePendingRimeCharacter(character, state: state)
-            return true
         case .processed(let state):
             applyRimeState(state)
-            return true
         }
     }
 
@@ -9862,6 +9864,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     private func insertChineseDirectTextKey(_ character: String) {
         let currentState = rimeInput.state()
+        if shouldProcessChineseDirectTextKeyInRime(character, state: currentState) {
+            processChineseRimeTextKey(character)
+            resetShiftIfSticky()
+            renderRefineSuggestionsIfIdle()
+            return
+        }
         let directText = chineseDirectText(for: character)
         if !pendingRimeCharacters.isEmpty || !pendingRimeDirectTextKeys.isEmpty {
             queuePendingRimeDirectTextKey(directText, state: currentState)
@@ -9909,11 +9917,51 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         return exactLatinCandidateBeforeNonLatinCandidates(in: state)?.text
     }
 
+    private func shouldProcessChineseDirectTextKeyInRime(
+        _ character: String,
+        state: RimeKeyboardState
+    ) -> Bool {
+        guard textInputLanguage == .chinese,
+              !isRenderedNumericTextKeyboard,
+              isLiteralAsciiDirectKeyContinuation(character)
+        else { return false }
+
+        if !pendingRimeCharacters.isEmpty,
+           pendingRimeDirectTextKeys.isEmpty {
+            let pendingInput = pendingRimeCharacters.joined()
+            return shouldContinueLiteralAsciiComposition(input: pendingInput, appending: character)
+        }
+
+        guard state.isComposing,
+              isRawLatinInput(state.input)
+        else { return false }
+        return shouldContinueLiteralAsciiComposition(input: state.input, appending: character)
+    }
+
+    private func shouldContinueLiteralAsciiComposition(
+        input: String,
+        appending character: String
+    ) -> Bool {
+        guard !input.isEmpty,
+              isRawLatinInput(input)
+        else { return false }
+
+        let lowercasedInput = input.lowercased()
+        if character == "@" { return true }
+        if isLiteralAsciiTextInputContext { return true }
+        if isContinuingLiteralAsciiTokenContext { return true }
+        if isRawRimeInputLiteralToken(input) { return true }
+        if isURLSchemeLiteralPrefix(lowercasedInput) { return true }
+        if character == ".", lowercasedInput == "www" { return true }
+        if character == ":", Self.literalURLSchemes.contains(lowercasedInput) { return true }
+        return false
+    }
+
     private func isLiteralAsciiDirectKeyContinuation(_ character: String) -> Bool {
         guard character.count == 1,
               let scalar = character.unicodeScalars.first
         else { return false }
-        return isASCIIAlphanumeric(scalar) || ".@_+-':/".unicodeScalars.contains(scalar)
+        return isASCIIAlphanumeric(scalar) || Self.literalAsciiContinuationScalars.contains(scalar)
     }
 
     private func exactLatinCandidateBeforeNonLatinCandidates(in state: RimeKeyboardState) -> RimeKeyboardCandidate? {
@@ -9930,6 +9978,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         return nil
     }
 
+    private static let literalAsciiContinuationScalars = Set(".@_+-':/#%?=&".unicodeScalars)
+    private static let literalURLSchemes: Set<String> = ["http", "https", "ftp", "mailto", "file"]
+    private static let literalURLSchemePrefixes = ["http:", "https:", "ftp:", "mailto:", "file:"]
+
     private func shouldCommitRawRimeInputBeforeSeparator(_ state: RimeKeyboardState) -> Bool {
         guard textInputLanguage == .chinese,
               state.isComposing,
@@ -9945,7 +9997,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         guard !input.isEmpty else { return false }
         return input.unicodeScalars.allSatisfy { scalar in
             isASCIIAlphanumeric(scalar)
-                || "-_+.'@:/".unicodeScalars.contains(scalar)
+                || Self.literalAsciiContinuationScalars.contains(scalar)
         }
     }
 
@@ -9954,6 +10006,14 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         return lowercasedInput.contains("@")
             || lowercasedInput.contains("://")
             || lowercasedInput.hasPrefix("www.")
+            || isURLSchemeLiteralPrefix(lowercasedInput)
+    }
+
+    private func isURLSchemeLiteralPrefix(_ input: String) -> Bool {
+        let lowercasedInput = input.lowercased()
+        return Self.literalURLSchemePrefixes.contains { prefix in
+            lowercasedInput.hasPrefix(prefix)
+        }
     }
 
     private func isASCIIAlphanumeric(_ scalar: UnicodeScalar) -> Bool {
@@ -9979,6 +10039,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         return lowercasedToken.contains("@")
             || lowercasedToken.contains("://")
             || lowercasedToken.hasPrefix("www.")
+            || isURLSchemeLiteralPrefix(lowercasedToken)
             || lowercasedToken.hasPrefix("@")
             || lowercasedToken.hasPrefix("#")
     }
@@ -9991,7 +10052,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         var tokenScalars: [UnicodeScalar] = []
         for scalar in scalars.reversed() {
             if isASCIIAlphanumeric(scalar)
-                || ".@_+-':/#".unicodeScalars.contains(scalar) {
+                || Self.literalAsciiContinuationScalars.contains(scalar) {
                 tokenScalars.append(scalar)
             } else {
                 break
