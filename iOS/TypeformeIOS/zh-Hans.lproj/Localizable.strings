@@ -14,11 +14,14 @@
 "Typeforme dictates in any text field via its keyboard. Two iOS-only steps:" = "Typeforme 通过自带键盘在任意文本框听写。还差两步 iOS 端设置:";
 "Typeforme dictates in any text field via its keyboard." = "Typeforme 通过自带键盘在任意文本框听写。";
 "Allow Full Access so the Typeforme keyboard can talk to this app." = "请允许完全访问,这样 Typeforme 键盘才能连接本 app。";
+"Full Access lets the keyboard connect to this app, sync settings, and send selected text or nearby context only when you dictate or refine." = "完全访问让键盘连接本 app、同步设置,并且只在你听写或优化时发送选中文本或光标附近上下文。";
 "Open iOS Settings, enable the Typeforme keyboard, then allow Full Access." = "打开 iOS 设置,启用 Typeforme 键盘,然后允许完全访问。";
+"Full Access lets the keyboard connect to Typeforme, sync settings, and send text context only when you use dictation or refine." = "完全访问让键盘连接 Typeforme、同步设置,并且只在你使用听写或优化时发送文本上下文。";
 "Enable Typeforme keyboard" = "启用 Typeforme 键盘";
 "Settings → General → Keyboard → Add New Keyboard" = "设置 → 通用 → 键盘 → 添加新键盘";
 "Allow Full Access" = "允许完全访问";
 "Required so the keyboard can reach this app" = "键盘需要它来访问本 app";
+"Needed for local bridge, dictation, settings, and learning sync" = "用于本地桥接、听写、设置和学习数据同步";
 "Guide" = "指南";
 "Open Settings" = "打开设置";
 

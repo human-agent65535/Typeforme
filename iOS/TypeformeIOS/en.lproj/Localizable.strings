@@ -14,11 +14,14 @@
 "Typeforme dictates in any text field via its keyboard. Two iOS-only steps:" = "Typeforme dictates in any text field via its keyboard. Two iOS-only steps:";
 "Typeforme dictates in any text field via its keyboard." = "Typeforme dictates in any text field via its keyboard.";
 "Allow Full Access so the Typeforme keyboard can talk to this app." = "Allow Full Access so the Typeforme keyboard can talk to this app.";
+"Full Access lets the keyboard connect to this app, sync settings, and send selected text or nearby context only when you dictate or refine." = "Full Access lets the keyboard connect to this app, sync settings, and send selected text or nearby context only when you dictate or refine.";
 "Open iOS Settings, enable the Typeforme keyboard, then allow Full Access." = "Open iOS Settings, enable the Typeforme keyboard, then allow Full Access.";
+"Full Access lets the keyboard connect to Typeforme, sync settings, and send text context only when you use dictation or refine." = "Full Access lets the keyboard connect to Typeforme, sync settings, and send text context only when you use dictation or refine.";
 "Enable Typeforme keyboard" = "Enable Typeforme keyboard";
 "Settings → General → Keyboard → Add New Keyboard" = "Settings → General → Keyboard → Add New Keyboard";
 "Allow Full Access" = "Allow Full Access";
 "Required so the keyboard can reach this app" = "Required so the keyboard can reach this app";
+"Needed for local bridge, dictation, settings, and learning sync" = "Needed for local bridge, dictation, settings, and learning sync";
 "Guide" = "Guide";
 "Open Settings" = "Open Settings";
 

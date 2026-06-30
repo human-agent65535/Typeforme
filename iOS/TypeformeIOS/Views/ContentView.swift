@@ -186,7 +186,7 @@ private struct SetupStatusCard: View {
             if isExpanded {
                 Divider()
 
-                Text(state.keyboardNeedsFullAccessSetup ? "Allow Full Access so the Typeforme keyboard can talk to this app." : "Typeforme dictates in any text field via its keyboard.")
+                Text(state.keyboardNeedsFullAccessSetup ? "Full Access lets the keyboard connect to this app, sync settings, and send selected text or nearby context only when you dictate or refine." : "Typeforme dictates in any text field via its keyboard.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -200,7 +200,7 @@ private struct SetupStatusCard: View {
                     SetupStepRow(
                         icon: "lock.shield",
                         title: "Allow Full Access",
-                        subtitle: "Required so the keyboard can reach this app"
+                        subtitle: "Needed for local bridge, dictation, settings, and learning sync"
                     )
                 }
 
@@ -260,7 +260,7 @@ private struct KeyboardFullAccessBanner: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text("Keyboard needs Full Access")
                     .font(.footnote.weight(.semibold))
-                Text("Open iOS Settings, enable the Typeforme keyboard, then allow Full Access.")
+                Text("Full Access lets the keyboard connect to Typeforme, sync settings, and send text context only when you use dictation or refine.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

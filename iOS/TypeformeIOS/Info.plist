@@ -49,11 +49,11 @@
 	<key>NSCameraUsageDescription</key>
 	<string>Typeforme uses the camera to scan the pairing QR code shown by the Mac app.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Typeforme records your voice and sends it to your paired Mac for transcription.</string>
+	<string>Typeforme records your voice in the host app and sends audio to your paired Mac Bridge for transcription.</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Typeforme checks whether your paired Mac is reachable on the local network before falling back to Cloud.</string>
+	<string>Typeforme connects to your paired Mac on the local network for dictation, settings, and keyboard status.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>Typeforme can use Apple Speech for live preview while recording. Preview runs on device unless Cloud Fallback is enabled for cloud-only languages.</string>
+	<string>Typeforme can use Apple Speech for optional live preview while recording. On-device Only keeps preview audio on this iPhone; Cloud Fallback may use Apple servers for unsupported languages.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
