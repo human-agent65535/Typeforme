@@ -6019,7 +6019,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         activeRecordingTextTarget = target.map {
             PendingRecordingTextTarget(commandID: command.id, target: $0)
         }
-        if textEditContext != nil, activeMarkedTextOwner == .livePartial {
+        if activeMarkedTextOwner == .livePartial {
             replaceMarkedText("")
         }
         sendBridgeCommand(command)

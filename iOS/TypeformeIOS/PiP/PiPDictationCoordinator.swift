@@ -36,7 +36,7 @@ final class PiPDictationCoordinator: NSObject, ObservableObject {
     private var renderTask: Task<Void, Never>?
     private var presentation = PiPDictationPresentation.ready
 
-    private static let frameSize = CGSize(width: 480, height: 160)
+    private static let frameSize = CGSize(width: 240, height: 240)
     private static let frameDuration = CMTime(value: 1, timescale: 2)
     private static let frameInterval: UInt64 = 500_000_000
 
@@ -79,10 +79,17 @@ final class PiPDictationCoordinator: NSObject, ObservableObject {
             return false
         }
 
+        let controller = ensureController(for: displayLayer)
+        guard !controller.isPictureInPictureActive else {
+            isActive = true
+            statusMessage = NSLocalizedString("Picture in Picture is active.", comment: "PiP active status")
+            startRendering()
+            return true
+        }
+
         displayLayer.flushAndRemoveImage()
         renderCurrentFrame()
         startRendering()
-        let controller = ensureController(for: displayLayer)
 
         // The display layer needs at least one committed frame before PiP can
         // become possible. Give AVKit one render pass before checking.
@@ -100,12 +107,6 @@ final class PiPDictationCoordinator: NSObject, ObservableObject {
             stopRenderingIfIdle()
             return false
         }
-        guard !controller.isPictureInPictureActive else {
-            isActive = true
-            statusMessage = NSLocalizedString("Picture in Picture is active.", comment: "PiP active status")
-            return true
-        }
-
         controller.startPictureInPicture()
         refreshCapability()
         return true
@@ -257,8 +258,6 @@ final class PiPDictationCoordinator: NSObject, ObservableObject {
             return nil
         }
 
-        context.translateBy(x: 0, y: Self.frameSize.height)
-        context.scaleBy(x: 1, y: -1)
         UIGraphicsPushContext(context)
         drawFrame(in: CGRect(origin: .zero, size: Self.frameSize))
         UIGraphicsPopContext()
@@ -269,47 +268,51 @@ final class PiPDictationCoordinator: NSObject, ObservableObject {
         UIColor(red: 0.05, green: 0.06, blue: 0.07, alpha: 1).setFill()
         UIBezierPath(rect: rect).fill()
 
-        let panelRect = rect.insetBy(dx: 18, dy: 16)
+        let panelRect = rect.insetBy(dx: 16, dy: 16)
         UIColor(red: 0.12, green: 0.13, blue: 0.15, alpha: 1).setFill()
-        UIBezierPath(roundedRect: panelRect, cornerRadius: 24).fill()
+        UIBezierPath(roundedRect: panelRect, cornerRadius: 28).fill()
 
         let level = max(0, min(1, CGFloat(audioLevelProvider?() ?? 0)))
         drawVoiceMark(
-            in: CGRect(x: panelRect.minX + 18, y: panelRect.minY + 30, width: 62, height: panelRect.height - 60),
+            in: CGRect(x: panelRect.midX - 38, y: panelRect.minY + 26, width: 76, height: 56),
             level: level
         )
 
+        let titleParagraph = NSMutableParagraphStyle()
+        titleParagraph.alignment = .center
+        titleParagraph.lineBreakMode = .byTruncatingTail
         let detailParagraph = NSMutableParagraphStyle()
+        detailParagraph.alignment = .center
         detailParagraph.lineBreakMode = .byTruncatingTail
 
         let titleAttributes: [NSAttributedString.Key: Any] = [
-            .font: UIFont.systemFont(ofSize: 30, weight: .bold),
+            .font: UIFont.systemFont(ofSize: 24, weight: .bold),
             .foregroundColor: UIColor.white,
+            .paragraphStyle: titleParagraph,
         ]
         let detailAttributes: [NSAttributedString.Key: Any] = [
-            .font: UIFont.systemFont(ofSize: 18, weight: .medium),
+            .font: UIFont.systemFont(ofSize: 13, weight: .medium),
             .foregroundColor: UIColor(white: 0.74, alpha: 1),
             .paragraphStyle: detailParagraph,
         ]
         let stateAttributes: [NSAttributedString.Key: Any] = [
-            .font: UIFont.monospacedDigitSystemFont(ofSize: 20, weight: .semibold),
+            .font: UIFont.monospacedDigitSystemFont(ofSize: 18, weight: .semibold),
             .foregroundColor: UIColor(red: 0.18, green: 0.72, blue: 1, alpha: 1),
+            .paragraphStyle: detailParagraph,
         ]
 
-        let textX = panelRect.minX + 100
-        let textWidth = panelRect.maxX - textX - 22
         (presentation.title as NSString).draw(
-            in: CGRect(x: textX, y: panelRect.minY + 24, width: textWidth, height: 36),
+            in: CGRect(x: panelRect.minX + 12, y: panelRect.minY + 94, width: panelRect.width - 24, height: 32),
             withAttributes: titleAttributes
         )
         (presentation.detail as NSString).draw(
-            in: CGRect(x: textX, y: panelRect.minY + 62, width: textWidth, height: 25),
+            in: CGRect(x: panelRect.minX + 18, y: panelRect.minY + 130, width: panelRect.width - 36, height: 38),
             withAttributes: detailAttributes
         )
 
         let stateText = currentStateText()
         (stateText as NSString).draw(
-            in: CGRect(x: textX, y: panelRect.maxY - 38, width: textWidth, height: 26),
+            in: CGRect(x: panelRect.minX + 16, y: panelRect.maxY - 42, width: panelRect.width - 32, height: 26),
             withAttributes: stateAttributes
         )
     }

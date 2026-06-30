@@ -102,7 +102,7 @@ struct ContentView: View {
                 }
                 .background(alignment: .topLeading) {
                     PiPDisplayLayerHost()
-                        .frame(width: 240, height: 80)
+                        .frame(width: 96, height: 96)
                         .opacity(0.01)
                         .allowsHitTesting(false)
                         .accessibilityHidden(true)

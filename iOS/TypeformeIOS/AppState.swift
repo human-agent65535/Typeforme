@@ -491,6 +491,7 @@ final class AppState {
     private var initialRenderDelayTask: Task<Void, Never>?
     @ObservationIgnored private var autoStartPiPTask: Task<Void, Never>?
     private var suppressAutomaticPiPStart = false
+    private var ignoreNextPiPStopCallback = false
     @ObservationIgnored private var recorderPreWarmTask: Task<Void, Never>?
     private var bridgeProgressStatusTask: Task<Void, Never>?
     @ObservationIgnored private var keyboardStatusAudioLevelTask: Task<Void, Never>?
@@ -2201,13 +2202,14 @@ final class AppState {
         return await prepareKeyboardPiPStandby(showErrors: showErrors)
     }
 
-    private func prepareKeyboardPiPStandby(showErrors: Bool, publishStatus: Bool = true) async -> Bool {
+    private func startKeyboardServerForPiP(showErrors: Bool, caller: String) -> Bool {
         keyboardStandbyEnabled = true
         configureKeyboardServer()
         do {
             try keyboardServer.start()
+            return true
         } catch {
-            appLog.error("prepareKeyboardPiPStandby: local server failed \(error.localizedDescription, privacy: .public)")
+            appLog.error("\(caller, privacy: .public): local server failed \(error.localizedDescription, privacy: .public)")
             if showErrors {
                 showTransient(NSLocalizedString(
                     "Keyboard bridge is unavailable.",
@@ -2216,9 +2218,13 @@ final class AppState {
             }
             return false
         }
+    }
+
+    private func prepareKeyboardPiPStandby(showErrors: Bool, publishStatus: Bool = true) async -> Bool {
+        guard startKeyboardServerForPiP(showErrors: showErrors, caller: "prepareKeyboardPiPStandby") else { return false }
 
         stopKeyboardInputStandbyForPiP()
-        let didStartPiP = await preparePiPDictationSession(showErrors: showErrors)
+        let didStartPiP = await ensurePiPDictationSessionStarted(showErrors: showErrors)
         guard didStartPiP else {
             keyboardServer.stop()
             return false
@@ -2232,17 +2238,34 @@ final class AppState {
         return true
     }
 
+    private func prepareKeyboardPiPForRecordingStart(showErrors: Bool) async -> Bool {
+        guard startKeyboardServerForPiP(showErrors: showErrors, caller: "prepareKeyboardPiPForRecordingStart") else { return false }
+        let didStartPiP = await ensurePiPDictationSessionStarted(showErrors: showErrors)
+        guard didStartPiP else {
+            keyboardServer.stop()
+            return false
+        }
+        KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.sessionStarted)
+        scheduleHostAudioSessionExpiry()
+        return true
+    }
+
     private func publishKeyboardPiPStandby() {
         publishKeyboardStatus(.standby, message: "Ready")
         KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.sessionStarted)
         scheduleHostAudioSessionExpiry()
     }
 
-    private func endKeyboardPiPStandby(message: String) {
+    private func endKeyboardPiPStandby(message: String, stopPiP: Bool = true) {
         hostAudioSessionExpiryTask?.cancel()
         hostAudioSessionExpiryTask = nil
         keyboardServer.stop()
-        pipDictationCoordinator.stop()
+        if stopPiP {
+            if pipDictationCoordinator.isActive {
+                ignoreNextPiPStopCallback = true
+            }
+            pipDictationCoordinator.stop()
+        }
         stopKeyboardInputStandbyForPiP()
         publishKeyboardStatus(.idle, message: message)
         KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.sessionEnded)
@@ -2264,6 +2287,15 @@ final class AppState {
     }
 
     @discardableResult
+    private func ensurePiPDictationSessionStarted(showErrors: Bool) async -> Bool {
+        pipDictationCoordinator.refreshCapability()
+        if pipDictationCoordinator.isActive {
+            return true
+        }
+        return await preparePiPDictationSession(showErrors: showErrors)
+    }
+
+    @discardableResult
     private func preparePiPDictationSession(showErrors: Bool) async -> Bool {
         syncPiPDictationPresentation()
         let didStart = await pipDictationCoordinator.start()
@@ -2277,6 +2309,14 @@ final class AppState {
 
     private func handlePiPDidStop() async {
         guard keyboardDictationCaptureMode == .pictureInPicture else { return }
+        if ignoreNextPiPStopCallback {
+            ignoreNextPiPStopCallback = false
+            syncPiPDictationPresentation()
+            return
+        }
+        suppressAutomaticPiPStart = true
+        autoStartPiPTask?.cancel()
+        autoStartPiPTask = nil
         if hasAnyActiveRecordingCapture || phase == .recording || phase == .preparing {
             await cancelActiveRecordingWithoutSending(
                 hostFailureMessage: "Recording stopped because Picture in Picture closed.",
@@ -2284,9 +2324,9 @@ final class AppState {
                 keyboardMessage: "Ready",
                 resumeKeyboardStandby: false
             )
-            endKeyboardPiPStandby(message: "Picture in Picture stopped")
-        } else if keyboardBridgeStatus.state == .standby {
-            endKeyboardPiPStandby(message: "Picture in Picture stopped")
+            endKeyboardPiPStandby(message: "Picture in Picture stopped", stopPiP: false)
+        } else if keyboardBridgeStatus.state == .standby || keyboardServer.isRunning {
+            endKeyboardPiPStandby(message: "Picture in Picture stopped", stopPiP: false)
         }
         syncPiPDictationPresentation()
     }
@@ -2393,7 +2433,8 @@ final class AppState {
 
     private func prepareKeyboardInputStandby(
         requestMicrophoneIfNeeded: Bool,
-        warmInputEngine: Bool = true
+        warmInputEngine: Bool = true,
+        waitForActiveApplication: Bool = true
     ) async throws -> Bool {
         if keyboardAudioSession.isActive {
             keyboardAudioUnavailableMessage = nil
@@ -2408,7 +2449,8 @@ final class AppState {
         // start still works.
         guard warmInputEngine else { return false }
 
-        if !(await waitUntilApplicationIsActive(timeout: requestMicrophoneIfNeeded ? 3.0 : 1.0)) {
+        if waitForActiveApplication,
+           !(await waitUntilApplicationIsActive(timeout: requestMicrophoneIfNeeded ? 3.0 : 1.0)) {
             appLog.notice("prepareKeyboardInputStandby: app did not become active before audio start; continuing with activation retry")
         }
 
@@ -3278,7 +3320,7 @@ final class AppState {
             activeKeyboardRecordingCommandID = commandID
         }
         if keyboardDictationCaptureMode == .pictureInPicture {
-            let didPreparePiP = await prepareKeyboardPiPStandby(showErrors: true)
+            let didPreparePiP = await prepareKeyboardPiPForRecordingStart(showErrors: true)
             guard didPreparePiP else {
                 clearKeyboardCaptureContext()
                 resetCorrectionModeToDefault()
@@ -3310,8 +3352,11 @@ final class AppState {
                 return
             }
             do {
+                let shouldWaitForActiveApplication = keyboardDictationCaptureMode != .pictureInPicture
+                    || !pipDictationCoordinator.isActive
                 let isInputReady = try await prepareKeyboardInputStandby(
-                    requestMicrophoneIfNeeded: false
+                    requestMicrophoneIfNeeded: false,
+                    waitForActiveApplication: shouldWaitForActiveApplication
                 )
                 guard isInputReady else {
                     clearKeyboardCaptureContext()
