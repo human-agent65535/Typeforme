@@ -100,6 +100,13 @@ struct ContentView: View {
                         .padding(.top, 8)
                         .animation(.snappy(duration: 0.22), value: state.transientMessage)
                 }
+                .background(alignment: .topLeading) {
+                    PiPDisplayLayerHost()
+                        .frame(width: 160, height: 90)
+                        .opacity(0.01)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                }
                 .onAppear {
                     presentFirstRunReadinessIfNeeded()
                 }
@@ -597,6 +604,10 @@ private struct DictationCaptureModeToggle: View {
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+
+            if state.keyboardDictationCaptureMode == .pictureInPicture {
+                PiPDictationStatusRow(coordinator: state.pipDictationCoordinator)
+            }
         }
         .padding(.vertical, 3)
     }
@@ -607,6 +618,72 @@ private struct DictationCaptureModeToggle: View {
         } set: { mode in
             state.setKeyboardDictationCaptureMode(mode)
         }
+    }
+}
+
+private struct PiPDictationStatusRow: View {
+    @ObservedObject var coordinator: PiPDictationCoordinator
+    @Environment(AppState.self) private var state
+    @State private var isWorking = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label(statusText, systemImage: statusIcon)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(statusTint)
+
+            HStack(spacing: 10) {
+                if coordinator.isActive {
+                    Button {
+                        state.stopPiPDictationFromUserAction()
+                    } label: {
+                        Label("Stop PiP", systemImage: "xmark.circle")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                } else {
+                    Button {
+                        isWorking = true
+                        Task {
+                            await state.startPiPDictationFromUserAction()
+                            isWorking = false
+                        }
+                    } label: {
+                        if isWorking {
+                            HStack(spacing: 8) {
+                                ProgressView()
+                                Text("Start PiP")
+                            }
+                        } else {
+                            Label("Start PiP", systemImage: "pip")
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(isWorking || !coordinator.isSupported)
+                }
+            }
+        }
+        .padding(.top, 2)
+    }
+
+    private var statusText: LocalizedStringKey {
+        if coordinator.statusMessage.isEmpty {
+            return "Picture in Picture is preparing."
+        }
+        return LocalizedStringKey(coordinator.statusMessage)
+    }
+
+    private var statusIcon: String {
+        if coordinator.isActive { return "pip.fill" }
+        if coordinator.isSupported { return "pip" }
+        return "exclamationmark.triangle.fill"
+    }
+
+    private var statusTint: Color {
+        if coordinator.isActive { return .green }
+        if coordinator.isSupported { return .secondary }
+        return .orange
     }
 }
 
