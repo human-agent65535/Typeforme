@@ -1869,6 +1869,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         // `viewDidLoad`; pick up whatever's current right before display.
         refreshDynamicAppearance()
         configureKeyboardDarwinBridge()
+        _ = applySharedStandbySnapshotForFastStart()
         keyboardHaptics.prepareForKeyboardReady()
         setKeyboardContentVisible(true)
         logKeyboardPresentationGateIfUnstable()
@@ -5706,6 +5707,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         continuesAfterRelease: Bool
     ) {
         guard !isStartRequestInFlight else { return }
+        _ = applySharedStandbySnapshotForFastStart()
         if canStartFromPreparedHostSession(textEditContext: textEditContext) {
             startDictationCommand(textEditContext: textEditContext, target: target)
             return
@@ -10027,6 +10029,17 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         guard let status = KeyboardSharedDefaults.loadStatusSnapshot(),
               isUsableSharedBridgeStatusSnapshot(status, allowActiveState: allowActiveState)
         else { return false }
+        applyBridgeStatus(status, recordsLiveContact: false)
+        return true
+    }
+
+    @discardableResult
+    private func applySharedStandbySnapshotForFastStart() -> Bool {
+        guard let status = KeyboardSharedDefaults.loadStatusSnapshot(),
+              status.state == .standby
+        else { return false }
+        let age = Date().timeIntervalSince1970 - status.updatedAt
+        guard age >= 0, age <= Self.sharedStandbyLivenessSnapshotMaxAge else { return false }
         applyBridgeStatus(status, recordsLiveContact: false)
         return true
     }
