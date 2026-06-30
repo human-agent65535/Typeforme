@@ -22,12 +22,17 @@ test account details, and public privacy policy URL before submission.
 5. On iPhone, open Typeforme, paste the pairing JSON, and save.
 6. Enable the Typeforme keyboard with Full Access.
 7. Open any text field, switch to the Typeforme keyboard, and use the mic button
-   to dictate.
+   to dictate. If iOS opens Typeforme to prepare microphone access, wait for
+   the ready toast, then use the system back/swipe affordance to return to the
+   previous app.
 
 ## Privacy notes
 
 - Dictation audio is recorded by the iOS host app and sent to the user-paired
   Mac Bridge for transcription.
+- The host app uses the background audio mode to keep a user-visible microphone
+  session ready for keyboard dictation after the user enables it. The keyboard
+  extension does not record audio directly.
 - The keyboard may send selected text or nearby text context only when the user
   explicitly starts dictation, a repair command, or a refine action.
 - Keyboard learning data is stored locally in the app group and can be reset
@@ -36,7 +41,7 @@ test account details, and public privacy policy URL before submission.
 
 ## Known review blockers to resolve before submission
 
-- Remove private API host wake / return paths from App Store builds.
-- Rework or remove the background silent-audio keepalive before submitting.
+- Confirm App Review notes clearly explain the background audio mode as the
+  user-visible host microphone session for keyboard dictation.
 - Replace the default `com.example` bundle prefix with a real App Store bundle
   prefix owned by the developer team.

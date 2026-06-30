@@ -721,27 +721,18 @@ struct KeyboardHostHandoff: Codable, Equatable {
 
     let id: String
     let action: String
-    let shouldReturnToKeyboard: Bool
     let correctionMode: String
-    let returnBundleID: String?
-    let returnProcessID: Int32?
     let createdAt: TimeInterval
 
     init(
         id: String = UUID().uuidString,
         action: String,
-        shouldReturnToKeyboard: Bool,
         correctionMode: String,
-        returnBundleID: String?,
-        returnProcessID: Int32?,
         createdAt: TimeInterval = Date().timeIntervalSince1970
     ) {
         self.id = id
         self.action = action
-        self.shouldReturnToKeyboard = shouldReturnToKeyboard
         self.correctionMode = correctionMode
-        self.returnBundleID = returnBundleID
-        self.returnProcessID = returnProcessID
         self.createdAt = createdAt
     }
 
@@ -752,10 +743,7 @@ struct KeyboardHostHandoff: Codable, Equatable {
     enum CodingKeys: String, CodingKey {
         case id
         case action
-        case shouldReturnToKeyboard = "return_to_keyboard"
         case correctionMode = "correction_mode"
-        case returnBundleID = "return_bundle"
-        case returnProcessID = "return_pid"
         case createdAt = "created_at"
     }
 }

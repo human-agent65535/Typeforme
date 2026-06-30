@@ -17,17 +17,6 @@ struct ContentView: View {
                 .navigationTitle("Typeforme")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
-                    // The route status bar is the refresh affordance now; a
-                    // second arrow up here was redundant chrome.
-                    if state.showsReturnButton {
-                        ToolbarItem(placement: .topBarLeading) {
-                            Button {
-                                Task { await state.returnToPreviousAppFromToolbar() }
-                            } label: {
-                                Label("Return", systemImage: "chevron.left")
-                            }
-                        }
-                    }
                     ToolbarItem(placement: .topBarTrailing) {
                         Menu {
                             Button {

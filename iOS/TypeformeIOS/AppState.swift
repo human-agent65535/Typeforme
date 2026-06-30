@@ -372,7 +372,6 @@ final class AppState {
     var latestServerTiming: ServerTimingSummary?
     var macSettings: BridgeMacSettingsPayload?
     var isEditingMacSettings = false
-    private(set) var showsReturnButton = false
     private(set) var isStopAndSendInFlight = false
     /// Transient feedback ("Copied!", "Saved!") rendered as a toast.
     var transientMessage: String?
@@ -389,10 +388,6 @@ final class AppState {
     private let bridgeService = BridgeService()
     private let keyboardCoordinator = KeyboardCoordinator()
     private let keyboardServer = KeyboardLocalServer()
-    private let returnTracker = ReturnTracker(
-        logName: "typeforme-return-trace.log",
-        enabledKey: "debug.returnTraceEnabled"
-    )
     private let networkPathMonitor = NWPathMonitor()
     private let networkPathQueue = DispatchQueue(label: "\(TypeformeBundleConfiguration.hostBundleIdentifier).network-path")
     private static let inputModeKey = "keyboard.inputMode"
@@ -432,8 +427,6 @@ final class AppState {
     private var macSettingsFetchedAt: Date?
     private var macSettingsRevision: String?
     private var cachedServerRimeUserPhrases: [String]
-    private var returnBundleID: String?
-    private var returnProcessID: Int32?
     private var phaseResetTask: Task<Void, Never>?
     private var transientMessageTask: Task<Void, Never>?
     private var initialRenderDelayTask: Task<Void, Never>?
@@ -665,11 +658,10 @@ final class AppState {
 
     func bootstrap() async {
         await waitForInitialRenderOpportunity()
-        // Music-priority: cold launch stays on the silent keeper only (no
-        // play-and-record activation), so opening or background-waking the host
-        // never interrupts or degrades the user's Bluetooth audio. The capture
-        // engine warms on first user-initiated recording (keyboard mic or orb).
-        await setKeyboardStandby(true, surfaceAudioSessionErrors: false, warmInputEngine: false)
+        // Host launch should establish the microphone-backed keyboard session
+        // when permission already exists, so returning to the keyboard has a
+        // ready local bridge instead of a cold silent keeper.
+        await setKeyboardStandby(true, surfaceAudioSessionErrors: false, warmInputEngine: true)
         await refreshRoute(force: true, showIndicator: false)
         _ = try? await refreshMacSettingsIfChanged()
         scheduleHostRecorderPreWarm()
@@ -1080,10 +1072,9 @@ final class AppState {
     }
 
     private func scheduleHostRecorderPreWarm() {
-        // Music-priority: pre-warming activated the play-and-record session while
-        // idle, forcing Bluetooth to HFP and interrupting other audio on a cold
-        // launch. The host orb cold-starts on press instead (foreground, cheap),
-        // so idle never touches the user's playback. Intentionally a no-op.
+        // Keyboard standby owns the launch-time microphone session. The separate
+        // host-recorder prewarm path stays disabled so the orb does not compete
+        // with keyboard standby or create a second idle capture path.
     }
 
     private func resetCorrectionModeToDefault() {
@@ -1840,7 +1831,7 @@ final class AppState {
         return RefineSource(sessionID: sessionID, rawTranscript: rawText)
     }
 
-    func handleOpenURL(_ url: URL, sourceApplication: String? = nil) async {
+    func handleOpenURL(_ url: URL) async {
         guard url.scheme?.lowercased() == "typeforme" else { return }
         let now = Date().timeIntervalSince1970
         if let lastHandledOpenURL,
@@ -1885,7 +1876,7 @@ final class AppState {
             }
         }
         if let keyboardHandoff {
-            await handleKeyboardHostHandoff(action: action, handoff: keyboardHandoff, sourceApplication: sourceApplication)
+            await handleKeyboardHostHandoff(action: action, handoff: keyboardHandoff)
             return
         }
         appLog.notice("handleOpenURL: action=\(action, privacy: .public), source=\(source ?? "nil", privacy: .public), handoff=false")
@@ -1926,10 +1917,8 @@ final class AppState {
 
     private func handleKeyboardHostHandoff(
         action: String,
-        handoff: KeyboardHostHandoff,
-        sourceApplication: String?
+        handoff: KeyboardHostHandoff
     ) async {
-        var shouldReturnToKeyboard = handoff.shouldReturnToKeyboard
         if let nextMode = CorrectionMode(rawValue: handoff.correctionMode) {
             correctionMode = nextMode
         } else {
@@ -1937,49 +1926,23 @@ final class AppState {
             return
         }
 
-        // For authenticated keyboard handoffs, the URL source application can
-        // be the foreground audio app while music is playing. The keyboard's
-        // saved handoff is the source of truth for returning to the text host.
-        let resolvedReturnBundleID = resolvedReturnBundleID(
-            explicitBundleID: handoff.returnBundleID,
-            sourceApplication: nil,
-            processID: handoff.returnProcessID
-        )
-        if shouldReturnToKeyboard || resolvedReturnBundleID != nil {
-            rememberReturnTarget(
-                bundleID: resolvedReturnBundleID,
-                processID: handoff.returnProcessID,
-                requested: shouldReturnToKeyboard
-            )
-        }
         appLog.notice("handleKeyboardHostHandoff: action=\(action, privacy: .public), source=keyboard")
 
         if action == "record" || action == "microphone" {
-            _ = await prepareKeyboardMicrophoneFromHostOpen()
-            // Returning the user to where they came from is a navigation
-            // concern, not an audio one. Only stay in the host when the mic is
-            // genuinely unusable (permission denied, which opens Settings). A
-            // transient prepare failure — e.g. the capture engine could not warm
-            // because another app holds audio while music is playing — must NOT
-            // strand the user in the host; return so they can retry. Recording
-            // itself re-activates capture on the next press.
-            if AVAudioApplication.shared.recordPermission == .denied {
-                shouldReturnToKeyboard = false
+            let didPrepare = await prepareKeyboardMicrophoneFromHostOpen()
+            if didPrepare {
+                showKeyboardSwipeBackPrompt()
             }
         } else if action == "standby" {
             let didPrepareKeyboardSession = await setKeyboardStandby(
                 true,
                 requestMicrophoneIfNeeded: true
             )
-            if !didPrepareKeyboardSession,
-               AVAudioApplication.shared.recordPermission == .denied {
-                shouldReturnToKeyboard = false
+            if didPrepareKeyboardSession {
+                showKeyboardSwipeBackPrompt()
+            } else if AVAudioApplication.shared.recordPermission == .denied {
                 showKeyboardMicrophoneDeniedFeedbackIfNeeded()
             }
-        }
-
-        if shouldReturnToKeyboard {
-            await returnToPreviousAppSoon(bundleID: resolvedReturnBundleID, processID: handoff.returnProcessID)
         }
     }
 
@@ -1989,6 +1952,13 @@ final class AppState {
             showKeyboardMicrophoneDeniedFeedbackIfNeeded()
         }
         return didPrepareKeyboardSession
+    }
+
+    private func showKeyboardSwipeBackPrompt() {
+        showTransient(NSLocalizedString(
+            "Swipe back to return to your previous app.",
+            comment: "Toast after the host prepares the microphone for keyboard dictation"
+        ))
     }
 
     private func waitForInitialRenderOpportunity() async {
@@ -2565,199 +2535,6 @@ final class AppState {
     private func nextLivePreviewGeneration() -> UInt64 {
         livePreviewGeneration &+= 1
         return livePreviewGeneration
-    }
-
-    private func resolvedReturnBundleID(
-        explicitBundleID: String?,
-        sourceApplication: String?,
-        processID: Int32?
-    ) -> String? {
-        if let explicitBundleID = explicitBundleID?.trimmingCharacters(in: .whitespacesAndNewlines),
-           isUsableReturnBundleID(explicitBundleID) {
-            appendReturnTrace("resolvedReturnBundleID explicit=\(explicitBundleID)")
-            return explicitBundleID
-        }
-        if let sourceApplication = sourceApplication?.trimmingCharacters(in: .whitespacesAndNewlines),
-           isUsableReturnBundleID(sourceApplication) {
-            appendReturnTrace("resolvedReturnBundleID sourceApplication=\(sourceApplication)")
-            return sourceApplication
-        }
-        if let processID,
-           let bundleID = returnBundleIDFromProcessID(processID),
-           isUsableReturnBundleID(bundleID) {
-            appendReturnTrace("resolvedReturnBundleID process=\(processID) bundle=\(bundleID)")
-            return bundleID
-        }
-        return nil
-    }
-
-    private func returnBundleIDFromProcessID(_ processID: Int32) -> String? {
-        guard processID > 0 else { return nil }
-        guard let handle = dlopen(nil, RTLD_NOW),
-              let symbol = dlsym(handle, "proc_pidpath")
-        else {
-            appendReturnTrace("resolvedReturnBundleID pidPathUnavailable pid=\(processID)")
-            return nil
-        }
-        typealias ProcPidPath = @convention(c) (Int32, UnsafeMutableRawPointer, UInt32) -> Int32
-        let procPidPath = unsafeBitCast(symbol, to: ProcPidPath.self)
-        var pathBuffer = [CChar](repeating: 0, count: 4096)
-        let copiedLength = pathBuffer.withUnsafeMutableBufferPointer { buffer -> Int32 in
-            guard let baseAddress = buffer.baseAddress else { return 0 }
-            return procPidPath(processID, baseAddress, UInt32(buffer.count))
-        }
-        guard copiedLength > 0 else {
-            appendReturnTrace("resolvedReturnBundleID pidPathFailed pid=\(processID)")
-            return nil
-        }
-        let executablePath = String(
-            decoding: pathBuffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) },
-            as: UTF8.self
-        )
-        guard let appURL = appBundleURL(containingExecutablePath: executablePath) else {
-            appendReturnTrace("resolvedReturnBundleID appPathMissing pid=\(processID)")
-            return nil
-        }
-        guard let bundleID = Bundle(url: appURL)?.bundleIdentifier?
-            .trimmingCharacters(in: .whitespacesAndNewlines),
-            !bundleID.isEmpty
-        else {
-            appendReturnTrace("resolvedReturnBundleID bundleReadFailed pid=\(processID)")
-            return nil
-        }
-        return bundleID
-    }
-
-    private func appBundleURL(containingExecutablePath path: String) -> URL? {
-        var url = URL(fileURLWithPath: path)
-        while url.path != "/" {
-            if url.pathExtension == "app" {
-                return url
-            }
-            url.deleteLastPathComponent()
-        }
-        return nil
-    }
-
-    private func rememberReturnTarget(bundleID: String?, processID: Int32?, requested: Bool) {
-        guard requested || bundleID != nil || processID != nil else {
-            clearReturnTarget()
-            appendReturnTrace("rememberReturnTarget skipped missingBundle")
-            return
-        }
-        showsReturnButton = true
-        returnBundleID = bundleID
-        returnProcessID = processID
-    }
-
-    private func clearReturnTarget() {
-        showsReturnButton = false
-        returnBundleID = nil
-        returnProcessID = nil
-    }
-
-    func returnToPreviousAppFromToolbar() async {
-        let bundleID = returnBundleID ?? returnProcessID.flatMap(returnBundleIDFromProcessID)
-        guard bundleID != nil || returnProcessID != nil else {
-            showTransient(NSLocalizedString("Ready. Return to your previous app manually.", comment: "Return-to-keyboard fallback toast"))
-            await refreshRoute(force: true)
-            return
-        }
-        await returnToPreviousAppSoon(bundleID: bundleID, processID: returnProcessID)
-    }
-
-    private func returnToPreviousAppSoon(bundleID: String?, processID: Int32? = nil) async {
-        appendReturnTrace("returnToPreviousAppSoon start bundle=\(bundleID ?? "nil")")
-        appLog.notice("returnToPreviousAppSoon: start bundle=\(bundleID ?? "nil", privacy: .private)")
-        var resolvedBundleID = bundleID
-        let retryDelays: [UInt64] = [
-            350_000_000,
-            450_000_000,
-            650_000_000,
-            900_000_000,
-        ]
-
-        for (index, delay) in retryDelays.enumerated() {
-            try? await Task.sleep(nanoseconds: delay)
-            if resolvedBundleID == nil, let processID {
-                resolvedBundleID = returnBundleIDFromProcessID(processID)
-            }
-            guard let bundleID = resolvedBundleID else { continue }
-            appendReturnTrace("return attempt=\(index + 1) bundle=\(bundleID)")
-            appLog.notice("returnToPreviousAppSoon: attempt \(index + 1, privacy: .public), bundle=\(bundleID, privacy: .private)")
-            if openApplication(bundleID: bundleID) {
-                appLog.notice("returnToPreviousAppSoon: returned via LSApplicationWorkspace bundle")
-                appendReturnTrace("return success LSApplicationWorkspace attempt=\(index + 1) bundle=\(bundleID)")
-                clearReturnTarget()
-                return
-            }
-        }
-
-        guard let resolvedBundleID else {
-            appLog.notice("returnToPreviousAppSoon: no return bundle available")
-            appendReturnTrace("return skipped missingBundle")
-            showTransient(NSLocalizedString("Ready. Return to your previous app manually.", comment: "Return-to-keyboard fallback toast"))
-            return
-        }
-        appLog.notice("returnToPreviousAppSoon: all attempts failed")
-        appendReturnTrace("return failed allAttempts bundle=\(resolvedBundleID)")
-        showTransient(NSLocalizedString("Ready. Return to your previous app manually.", comment: "Return-to-keyboard fallback toast"))
-    }
-
-    private func isUsableReturnBundleID(_ id: String) -> Bool {
-        let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, trimmed != "<null>" else { return false }
-        guard isBundleIdentifierShape(trimmed) else { return false }
-        guard trimmed != Bundle.main.bundleIdentifier else { return false }
-        guard !TypeformeBundleConfiguration.isOwnedBundleIdentifier(trimmed) else { return false }
-        return true
-    }
-
-    private func isBundleIdentifierShape(_ value: String) -> Bool {
-        let parts = value.split(separator: ".", omittingEmptySubsequences: false)
-        guard parts.count >= 2 else { return false }
-        for part in parts {
-            guard !part.isEmpty else { return false }
-            guard part.allSatisfy({ character in
-                character.isLetter || character.isNumber || character == "-"
-            }) else { return false }
-        }
-        return true
-    }
-
-    private func openApplication(bundleID: String) -> Bool {
-        // Counterpart to the keyboard host-wake workaround. The keyboard cannot
-        // record audio, and iOS does not provide a public custom-keyboard API to
-        // open the containing app and then return to the previous host. This
-        // private return path is intentionally isolated here; App Store-targeted
-        // builds should replace it with the visible toolbar return affordance.
-        let trimmed = bundleID.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, trimmed != Bundle.main.bundleIdentifier else {
-            appendReturnTrace("openApplication invalid bundle=\(trimmed)")
-            return false
-        }
-        guard let workspaceClass = objc_getClass("LSApplicationWorkspace") as? AnyObject else {
-            appendReturnTrace("openApplication LSApplicationWorkspace unavailable bundle=\(trimmed)")
-            return false
-        }
-        let defaultSelector = NSSelectorFromString("defaultWorkspace")
-        guard let workspace = workspaceClass.perform(defaultSelector)?.takeUnretainedValue() as? NSObject else {
-            appendReturnTrace("openApplication defaultWorkspace unavailable bundle=\(trimmed)")
-            return false
-        }
-        let openSelector = NSSelectorFromString("openApplicationWithBundleID:")
-        guard workspace.responds(to: openSelector),
-              let imp = workspace.method(for: openSelector)
-        else {
-            appendReturnTrace("openApplication openApplicationWithBundleID unavailable bundle=\(trimmed)")
-            return false
-        }
-        typealias OpenApplication = @convention(c) (AnyObject, Selector, NSString) -> Bool
-        let openApplication = unsafeBitCast(imp, to: OpenApplication.self)
-        let didOpen = openApplication(workspace, openSelector, trimmed as NSString)
-        appLog.notice("openApplication: bundle=\(trimmed, privacy: .private), result=\(didOpen, privacy: .public)")
-        appendReturnTrace("openApplication bundle=\(trimmed) result=\(didOpen)")
-        return didOpen
     }
 
     private func configureKeyboardServer() {
@@ -3759,14 +3536,6 @@ final class AppState {
         }
     }
 
-    private func resetReturnTrace(_ message: String) {
-        returnTracker.reset(message)
-    }
-
-    private func appendReturnTrace(_ message: String) {
-        returnTracker.append(message)
-    }
-
     // MARK: - Idle timer
 
     /// Multiple paths can ask the screen to stay on; track holders so we don't
@@ -4031,7 +3800,7 @@ final class AppState {
     private func handleForegroundKeyboardHandoffIfNeeded() async {
         guard let handoff = KeyboardSharedDefaults.consumeLatestHostHandoff() else { return }
         appLog.notice("handleForegroundKeyboardHandoffIfNeeded: consumed action=\(handoff.action, privacy: .public)")
-        await handleKeyboardHostHandoff(action: handoff.action, handoff: handoff, sourceApplication: nil)
+        await handleKeyboardHostHandoff(action: handoff.action, handoff: handoff)
     }
 }
 

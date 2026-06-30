@@ -250,4 +250,4 @@
 "On-device Only keeps preview audio local. Cloud Fallback uses on-device when available and Apple servers otherwise. Preview punctuation follows Dictation Settings. Host audio session controls how long keyboard dictation stays ready." = "仅端上会把预览音频留在本机。云端回退会优先使用端上识别,不支持端上时使用 Apple 服务器。预览标点跟随听写设置。宿主音频会话用于控制键盘听写保持就绪的时长。";
 "Dictation Vocabulary" = "听写词汇";
 "Start Typeforme on Mac, then refresh before recording." = "先启动 Mac 上的 Typeforme,再刷新后录音。";
-"Ready. Return to your previous app manually." = "已就绪。请手动返回上一个 app。";
+"Swipe back to return to your previous app." = "已就绪。向右滑动返回上一个 app。";

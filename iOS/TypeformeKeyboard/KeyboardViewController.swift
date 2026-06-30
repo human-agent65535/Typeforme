@@ -5752,35 +5752,25 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         activeRecordingTextEditIntent = nil
         activeRecordingTextTarget = nil
         cancelScheduledHostOpen()
-        // Intentional product workaround: third-party keyboard extensions
-        // cannot capture microphone audio. When the local bridge is not already
-        // awake, the only usable flow is to wake the containing app, let it
-        // request/own microphone permission, then best-effort return the user
-        // to the previous typing app.
+        // Third-party keyboard extensions cannot capture microphone audio. When
+        // the local bridge is not already awake, hand off to the containing app
+        // so it can request and own the microphone session.
         openHostAppForKeyboardAction(
             "microphone",
-            returnToKeyboard: true,
             openingMessage: "Opening Typeforme for microphone access."
         )
     }
 
-    private func openStandbyInHostApp(
-        returnToKeyboard: Bool = true,
-        allowBundleFallback: Bool = true
-    ) {
+    private func openStandbyInHostApp() {
         openHostAppForKeyboardAction(
             "standby",
-            returnToKeyboard: returnToKeyboard,
-            openingMessage: "Opening Typeforme to prepare dictation.",
-            allowBundleFallback: allowBundleFallback
+            openingMessage: "Opening Typeforme to prepare dictation."
         )
     }
 
     private func openHostAppForKeyboardAction(
         _ action: String,
-        returnToKeyboard: Bool,
-        openingMessage: String,
-        allowBundleFallback: Bool = true
+        openingMessage: String
     ) {
         guard hasFullAccess else {
             openHostForFullAccessSetup(showTextNotice: keyboardFocus == .text)
@@ -5797,17 +5787,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
         if suppressDuplicateHostOpen(source: "keyboard-action:\(action)") { return }
         let requestedCorrectionMode = action == "record" ? currentDefaultCorrectionMode() : correctionMode
-        let returnBundleID = returnToKeyboard ? currentHostBundleID : nil
-        let returnProcessID = returnToKeyboard ? currentHostProcessID : nil
-        kbLog.notice(
-            "openHostAppForKeyboardAction: action=\(action, privacy: .public), returnBundle=\(returnBundleID ?? "nil", privacy: .private), returnPID=\(returnProcessID.map(String.init) ?? "nil", privacy: .private)"
-        )
+        kbLog.notice("openHostAppForKeyboardAction: action=\(action, privacy: .public)")
         let handoff = KeyboardHostHandoff(
             action: action,
-            shouldReturnToKeyboard: returnToKeyboard,
-            correctionMode: requestedCorrectionMode.rawValue,
-            returnBundleID: returnBundleID,
-            returnProcessID: returnProcessID
+            correctionMode: requestedCorrectionMode.rawValue
         )
         guard KeyboardSharedDefaults.saveHostHandoff(handoff) else {
             kbLog.error("openHostAppForKeyboardAction: failed to save keyboard handoff")
@@ -5832,7 +5815,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         if keyboardFocus == .text {
             showTextKeyboardStatus(NSLocalizedString("Opening Typeforme…", comment: "Inline status while opening the host app"))
         }
-        openHostApp(url, allowBundleFallback: allowBundleFallback) { [weak self] success in
+        openHostApp(url) { [weak self] success in
             kbLog.debug("openHostAppForKeyboardAction: open success=\(success, privacy: .public)")
             guard !success else { return }
             Task { @MainActor [weak self] in
@@ -5849,13 +5832,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             }
         }
 
-        // Safety net: if the host wake "succeeded" from LSApplicationWorkspace's
-        // perspective but the host never finishes booting (or never posts the
-        // sessionStarted Darwin notification that would clear the spinner),
-        // the keyboard would otherwise show "Opening Typeforme…" forever
-        // because UI only re-renders on touch, timer, or notification. After
-        // the 8s window expires, force a one-shot redraw and reset bridge
-        // state so the user can try again.
+        // Safety net: if the host wake reports success but the host never
+        // finishes booting (or never posts the sessionStarted Darwin notification
+        // that would clear the spinner), the keyboard would otherwise show
+        // "Opening Typeforme..." forever because UI only re-renders on touch,
+        // timer, or notification. After the 8s window expires, force a one-shot
+        // redraw and reset bridge state so the user can try again.
         cancelHostWakeResetTask()
         hostWakeResetTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 8_500_000_000)
@@ -5911,337 +5893,20 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         hostWakeResetTask = nil
     }
 
-    private func openHostApp(
-        _ url: URL,
-        allowBundleFallback: Bool = true,
-        completion: @escaping @Sendable (Bool) -> Void
-    ) {
+    private func openHostApp(_ url: URL, completion: @escaping @Sendable (Bool) -> Void) {
         if let extensionContext {
             kbLog.debug("openHostApp: opening URL via extension context")
-            extensionContext.open(url) { [weak self] success in
+            extensionContext.open(url) { success in
                 DispatchQueue.main.async {
-                    guard let self else {
-                        completion(success)
-                        return
-                    }
                     kbLog.debug("openHostApp: extension context open success=\(success, privacy: .public)")
-                    if success {
-                        completion(true)
-                        return
-                    }
-                    self.openHostAppViaWorkspaceFallbacks(
-                        url,
-                        allowBundleFallback: allowBundleFallback,
-                        completion: completion
-                    )
+                    completion(success)
                 }
             }
             return
         }
 
-        openHostAppViaWorkspaceFallbacks(
-            url,
-            allowBundleFallback: allowBundleFallback,
-            completion: completion
-        )
-    }
-
-    private func openHostAppViaWorkspaceFallbacks(
-        _ url: URL,
-        allowBundleFallback: Bool,
-        completion: @escaping @Sendable (Bool) -> Void
-    ) {
-        // Non-public fallback: custom keyboards may not be allowed to open URLs
-        // through NSExtensionContext. Keep private host-wake reflection here so
-        // the primary path can still use the system URL opener that preserves
-        // the source app's iOS return affordance when the extension point allows it.
-        kbLog.notice("openHostApp: opening URL via LSApplicationWorkspace fallback")
-        let didRequestURL = openHostAppViaApplicationWorkspace(url)
-        if didRequestURL {
-            completion(true)
-            return
-        }
-
-        guard allowBundleFallback else {
-            kbLog.notice("openHostApp: URL open unavailable; bundle id fallback disabled")
-            completion(false)
-            return
-        }
-
-        kbLog.notice("openHostApp: URL open unavailable; opening bundle id fallback")
-        completion(openHostAppViaBundleIdentifier())
-    }
-
-    private func openHostAppViaApplicationWorkspace(_ url: URL) -> Bool {
-        guard let workspaceClass = objc_getClass("LSApplicationWorkspace") as? AnyObject else {
-            kbLog.notice("openHostAppViaApplicationWorkspace: LSApplicationWorkspace unavailable")
-            return false
-        }
-        let defaultSelector = NSSelectorFromString("defaultWorkspace")
-        guard let workspace = workspaceClass.perform(defaultSelector)?.takeUnretainedValue() as? NSObject else {
-            kbLog.notice("openHostAppViaApplicationWorkspace: defaultWorkspace unavailable")
-            return false
-        }
-
-        let openSensitiveSelector = NSSelectorFromString("openSensitiveURL:withOptions:")
-        guard workspace.responds(to: openSensitiveSelector),
-              let imp = workspace.method(for: openSensitiveSelector)
-        else {
-            kbLog.notice("openHostAppViaApplicationWorkspace: openSensitiveURL unavailable")
-            return false
-        }
-
-        kbLog.debug("openHostAppViaApplicationWorkspace: opening URL via openSensitiveURL")
-        typealias OpenSensitiveURL = @convention(c) (AnyObject, Selector, NSURL, NSDictionary) -> Void
-        let openSensitiveURL = unsafeBitCast(imp, to: OpenSensitiveURL.self)
-        openSensitiveURL(workspace, openSensitiveSelector, url as NSURL, NSDictionary())
-        return true
-    }
-
-    private func openHostAppViaBundleIdentifier() -> Bool {
-        guard let workspaceClass = objc_getClass("LSApplicationWorkspace") as? AnyObject else {
-            kbLog.notice("openHostAppViaBundleIdentifier: LSApplicationWorkspace unavailable")
-            return false
-        }
-        let defaultSelector = NSSelectorFromString("defaultWorkspace")
-        guard let workspace = workspaceClass.perform(defaultSelector)?.takeUnretainedValue() as? NSObject else {
-            kbLog.notice("openHostAppViaBundleIdentifier: defaultWorkspace unavailable")
-            return false
-        }
-
-        let openSelector = NSSelectorFromString("openApplicationWithBundleID:")
-        guard workspace.responds(to: openSelector),
-              let imp = workspace.method(for: openSelector)
-        else {
-            kbLog.notice("openHostAppViaBundleIdentifier: openApplicationWithBundleID unavailable")
-            return false
-        }
-
-        typealias OpenApplication = @convention(c) (AnyObject, Selector, NSString) -> Bool
-        let openApplication = unsafeBitCast(imp, to: OpenApplication.self)
-        let didOpen = openApplication(
-            workspace,
-            openSelector,
-            Self.containingAppBundleIdentifier as NSString
-        )
-        kbLog.debug("openHostAppViaBundleIdentifier: result=\(didOpen, privacy: .public)")
-        return didOpen
-    }
-
-    private var currentHostBundleID: String? {
-        currentHostBundleIDFromCurrentHostPID()
-            ?? currentTextHostBundleID.flatMap { isUsableReturnBundleID($0) ? $0 : nil }
-    }
-
-    private var currentTextHostBundleID: String? {
-        // Non-public host discovery. This exists only to make the microphone
-        // handoff feel like a keyboard action on device and to avoid opening
-        // Typeforme from inside Typeforme. Removing it makes host return
-        // manual; keeping it is not appropriate for an App Store-safe build.
-        let objects: [AnyObject?] = [self, parent]
-        let names = [
-            "_hostApplicationBundleIdentifier",
-            "_hostBundleIdentifier",
-            "_hostBundleID"
-        ]
-        for object in objects {
-            for name in names {
-                if let id = privateStringValue(named: name, from: object) {
-                    let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if isUsableReturnBundleID(trimmed) {
-                        return trimmed
-                    }
-                }
-            }
-        }
-        return currentHostBundleIDFromCurrentHostPID()
-    }
-
-    private func currentHostBundleIDFromCurrentHostPID() -> String? {
-        guard let pid = currentHostProcessID else { return nil }
-        let hostPID: AnyObject = NSNumber(value: pid)
-        return currentHostBundleIDFromXPC(hostPID: hostPID).flatMap { id in
-            let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
-            return isUsableReturnBundleID(trimmed) ? trimmed : nil
-        }
-    }
-
-    private var currentHostProcessID: Int32? {
-        let objects: [AnyObject?] = [self, parent]
-        for object in objects {
-            if let number = privateIntMethodValue(named: "_hostProcessIdentifier", from: object),
-               number.int32Value > 0 {
-                return number.int32Value
-            }
-            if let hostPID = privateObjectValue(named: "_hostPID", from: object),
-               let pid = intValue(from: hostPID),
-               pid > 0 {
-                return pid
-            }
-        }
-        return nil
-    }
-
-    private func currentHostBundleIDFromXPC(hostPID: AnyObject) -> String? {
-        guard let serviceClass = NSClassFromString("PKService") else { return nil }
-        let serviceObject = serviceClass as AnyObject
-        let defaultServiceSelector = NSSelectorFromString("defaultService")
-        guard serviceObject.responds(to: defaultServiceSelector),
-              let service = serviceObject.perform(defaultServiceSelector)?.takeUnretainedValue() as? NSObject
-        else { return nil }
-
-        let personalitiesSelector = NSSelectorFromString("personalities")
-        guard service.responds(to: personalitiesSelector),
-              let personalities = service.perform(personalitiesSelector)?.takeUnretainedValue() as? NSDictionary
-        else { return nil }
-
-        let extensionBundleIDs = [
-            Bundle.main.bundleIdentifier,
-            Bundle(for: type(of: self)).bundleIdentifier,
-        ].compactMap { $0 }
-
-        for extensionBundleID in extensionBundleIDs {
-            guard let infos = personalities.object(forKey: extensionBundleID) as? NSDictionary,
-                  let info = infos.object(forKey: hostPID) as? NSObject,
-                  let connection = privateObjectValue(named: "connection", from: info),
-                  let xpcConnection = privateObjectValue(named: "_xpcConnection", from: connection),
-                  let bundleID = copyBundleID(fromXPCConnection: xpcConnection)
-            else { continue }
-            return bundleID
-        }
-        return nil
-    }
-
-    private func copyBundleID(fromXPCConnection connection: AnyObject) -> String? {
-        guard let handle = dlopen(nil, RTLD_NOW),
-              let symbol = dlsym(handle, "xpc_connection_copy_bundle_id")
-        else { return nil }
-        typealias CopyBundleID = @convention(c) (AnyObject) -> UnsafeMutablePointer<CChar>?
-        let copyBundleID = unsafeBitCast(symbol, to: CopyBundleID.self)
-        guard let cString = copyBundleID(connection) else { return nil }
-        defer { free(cString) }
-        return String(cString: cString)
-    }
-
-    private func intValue(from object: AnyObject) -> Int32? {
-        if let number = object as? NSNumber {
-            return number.int32Value
-        }
-        return Int32(String(describing: object).trimmingCharacters(in: .whitespacesAndNewlines))
-    }
-
-    private func isUsableReturnBundleID(_ id: String) -> Bool {
-        let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, trimmed != "<null>" else { return false }
-        guard isBundleIdentifierShape(trimmed) else { return false }
-        guard trimmed != Bundle.main.bundleIdentifier else { return false }
-        guard !TypeformeBundleConfiguration.isOwnedBundleIdentifier(trimmed) else { return false }
-        return true
-    }
-
-    private func isBundleIdentifierShape(_ value: String) -> Bool {
-        let parts = value.split(separator: ".", omittingEmptySubsequences: false)
-        guard parts.count >= 2 else { return false }
-        return parts.allSatisfy { part in
-            !part.isEmpty && part.allSatisfy { $0.isLetter || $0.isNumber || $0 == "-" }
-        }
-    }
-
-    private func privateStringValue(named name: String, from object: AnyObject?) -> String? {
-        guard let value = privateObjectValue(named: name, from: object) else { return nil }
-        if let string = value as? String { return string }
-        if let number = value as? NSNumber { return number.stringValue }
-        let text = String(describing: value)
-        return text == "<null>" ? nil : text
-    }
-
-    private func privateObjectValue(named name: String, from object: AnyObject?) -> AnyObject? {
-        guard let object else { return nil }
-        let selector = NSSelectorFromString(name)
-        if object.responds(to: selector) {
-            if let returnTypeText = methodReturnType(named: selector, from: object) {
-                if returnTypeText.hasPrefix("@") || returnTypeText == "#" {
-                    return object.perform(selector)?.takeUnretainedValue()
-                }
-                return privateIntMethodValue(named: name, from: object)
-            }
-            return object.perform(selector)?.takeUnretainedValue()
-        }
-
-        var nextClass: AnyClass? = object_getClass(object)
-        while let currentClass = nextClass {
-            if let ivar = class_getInstanceVariable(currentClass, name) {
-                return privateIvarValue(ivar, from: object)
-            }
-            nextClass = class_getSuperclass(currentClass)
-        }
-        return nil
-    }
-
-    private func privateIntMethodValue(named name: String, from object: AnyObject?) -> NSNumber? {
-        guard let object else { return nil }
-        let selector = NSSelectorFromString(name)
-        guard object.responds(to: selector),
-              let returnTypeText = methodReturnType(named: selector, from: object),
-              let imp = object.method(for: selector)
-        else { return nil }
-
-        switch returnTypeText {
-        case "i":
-            typealias Getter = @convention(c) (AnyObject, Selector) -> Int32
-            return NSNumber(value: unsafeBitCast(imp, to: Getter.self)(object, selector))
-        case "I":
-            typealias Getter = @convention(c) (AnyObject, Selector) -> UInt32
-            return NSNumber(value: unsafeBitCast(imp, to: Getter.self)(object, selector))
-        case "q":
-            typealias Getter = @convention(c) (AnyObject, Selector) -> Int64
-            return NSNumber(value: unsafeBitCast(imp, to: Getter.self)(object, selector))
-        case "Q":
-            typealias Getter = @convention(c) (AnyObject, Selector) -> UInt64
-            return NSNumber(value: unsafeBitCast(imp, to: Getter.self)(object, selector))
-        case "s":
-            typealias Getter = @convention(c) (AnyObject, Selector) -> Int16
-            return NSNumber(value: unsafeBitCast(imp, to: Getter.self)(object, selector))
-        case "S":
-            typealias Getter = @convention(c) (AnyObject, Selector) -> UInt16
-            return NSNumber(value: unsafeBitCast(imp, to: Getter.self)(object, selector))
-        case "c", "B":
-            typealias Getter = @convention(c) (AnyObject, Selector) -> Bool
-            return NSNumber(value: unsafeBitCast(imp, to: Getter.self)(object, selector))
-        default:
-            return nil
-        }
-    }
-
-    private func methodReturnType(named selector: Selector, from object: AnyObject) -> String? {
-        guard let method = class_getInstanceMethod(type(of: object), selector),
-              method_getNumberOfArguments(method) == 2
-        else { return nil }
-        let returnType = method_copyReturnType(method)
-        let returnTypeText = String(cString: returnType)
-        free(returnType)
-        return returnTypeText
-    }
-
-    private func privateIvarValue(_ ivar: Ivar, from object: AnyObject) -> AnyObject? {
-        guard let typeEncoding = ivar_getTypeEncoding(ivar) else { return nil }
-        let type = String(cString: typeEncoding)
-        if type.hasPrefix("@") {
-            return object_getIvar(object, ivar) as AnyObject?
-        }
-
-        let offset = ivar_getOffset(ivar)
-        let rawPointer = Unmanaged.passUnretained(object).toOpaque().advanced(by: offset)
-        switch type {
-        case "i": return NSNumber(value: rawPointer.load(as: Int32.self))
-        case "I": return NSNumber(value: rawPointer.load(as: UInt32.self))
-        case "q": return NSNumber(value: rawPointer.load(as: Int64.self))
-        case "Q": return NSNumber(value: rawPointer.load(as: UInt64.self))
-        case "s": return NSNumber(value: rawPointer.load(as: Int16.self))
-        case "S": return NSNumber(value: rawPointer.load(as: UInt16.self))
-        case "c", "B": return NSNumber(value: rawPointer.load(as: Bool.self))
-        default: return nil
-        }
+        kbLog.notice("openHostApp: extension context unavailable")
+        completion(false)
     }
 
     private func startDictationCommand(
@@ -6369,7 +6034,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     @objc private func openHostFromSettingsButton() {
         lightHaptic()
-        openStandbyInHostApp(returnToKeyboard: false)
+        openStandbyInHostApp()
     }
 
     @objc private func selectCorrectionModeButton(_ sender: UIButton) {
@@ -10353,10 +10018,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         if Date().timeIntervalSince1970 - lastBridgeContactAt < 3 {
             return status.state != .idle
         }
-        // A fresh standby snapshot is enough for the handoff-return window:
-        // the host may prepare audio and return before the keyboard receives a
-        // Darwin echo. Older standby snapshots still expire so a killed host
-        // does not stay green indefinitely.
+        // A fresh standby snapshot is enough after host handoff: the host may
+        // prepare audio before the keyboard receives a Darwin echo. Older
+        // standby snapshots still expire so a killed host does not stay green
+        // indefinitely.
         switch status.state {
         case .standby:
             return Date().timeIntervalSince1970 - status.updatedAt <= Self.sharedStandbyLivenessSnapshotMaxAge

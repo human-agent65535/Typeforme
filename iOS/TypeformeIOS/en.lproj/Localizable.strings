@@ -250,4 +250,4 @@
 "On-device Only keeps preview audio local. Cloud Fallback uses on-device when available and Apple servers otherwise. Preview punctuation follows Dictation Settings. Host audio session controls how long keyboard dictation stays ready." = "On-device Only keeps preview audio local. Cloud Fallback uses on-device when available and Apple servers otherwise. Preview punctuation follows Dictation Settings. Host audio session controls how long keyboard dictation stays ready.";
 "Dictation Vocabulary" = "Dictation Vocabulary";
 "Start Typeforme on Mac, then refresh before recording." = "Start Typeforme on Mac, then refresh before recording.";
-"Ready. Return to your previous app manually." = "Ready. Return to your previous app manually.";
+"Swipe back to return to your previous app." = "Swipe back to return to your previous app.";

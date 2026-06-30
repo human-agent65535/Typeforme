@@ -7,16 +7,13 @@ private extension Notification.Name {
 
 final class AppDelegate: NSObject, UIApplicationDelegate {
     func application(
-        _ app: UIApplication,
+        _ _: UIApplication,
         open url: URL,
-        options: [UIApplication.OpenURLOptionsKey: Any] = [:]
+        options _: [UIApplication.OpenURLOptionsKey: Any] = [:]
     ) -> Bool {
         NotificationCenter.default.post(
             name: .typeformeOpenURL,
-            object: url,
-            userInfo: [
-                "sourceApplication": options[.sourceApplication] as? String as Any
-            ]
+            object: url
         )
         return true
     }
@@ -39,8 +36,7 @@ struct TypeformeIOSApp: App {
                 }
                 .onReceive(NotificationCenter.default.publisher(for: .typeformeOpenURL)) { notification in
                     guard let url = notification.object as? URL else { return }
-                    let sourceApplication = notification.userInfo?["sourceApplication"] as? String
-                    Task { await state.handleOpenURL(url, sourceApplication: sourceApplication) }
+                    Task { await state.handleOpenURL(url) }
                 }
                 .onOpenURL { url in
                     Task { await state.handleOpenURL(url) }
