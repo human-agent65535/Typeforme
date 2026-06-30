@@ -95,6 +95,7 @@ final class PiPDictationCoordinator: NSObject, ObservableObject {
                 comment: "PiP unavailable status"
             )
             statusMessage = lastErrorMessage ?? ""
+            stopRenderingIfIdle()
             return false
         }
         guard !controller.isPictureInPictureActive else {
@@ -354,6 +355,7 @@ extension PiPDictationCoordinator: AVPictureInPictureControllerDelegate {
         Task { @MainActor in
             self.lastErrorMessage = error.localizedDescription
             self.statusMessage = error.localizedDescription
+            self.stopRenderingIfIdle()
             self.refreshCapability()
         }
     }

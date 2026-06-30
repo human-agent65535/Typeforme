@@ -25,13 +25,19 @@ test account details, and public privacy policy URL before submission.
    to dictate. If iOS opens Typeforme to prepare microphone access, wait for
    the ready toast, then use the system back/swipe affordance to return to the
    previous app.
+8. If Keyboard Settings uses PiP capture, start the visible Typeforme Picture
+   in Picture session before returning to the text field. The microphone opens
+   only after the user presses the keyboard mic button.
 
 ## Privacy notes
 
 - Dictation audio is recorded by the iOS host app and sent to the user-paired
   Mac Bridge for transcription.
-- The host app uses the background audio mode to keep a user-visible microphone
-  session ready for keyboard dictation after the user enables it. The keyboard
+- The host app uses the background audio mode for keyboard dictation readiness:
+  Background Mic keeps a user-visible host audio session ready after the user
+  enables it, and PiP capture keeps a visible Typeforme Picture in Picture
+  session active so the keyboard can reach the host without switching apps.
+  The microphone opens only during user-initiated recording. The keyboard
   extension does not record audio directly.
 - The keyboard may send selected text or nearby text context only when the user
   explicitly starts dictation, a repair command, or a refine action.
@@ -39,9 +45,9 @@ test account details, and public privacy policy URL before submission.
   from Keyboard Settings.
 - Typeforme does not use tracking.
 
-## Known review blockers to resolve before submission
+## Before submission checklist
 
-- Confirm App Review notes clearly explain the background audio mode as the
-  user-visible host microphone session for keyboard dictation.
 - Replace the default `com.example` bundle prefix with a real App Store bundle
   prefix owned by the developer team.
+- Keep the background audio mode explanation aligned with the shipped Keyboard
+  Settings capture options.

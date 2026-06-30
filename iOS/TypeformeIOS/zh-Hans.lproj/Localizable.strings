@@ -54,6 +54,7 @@
 "Picture in Picture stopped" = "画中画已停止";
 "Picture in Picture is unavailable." = "画中画不可用。";
 "Picture in Picture is unavailable. Falling back to Background Mic." = "画中画不可用,将回退到后台麦克风。";
+"Keyboard bridge is unavailable." = "键盘 bridge 不可用。";
 "Open PiP to skip app switching" = "打开画中画以免切换 app";
 "Recording stopped because Picture in Picture closed." = "画中画关闭,录音已停止。";
 "Listening from the Typeforme keyboard" = "正在通过 Typeforme 键盘收音";

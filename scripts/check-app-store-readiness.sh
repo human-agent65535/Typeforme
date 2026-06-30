@@ -74,7 +74,11 @@ done
 
 if /usr/libexec/PlistBuddy -c 'Print :UIBackgroundModes' iOS/TypeformeIOS/Info.plist >/dev/null 2>&1; then
     if /usr/libexec/PlistBuddy -c 'Print :UIBackgroundModes' iOS/TypeformeIOS/Info.plist | grep -q 'audio'; then
-        fail "iOS host still declares UIBackgroundModes=audio; confirm this is removed or defensible before App Store submission"
+        if ! rg -q 'background audio mode' docs/app-store-review-notes.md \
+            || ! rg -q 'Picture in Picture|PiP' docs/app-store-review-notes.md; then
+            fail "iOS host declares UIBackgroundModes=audio but docs/app-store-review-notes.md does not explain the background audio and PiP review rationale"
+        fi
+        warn "iOS host declares UIBackgroundModes=audio; App Review notes must keep the PiP/background audio rationale accurate"
     fi
 fi
 

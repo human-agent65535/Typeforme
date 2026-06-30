@@ -54,6 +54,7 @@
 "Picture in Picture stopped" = "Picture in Picture stopped";
 "Picture in Picture is unavailable." = "Picture in Picture is unavailable.";
 "Picture in Picture is unavailable. Falling back to Background Mic." = "Picture in Picture is unavailable. Falling back to Background Mic.";
+"Keyboard bridge is unavailable." = "Keyboard bridge is unavailable.";
 "Open PiP to skip app switching" = "Open PiP to skip app switching";
 "Recording stopped because Picture in Picture closed." = "Recording stopped because Picture in Picture closed.";
 "Listening from the Typeforme keyboard" = "Listening from the Typeforme keyboard";
