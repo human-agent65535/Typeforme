@@ -6,10 +6,9 @@ struct ContentView: View {
     @State private var showingPairing = false
     @State private var showingDictationSettings = false
     @State private var showingKeyboardSettings = false
+    @State private var showingSetupReadiness = false
     @State private var showingKeyboardGuide = false
     @State private var rawTranscriptExpanded = false
-    /// First-launch setup guidance — once dismissed, the user can still reach
-    /// it via the toolbar's "Keyboard Guide" menu item.
 
     var body: some View {
         NavigationStack {
@@ -23,6 +22,11 @@ struct ContentView: View {
                                 showingPairing = true
                             } label: {
                                 Label("Pairing", systemImage: "qrcode.viewfinder")
+                            }
+                            Button {
+                                showingSetupReadiness = true
+                            } label: {
+                                Label("Setup & Permissions", systemImage: "checklist")
                             }
                             Button {
                                 showingDictationSettings = true
@@ -71,6 +75,16 @@ struct ContentView: View {
                             .environment(state)
                     }
                 }
+                .sheet(isPresented: $showingSetupReadiness, onDismiss: {
+                    state.dismissSetupReadiness()
+                }) {
+                    NavigationStack {
+                        SetupReadinessView(
+                            onShowGuide: openGuideFromSetup
+                        )
+                        .environment(state)
+                    }
+                }
                 .sheet(isPresented: $showingKeyboardGuide) {
                     NavigationStack {
                         KeyboardGuideView()
@@ -86,6 +100,25 @@ struct ContentView: View {
                         .padding(.top, 8)
                         .animation(.snappy(duration: 0.22), value: state.transientMessage)
                 }
+                .onAppear {
+                    presentFirstRunReadinessIfNeeded()
+                }
+                .onChange(of: state.shouldPresentSetupReadiness) { _, _ in
+                    presentFirstRunReadinessIfNeeded()
+                }
+        }
+    }
+
+    private func presentFirstRunReadinessIfNeeded() {
+        state.refreshSetupReadinessStatuses()
+        guard state.shouldPresentSetupReadiness, !showingSetupReadiness else { return }
+        showingSetupReadiness = true
+    }
+
+    private func openGuideFromSetup() {
+        showingSetupReadiness = false
+        DispatchQueue.main.async {
+            showingKeyboardGuide = true
         }
     }
 
@@ -113,9 +146,9 @@ struct ContentView: View {
                                 state.errorMessage = nil
                             }
                         }
-                        if state.keyboardNeedsFullAccessSetup {
-                            KeyboardFullAccessBanner {
-                                showingKeyboardGuide = true
+                        if state.setupReadinessNeedsAttention {
+                            SetupReadinessBanner {
+                                showingSetupReadiness = true
                             }
                         }
                         ModeChipsRow()
@@ -123,6 +156,7 @@ struct ContentView: View {
                         ResultCard()
                         RawTranscriptCard(expanded: $rawTranscriptExpanded)
                         SetupStatusCard(
+                            onShowSetup: { showingSetupReadiness = true },
                             onShowGuide: { showingKeyboardGuide = true }
                         )
                     }
@@ -145,6 +179,7 @@ struct ContentView: View {
 /// collapsed afterwards, while still letting the user re-expand any time.
 private struct SetupStatusCard: View {
     @Environment(AppState.self) private var state
+    let onShowSetup: () -> Void
     let onShowGuide: () -> Void
 
     @State private var isExpanded: Bool = true
@@ -156,9 +191,9 @@ private struct SetupStatusCard: View {
                 withAnimation(.snappy(duration: 0.2)) { isExpanded.toggle() }
             } label: {
                 HStack(spacing: 8) {
-                    Image(systemName: state.keyboardNeedsFullAccessSetup ? "lock.shield.fill" : "checkmark.seal.fill")
-                        .foregroundStyle(state.keyboardNeedsFullAccessSetup ? Color.orange : Color.green)
-                    Text(state.keyboardNeedsFullAccessSetup ? "Keyboard needs Full Access" : "Keyboard ready")
+                    Image(systemName: state.setupReadinessNeedsAttention ? "exclamationmark.triangle.fill" : "checkmark.seal.fill")
+                        .foregroundStyle(state.setupReadinessNeedsAttention ? Color.orange : Color.green)
+                    Text(state.setupReadinessNeedsAttention ? "Setup needs attention" : "Setup ready")
                         .font(.subheadline.weight(.semibold))
                     Spacer()
                     Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
@@ -175,7 +210,7 @@ private struct SetupStatusCard: View {
             if isExpanded {
                 Divider()
 
-                Text(state.keyboardNeedsFullAccessSetup ? "Full Access lets the keyboard connect to this app, sync settings, and send selected text or nearby context only when you dictate or refine." : "Typeforme dictates in any text field via its keyboard.")
+                Text(state.setupReadinessNeedsAttention ? "Review microphone and keyboard access before using Typeforme from the keyboard." : "Typeforme is ready to dictate in any text field via its keyboard.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -187,6 +222,11 @@ private struct SetupStatusCard: View {
                         subtitle: "Settings → General → Keyboard → Add New Keyboard"
                     )
                     SetupStepRow(
+                        icon: "mic",
+                        title: "Allow Microphone",
+                        subtitle: "Required for host-owned keyboard dictation"
+                    )
+                    SetupStepRow(
                         icon: "lock.shield",
                         title: "Allow Full Access",
                         subtitle: "Needed for local bridge, dictation, settings, and learning sync"
@@ -195,19 +235,17 @@ private struct SetupStatusCard: View {
 
                 HStack(spacing: 10) {
                     Button {
-                        onShowGuide()
+                        onShowSetup()
                     } label: {
-                        Label("Guide", systemImage: "questionmark.circle")
+                        Label("Setup", systemImage: "checklist")
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
 
                     Button {
-                        if let url = URL(string: UIApplication.openSettingsURLString) {
-                            UIApplication.shared.open(url)
-                        }
+                        onShowGuide()
                     } label: {
-                        Label("Open Settings", systemImage: "arrow.up.right.square")
+                        Label("Guide", systemImage: "questionmark.circle")
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
@@ -223,9 +261,9 @@ private struct SetupStatusCard: View {
         .onAppear {
             guard !didApplyInitialExpansion else { return }
             didApplyInitialExpansion = true
-            isExpanded = state.keyboardNeedsFullAccessSetup
+            isExpanded = state.setupReadinessNeedsAttention
         }
-        .onChange(of: state.keyboardNeedsFullAccessSetup) { _, needsSetup in
+        .onChange(of: state.setupReadinessNeedsAttention) { _, needsSetup in
             guard !needsSetup else {
                 withAnimation(.snappy(duration: 0.2)) {
                     isExpanded = true
@@ -239,37 +277,28 @@ private struct SetupStatusCard: View {
     }
 }
 
-private struct KeyboardFullAccessBanner: View {
-    let onShowGuide: () -> Void
+private struct SetupReadinessBanner: View {
+    @Environment(AppState.self) private var state
+    let onShowSetup: () -> Void
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
-            Image(systemName: "lock.shield.fill")
+            Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundStyle(.orange)
             VStack(alignment: .leading, spacing: 8) {
-                Text("Keyboard needs Full Access")
+                Text("Setup needs attention")
                     .font(.footnote.weight(.semibold))
-                Text("Full Access lets the keyboard connect to Typeforme, sync settings, and send text context only when you use dictation or refine.")
+                Text(message)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 HStack(spacing: 10) {
                     Button {
-                        onShowGuide()
+                        onShowSetup()
                     } label: {
-                        Label("Guide", systemImage: "questionmark.circle")
+                        Label("Setup", systemImage: "checklist")
                     }
                     .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-
-                    Button {
-                        if let url = URL(string: UIApplication.openSettingsURLString) {
-                            UIApplication.shared.open(url)
-                        }
-                    } label: {
-                        Label("Open Settings", systemImage: "arrow.up.right.square")
-                    }
-                    .buttonStyle(.bordered)
                     .controlSize(.small)
                 }
             }
@@ -285,6 +314,16 @@ private struct KeyboardFullAccessBanner: View {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .stroke(Color.orange.opacity(0.32), lineWidth: 0.5)
         )
+    }
+
+    private var message: LocalizedStringKey {
+        if !state.microphonePermissionStatus.isGranted {
+            return "Allow Microphone so the host app can own dictation audio."
+        }
+        if state.keyboardNeedsFullAccessSetup {
+            return "Enable the Typeforme keyboard and allow Full Access."
+        }
+        return "Review setup and permissions."
     }
 }
 
@@ -308,6 +347,371 @@ private struct SetupStepRow: View {
             }
             Spacer()
         }
+    }
+}
+
+// MARK: - Setup readiness
+
+private struct SetupReadinessView: View {
+    @Environment(\.dismiss) private var dismiss
+    @Environment(AppState.self) private var state
+    @State private var isRequestingMicrophone = false
+    @State private var isRequestingSpeech = false
+
+    let onShowGuide: () -> Void
+
+    var body: some View {
+        readinessList
+            .navigationTitle("Setup & Permissions")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+            .onAppear {
+                state.refreshSetupReadinessStatuses()
+            }
+    }
+
+    private var readinessList: some View {
+        List {
+            introSection
+            captureMethodSection
+            requiredSection
+            if showsSpeechPreviewPermission {
+                optionalSection
+            }
+            helpSection
+        }
+    }
+
+    @ViewBuilder
+    private var captureMethodSection: some View {
+        Section("Capture Method") {
+            DictationCaptureModeToggle()
+        }
+    }
+
+    @ViewBuilder
+    private var introSection: some View {
+        Section {
+            Text("Check the required host app setup before using Typeforme from the keyboard.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private var requiredSection: some View {
+        Section("Required") {
+            ReadinessActionRow(
+                icon: "mic",
+                title: "Microphone",
+                detail: "Required because the host app owns keyboard dictation audio.",
+                status: microphoneStatus,
+                actionTitle: microphoneActionTitle,
+                actionIcon: microphoneActionIcon,
+                isWorking: isRequestingMicrophone,
+                action: microphoneAction
+            )
+
+            ReadinessActionRow(
+                icon: "keyboard",
+                title: "Keyboard & Full Access",
+                detail: "iOS exposes this only through Settings. Full Access lets the keyboard reach the host app.",
+                status: keyboardStatus,
+                actionTitle: keyboardActionTitle,
+                actionIcon: "arrow.up.right.square",
+                action: keyboardAction
+            )
+        }
+    }
+
+    @ViewBuilder
+    private var optionalSection: some View {
+        Section("Optional") {
+            ReadinessActionRow(
+                icon: "waveform",
+                title: "Apple Speech Preview",
+                detail: "Only needed for on-iPhone live partial preview. Core dictation still works without it.",
+                status: speechStatus,
+                actionTitle: speechActionTitle,
+                actionIcon: speechActionIcon,
+                isWorking: isRequestingSpeech,
+                action: speechAction
+            )
+        }
+    }
+
+    @ViewBuilder
+    private var helpSection: some View {
+        Section {
+            Button {
+                onShowGuide()
+            } label: {
+                Label("Keyboard Guide", systemImage: "questionmark.circle")
+            }
+        } header: {
+            Text("Help")
+        } footer: {
+            Text("Camera access is requested only when you open the QR scanner.")
+        }
+    }
+
+    private var showsSpeechPreviewPermission: Bool {
+        state.keyboardLivePreviewEnabled && state.keyboardLivePreviewSource == .appleSpeech
+    }
+
+    private var microphoneStatus: ReadinessStatusBadge {
+        switch state.microphonePermissionStatus {
+        case .granted:
+            return .ready("Allowed")
+        case .notDetermined:
+            return .warning("Required")
+        case .denied:
+            return .blocked("Denied")
+        case .restricted:
+            return .blocked("Restricted")
+        case .unavailable:
+            return .blocked("Unavailable")
+        case .unknown:
+            return .warning("Unknown")
+        }
+    }
+
+    private var microphoneActionTitle: String? {
+        switch state.microphonePermissionStatus {
+        case .notDetermined:
+            return "Allow"
+        case .denied:
+            return "Open Settings"
+        default:
+            return nil
+        }
+    }
+
+    private var microphoneActionIcon: String {
+        state.microphonePermissionStatus == .denied ? "arrow.up.right.square" : "mic.fill"
+    }
+
+    private var microphoneAction: (() -> Void)? {
+        guard microphoneActionTitle != nil else { return nil }
+        return {
+            isRequestingMicrophone = true
+            Task {
+                await state.requestMicrophonePermissionForSetup()
+                isRequestingMicrophone = false
+            }
+        }
+    }
+
+    private var keyboardStatus: ReadinessStatusBadge {
+        state.keyboardNeedsFullAccessSetup
+            ? .warning("Required")
+            : .ready("Ready")
+    }
+
+    private var keyboardActionTitle: String? {
+        state.keyboardNeedsFullAccessSetup ? "Open Settings" : nil
+    }
+
+    private var keyboardAction: (() -> Void)? {
+        if state.keyboardNeedsFullAccessSetup {
+            return openAppSettings
+        }
+        return nil
+    }
+
+    private var speechStatus: ReadinessStatusBadge {
+        switch state.speechRecognitionPermissionStatus {
+        case .granted:
+            return .ready("Allowed")
+        case .notDetermined:
+            return .neutral("Optional")
+        case .denied:
+            return .neutral("Off")
+        case .restricted:
+            return .warning("Restricted")
+        case .unavailable:
+            return .warning("Unavailable")
+        case .unknown:
+            return .neutral("Unknown")
+        }
+    }
+
+    private var speechActionTitle: String? {
+        switch state.speechRecognitionPermissionStatus {
+        case .notDetermined:
+            return "Allow Preview"
+        case .denied:
+            return "Open Settings"
+        default:
+            return nil
+        }
+    }
+
+    private var speechActionIcon: String {
+        state.speechRecognitionPermissionStatus == .denied ? "arrow.up.right.square" : "waveform"
+    }
+
+    private var speechAction: (() -> Void)? {
+        guard speechActionTitle != nil else { return nil }
+        return {
+            switch state.speechRecognitionPermissionStatus {
+            case .notDetermined:
+                isRequestingSpeech = true
+                Task {
+                    await state.requestSpeechRecognitionPermissionForSetup()
+                    isRequestingSpeech = false
+                }
+            case .denied:
+                openAppSettings()
+            default:
+                break
+            }
+        }
+    }
+
+    private func openAppSettings() {
+        guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+        UIApplication.shared.open(url)
+    }
+}
+
+private struct DictationCaptureModeToggle: View {
+    @Environment(AppState.self) private var state
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Picker("Capture Method", selection: captureModeBinding) {
+                ForEach(KeyboardDictationCaptureMode.allCases) { mode in
+                    Text(mode.title).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .disabled(state.isBusy)
+
+            Text(state.keyboardDictationCaptureMode.detail)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.vertical, 3)
+    }
+
+    private var captureModeBinding: Binding<KeyboardDictationCaptureMode> {
+        Binding {
+            state.keyboardDictationCaptureMode
+        } set: { mode in
+            state.setKeyboardDictationCaptureMode(mode)
+        }
+    }
+}
+
+private struct ReadinessStatusBadge {
+    let title: String
+    let systemImage: String
+    let tint: Color
+
+    static func ready(_ title: String) -> ReadinessStatusBadge {
+        ReadinessStatusBadge(title: title, systemImage: "checkmark.circle.fill", tint: .green)
+    }
+
+    static func warning(_ title: String) -> ReadinessStatusBadge {
+        ReadinessStatusBadge(title: title, systemImage: "exclamationmark.triangle.fill", tint: .orange)
+    }
+
+    static func blocked(_ title: String) -> ReadinessStatusBadge {
+        ReadinessStatusBadge(title: title, systemImage: "xmark.circle.fill", tint: .red)
+    }
+
+    static func info(_ title: String) -> ReadinessStatusBadge {
+        ReadinessStatusBadge(title: title, systemImage: "checkmark.circle.fill", tint: .blue)
+    }
+
+    static func neutral(_ title: String) -> ReadinessStatusBadge {
+        ReadinessStatusBadge(title: title, systemImage: "circle", tint: .secondary)
+    }
+}
+
+private struct ReadinessActionRow: View {
+    let icon: String
+    let title: String
+    let detail: String
+    let status: ReadinessStatusBadge
+    let actionTitle: String?
+    let actionIcon: String
+    var isWorking = false
+    let action: (() -> Void)?
+
+    init(
+        icon: String,
+        title: String,
+        detail: String,
+        status: ReadinessStatusBadge,
+        actionTitle: String? = nil,
+        actionIcon: String = "arrow.right",
+        isWorking: Bool = false,
+        action: (() -> Void)? = nil
+    ) {
+        self.icon = icon
+        self.title = title
+        self.detail = detail
+        self.status = status
+        self.actionTitle = actionTitle
+        self.actionIcon = actionIcon
+        self.isWorking = isWorking
+        self.action = action
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: icon)
+                    .font(.headline)
+                    .foregroundStyle(.tint)
+                    .frame(width: 24)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(LocalizedStringKey(title))
+                            .font(.subheadline.weight(.semibold))
+                        Spacer(minLength: 8)
+                        Label {
+                            Text(LocalizedStringKey(status.title))
+                        } icon: {
+                            Image(systemName: status.systemImage)
+                        }
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(status.tint)
+                    }
+                    Text(LocalizedStringKey(detail))
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            if let actionTitle, let action {
+                Button(action: action) {
+                    if isWorking {
+                        HStack(spacing: 8) {
+                            ProgressView()
+                            Text(LocalizedStringKey(actionTitle))
+                        }
+                    } else {
+                        Label(LocalizedStringKey(actionTitle), systemImage: actionIcon)
+                    }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(isWorking)
+                .padding(.leading, 36)
+            }
+        }
+        .padding(.vertical, 3)
     }
 }
 
@@ -990,6 +1394,8 @@ private struct KeyboardSettingsView: View {
                 Text("Chinese self-learning controls Rime's user dictionary. Touch learning adapts per-key tap offsets when on; when off, text keys use fixed midpoint hit routing.")
             }
             Section {
+                DictationCaptureModeToggle()
+
                 Picker("Host audio session", selection: hostAudioSessionLengthBinding) {
                     ForEach(HostAudioSessionLength.allCases) { length in
                         Text(length.title).tag(length)

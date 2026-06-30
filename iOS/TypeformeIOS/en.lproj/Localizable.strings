@@ -4,6 +4,7 @@
 "Pairing" = "Pairing";
 "Dictation Settings" = "Dictation Settings";
 "Keyboard Guide" = "Keyboard Guide";
+"Setup & Permissions" = "Setup & Permissions";
 "Done" = "Done";
 "Discard" = "Discard";
 
@@ -11,19 +12,55 @@
 "Paired with Mac" = "Paired with Mac";
 "Keyboard ready" = "Keyboard ready";
 "Keyboard needs Full Access" = "Keyboard needs Full Access";
+"Setup ready" = "Setup ready";
+"Setup needs attention" = "Setup needs attention";
 "Typeforme dictates in any text field via its keyboard. Two iOS-only steps:" = "Typeforme dictates in any text field via its keyboard. Two iOS-only steps:";
 "Typeforme dictates in any text field via its keyboard." = "Typeforme dictates in any text field via its keyboard.";
+"Typeforme is ready to dictate in any text field via its keyboard." = "Typeforme is ready to dictate in any text field via its keyboard.";
+"Review microphone and keyboard access before using Typeforme from the keyboard." = "Review microphone and keyboard access before using Typeforme from the keyboard.";
 "Allow Full Access so the Typeforme keyboard can talk to this app." = "Allow Full Access so the Typeforme keyboard can talk to this app.";
 "Full Access lets the keyboard connect to this app, sync settings, and send selected text or nearby context only when you dictate or refine." = "Full Access lets the keyboard connect to this app, sync settings, and send selected text or nearby context only when you dictate or refine.";
 "Open iOS Settings, enable the Typeforme keyboard, then allow Full Access." = "Open iOS Settings, enable the Typeforme keyboard, then allow Full Access.";
 "Full Access lets the keyboard connect to Typeforme, sync settings, and send text context only when you use dictation or refine." = "Full Access lets the keyboard connect to Typeforme, sync settings, and send text context only when you use dictation or refine.";
 "Enable Typeforme keyboard" = "Enable Typeforme keyboard";
 "Settings → General → Keyboard → Add New Keyboard" = "Settings → General → Keyboard → Add New Keyboard";
+"Allow Microphone" = "Allow Microphone";
+"Required for host-owned keyboard dictation" = "Required for host-owned keyboard dictation";
 "Allow Full Access" = "Allow Full Access";
 "Required so the keyboard can reach this app" = "Required so the keyboard can reach this app";
 "Needed for local bridge, dictation, settings, and learning sync" = "Needed for local bridge, dictation, settings, and learning sync";
+"Allow Microphone so the host app can own dictation audio." = "Allow Microphone so the host app can own dictation audio.";
+"Enable the Typeforme keyboard and allow Full Access." = "Enable the Typeforme keyboard and allow Full Access.";
+"Review setup and permissions." = "Review setup and permissions.";
 "Guide" = "Guide";
 "Open Settings" = "Open Settings";
+
+// Setup readiness
+"Check the required host app setup before using Typeforme from the keyboard." = "Check the required host app setup before using Typeforme from the keyboard.";
+"Capture Method" = "Capture Method";
+"Background Mic" = "Background Mic";
+"PiP" = "PiP";
+"Uses the host app's background microphone session so the keyboard can start dictation without switching screens." = "Uses the host app's background microphone session so the keyboard can start dictation without switching screens.";
+"PiP is planned. This build still uses Background Mic until Picture in Picture support is available." = "PiP is planned. This build still uses Background Mic until Picture in Picture support is available.";
+"Required" = "Required";
+"Microphone" = "Microphone";
+"Required because the host app owns keyboard dictation audio." = "Required because the host app owns keyboard dictation audio.";
+"Keyboard & Full Access" = "Keyboard & Full Access";
+"iOS exposes this only through Settings. Full Access lets the keyboard reach the host app." = "iOS exposes this only through Settings. Full Access lets the keyboard reach the host app.";
+"Optional" = "Optional";
+"Apple Speech Preview" = "Apple Speech Preview";
+"Only needed for on-iPhone live partial preview. Core dictation still works without it." = "Only needed for on-iPhone live partial preview. Core dictation still works without it.";
+"Help" = "Help";
+"Camera access is requested only when you open the QR scanner." = "Camera access is requested only when you open the QR scanner.";
+"Allowed" = "Allowed";
+"Denied" = "Denied";
+"Restricted" = "Restricted";
+"Unknown" = "Unknown";
+"Allow" = "Allow";
+"Allow Preview" = "Allow Preview";
+"Microphone ready." = "Microphone ready.";
+"Enable Microphone in iOS Settings." = "Enable Microphone in iOS Settings.";
+"Microphone permission is unavailable." = "Microphone permission is unavailable.";
 
 // Test dictation section
 "Test dictation" = "Test dictation";

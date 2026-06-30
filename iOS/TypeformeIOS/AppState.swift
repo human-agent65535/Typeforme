@@ -124,6 +124,19 @@ enum AppPhase: Equatable {
     }
 }
 
+enum HostReadinessAuthorizationStatus: Equatable {
+    case granted
+    case notDetermined
+    case denied
+    case restricted
+    case unavailable
+    case unknown
+
+    var isGranted: Bool {
+        self == .granted
+    }
+}
+
 private struct BridgeStageLabels {
     let transcribing: String
     let refining: String
@@ -191,6 +204,37 @@ enum HostAudioSessionLength: String, CaseIterable, Identifiable {
         case .thirtyMinutes: return 30 * 60
         case .oneHour: return 60 * 60
         case .untilStopped: return nil
+        }
+    }
+}
+
+enum KeyboardDictationCaptureMode: String, CaseIterable, Identifiable {
+    case backgroundMic = "background_mic"
+    case pictureInPicture = "picture_in_picture"
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .backgroundMic:
+            return NSLocalizedString("Background Mic", comment: "Keyboard dictation capture method")
+        case .pictureInPicture:
+            return NSLocalizedString("PiP", comment: "Keyboard dictation capture method")
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .backgroundMic:
+            return NSLocalizedString(
+                "Uses the host app's background microphone session so the keyboard can start dictation without switching screens.",
+                comment: "Background mic capture mode detail"
+            )
+        case .pictureInPicture:
+            return NSLocalizedString(
+                "PiP is planned. This build still uses Background Mic until Picture in Picture support is available.",
+                comment: "PiP capture mode detail"
+            )
         }
     }
 }
@@ -342,6 +386,7 @@ final class AppState {
     private(set) var isRefreshingRoute = false
     var keyboardStandbyEnabled = true
     var hostAudioSessionLength: HostAudioSessionLength
+    var keyboardDictationCaptureMode: KeyboardDictationCaptureMode
     var keyboardAutoCapitalizationEnabled: Bool
     var keyboardCharacterPreviewEnabled: Bool
     var keyboardKeySoundEnabled: Bool
@@ -372,6 +417,9 @@ final class AppState {
     var latestServerTiming: ServerTimingSummary?
     var macSettings: BridgeMacSettingsPayload?
     var isEditingMacSettings = false
+    private(set) var microphonePermissionStatus: HostReadinessAuthorizationStatus
+    private(set) var speechRecognitionPermissionStatus: HostReadinessAuthorizationStatus
+    var setupReadinessDismissed: Bool
     private(set) var isStopAndSendInFlight = false
     /// Transient feedback ("Copied!", "Saved!") rendered as a toast.
     var transientMessage: String?
@@ -383,6 +431,14 @@ final class AppState {
         keyboardFullAccessRequired || !keyboardEverContacted
     }
 
+    var setupReadinessNeedsAttention: Bool {
+        !microphonePermissionStatus.isGranted || keyboardNeedsFullAccessSetup
+    }
+
+    var shouldPresentSetupReadiness: Bool {
+        !setupReadinessDismissed && setupReadinessNeedsAttention
+    }
+
     let audioCoordinator = AudioCoordinator()
 
     private let bridgeService = BridgeService()
@@ -392,6 +448,7 @@ final class AppState {
     private let networkPathQueue = DispatchQueue(label: "\(TypeformeBundleConfiguration.hostBundleIdentifier).network-path")
     private static let inputModeKey = "keyboard.inputMode"
     private static let hostAudioSessionLengthKey = "keyboard.hostAudioSessionLength"
+    private static let keyboardDictationCaptureModeKey = "keyboard.dictationCaptureMode"
     private static let keyboardAutoCapitalizationKey = "keyboard.autoCapitalizationEnabled"
     private static let keyboardCharacterPreviewKey = "keyboard.characterPreviewEnabled"
     private static let keyboardKeySoundKey = "keyboard.keySoundEnabled"
@@ -410,6 +467,7 @@ final class AppState {
     private static let keyboardTouchLearningResetGenerationKey = "keyboard.touchLearningResetGeneration"
     private static let keyboardEverContactedKey = "keyboard.everContacted"
     private static let keyboardFullAccessRequiredKey = "keyboard.fullAccessRequired"
+    private static let setupReadinessDismissedKey = "setup.readinessDismissed"
     private static let serverRimeUserPhrasesKey = "server.rimeUserPhrases"
     private static let livePreviewFinishWaitTimeout: TimeInterval = BridgeSettingsNormalization.asrTimeoutSecondsRange.upperBound + 5
     private var hostHoldReleasePending = false
@@ -594,6 +652,8 @@ final class AppState {
             .flatMap(VoiceInputMode.init(rawValue:)) ?? .tap
         self.hostAudioSessionLength = UserDefaults.standard.string(forKey: Self.hostAudioSessionLengthKey)
             .flatMap(HostAudioSessionLength.init(rawValue:)) ?? .fifteenMinutes
+        self.keyboardDictationCaptureMode = UserDefaults.standard.string(forKey: Self.keyboardDictationCaptureModeKey)
+            .flatMap(KeyboardDictationCaptureMode.init(rawValue:)) ?? .backgroundMic
         self.keyboardAutoCapitalizationEnabled = UserDefaults.standard.object(forKey: Self.keyboardAutoCapitalizationKey)
             .map { _ in UserDefaults.standard.bool(forKey: Self.keyboardAutoCapitalizationKey) } ?? true
         self.keyboardCharacterPreviewEnabled = UserDefaults.standard.object(forKey: Self.keyboardCharacterPreviewKey)
@@ -626,6 +686,9 @@ final class AppState {
         self.keyboardTouchLearningResetGeneration = UserDefaults.standard.integer(forKey: Self.keyboardTouchLearningResetGenerationKey)
         self.keyboardEverContacted = UserDefaults.standard.bool(forKey: Self.keyboardEverContactedKey)
         self.keyboardFullAccessRequired = UserDefaults.standard.bool(forKey: Self.keyboardFullAccessRequiredKey)
+        self.microphonePermissionStatus = Self.currentMicrophonePermissionStatus()
+        self.speechRecognitionPermissionStatus = Self.currentSpeechRecognitionPermissionStatus()
+        self.setupReadinessDismissed = UserDefaults.standard.bool(forKey: Self.setupReadinessDismissedKey)
         self.cachedServerRimeUserPhrases = Self.loadCachedServerRimeUserPhrases()
         self.selectedLanguageIDs = Set(saved.validatedLanguageIDs)
         self.keyboardStandbyEnabled = true
@@ -658,6 +721,7 @@ final class AppState {
 
     func bootstrap() async {
         await waitForInitialRenderOpportunity()
+        refreshSetupReadinessStatuses()
         // Host launch should establish the microphone-backed keyboard session
         // when permission already exists, so returning to the keyboard has a
         // ready local bridge instead of a cold silent keeper.
@@ -665,6 +729,93 @@ final class AppState {
         await refreshRoute(force: true, showIndicator: false)
         _ = try? await refreshMacSettingsIfChanged()
         scheduleHostRecorderPreWarm()
+    }
+
+    func refreshSetupReadinessStatuses() {
+        microphonePermissionStatus = Self.currentMicrophonePermissionStatus()
+        speechRecognitionPermissionStatus = Self.currentSpeechRecognitionPermissionStatus()
+    }
+
+    @discardableResult
+    func requestMicrophonePermissionForSetup() async -> Bool {
+        refreshSetupReadinessStatuses()
+        switch microphonePermissionStatus {
+        case .granted:
+            return true
+        case .notDetermined:
+            let result = await requestMicrophonePermission()
+            refreshSetupReadinessStatuses()
+            guard result == .granted else {
+                showTransient(NSLocalizedString("Microphone permission is required.", comment: "Setup microphone permission denied toast"))
+                return false
+            }
+            await setKeyboardStandby(true, surfaceAudioSessionErrors: false, warmInputEngine: true)
+            showTransient(NSLocalizedString("Microphone ready.", comment: "Setup microphone permission granted toast"))
+            return true
+        case .denied:
+            showTransient(NSLocalizedString("Enable Microphone in iOS Settings.", comment: "Setup microphone settings toast"))
+            await openAppSettingsForMicrophone()
+            refreshSetupReadinessStatuses()
+            return false
+        case .restricted, .unavailable, .unknown:
+            showTransient(NSLocalizedString("Microphone permission is unavailable.", comment: "Setup microphone unavailable toast"))
+            return false
+        }
+    }
+
+    @discardableResult
+    func requestSpeechRecognitionPermissionForSetup() async -> HostReadinessAuthorizationStatus {
+        refreshSetupReadinessStatuses()
+        guard speechRecognitionPermissionStatus == .notDetermined else {
+            return speechRecognitionPermissionStatus
+        }
+        let status = await withCheckedContinuation { continuation in
+            SFSpeechRecognizer.requestAuthorization { status in
+                continuation.resume(returning: status)
+            }
+        }
+        speechRecognitionPermissionStatus = Self.readinessStatus(for: status)
+        return speechRecognitionPermissionStatus
+    }
+
+    func dismissSetupReadiness() {
+        guard !setupReadinessDismissed else { return }
+        setupReadinessDismissed = true
+        UserDefaults.standard.set(true, forKey: Self.setupReadinessDismissedKey)
+    }
+
+    private static func currentMicrophonePermissionStatus() -> HostReadinessAuthorizationStatus {
+        switch AVAudioApplication.shared.recordPermission {
+        case .granted:
+            return .granted
+        case .undetermined:
+            return .notDetermined
+        case .denied:
+            return .denied
+        @unknown default:
+            return .unknown
+        }
+    }
+
+    private static func currentSpeechRecognitionPermissionStatus() -> HostReadinessAuthorizationStatus {
+        readinessStatus(for: SFSpeechRecognizer.authorizationStatus())
+    }
+
+    private static func readinessStatus(
+        for status: SFSpeechRecognizerAuthorizationStatus
+    ) -> HostReadinessAuthorizationStatus {
+        switch status {
+        case .authorized:
+            return .granted
+        case .notDetermined:
+            return .notDetermined
+        case .denied:
+            return .denied
+        case .restricted:
+            return .restricted
+        @unknown default:
+            return .unknown
+        }
     }
 
     func saveConfig(_ newConfig: PairingConfig) {
@@ -721,6 +872,14 @@ final class AppState {
             key: Self.hostAudioSessionLengthKey
         ) else { return }
         scheduleHostAudioSessionExpiry()
+    }
+
+    func setKeyboardDictationCaptureMode(_ mode: KeyboardDictationCaptureMode) {
+        updateStoredRawPreference(
+            \.keyboardDictationCaptureMode,
+            to: mode,
+            key: Self.keyboardDictationCaptureModeKey
+        )
     }
 
     func setKeyboardAutoCapitalizationEnabled(_ enabled: Bool) {

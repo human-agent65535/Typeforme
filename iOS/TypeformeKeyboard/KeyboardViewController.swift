@@ -8105,8 +8105,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private var isRunningInsideHostApp: Bool {
-        currentTextHostBundleID == Self.containingAppBundleIdentifier
-            || KeyboardSharedDefaults.isHostForegroundActive()
+        KeyboardSharedDefaults.isHostForegroundActive()
     }
 
     private func addCandidateSeparator() {

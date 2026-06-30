@@ -4,6 +4,7 @@
 "Pairing" = "配对";
 "Dictation Settings" = "听写设置";
 "Keyboard Guide" = "键盘使用指南";
+"Setup & Permissions" = "设置与权限";
 "Done" = "完成";
 "Discard" = "放弃";
 
@@ -11,19 +12,55 @@
 "Paired with Mac" = "已与 Mac 配对";
 "Keyboard ready" = "键盘已就绪";
 "Keyboard needs Full Access" = "键盘需要完全访问";
+"Setup ready" = "设置已就绪";
+"Setup needs attention" = "设置需要处理";
 "Typeforme dictates in any text field via its keyboard. Two iOS-only steps:" = "Typeforme 通过自带键盘在任意文本框听写。还差两步 iOS 端设置:";
 "Typeforme dictates in any text field via its keyboard." = "Typeforme 通过自带键盘在任意文本框听写。";
+"Typeforme is ready to dictate in any text field via its keyboard." = "Typeforme 已可通过自带键盘在任意文本框听写。";
+"Review microphone and keyboard access before using Typeforme from the keyboard." = "用键盘里的 Typeforme 前,请检查麦克风和键盘访问权限。";
 "Allow Full Access so the Typeforme keyboard can talk to this app." = "请允许完全访问,这样 Typeforme 键盘才能连接本 app。";
 "Full Access lets the keyboard connect to this app, sync settings, and send selected text or nearby context only when you dictate or refine." = "完全访问让键盘连接本 app、同步设置,并且只在你听写或优化时发送选中文本或光标附近上下文。";
 "Open iOS Settings, enable the Typeforme keyboard, then allow Full Access." = "打开 iOS 设置,启用 Typeforme 键盘,然后允许完全访问。";
 "Full Access lets the keyboard connect to Typeforme, sync settings, and send text context only when you use dictation or refine." = "完全访问让键盘连接 Typeforme、同步设置,并且只在你使用听写或优化时发送文本上下文。";
 "Enable Typeforme keyboard" = "启用 Typeforme 键盘";
 "Settings → General → Keyboard → Add New Keyboard" = "设置 → 通用 → 键盘 → 添加新键盘";
+"Allow Microphone" = "允许麦克风";
+"Required for host-owned keyboard dictation" = "宿主 app 拥有键盘听写音频,因此需要此权限";
 "Allow Full Access" = "允许完全访问";
 "Required so the keyboard can reach this app" = "键盘需要它来访问本 app";
 "Needed for local bridge, dictation, settings, and learning sync" = "用于本地桥接、听写、设置和学习数据同步";
+"Allow Microphone so the host app can own dictation audio." = "请允许麦克风,让宿主 app 接管听写音频。";
+"Enable the Typeforme keyboard and allow Full Access." = "请启用 Typeforme 键盘并允许完全访问。";
+"Review setup and permissions." = "检查设置和权限。";
 "Guide" = "指南";
 "Open Settings" = "打开设置";
+
+// 设置就绪检查
+"Check the required host app setup before using Typeforme from the keyboard." = "用键盘里的 Typeforme 前,请先检查宿主 app 必要设置。";
+"Capture Method" = "捕获方式";
+"Background Mic" = "后台麦克风";
+"PiP" = "画中画";
+"Uses the host app's background microphone session so the keyboard can start dictation without switching screens." = "使用宿主 app 的后台麦克风会话,让键盘无需切屏即可开始听写。";
+"PiP is planned. This build still uses Background Mic until Picture in Picture support is available." = "画中画方案已规划。当前 build 在画中画支持可用前仍使用后台麦克风。";
+"Required" = "必需";
+"Microphone" = "麦克风";
+"Required because the host app owns keyboard dictation audio." = "宿主 app 负责键盘听写音频,因此需要此权限。";
+"Keyboard & Full Access" = "键盘与完全访问";
+"iOS exposes this only through Settings. Full Access lets the keyboard reach the host app." = "iOS 只能在系统设置中开启。完全访问让键盘连接宿主 app。";
+"Optional" = "可选";
+"Apple Speech Preview" = "Apple Speech 预览";
+"Only needed for on-iPhone live partial preview. Core dictation still works without it." = "只用于 iPhone 端实时部分预览。没有它也不影响核心听写。";
+"Help" = "帮助";
+"Camera access is requested only when you open the QR scanner." = "只有打开二维码扫描器时才会请求相机权限。";
+"Allowed" = "已允许";
+"Denied" = "已拒绝";
+"Restricted" = "受限";
+"Unknown" = "未知";
+"Allow" = "允许";
+"Allow Preview" = "允许预览";
+"Microphone ready." = "麦克风已就绪。";
+"Enable Microphone in iOS Settings." = "请在 iOS 设置中开启麦克风。";
+"Microphone permission is unavailable." = "麦克风权限不可用。";
 
 // 试录区域
 "Test dictation" = "试录";
