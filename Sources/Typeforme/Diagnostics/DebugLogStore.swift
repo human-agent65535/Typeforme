@@ -152,6 +152,7 @@ private struct DebugLogCorrection: Codable, Sendable {
     var error: String?
     var latencyMs: Int?
     var input: DebugLogCorrectionInput?
+    var debugTrace: CorrectionDebugTrace?
 
     enum CodingKeys: String, CodingKey {
         case correctionMode = "correction_mode"
@@ -164,6 +165,7 @@ private struct DebugLogCorrection: Codable, Sendable {
         case error
         case latencyMs = "latency_ms"
         case input
+        case debugTrace = "debug_trace"
     }
 }
 
@@ -181,6 +183,7 @@ private struct DebugLogCorrectionInput: Codable, Sendable {
     var vocabularyCandidates: [VocabularyCandidatePayload]?
     var asrHypotheses: [String]
     var sourceHypotheses: [ASRSourceHypothesis]?
+    var audioDurationMs: Int?
     var rawTranscriptChars: Int
     var asrHypothesisCount: Int
     var contextBeforeChars: Int
@@ -200,6 +203,7 @@ private struct DebugLogCorrectionInput: Codable, Sendable {
         case vocabularyCandidates = "vocabulary_candidates"
         case asrHypotheses = "asr_hypotheses"
         case sourceHypotheses = "source_hypotheses"
+        case audioDurationMs = "audio_duration_ms"
         case rawTranscriptChars = "raw_transcript_chars"
         case asrHypothesisCount = "asr_hypothesis_count"
         case contextBeforeChars = "context_before_chars"
@@ -442,6 +446,7 @@ enum DebugLogStore {
         error: String? = nil,
         latencyMs: Int? = nil,
         request: CorrectionRequest? = nil,
+        debugTrace: CorrectionDebugTrace? = nil,
         timeoutMs: Int? = nil
     ) {
         guard let handle else { return }
@@ -455,7 +460,8 @@ enum DebugLogStore {
             text: text,
             error: error,
             latencyMs: latencyMs,
-            input: request.map(correctionInput)
+            input: request.map(correctionInput),
+            debugTrace: debugTrace
         )
         Task {
             await DebugLogDiskWriter.shared.recordCorrection(correction, for: handle)
@@ -527,6 +533,7 @@ enum DebugLogStore {
             vocabularyCandidates: correctionVocabularyCandidates(for: request),
             asrHypotheses: request.asrHypotheses,
             sourceHypotheses: request.sourceHypotheses,
+            audioDurationMs: request.audioDurationMs,
             rawTranscriptChars: request.rawTranscript.count,
             asrHypothesisCount: request.asrHypotheses.count,
             contextBeforeChars: request.contextBefore.count,
@@ -603,7 +610,7 @@ enum DebugLogStore {
         outputs.compactMap { output in
             let text = cleanedOptionalText(output.text)
             let error = cleanedOptionalText(output.error)
-            guard text != nil || error != nil else { return nil }
+            guard text != nil || error != nil || output.status != "ok" else { return nil }
             return DebugLogTranscriptModelOutput(
                 role: output.role,
                 provider: output.provider,

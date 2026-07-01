@@ -474,7 +474,7 @@ private struct MultiSourceASRService: ASRService {
         }
         let alternates = Array(hypotheses.dropFirst())
         let warnings = ordered.compactMap { attempt -> String? in
-            guard attempt.status != "ok" else { return nil }
+            guard attempt.status != "ok", attempt.status != "empty" else { return nil }
             return "\(attempt.source.displayName): \(attempt.error ?? attempt.status)"
         }
         return ASRTranscription(
@@ -487,7 +487,7 @@ private struct MultiSourceASRService: ASRService {
     }
 
     private static func isBenignEmptyAttempt(_ attempt: ASRSourceAttemptResult) -> Bool {
-        ASRAudioSupport.isBenignEmptyTranscriptMessage(attempt.error ?? attempt.status)
+        attempt.status == "empty" || ASRAudioSupport.isBenignEmptyTranscriptMessage(attempt.error ?? attempt.status)
     }
 
     private static func attempt(
@@ -530,11 +530,20 @@ private struct MultiSourceASRService: ASRService {
             return ASRSourceAttemptResult(
                 source: source,
                 index: index,
-                status: trimmed.isEmpty ? "error" : "ok",
-                text: trimmed,
-                error: trimmed.isEmpty ? ASRAudioSupportError.emptyTranscript.localizedDescription : nil
+                status: trimmed.isEmpty ? "empty" : "ok",
+                text: trimmed.isEmpty ? nil : trimmed,
+                error: nil
             )
         } catch {
+            if ASRAudioSupport.isBenignEmptyTranscript(error) {
+                return ASRSourceAttemptResult(
+                    source: source,
+                    index: index,
+                    status: "empty",
+                    text: nil,
+                    error: nil
+                )
+            }
             return ASRSourceAttemptResult(
                 source: source,
                 index: index,

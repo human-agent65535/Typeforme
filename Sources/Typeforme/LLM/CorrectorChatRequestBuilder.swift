@@ -15,19 +15,29 @@ enum CorrectorChatRequestBuilder {
         maxTokens: Int,
         baseURL: String? = nil
     ) -> OpenAIChatCompletionRequest {
+        body(
+            model: model,
+            system: system,
+            messages: [.user(user)],
+            maxTokens: maxTokens,
+            baseURL: baseURL
+        )
+    }
+
+    static func body(
+        model: String,
+        system: String,
+        messages: [CorrectorChatMessage],
+        maxTokens: Int,
+        baseURL: String? = nil
+    ) -> OpenAIChatCompletionRequest {
         let noThinkProfile = OpenAICompatibleReasoningHints.noThinkProfile(model: model, baseURL: baseURL)
         let messages = chatMessages(
             system: system,
-            user: user,
+            messages: messages,
             model: model,
             noThinkProfile: noThinkProfile
         )
-            .map { message in
-                OpenAIChatMessage(
-                    role: message["role"] ?? "user",
-                    content: message["content"] ?? ""
-                )
-            }
         let templateKwargs = noThinkProfile == .qwen || noThinkProfile == .gemma4
             ? OpenAIChatTemplateKwargs(enableThinking: false)
             : nil
@@ -54,19 +64,45 @@ enum CorrectorChatRequestBuilder {
 
     private static func chatMessages(
         system: String,
-        user: String,
+        messages: [CorrectorChatMessage],
         model: String,
         noThinkProfile: OpenAICompatibleNoThinkProfile
-    ) -> [[String: String]] {
+    ) -> [OpenAIChatMessage] {
         if noThinkProfile == .qwen {
-            return QwenPromptHints.openAIChatMessages(system: system, user: user, model: model)
+            return noThinkMessages(
+                system: system,
+                messages: messages,
+                userTransform: { QwenPromptHints.userPrompt($0, model: model) },
+                assistantPrefill: QwenPromptHints.noThinkAssistantPrefill
+            )
         }
         if noThinkProfile == .gemma4 {
-            return GemmaPromptHints.openAIChatMessages(system: system, user: user, model: model)
+            return noThinkMessages(
+                system: system,
+                messages: messages,
+                userTransform: { $0 },
+                assistantPrefill: GemmaPromptHints.noThinkAssistantPrefill
+            )
         }
-        return [
-            ["role": "system", "content": system],
-            ["role": "user", "content": user],
-        ]
+        return [OpenAIChatMessage(role: "system", content: system)] + messages.map {
+            OpenAIChatMessage(role: $0.role, content: $0.content)
+        }
+    }
+
+    private static func noThinkMessages(
+        system: String,
+        messages: [CorrectorChatMessage],
+        userTransform: (String) -> String,
+        assistantPrefill: String
+    ) -> [OpenAIChatMessage] {
+        var output = [OpenAIChatMessage(role: "system", content: system)]
+        let lastUserIndex = messages.lastIndex { $0.role == "user" }
+        for (index, message) in messages.enumerated() {
+            let shouldTransform = lastUserIndex.map { $0 == index } ?? false
+            let content = shouldTransform ? userTransform(message.content) : message.content
+            output.append(OpenAIChatMessage(role: message.role, content: content))
+        }
+        output.append(OpenAIChatMessage(role: "assistant", content: assistantPrefill))
+        return output
     }
 }

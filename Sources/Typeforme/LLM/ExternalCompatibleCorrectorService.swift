@@ -44,31 +44,17 @@ final class ExternalCompatibleCorrectorService: CorrectorService {
         self.kind = kind
     }
 
-    func correct(_ request: CorrectionRequest, timeoutMs: Int) async throws -> CorrectionResult {
-        let (system, user) = PromptBuilder.build(for: request)
-        let content = try await complete(system: system, user: user, timeoutMs: timeoutMs)
-        do {
-            var result = try CorrectionValidator.parseAndValidate(rawOutput: content, for: request)
-            let vocabularyCandidates = PromptBuilder.vocabularyCandidates(for: request)
-            result.text = ProtectedSpanPostProcessor.apply(
-                result.text,
-                rawTranscript: request.transcriptEvidenceText,
-                vocabularyCandidates: vocabularyCandidates
-            )
-            result.text = TranscriptPostProcessor.clean(
-                result.text,
-                languageIDs: request.languageIDs,
-                preserveLineBreaks: request.correctionMode == .structurePlus,
-                numberPreference: request.numberOutputPreference,
-                punctuationPreference: request.punctuationPreference
-            )
-            return result
-        } catch let error as CorrectionValidationError {
-            throw CorrectorError.validationFailed(error.localizedDescription)
-        }
+    func correct(_ request: CorrectionRequest, timeoutMs: Int) async throws -> CorrectorOutput {
+        try await CorrectorPipeline.correct(
+            request: request,
+            timeoutMs: timeoutMs,
+            complete: { system, messages, timeoutMs in
+                try await complete(system: system, messages: messages, timeoutMs: timeoutMs)
+            }
+        )
     }
 
-    func complete(system: String, user: String, timeoutMs: Int) async throws -> String {
+    func complete(system: String, messages: [CorrectorChatMessage], timeoutMs: Int) async throws -> String {
         let model = AppSettings.externalLLMModel
         guard !model.isEmpty else {
             throw CorrectorError.unavailable("Set the external model identifier in Settings")
@@ -84,7 +70,7 @@ final class ExternalCompatibleCorrectorService: CorrectorService {
                 let body = CorrectorChatRequestBuilder.body(
                     model: model,
                     system: system,
-                    user: user,
+                    messages: messages,
                     maxTokens: AppSettings.correctionMaxTokens,
                     baseURL: AppSettings.externalLLMBaseURL
                 )
@@ -99,7 +85,7 @@ final class ExternalCompatibleCorrectorService: CorrectorService {
                     model: model,
                     maxTokens: AppSettings.correctionMaxTokens,
                     system: system,
-                    messages: [AnthropicMessage(role: "user", content: user)]
+                    messages: messages.map { AnthropicMessage(role: $0.role, content: $0.content) }
                 )
                 return try await AnthropicCompatibleClient.messageContent(
                     endpoint: endpoint,

@@ -316,6 +316,7 @@ final class DictationCoordinator: ObservableObject {
             bundleID: snapshot?.bundleID,
             appCategory: AppCategory.from(bundleID: snapshot?.bundleID)
         )
+        let audioDurationMs = ASRAudioSupport.audioDurationMilliseconds(for: url)
 
         if AppSettings.processingMode == .client {
             await processWithRemoteBridge(
@@ -389,15 +390,16 @@ final class DictationCoordinator: ObservableObject {
                     let request = buildCorrectionRequest(
                         rawTranscript: trimmed,
                         correctionModeOverride: .clean,
+                        audioDurationMs: audioDurationMs,
                         alternateTranscripts: alternateTranscripts,
                         asrHypotheses: asrHypotheses,
                         sourceHypotheses: asrResult.sourceHypotheses
                     )
                     let correctionStarted = Date()
                     do {
-                        let result = try await corrector.correct(request, timeoutMs: AppSettings.correctionTimeoutMs)
+                        let output = try await corrector.correct(request, timeoutMs: AppSettings.correctionTimeoutMs)
                         try await ensureActive(sessionID: sessionID, token: cancelToken)
-                        let normalizedResult = normalizeResult(result, correctionMode: request.correctionMode)
+                        let normalizedResult = normalizeResult(output.result, correctionMode: request.correctionMode)
                         spokenInstruction = normalizedResult.text.trimmingCharacters(in: .whitespacesAndNewlines)
                         lastWarning = asrWarning
                     } catch {
@@ -423,6 +425,7 @@ final class DictationCoordinator: ObservableObject {
                             error: error.localizedDescription,
                             latencyMs: elapsedMs(since: correctionStarted),
                             request: request,
+                            debugTrace: (error as? CorrectorError)?.correctionDebugTrace,
                             timeoutMs: AppSettings.correctionTimeoutMs
                         )
                     }
@@ -493,15 +496,16 @@ final class DictationCoordinator: ObservableObject {
             transition(to: .correcting)
             let request = buildCorrectionRequest(
                 rawTranscript: trimmed,
+                audioDurationMs: audioDurationMs,
                 alternateTranscripts: alternateTranscripts,
                 asrHypotheses: asrHypotheses,
                 sourceHypotheses: asrResult.sourceHypotheses
             )
             let correctionStarted = Date()
             do {
-                let result = try await corrector.correct(request, timeoutMs: AppSettings.correctionTimeoutMs)
+                let output = try await corrector.correct(request, timeoutMs: AppSettings.correctionTimeoutMs)
                 try await ensureActive(sessionID: sessionID, token: cancelToken)
-                let normalizedResult = normalizeResult(result, correctionMode: request.correctionMode)
+                let normalizedResult = normalizeResult(output.result, correctionMode: request.correctionMode)
                 DebugLogStore.recordCorrection(
                     debugLog,
                     mode: request.correctionMode,
@@ -509,6 +513,7 @@ final class DictationCoordinator: ObservableObject {
                     status: "ok",
                     latencyMs: elapsedMs(since: correctionStarted),
                     request: request,
+                    debugTrace: output.debugTrace,
                     timeoutMs: AppSettings.correctionTimeoutMs
                 )
                 previewCorrectionMode = request.correctionMode
@@ -533,6 +538,7 @@ final class DictationCoordinator: ObservableObject {
                     error: error.localizedDescription,
                     latencyMs: elapsedMs(since: correctionStarted),
                     request: request,
+                    debugTrace: (error as? CorrectorError)?.correctionDebugTrace,
                     timeoutMs: AppSettings.correctionTimeoutMs
                 )
                 previewCorrectionMode = request.correctionMode
@@ -770,6 +776,7 @@ final class DictationCoordinator: ObservableObject {
     private func buildCorrectionRequest(
         rawTranscript: String,
         correctionModeOverride: CorrectionMode? = nil,
+        audioDurationMs: Int? = nil,
         alternateTranscripts: [String] = [],
         asrHypotheses: [String] = [],
         sourceHypotheses: [ASRSourceHypothesis] = []
@@ -793,6 +800,7 @@ final class DictationCoordinator: ObservableObject {
             numberOutputPreference: AppSettings.numberOutputPreference,
             punctuationPreference: AppSettings.punctuationPreference,
             userDictionary: dictionary.sortedSnapshot(),
+            audioDurationMs: audioDurationMs,
             alternateTranscripts: alternateForRequest,
             asrHypotheses: asrHypotheses,
             sourceHypotheses: sourceHypotheses
@@ -1476,10 +1484,10 @@ final class DictationCoordinator: ObservableObject {
                     userDictionary: dictionary.sortedSnapshot()
                 )
                 do {
-                    let result = try await corrector.correct(request, timeoutMs: AppSettings.correctionTimeoutMs)
+                    let output = try await corrector.correct(request, timeoutMs: AppSettings.correctionTimeoutMs)
                     try await ensureActive(sessionID: sessionID, token: cancelToken)
                     lastWarning = nil
-                    text = normalizeResult(result, correctionMode: request.correctionMode).text
+                    text = normalizeResult(output.result, correctionMode: request.correctionMode).text
                 } catch {
                     if error is CancellationError {
                         throw error

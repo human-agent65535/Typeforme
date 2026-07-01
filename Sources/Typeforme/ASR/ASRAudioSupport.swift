@@ -28,6 +28,13 @@ enum ASRAudioSupportError: LocalizedError {
 }
 
 enum ASRAudioSupport {
+    static func audioDurationMilliseconds(for url: URL) -> Int? {
+        guard let file = try? AVAudioFile(forReading: url) else { return nil }
+        let sampleRate = file.fileFormat.sampleRate
+        guard sampleRate > 0 else { return nil }
+        return max(0, Int((Double(file.length) / sampleRate * 1_000).rounded()))
+    }
+
     static func cleanTranscriptText(_ text: String) -> String {
         var value = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if let markerRange = value.range(of: "<asr_text>") {

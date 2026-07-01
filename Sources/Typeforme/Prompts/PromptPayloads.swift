@@ -76,6 +76,7 @@ struct DictationPromptInputPayload: Codable, Sendable, Equatable {
     let contextAfter: String
     let vocabularyCandidates: [VocabularyCandidatePayload]
     let rawTranscript: String
+    let audioDurationMs: Int?
     /// Source-aware ASR hypotheses. Source is evidence metadata, not authority.
     let asrHypotheses: [ASRSourceHypothesis]
 
@@ -85,6 +86,7 @@ struct DictationPromptInputPayload: Codable, Sendable, Equatable {
         case contextAfter = "context_after"
         case vocabularyCandidates = "vocabulary_candidates"
         case rawTranscript = "raw_transcript"
+        case audioDurationMs = "audio_duration_ms"
         case asrHypotheses = "asr_hypotheses"
     }
 
@@ -101,6 +103,9 @@ struct DictationPromptInputPayload: Codable, Sendable, Equatable {
             try container.encode(vocabularyCandidates, forKey: .vocabularyCandidates)
         }
         try container.encode(rawTranscript, forKey: .rawTranscript)
+        if let audioDurationMs {
+            try container.encode(audioDurationMs, forKey: .audioDurationMs)
+        }
         if shouldEncodeASRHypotheses {
             try container.encode(asrHypotheses, forKey: .asrHypotheses)
         }
@@ -114,6 +119,24 @@ struct DictationPromptInputPayload: Codable, Sendable, Equatable {
             return false
         }
         return true
+    }
+}
+
+struct DictationRepairPromptPayload: Codable, Sendable, Equatable {
+    let validationError: String
+
+    enum CodingKeys: String, CodingKey {
+        case validationError = "validation_error"
+    }
+}
+
+struct DictationVerifierPromptPayload: Codable, Sendable, Equatable {
+    let validationSignal: String
+    let candidateText: String
+
+    enum CodingKeys: String, CodingKey {
+        case validationSignal = "validation_signal"
+        case candidateText = "candidate_text"
     }
 }
 

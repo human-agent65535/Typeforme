@@ -15,6 +15,8 @@ struct CorrectionRequest: Codable, Sendable {
     /// Plain transcript hypotheses for validators and vocabulary matching.
     var asrHypotheses: [String]
     var sourceHypotheses: [ASRSourceHypothesis]
+    /// Recording duration for ASR reliability checks. Nil when refining existing text.
+    var audioDurationMs: Int?
     /// Optional supplementary transcriptions of the same audio.
     var alternateTranscripts: [String]
 
@@ -30,6 +32,7 @@ struct CorrectionRequest: Codable, Sendable {
         numberOutputPreference: NumberOutputPreference = .automatic,
         punctuationPreference: PunctuationOutputPreference = .normal,
         userDictionary: [DictionaryEntry],
+        audioDurationMs: Int? = nil,
         alternateTranscript: String? = nil,
         alternateTranscripts: [String] = [],
         asrHypotheses: [String] = [],
@@ -46,6 +49,7 @@ struct CorrectionRequest: Codable, Sendable {
         self.numberOutputPreference = numberOutputPreference
         self.punctuationPreference = punctuationPreference
         self.userDictionary = userDictionary
+        self.audioDurationMs = audioDurationMs
         let normalizedAlternates = Self.normalizedAlternateTranscripts(
             primaryTranscript: rawTranscript,
             candidates: alternateTranscripts.map(Optional.some) + [alternateTranscript]
@@ -74,6 +78,7 @@ struct CorrectionRequest: Codable, Sendable {
             numberOutputPreference: numberOutputPreference,
             punctuationPreference: punctuationPreference,
             userDictionary: userDictionary,
+            audioDurationMs: audioDurationMs,
             alternateTranscripts: alternateTranscripts,
             asrHypotheses: asrHypotheses,
             sourceHypotheses: sourceHypotheses

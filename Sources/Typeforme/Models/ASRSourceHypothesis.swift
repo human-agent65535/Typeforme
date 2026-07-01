@@ -16,10 +16,11 @@ struct ASRSourceHypothesis: Codable, Sendable, Equatable {
         fallbackTexts: [String?] = []
     ) -> [ASRSourceHypothesis] {
         let hypotheses = outputs.compactMap { output -> ASRSourceHypothesis? in
-            guard output.status == "ok",
-                  let text = output.text?.trimmingCharacters(in: .whitespacesAndNewlines),
-                  !text.isEmpty
-            else { return nil }
+            let text = output.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if output.status == "empty" || (text.isEmpty && ASRAudioSupport.isBenignEmptyTranscriptMessage(output.error ?? output.status)) {
+                return ASRSourceHypothesis(source: sourceID(forProvider: output.provider), text: "")
+            }
+            guard output.status == "ok", !text.isEmpty else { return nil }
             return ASRSourceHypothesis(source: sourceID(forProvider: output.provider), text: text)
         }
         return normalized(hypotheses, fallbackTexts: fallbackTexts)
@@ -29,18 +30,24 @@ struct ASRSourceHypothesis: Codable, Sendable, Equatable {
         _ hypotheses: [ASRSourceHypothesis],
         fallbackTexts: [String?] = []
     ) -> [ASRSourceHypothesis] {
-        var seen = Set<String>()
+        var seenKeys = Set<String>()
+        var seenTexts = Set<String>()
         var result: [ASRSourceHypothesis] = []
 
         for hypothesis in hypotheses {
             let text = hypothesis.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !text.isEmpty, seen.insert(text).inserted else { continue }
+            if text.isEmpty, hypothesis.source == unattributedSource { continue }
+            let key = "\(hypothesis.source)\t\(text)"
+            guard seenKeys.insert(key).inserted else { continue }
+            if !text.isEmpty {
+                seenTexts.insert(text)
+            }
             result.append(ASRSourceHypothesis(source: hypothesis.source, text: text))
         }
 
         for candidate in fallbackTexts {
             let text = candidate?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            guard !text.isEmpty, seen.insert(text).inserted else { continue }
+            guard !text.isEmpty, seenTexts.insert(text).inserted else { continue }
             result.append(ASRSourceHypothesis(source: unattributedSource, text: text))
         }
 

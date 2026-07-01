@@ -57,6 +57,7 @@ enum PromptBuilder {
             contextAfter: request.contextAfter,
             vocabularyCandidates: vocabularyCandidates,
             rawTranscript: request.rawTranscript,
+            audioDurationMs: request.audioDurationMs,
             asrHypotheses: asrHypotheses
         )
 
@@ -66,8 +67,52 @@ enum PromptBuilder {
         \(json)
         </input_json>
         """)
-        parts.append("Return the corrected text.")
+        parts.append("Return exactly one JSON object and nothing else: {\"text\":\"corrected transcript\"}.")
         return parts.joined(separator: "\n")
+    }
+
+    static func formatRepairPrompt(parseError: String) -> String {
+        let repair = DictationRepairPromptPayload(
+            validationError: parseError
+        )
+        return """
+        Your previous output did not satisfy the JSON contract.
+
+        <format_error_json>
+        \(PromptPayloadEncoder.jsonString(repair))
+        </format_error_json>
+
+        Rewrap the same intended final transcript from your previous output.
+        Do not re-edit, improve, translate, summarize, or regenerate from input_json.
+        If your previous output does not contain a determinate intended final transcript, return {"decision":"reject","text":""}.
+        Otherwise return exactly one JSON object and nothing else: {"decision":"rewrap","text":"same intended final transcript"}.
+        """
+    }
+
+    static func verifierPrompt(validationSignal: String, candidateText: String) -> String {
+        let payload = DictationVerifierPromptPayload(
+            validationSignal: validationSignal,
+            candidateText: candidateText
+        )
+        return """
+        Check whether your previous candidate text is safe to commit.
+
+        <verification_json>
+        \(PromptPayloadEncoder.jsonString(payload))
+        </verification_json>
+
+        You are checking, not editing. Default to accept unless there is clear evidence that the candidate violates the original task or validation signal.
+        Return exactly one JSON object and nothing else:
+        {"decision":"accept","reason_code":"ok","text":"candidate text exactly"}
+        {"decision":"replace","reason_code":"minimal_fix","text":"minimal corrected text"}
+        {"decision":"reject","reason_code":"unsafe","text":""}
+
+        Rules:
+        - For accept, text must exactly equal candidate_text.
+        - Use replace only for a minimal fix to a clear violation such as duplicated content, concatenated ASR hypotheses, or unsafe markup.
+        - Do not make stylistic improvements or re-run correction.
+        - Reject if the safe final transcript is not determinate.
+        """
     }
 
     static func vocabularyCandidates(for request: CorrectionRequest) -> [VocabularyCandidatePayload] {

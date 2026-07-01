@@ -75,6 +75,7 @@ private struct BridgeCorrectionOutput {
     let result: CorrectionResult
     let status: String
     let error: String?
+    let debugTrace: CorrectionDebugTrace?
 }
 
 private struct BridgeLivePreviewFinalSeed {
@@ -397,6 +398,7 @@ final class BridgeService {
         let languageIDs = fastRoute?.languageIDs ?? requestedLanguageIDs
         let audioURL = try await writeAudio(request)
         audioURLToCleanup = audioURL
+        let audioDurationMs = ASRAudioSupport.audioDurationMilliseconds(for: audioURL)
         await publishJobStatus(
             jobID: jobID,
             stage: .audioReceived,
@@ -532,6 +534,7 @@ final class BridgeService {
             appCategory: appCategory,
             contextBefore: contextBefore,
             contextAfter: contextAfter,
+            audioDurationMs: audioDurationMs,
             alternateTranscripts: combinedAlternateTranscripts,
             asrHypotheses: asrHypotheses,
             sourceHypotheses: asrSourceHypotheses
@@ -548,6 +551,7 @@ final class BridgeService {
                 error: correction.error,
                 latencyMs: correctionLatencyMs,
                 request: editRequest,
+                debugTrace: correction.debugTrace,
                 timeoutMs: AppSettings.correctionTimeoutMs
             )
             let sessionID = UUID().uuidString
@@ -610,6 +614,7 @@ final class BridgeService {
                 appCategory: appCategory,
                 contextBefore: contextBefore,
                 contextAfter: contextAfter,
+                audioDurationMs: audioDurationMs,
                 alternateTranscripts: combinedAlternateTranscripts,
                 asrHypotheses: asrHypotheses,
                 sourceHypotheses: asrSourceHypotheses
@@ -633,6 +638,7 @@ final class BridgeService {
             error: correction.error,
             latencyMs: correctionLatencyMs,
             request: editRequest,
+            debugTrace: correction.debugTrace,
             timeoutMs: AppSettings.correctionTimeoutMs
         )
 
@@ -842,7 +848,8 @@ final class BridgeService {
         BridgeCorrectionOutput(
             result: CorrectionResult(action: .commit, text: rawTranscript, risk: .low),
             status: "skipped_fast_mode",
-            error: nil
+            error: nil,
+            debugTrace: nil
         )
     }
 
@@ -852,8 +859,6 @@ final class BridgeService {
         correctionMode: CorrectionMode,
         error: Error
     ) -> BridgeCorrectionOutput {
-        // Correction failed after ASR succeeded. Keep dictation usable while
-        // making the degraded refine reason explicit to clients and logs.
         let fallbackResult = normalize(
             CorrectionResult(action: .commit, text: rawTranscript, risk: .medium),
             languageIDs: languageIDs,
@@ -862,7 +867,8 @@ final class BridgeService {
         return BridgeCorrectionOutput(
             result: fallbackResult,
             status: Self.refineFailureStatus(for: error),
-            error: error.localizedDescription
+            error: error.localizedDescription,
+            debugTrace: (error as? CorrectorError)?.correctionDebugTrace
         )
     }
 
@@ -972,6 +978,7 @@ final class BridgeService {
         appCategory: AppCategory,
         contextBefore: String = "",
         contextAfter: String = "",
+        audioDurationMs: Int? = nil,
         alternateTranscripts: [String] = [],
         asrHypotheses: [String] = [],
         sourceHypotheses: [ASRSourceHypothesis] = []
@@ -985,20 +992,22 @@ final class BridgeService {
             appCategory: appCategory,
             contextBefore: contextBefore,
             contextAfter: contextAfter,
+            audioDurationMs: audioDurationMs,
             alternateTranscripts: alternateTranscripts,
             asrHypotheses: asrHypotheses,
             sourceHypotheses: sourceHypotheses
         )
 
-        var result = try await CorrectorFactory.shared.make().correct(
+        let output = try await CorrectorFactory.shared.make().correct(
             request,
             timeoutMs: AppSettings.correctionTimeoutMs
         )
+        var result = output.result
         result = normalize(result, languageIDs: languageIDs, correctionMode: correctionMode)
         guard !result.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw CorrectorError.empty
         }
-        return BridgeCorrectionOutput(result: result, status: "ok", error: nil)
+        return BridgeCorrectionOutput(result: result, status: "ok", error: nil, debugTrace: output.debugTrace)
     }
 
     private func correctionRequest(
@@ -1010,6 +1019,7 @@ final class BridgeService {
         appCategory: AppCategory,
         contextBefore: String = "",
         contextAfter: String = "",
+        audioDurationMs: Int? = nil,
         alternateTranscripts: [String] = [],
         asrHypotheses: [String] = [],
         sourceHypotheses: [ASRSourceHypothesis] = []
@@ -1026,6 +1036,7 @@ final class BridgeService {
             numberOutputPreference: AppSettings.numberOutputPreference,
             punctuationPreference: AppSettings.punctuationPreference,
             userDictionary: dictionary.sortedSnapshot(),
+            audioDurationMs: audioDurationMs,
             alternateTranscripts: alternateTranscripts,
             asrHypotheses: asrHypotheses,
             sourceHypotheses: sourceHypotheses

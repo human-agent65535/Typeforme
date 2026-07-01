@@ -12,31 +12,17 @@ final class EmbeddedLlamaCorrectorService: CorrectorService {
         self.server = server
     }
 
-    func correct(_ request: CorrectionRequest, timeoutMs: Int) async throws -> CorrectionResult {
-        let (system, user) = PromptBuilder.build(for: request)
-        let content = try await complete(system: system, user: user, timeoutMs: timeoutMs)
-        do {
-            var result = try CorrectionValidator.parseAndValidate(rawOutput: content, for: request)
-            let vocabularyCandidates = PromptBuilder.vocabularyCandidates(for: request)
-            result.text = ProtectedSpanPostProcessor.apply(
-                result.text,
-                rawTranscript: request.transcriptEvidenceText,
-                vocabularyCandidates: vocabularyCandidates
-            )
-            result.text = TranscriptPostProcessor.clean(
-                result.text,
-                languageIDs: request.languageIDs,
-                preserveLineBreaks: request.correctionMode == .structurePlus,
-                numberPreference: request.numberOutputPreference,
-                punctuationPreference: request.punctuationPreference
-            )
-            return result
-        } catch let error as CorrectionValidationError {
-            throw CorrectorError.validationFailed(error.localizedDescription)
-        }
+    func correct(_ request: CorrectionRequest, timeoutMs: Int) async throws -> CorrectorOutput {
+        try await CorrectorPipeline.correct(
+            request: request,
+            timeoutMs: timeoutMs,
+            complete: { system, messages, timeoutMs in
+                try await complete(system: system, messages: messages, timeoutMs: timeoutMs)
+            }
+        )
     }
 
-    func complete(system: String, user: String, timeoutMs: Int) async throws -> String {
+    func complete(system: String, messages: [CorrectorChatMessage], timeoutMs: Int) async throws -> String {
         // Warmup uses the cold-timeout window from settings.
         let port: Int
         do {
@@ -48,7 +34,7 @@ final class EmbeddedLlamaCorrectorService: CorrectorService {
         let body = CorrectorChatRequestBuilder.body(
             model: "qwen3.5",
             system: system,
-            user: user,
+            messages: messages,
             maxTokens: AppSettings.correctionMaxTokens
         )
         do {

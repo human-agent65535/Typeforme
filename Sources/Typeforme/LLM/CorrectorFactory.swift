@@ -166,11 +166,11 @@ private struct UnavailableCorrectorService: CorrectorService {
     let kind: CorrectionBackendKind
     let reason: String
 
-    func correct(_ request: CorrectionRequest, timeoutMs: Int) async throws -> CorrectionResult {
+    func correct(_ request: CorrectionRequest, timeoutMs: Int) async throws -> CorrectorOutput {
         throw CorrectorError.unavailable(reason)
     }
 
-    func complete(system: String, user: String, timeoutMs: Int) async throws -> String {
+    func complete(system: String, messages: [CorrectorChatMessage], timeoutMs: Int) async throws -> String {
         throw CorrectorError.unavailable(reason)
     }
 }
@@ -180,7 +180,7 @@ private struct AutoInstallingLlamaCorrectorService: CorrectorService {
     let modelPath: String
     let downloadURLString: String
 
-    func correct(_ request: CorrectionRequest, timeoutMs: Int) async throws -> CorrectionResult {
+    func correct(_ request: CorrectionRequest, timeoutMs: Int) async throws -> CorrectorOutput {
         try AppPaths.ensureDirectories()
         try await ModelAutoInstaller.shared.ensureFile(
             atPath: modelPath,
@@ -191,7 +191,7 @@ private struct AutoInstallingLlamaCorrectorService: CorrectorService {
         return try await service.correct(request, timeoutMs: timeoutMs)
     }
 
-    func complete(system: String, user: String, timeoutMs: Int) async throws -> String {
+    func complete(system: String, messages: [CorrectorChatMessage], timeoutMs: Int) async throws -> String {
         try AppPaths.ensureDirectories()
         try await ModelAutoInstaller.shared.ensureFile(
             atPath: modelPath,
@@ -199,6 +199,6 @@ private struct AutoInstallingLlamaCorrectorService: CorrectorService {
             label: kind.displayName
         )
         let service = await CorrectorFactory.shared.installedLlamaService(modelPath: modelPath, kind: kind)
-        return try await service.complete(system: system, user: user, timeoutMs: timeoutMs)
+        return try await service.complete(system: system, messages: messages, timeoutMs: timeoutMs)
     }
 }

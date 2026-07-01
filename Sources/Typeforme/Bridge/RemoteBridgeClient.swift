@@ -484,7 +484,8 @@ struct RemoteBridgeClient {
     }
 
     static func validateTextResponse(text: String, status: String?, error: String?) throws {
-        if status?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "error" {
+        let normalizedStatus = status?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if normalizedStatus == "error" {
             throw RemoteBridgeClientError.correctionFailed(error ?? "")
         }
         if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
