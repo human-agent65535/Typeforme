@@ -1111,6 +1111,7 @@ private struct HeroRecordCard: View {
                         .foregroundStyle(.white)
                 }
             }
+
         }
         .frame(width: orbDiameter, height: orbDiameter)
         .compositingGroup()
@@ -1196,9 +1197,8 @@ private struct HeroRecordCard: View {
         }
         switch state.phase {
         case .sending, .refining:
-            // Title now carries the live stage label — leave detail empty so
-            // the orb doesn't show "Transcribing" / "Refining" twice on two
-            // lines.
+            // Title carries the live stage label; keep detail empty so the
+            // hero does not repeat "Transcribing" / "Refining" on two lines.
             return ""
         case .success(.ready): return "Result ready."
         case .success(.copied): return "Result copied to the clipboard."
@@ -1803,9 +1803,10 @@ private struct ResultCard: View {
 
     var body: some View {
         @Bindable var state = state
+        let previewText = livePreviewText
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Label("Result", systemImage: "text.alignleft")
+                Label(showsLivePreview ? "Preview" : "Result", systemImage: showsLivePreview ? "waveform" : "text.alignleft")
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.secondary)
                 Spacer()
@@ -1814,26 +1815,41 @@ private struct ResultCard: View {
                         .scaleEffect(0.7)
                 }
             }
-            TextEditor(text: $state.resultText)
-                .frame(minHeight: 120)
-                .scrollContentBackground(.hidden)
-                .padding(8)
+            if showsLivePreview {
+                ScrollView {
+                    Text(previewText)
+                        .font(.body)
+                        .foregroundStyle(.primary)
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                        .padding(14)
+                }
+                .frame(minHeight: 120, alignment: .topLeading)
                 .background(
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
                         .fill(Color(.systemBackground))
                 )
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .overlay(alignment: .topLeading) {
-                    if !hasResult {
-                        Text("Dictation result appears here. Hold the orb and speak.")
-                            .font(.callout)
-                            .foregroundStyle(.tertiary)
-                            .padding(.horizontal, 14)
-                            .padding(.top, 16)
-                            .allowsHitTesting(false)
+            } else {
+                TextEditor(text: $state.resultText)
+                    .frame(minHeight: 120)
+                    .scrollContentBackground(.hidden)
+                    .padding(8)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(Color(.systemBackground))
+                    )
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .overlay(alignment: .topLeading) {
+                        if !hasResult {
+                            Text("Dictation result appears here. Hold the orb and speak.")
+                                .font(.callout)
+                                .foregroundStyle(.tertiary)
+                                .padding(.horizontal, 14)
+                                .padding(.top, 16)
+                                .allowsHitTesting(false)
+                        }
                     }
-                }
+            }
             HStack(spacing: 10) {
                 Button {
                     state.copyResult()
@@ -1865,6 +1881,20 @@ private struct ResultCard: View {
 
     private var hasResult: Bool {
         !state.resultText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var livePreviewText: String {
+        state.livePartialTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var showsLivePreview: Bool {
+        guard !livePreviewText.isEmpty else { return false }
+        switch state.phase {
+        case .recording, .sending, .refining:
+            return true
+        default:
+            return false
+        }
     }
 }
 

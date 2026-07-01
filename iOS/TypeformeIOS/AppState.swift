@@ -913,6 +913,7 @@ final class AppState {
     }
 
     func setKeyboardDictationCaptureMode(_ mode: KeyboardDictationCaptureMode) {
+        let previousMode = keyboardDictationCaptureMode
         guard updateStoredRawPreference(
             \.keyboardDictationCaptureMode,
             to: mode,
@@ -927,7 +928,7 @@ final class AppState {
             suppressAutomaticLiveActivityStart = true
             liveActivityCoordinator.stop()
         }
-        if mode != .backgroundMic {
+        if mode != .backgroundMic || previousMode != .backgroundMic {
             stopBackgroundAudioCaptureForVisibleMode()
         }
         publishKeyboardCaptureNotReady()
@@ -964,6 +965,7 @@ final class AppState {
         suppressAutomaticPiPStart = true
         cancelAutomaticPiPStart()
         pipDictationCoordinator.stop()
+        stopBackgroundAudioCaptureForVisibleMode()
         publishKeyboardCaptureNotReady()
         showTransient(NSLocalizedString("Picture in Picture stopped.", comment: "PiP stopped toast"))
         syncPiPDictationPresentation()
@@ -985,6 +987,7 @@ final class AppState {
     func stopLiveActivityFromUserAction() {
         suppressAutomaticLiveActivityStart = true
         liveActivityCoordinator.stop()
+        stopBackgroundAudioCaptureForVisibleMode()
         publishKeyboardCaptureNotReady()
         showTransient(NSLocalizedString("Live Activity stopped.", comment: "Live Activity stopped toast"))
     }
@@ -1622,21 +1625,30 @@ final class AppState {
         // session active so recording does not pay a deactivate/reactivate
         // round trip before the UI can leave Preparing.
         standbyKeeper.stop(deactivateSession: false)
-        // If a keyboard dictation engine happens to be hot already, reuse it.
-        // Otherwise the host orb records on its OWN lightweight AVAudioRecorder
-        // (no voice-processing engine) — this keeps the orb fast (~300ms, no
-        // ~2s cold start), and crucially does NOT borrow the keyboard's shared
-        // capture engine, so a host orb recording never lights up the keyboard
-        // UI. Reuse the silent keeper's still-active session for a clean
-        // activation.
-        if keyboardDictationCaptureMode == .pictureInPicture,
-           keyboardAudioSession.isActive,
-           !keyboardAudioSession.isRecording {
-            keyboardAudioSession.stop()
+        // PiP mode uses the same FLAC writer as keyboard dictation. Do not
+        // fall through to AVAudioRecorder here: PiP keeps an AV playback
+        // session alive and device logs show host AVAudioRecorder can leave an
+        // unreadable FLAC under that session.
+        if keyboardDictationCaptureMode == .pictureInPicture {
+            path = keyboardAudioSession.isActive ? "keyboard-session" : "keyboard-session-cold"
+            if !keyboardAudioSession.isActive {
+                try await keyboardAudioSession.start(reuseActiveSession: hadSilentStandby)
+            }
+            _ = try await keyboardAudioSession.beginRecording()
+            hostRecordingUsesKeyboardAudioSession = true
+            activeBridgeDictateJobID = Self.newBridgeJobID()
+            startLivePartialPreviewIfAvailable()
+            logSlowHostRecordingStart(
+                startedAt: startedAt,
+                path: path,
+                hadSilentStandby: hadSilentStandby,
+                hadKeyboardSession: hadKeyboardSession,
+                hadPreWarmedRecorder: hadPreWarmedRecorder
+            )
+            return
         }
 
-        if keyboardDictationCaptureMode != .pictureInPicture,
-           keyboardAudioSession.isActive,
+        if keyboardAudioSession.isActive,
            !keyboardAudioSession.isRecording {
             path = "keyboard-session"
             _ = try await keyboardAudioSession.beginRecording()
@@ -1728,7 +1740,11 @@ final class AppState {
         let fileURL = isKeyboardCapture
             ? keyboardAudioSession.finishRecording()
             : recorder.stop(deactivateSession: true)
-        if isKeyboardCapture, !keyboardAudioSession.isActive {
+        if isKeyboardCapture,
+           keyboardDictationCaptureMode == .pictureInPicture,
+           keyboardAudioSession.isActive {
+            keyboardAudioSession.stop()
+        } else if isKeyboardCapture, !keyboardAudioSession.isActive {
             startSilentStandbyKeeperIfNeeded()
         }
         // Close the live preview audio side so it finalizes its last partial.
@@ -1737,6 +1753,7 @@ final class AppState {
         // committed result replaces it.
         await endLivePartialPreviewAudio()
         hostRecordingUsesKeyboardAudioSession = false
+        syncPiPDictationPresentation()
         let keyboardTextEditContext = pendingKeyboardTextEditContext
         let keyboardDictationContext = shouldPublishKeyboardProgress ? activeKeyboardDictationContext : nil
         activeKeyboardTextEditContext = nil
@@ -2465,6 +2482,7 @@ final class AppState {
         lastPiPStopAt = Date()
         suppressAutomaticPiPStart = true
         cancelAutomaticPiPStart()
+        stopBackgroundAudioCaptureForVisibleMode()
         publishKeyboardCaptureNotReady()
         syncPiPDictationPresentation()
     }
@@ -3235,7 +3253,7 @@ final class AppState {
             KeyboardDarwinBridge.observe(requestSessionStatusName) { [weak self] in
                 Task { @MainActor [weak self] in
                     guard let self else { return }
-                    if self.isKeyboardHostSessionActive {
+                    if self.shouldReportKeyboardSessionStarted {
                         KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.sessionStarted)
                     }
                     if self.keyboardAudioSession.isRecording {
@@ -3244,6 +3262,19 @@ final class AppState {
                 }
             },
         ]
+    }
+
+    private var shouldReportKeyboardSessionStarted: Bool {
+        if isKeyboardHostSessionActive {
+            return true
+        }
+        guard keyboardServer.isRunning else { return false }
+        switch keyboardBridgeStatus.state {
+        case .standby, .recording, .sending, .result:
+            return true
+        case .idle, .error:
+            return false
+        }
     }
 
     private func handleKeyboardCommand(_ command: KeyboardBridgeCommand) async -> KeyboardBridgeStatus {
@@ -3468,7 +3499,8 @@ final class AppState {
             }
             do {
                 let isInputReady = try await prepareKeyboardInputStandby(
-                    requestMicrophoneIfNeeded: false
+                    requestMicrophoneIfNeeded: false,
+                    waitForApplicationActive: keyboardDictationCaptureMode != .pictureInPicture
                 )
                 guard isInputReady else {
                     clearKeyboardCaptureContext()
@@ -4039,7 +4071,6 @@ final class AppState {
 
         pipDictationCoordinator.updatePresentation(PiPDictationPresentation(
             title: NSLocalizedString("Typeforme", comment: "Product name"),
-            detail: activityState.detail,
             stateLabel: stateLabel,
             isRecording: activityState.phase == .recording,
             recordingStartedAt: activityState.startedAt
@@ -4057,10 +4088,14 @@ final class AppState {
         let phase: TypeformeDictationActivityPhase
         let detail: String
         let startedAt: Date?
+        func nonEmpty(_ value: String?, fallback: String) -> String {
+            let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return trimmed.isEmpty ? fallback : trimmed
+        }
 
-        if keyboardAudioSession.isRecording || recorder.isRecording || self.phase == .recording {
+        if hasHostOwnedRecordingCapture || self.phase == .recording {
             phase = .recording
-            detail = NSLocalizedString("Listening from the Typeforme keyboard", comment: "Live Activity recording detail")
+            detail = NSLocalizedString("Listening from Typeforme", comment: "Live Activity host recording detail")
             startedAt = recordingStartedAt
         } else {
             switch keyboardBridgeStatus.state {
@@ -4085,9 +4120,37 @@ final class AppState {
                     : keyboardBridgeStatus.message
                 startedAt = nil
             case .standby, .idle:
-                phase = .ready
-                detail = NSLocalizedString("Ready for dictation", comment: "Live Activity ready detail")
-                startedAt = nil
+                switch self.phase {
+                case .sending:
+                    phase = .transcribing
+                    detail = nonEmpty(
+                        processingStatusMessage,
+                        fallback: NSLocalizedString("Transcribing audio on your paired Mac", comment: "Live Activity transcribing detail")
+                    )
+                    startedAt = nil
+                case .refining:
+                    phase = .refining
+                    detail = nonEmpty(
+                        processingStatusMessage,
+                        fallback: NSLocalizedString("Refining text on your paired Mac", comment: "Live Activity refining detail")
+                    )
+                    startedAt = nil
+                case .success:
+                    phase = .result
+                    detail = NSLocalizedString("Result ready", comment: "Live Activity host result ready detail")
+                    startedAt = nil
+                case .failure:
+                    phase = .issue
+                    detail = nonEmpty(
+                        errorMessage,
+                        fallback: NSLocalizedString("Open Typeforme to review the issue", comment: "Live Activity generic error detail")
+                    )
+                    startedAt = nil
+                default:
+                    phase = .ready
+                    detail = NSLocalizedString("Ready for dictation", comment: "Live Activity ready detail")
+                    startedAt = nil
+                }
             case .recording:
                 phase = .recording
                 detail = NSLocalizedString("Listening from the Typeforme keyboard", comment: "Live Activity recording detail")

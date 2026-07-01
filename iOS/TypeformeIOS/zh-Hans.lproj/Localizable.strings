@@ -6,6 +6,7 @@
 "Keyboard Guide" = "键盘使用指南";
 "Setup & Permissions" = "设置与权限";
 "Done" = "完成";
+"Ready" = "就绪";
 "Discard" = "放弃";
 
 // 设置状态卡片
@@ -53,6 +54,7 @@
 "Picture in Picture is preparing." = "画中画准备中。";
 "Picture in Picture is not supported on this device." = "此设备不支持画中画。";
 "Picture in Picture is still preparing." = "画中画仍在准备中。";
+"Picture in Picture is still starting." = "画中画仍在启动中。";
 "Picture in Picture is not available right now." = "画中画当前不可用。";
 "Picture in Picture stopped." = "画中画已停止。";
 "Picture in Picture stopped" = "画中画已停止";
@@ -66,11 +68,13 @@
 "Open PiP to skip app switching" = "打开画中画以免切换 app";
 "Recording stopped because Picture in Picture closed." = "画中画关闭,录音已停止。";
 "Ready for dictation" = "听写已就绪";
+"Listening from Typeforme" = "Typeforme 正在收音";
 "Listening from the Typeforme keyboard" = "正在通过 Typeforme 键盘收音";
 "Sending audio to your paired Mac" = "正在将音频发送到已配对的 Mac";
 "Transcribing audio on your paired Mac" = "正在已配对的 Mac 上转写音频";
 "Refining text on your paired Mac" = "正在已配对的 Mac 上整理文本";
 "Result Ready" = "结果已就绪";
+"Result ready" = "结果已就绪";
 "Return to your text field to insert or review" = "返回文本框插入或查看结果";
 "Needs Attention" = "需要处理";
 "Open Typeforme to review the issue" = "打开 Typeforme 查看问题";

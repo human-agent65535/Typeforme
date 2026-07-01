@@ -11,14 +11,12 @@ private enum PiPDictationLayout {
 
 struct PiPDictationPresentation: Equatable {
     var title: String
-    var detail: String
     var stateLabel: String
     var isRecording: Bool
     var recordingStartedAt: Date?
 
     static let ready = PiPDictationPresentation(
         title: "Typeforme",
-        detail: "Ready for dictation",
         stateLabel: "Ready",
         isRecording: false,
         recordingStartedAt: nil
@@ -45,6 +43,7 @@ final class PiPDictationCoordinator: NSObject, ObservableObject {
 
     private static let startupSourceViewTimeout: TimeInterval = 1.0
     private static let startupReadinessTimeout: TimeInterval = 1.6
+    private static let startupActivationTimeout: TimeInterval = 2.0
     private static let startupReadinessPollInterval: UInt64 = 80_000_000
     private static let contentUpdateInterval: UInt64 = 250_000_000
 
@@ -119,7 +118,18 @@ final class PiPDictationCoordinator: NSObject, ObservableObject {
 
         controller.startPictureInPicture()
         pipLog.notice("start requested")
+        await waitUntilPictureInPictureIsActive(controller)
         refreshCapability()
+        guard controller.isPictureInPictureActive else {
+            pipLog.notice("start rejected: PiP did not become active")
+            lastErrorMessage = NSLocalizedString(
+                "Picture in Picture is still starting.",
+                comment: "PiP activation timeout status"
+            )
+            statusMessage = lastErrorMessage ?? ""
+            stopContentUpdatesIfIdle()
+            return false
+        }
         return true
     }
 
@@ -173,6 +183,15 @@ final class PiPDictationCoordinator: NSObject, ObservableObject {
             try? await Task.sleep(nanoseconds: Self.startupReadinessPollInterval)
         }
         updateContentView()
+        refreshCapability()
+    }
+
+    private func waitUntilPictureInPictureIsActive(_ controller: AVPictureInPictureController) async {
+        let deadline = Date().addingTimeInterval(Self.startupActivationTimeout)
+        while !controller.isPictureInPictureActive, Date() < deadline {
+            refreshCapability()
+            try? await Task.sleep(nanoseconds: Self.startupReadinessPollInterval)
+        }
         refreshCapability()
     }
 
@@ -349,41 +368,32 @@ private final class PiPVideoCallContentView: UIView {
         let titleParagraph = NSMutableParagraphStyle()
         titleParagraph.alignment = .center
         titleParagraph.lineBreakMode = .byTruncatingTail
-        let detailParagraph = NSMutableParagraphStyle()
-        detailParagraph.alignment = .center
-        detailParagraph.lineBreakMode = .byTruncatingTail
+        let statusParagraph = NSMutableParagraphStyle()
+        statusParagraph.alignment = .center
+        statusParagraph.lineBreakMode = .byTruncatingTail
 
         let titleAttributes: [NSAttributedString.Key: Any] = [
             .font: UIFont.systemFont(ofSize: 20 * scale, weight: .bold),
             .foregroundColor: UIColor.white,
             .paragraphStyle: titleParagraph,
         ]
-        let detailAttributes: [NSAttributedString.Key: Any] = [
-            .font: UIFont.systemFont(ofSize: 10.5 * scale, weight: .medium),
-            .foregroundColor: UIColor(white: 0.74, alpha: 1),
-            .paragraphStyle: detailParagraph,
-        ]
         let stateAttributes: [NSAttributedString.Key: Any] = [
             .font: UIFont.monospacedDigitSystemFont(ofSize: 13.5 * scale, weight: .semibold),
             .foregroundColor: UIColor(red: 0.18, green: 0.72, blue: 1, alpha: 1),
-            .paragraphStyle: detailParagraph,
+            .paragraphStyle: statusParagraph,
         ]
         let tapAttributes: [NSAttributedString.Key: Any] = [
             .font: UIFont.systemFont(ofSize: max(8, 9.5 * scale), weight: .medium),
             .foregroundColor: UIColor(white: 0.58, alpha: 1),
-            .paragraphStyle: detailParagraph,
+            .paragraphStyle: statusParagraph,
         ]
 
         (presentation.title as NSString).draw(
-            in: CGRect(x: panelRect.minX + 10 * scale, y: panelRect.minY + 53 * scale, width: panelRect.width - 20 * scale, height: 24 * scale),
+            in: CGRect(x: panelRect.minX + 10 * scale, y: panelRect.minY + 57 * scale, width: panelRect.width - 20 * scale, height: 24 * scale),
             withAttributes: titleAttributes
         )
-        (presentation.detail as NSString).draw(
-            in: CGRect(x: panelRect.minX + 14 * scale, y: panelRect.minY + 77 * scale, width: panelRect.width - 28 * scale, height: 19 * scale),
-            withAttributes: detailAttributes
-        )
         (currentStateText() as NSString).draw(
-            in: CGRect(x: panelRect.minX + 12 * scale, y: panelRect.minY + 98 * scale, width: panelRect.width - 24 * scale, height: 18 * scale),
+            in: CGRect(x: panelRect.minX + 12 * scale, y: panelRect.minY + 84 * scale, width: panelRect.width - 24 * scale, height: 20 * scale),
             withAttributes: stateAttributes
         )
         (NSLocalizedString("Tap to close", comment: "PiP tap-to-close hint") as NSString).draw(

@@ -6,6 +6,7 @@
 "Keyboard Guide" = "Keyboard Guide";
 "Setup & Permissions" = "Setup & Permissions";
 "Done" = "Done";
+"Ready" = "Ready";
 "Discard" = "Discard";
 
 // Setup status card
@@ -53,6 +54,7 @@
 "Picture in Picture is preparing." = "Picture in Picture is preparing.";
 "Picture in Picture is not supported on this device." = "Picture in Picture is not supported on this device.";
 "Picture in Picture is still preparing." = "Picture in Picture is still preparing.";
+"Picture in Picture is still starting." = "Picture in Picture is still starting.";
 "Picture in Picture is not available right now." = "Picture in Picture is not available right now.";
 "Picture in Picture stopped." = "Picture in Picture stopped.";
 "Picture in Picture stopped" = "Picture in Picture stopped";
@@ -66,11 +68,13 @@
 "Open PiP to skip app switching" = "Open PiP to skip app switching";
 "Recording stopped because Picture in Picture closed." = "Recording stopped because Picture in Picture closed.";
 "Ready for dictation" = "Ready for dictation";
+"Listening from Typeforme" = "Listening from Typeforme";
 "Listening from the Typeforme keyboard" = "Listening from the Typeforme keyboard";
 "Sending audio to your paired Mac" = "Sending audio to your paired Mac";
 "Transcribing audio on your paired Mac" = "Transcribing audio on your paired Mac";
 "Refining text on your paired Mac" = "Refining text on your paired Mac";
 "Result Ready" = "Result Ready";
+"Result ready" = "Result ready";
 "Return to your text field to insert or review" = "Return to your text field to insert or review";
 "Needs Attention" = "Needs Attention";
 "Open Typeforme to review the issue" = "Open Typeforme to review the issue";

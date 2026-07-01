@@ -72,7 +72,8 @@ enum IOSRecordingAudioSession {
 
     static func isPriorityConflict(_ error: Error) -> Bool {
         let nsError = error as NSError
-        if nsError.code == AVAudioSession.ErrorCode.insufficientPriority.rawValue {
+        if nsError.code == AVAudioSession.ErrorCode.insufficientPriority.rawValue
+            || nsError.code == AVAudioSession.ErrorCode.cannotInterruptOthers.rawValue {
             return true
         }
         let description = "\(nsError.domain) \(nsError.code) \(nsError.localizedDescription)"
@@ -490,7 +491,15 @@ final class AudioRecorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
         guard let url else { return nil }
         guard BridgeAudioFormat.isFLACFile(url) else {
             let fileBytes = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.intValue ?? 0
-            recordingLog.error("host audio finish: invalid flac fileBytes=\(fileBytes, privacy: .public)")
+            let hasMagic = BridgeAudioFormat.fileHasFLACMagic(url)
+            let formatSummary: String
+            if let file = try? AVAudioFile(forReading: url) {
+                let description = file.fileFormat.streamDescription.pointee
+                formatSummary = "formatID=\(description.mFormatID) flags=\(description.mFormatFlags) sampleRate=\(file.fileFormat.sampleRate) channels=\(file.fileFormat.channelCount)"
+            } else {
+                formatSummary = "unreadable"
+            }
+            recordingLog.error("host audio finish: invalid flac fileBytes=\(fileBytes, privacy: .public) magic=\(hasMagic, privacy: .public) \(formatSummary, privacy: .public)")
             try? FileManager.default.removeItem(at: url)
             return nil
         }
