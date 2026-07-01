@@ -26,7 +26,7 @@ struct ContentView: View {
                             Button {
                                 showingSetupReadiness = true
                             } label: {
-                                Label("Setup & Permissions", systemImage: "checklist")
+                                Label("Capture Mode & Permissions", systemImage: "checklist")
                             }
                             Button {
                                 showingDictationSettings = true
@@ -60,6 +60,7 @@ struct ContentView: View {
                             state.unpair()
                         }
                     )
+                    .environment(state)
                 }
                 .sheet(isPresented: $showingDictationSettings) {
                     NavigationStack {
@@ -68,12 +69,14 @@ struct ContentView: View {
                         }
                             .environment(state)
                     }
+                    .environment(state)
                 }
                 .sheet(isPresented: $showingKeyboardSettings) {
                     NavigationStack {
                         KeyboardSettingsView()
                             .environment(state)
                     }
+                    .environment(state)
                 }
                 .sheet(isPresented: $showingSetupReadiness, onDismiss: {
                     state.dismissSetupReadiness()
@@ -84,6 +87,7 @@ struct ContentView: View {
                         )
                         .environment(state)
                     }
+                    .environment(state)
                 }
                 .sheet(isPresented: $showingKeyboardGuide) {
                     NavigationStack {
@@ -94,18 +98,15 @@ struct ContentView: View {
                                 }
                             }
                     }
+                    .environment(state)
                 }
                 .overlay(alignment: .top) {
                     ToastView(message: state.transientMessage)
                         .padding(.top, 8)
                         .animation(.snappy(duration: 0.22), value: state.transientMessage)
                 }
-                .background(alignment: .topLeading) {
-                    PiPDisplayLayerHost()
-                        .frame(width: 96, height: 96)
-                        .opacity(0.01)
-                        .allowsHitTesting(false)
-                        .accessibilityHidden(true)
+                .background(alignment: .topTrailing) {
+                    PiPSourceViewMount()
                 }
                 .onAppear {
                     presentFirstRunReadinessIfNeeded()
@@ -369,7 +370,7 @@ private struct SetupReadinessView: View {
 
     var body: some View {
         readinessList
-            .navigationTitle("Setup & Permissions")
+            .navigationTitle("Capture Mode & Permissions")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
@@ -583,6 +584,22 @@ private struct SetupReadinessView: View {
     private func openAppSettings() {
         guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
         UIApplication.shared.open(url)
+    }
+}
+
+private struct PiPSourceViewMount: View {
+    @Environment(AppState.self) private var state
+
+    var body: some View {
+        if state.keyboardDictationCaptureMode == .pictureInPicture {
+            PiPSourceViewHost()
+                .frame(width: 70, height: 70)
+                .padding(.top, 16)
+                .padding(.trailing, 16)
+                .opacity(0.01)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+        }
     }
 }
 
