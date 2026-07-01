@@ -562,6 +562,15 @@ final class DictationCoordinator: ObservableObject {
             }
             try? FileManager.default.removeItem(at: url)
             guard await isActive(sessionID: sessionID, token: cancelToken) else { return }
+            if ASRAudioSupport.isBenignEmptyTranscript(error) {
+                Log.asr.notice("empty transcript — returning to idle without commit")
+                clearActiveSession()
+                clearDictationContext()
+                clearTextEditRequest()
+                collapseVoicePreviewHUDAfterAction()
+                transition(to: .idle)
+                return
+            }
             reportError(error.localizedDescription)
             scheduleAutoReset(after: Self.errorResetDelay)
         }
@@ -814,8 +823,11 @@ final class DictationCoordinator: ObservableObject {
     private static func successWarning(from warning: String?) -> String? {
         let trimmed = warning?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if trimmed.isEmpty { return nil }
-        let lines = trimmed.components(separatedBy: .newlines).map { line -> String in
+        let lines = trimmed.components(separatedBy: .newlines).compactMap { line -> String? in
             let cleaned = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !ASRAudioSupport.isBenignEmptyTranscriptMessage(cleaned) else {
+                return nil
+            }
             if cleaned == previewWithoutRefineBaseMessage {
                 return insertedWithoutRefineBaseMessage
             }
@@ -827,7 +839,7 @@ final class DictationCoordinator: ObservableObject {
             }
             return line
         }
-        return lines.joined(separator: "\n")
+        return lines.isEmpty ? nil : lines.joined(separator: "\n")
     }
 
     private static func previewWithoutRefineMessage(for status: String?) -> String {

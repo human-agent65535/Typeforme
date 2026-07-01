@@ -80,6 +80,24 @@ enum ASRAudioSupport {
         return url
     }
 
+    static func isBenignEmptyTranscript(_ error: Error) -> Bool {
+        if let asrError = error as? ASRAudioSupportError {
+            switch asrError {
+            case .emptyTranscript:
+                return true
+            default:
+                break
+            }
+        }
+        return isBenignEmptyTranscriptMessage(error.localizedDescription)
+    }
+
+    static func isBenignEmptyTranscriptMessage(_ message: String) -> Bool {
+        let lower = message.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return lower.contains("empty transcript")
+            || lower.contains("no speech detected")
+    }
+
     static func validateHTTPResponse(_ response: URLResponse, data: Data) throws {
         guard let http = response as? HTTPURLResponse else { return }
         guard (200..<300).contains(http.statusCode) else {

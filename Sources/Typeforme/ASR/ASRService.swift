@@ -35,7 +35,7 @@ struct ASRTranscription: Sendable {
     var warningText: String? {
         let cleaned = warnings
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
+            .filter { !$0.isEmpty && !ASRAudioSupport.isBenignEmptyTranscriptMessage($0) }
         return cleaned.isEmpty ? nil : cleaned.joined(separator: "\n")
     }
 }

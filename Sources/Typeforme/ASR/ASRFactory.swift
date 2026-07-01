@@ -411,7 +411,6 @@ private struct MultiSourceASRService: ASRService {
                 try? FileManager.default.removeItem(at: canonicalAudioURL)
             }
         }
-
         var attempts: [ASRSourceAttemptResult] = []
         let timeoutSeconds = Self.unifiedAttemptTimeoutSeconds(for: enabledSources)
         if let progress, enabledSources.count > 1 {
@@ -462,6 +461,9 @@ private struct MultiSourceASRService: ASRService {
             candidates: successfulTexts.map(Optional.some)
         )
         guard let transcript = hypotheses.first else {
+            if !ordered.isEmpty, ordered.allSatisfy(Self.isBenignEmptyAttempt) {
+                throw ASRAudioSupportError.emptyTranscript
+            }
             let detail = ordered
                 .map { "\($0.source.displayName): \($0.error ?? $0.status)" }
                 .joined(separator: "; ")
@@ -482,6 +484,10 @@ private struct MultiSourceASRService: ASRService {
             modelOutputs: ordered.map(\.modelOutput),
             warnings: warnings
         )
+    }
+
+    private static func isBenignEmptyAttempt(_ attempt: ASRSourceAttemptResult) -> Bool {
+        ASRAudioSupport.isBenignEmptyTranscriptMessage(attempt.error ?? attempt.status)
     }
 
     private static func attempt(

@@ -48,6 +48,17 @@ struct ASRAudioSupportTests {
         #expect(!QwenLlamaASRService.shouldRetryTransientASRError(ASRAudioSupportError.httpStatus(400, "bad request"), attempt: 1))
     }
 
+    @Test func benignEmptyASRWarningsAreNotUserVisible() {
+        let transcription = ASRTranscription(
+            text: "hello",
+            warnings: [
+                "NVIDIA Nemotron ASR: ASR server returned an empty transcript",
+                "Qwen3-ASR: No speech detected",
+            ]
+        )
+        #expect(transcription.warningText == nil)
+    }
+
     @Test func qwenWarmupSilenceWAVIs16kMonoPCM() throws {
         let url = try QwenLlamaASRService.writeWarmupSilenceWAVFile(sampleCount: 3)
         defer { try? FileManager.default.removeItem(at: url) }

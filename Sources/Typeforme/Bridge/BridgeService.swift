@@ -1113,7 +1113,9 @@ final class BridgeService {
             switch asrError {
             case .audioConversionFailed:
                 return BridgeServiceError.invalidAudio
-            case .requestBodyFailed, .httpStatus, .timeout, .emptyTranscript, .unsupportedBridgeAudioExtension:
+            case .emptyTranscript:
+                return BridgeServiceError.emptyTranscript
+            case .requestBodyFailed, .httpStatus, .timeout, .unsupportedBridgeAudioExtension:
                 return error
             }
         }
