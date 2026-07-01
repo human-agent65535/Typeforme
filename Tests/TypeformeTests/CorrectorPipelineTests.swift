@@ -79,6 +79,27 @@ struct CorrectorPipelineTests {
         #expect(output.debugTrace.verifierText == replacement)
     }
 
+    @Test func emptyCorrectionReturnsWithoutVerifier() async throws {
+        let stub = CompletionStub(outputs: [
+            "{\"text\":\"\"}",
+        ])
+        let request = makeRequest(raw: "在1990年代，该市人口增长迅速。")
+
+        let output = try await CorrectorPipeline.correct(
+            request: request,
+            timeoutMs: 1_000,
+            complete: { system, messages, timeoutMs in
+                try await stub.complete(system: system, messages: messages, timeoutMs: timeoutMs)
+            }
+        )
+        let requests = await stub.requests
+
+        #expect(output.result.text.isEmpty)
+        #expect(output.debugTrace.parsedText == "")
+        #expect(!output.debugTrace.verifierAttempted)
+        #expect(requests.count == 1)
+    }
+
     private func makeRequest(raw: String, correctionMode: CorrectionMode = .polishPlus) -> CorrectionRequest {
         CorrectionRequest(
             correctionMode: correctionMode,

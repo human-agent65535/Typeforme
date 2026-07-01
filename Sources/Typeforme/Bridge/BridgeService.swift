@@ -835,6 +835,8 @@ final class BridgeService {
             return okMessage
         case "skipped_fast_mode":
             return "Fast transcript ready"
+        case "empty":
+            return "No reliable transcript"
         case "refine_timeout":
             return "Without refine: refine timeout"
         case "refine_error":
@@ -1005,7 +1007,7 @@ final class BridgeService {
         var result = output.result
         result = normalize(result, languageIDs: languageIDs, correctionMode: correctionMode)
         guard !result.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw CorrectorError.empty
+            return BridgeCorrectionOutput(result: result, status: "empty", error: nil, debugTrace: output.debugTrace)
         }
         return BridgeCorrectionOutput(result: result, status: "ok", error: nil, debugTrace: output.debugTrace)
     }

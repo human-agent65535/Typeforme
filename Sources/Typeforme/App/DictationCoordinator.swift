@@ -430,8 +430,12 @@ final class DictationCoordinator: ObservableObject {
                         )
                     }
                     guard !spokenInstruction.isEmpty else {
-                        reportError("Dictation produced an empty edit command")
-                        scheduleAutoReset(after: Self.errorResetDelay)
+                        Log.coordinator.notice("refine returned empty edit command — returning to idle without commit")
+                        clearActiveSession()
+                        clearDictationContext()
+                        clearTextEditRequest()
+                        collapseVoicePreviewHUDAfterAction()
+                        transition(to: .idle)
                         return
                     }
                     let editStarted = Date()
@@ -510,7 +514,7 @@ final class DictationCoordinator: ObservableObject {
                     debugLog,
                     mode: request.correctionMode,
                     text: normalizedResult.text,
-                    status: "ok",
+                    status: normalizedResult.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "empty" : "ok",
                     latencyMs: elapsedMs(since: correctionStarted),
                     request: request,
                     debugTrace: output.debugTrace,
@@ -1321,8 +1325,12 @@ final class DictationCoordinator: ObservableObject {
                let editIntent = activeTextEditIntent {
                 let spoken = response.text.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !spoken.isEmpty else {
-                    reportError("Remote transcript was empty")
-                    scheduleAutoReset(after: Self.errorResetDelay)
+                    Log.coordinator.notice("remote refine returned empty edit command — returning to idle without commit")
+                    clearActiveSession()
+                    clearDictationContext()
+                    clearTextEditRequest()
+                    collapseVoicePreviewHUDAfterAction()
+                    transition(to: .idle)
                     return
                 }
                 transition(to: .correcting)
@@ -1619,8 +1627,12 @@ final class DictationCoordinator: ObservableObject {
         cancelToken: CommitCancellationToken
     ) async {
         guard !result.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            reportError("Refine returned empty text")
-            scheduleAutoReset(after: Self.errorResetDelay)
+            Log.coordinator.notice("refine returned empty text — returning to idle without commit")
+            clearActiveSession()
+            clearDictationContext()
+            clearTextEditRequest()
+            collapseVoicePreviewHUDAfterAction()
+            transition(to: .idle)
             return
         }
         transition(to: .inserting)

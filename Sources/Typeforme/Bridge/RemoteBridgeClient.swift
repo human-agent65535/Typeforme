@@ -489,6 +489,7 @@ struct RemoteBridgeClient {
             throw RemoteBridgeClientError.correctionFailed(error ?? "")
         }
         if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            if normalizedStatus == "empty" { return }
             throw RemoteBridgeClientError.emptyResult
         }
     }

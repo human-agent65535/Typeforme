@@ -2,7 +2,6 @@ import Foundation
 
 enum CorrectionValidationError: LocalizedError {
     case parseFailed(String)
-    case emptyText
     case textTooLong(actual: Int, cap: Int)
     case containsMarkupOrJSON
     case repeatedOutput
@@ -11,7 +10,6 @@ enum CorrectionValidationError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .parseFailed(let why):              return "Parse failed: \(why)"
-        case .emptyText:                        return "Empty text on commit"
         case .textTooLong(let a, let c):        return "Output too long (\(a) > \(c))"
         case .containsMarkupOrJSON:             return "Correction text contains markup or JSON"
         case .repeatedOutput:                   return "Correction text repeats the same content"
@@ -53,10 +51,6 @@ enum CorrectionValidator {
     }
 
     static func validateForCommit(_ result: CorrectionResult) throws {
-        let trimmed = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty {
-            throw CorrectionValidationError.emptyText
-        }
         if result.text.contains("```") || result.text.contains("<think>") || result.text.contains("</think>") {
             throw CorrectionValidationError.containsMarkupOrJSON
         }

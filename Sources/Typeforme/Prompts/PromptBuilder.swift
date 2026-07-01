@@ -16,6 +16,9 @@ enum PromptBuilder {
         if let asrSourceNotes = BuiltInPrompts.asrSourceNotesPrompt(for: request.sourceHypotheses) {
             parts.append(asrSourceNotes)
         }
+        if let reliabilityExamples = BuiltInPrompts.asrReliabilityExamplesPrompt(for: request.sourceHypotheses) {
+            parts.append(reliabilityExamples)
+        }
 
         let additional = AppSettings.promptAdditionalSystem.trimmingCharacters(in: .whitespacesAndNewlines)
         if !additional.isEmpty {

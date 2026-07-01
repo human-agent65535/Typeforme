@@ -8,6 +8,7 @@ struct BridgeServiceTests {
         #expect(BridgeService.resultReadyMessage(correctionStatus: "refine_timeout", okMessage: "Refine complete") == "Without refine: refine timeout")
         #expect(BridgeService.resultReadyMessage(correctionStatus: "refine_error", okMessage: "Refine complete") == "Without refine: refine error")
         #expect(BridgeService.resultReadyMessage(correctionStatus: "skipped_fast_mode", okMessage: "Refine complete") == "Fast transcript ready")
+        #expect(BridgeService.resultReadyMessage(correctionStatus: "empty", okMessage: "Refine complete") == "No reliable transcript")
     }
 
     @Test @MainActor func refineFailureStatusDistinguishesTimeoutFromOtherErrors() {
@@ -43,6 +44,7 @@ struct BridgeServiceTests {
     @Test func remoteClientAcceptsDegradedRefineResponsesWithText() throws {
         try RemoteBridgeClient.validateTextResponse(text: "raw transcript", status: "refine_timeout", error: "Correction timed out")
         try RemoteBridgeClient.validateTextResponse(text: "raw transcript", status: "refine_error", error: "Backend error")
+        try RemoteBridgeClient.validateTextResponse(text: "", status: "empty", error: nil)
         #expect(throws: RemoteBridgeClientError.self) {
             try RemoteBridgeClient.validateTextResponse(text: "raw transcript", status: "error", error: "Backend error")
         }

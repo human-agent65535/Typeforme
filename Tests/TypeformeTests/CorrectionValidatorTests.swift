@@ -60,11 +60,9 @@ struct CorrectionValidatorTests {
         }
     }
 
-    @Test func emptyTextOnCommitRejected() {
+    @Test func emptyTextIsValidNoCommitSignal() throws {
         let result = CorrectionResult(action: .commit, text: "  ", risk: .low)
-        #expect(throws: CorrectionValidationError.self) {
-            try CorrectionValidator.validate(result, for: makeRequest(raw: "hello"))
-        }
+        try CorrectionValidator.validate(result, for: makeRequest(raw: "hello"))
     }
 
     @Test func cleanLengthCapUsesRawTranscriptWithoutLargeFloor() throws {
