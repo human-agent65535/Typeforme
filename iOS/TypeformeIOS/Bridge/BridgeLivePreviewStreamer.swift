@@ -447,8 +447,9 @@ final class BridgeLivePreviewStreamer: @unchecked Sendable {
                     self.onTranscript(text)
                 }
             }
+            let resolvedText = finalText
             self.audioQueue.async {
-                self.resolveFinishWaitersOnAudioQueue(text: finalText)
+                self.resolveFinishWaitersOnAudioQueue(text: resolvedText)
                 self.closeWebSocketOnAudioQueue()
             }
         }

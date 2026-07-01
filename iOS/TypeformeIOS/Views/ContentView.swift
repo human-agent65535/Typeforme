@@ -627,12 +627,10 @@ private struct DictationCaptureModeToggle: View {
             Text(state.keyboardDictationCaptureMode.detail)
                 .font(.footnote)
                 .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            .fixedSize(horizontal: false, vertical: true)
 
             if state.keyboardDictationCaptureMode == .pictureInPicture {
                 PiPDictationStatusRow(coordinator: state.pipDictationCoordinator)
-            } else if state.keyboardDictationCaptureMode == .liveActivity {
-                LiveActivityStatusRow(coordinator: state.liveActivityCoordinator)
             }
         }
         .padding(.vertical, 3)
@@ -709,72 +707,6 @@ private struct PiPDictationStatusRow: View {
     private var statusTint: Color {
         if coordinator.isActive { return .green }
         if coordinator.isSupported { return .secondary }
-        return .orange
-    }
-}
-
-private struct LiveActivityStatusRow: View {
-    @ObservedObject var coordinator: LiveActivityDictationCoordinator
-    @Environment(AppState.self) private var state
-    @State private var isWorking = false
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Label(statusText, systemImage: statusIcon)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(statusTint)
-
-            HStack(spacing: 10) {
-                if coordinator.isActive {
-                    Button {
-                        state.stopLiveActivityFromUserAction()
-                    } label: {
-                        Label("Stop Live Activity", systemImage: "xmark.circle")
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                } else {
-                    Button {
-                        isWorking = true
-                        Task {
-                            await state.startLiveActivityFromUserAction()
-                            isWorking = false
-                        }
-                    } label: {
-                        if isWorking {
-                            HStack(spacing: 8) {
-                                ProgressView()
-                                Text("Start Live Activity")
-                            }
-                        } else {
-                            Label("Start Live Activity", systemImage: "waveform.circle")
-                        }
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .disabled(isWorking || !coordinator.isEnabled)
-                }
-            }
-        }
-        .padding(.top, 2)
-    }
-
-    private var statusText: LocalizedStringKey {
-        if coordinator.statusMessage.isEmpty {
-            return "Live Activity is ready."
-        }
-        return LocalizedStringKey(coordinator.statusMessage)
-    }
-
-    private var statusIcon: String {
-        if coordinator.isActive { return "waveform.circle.fill" }
-        if coordinator.isEnabled { return "waveform.circle" }
-        return "exclamationmark.triangle.fill"
-    }
-
-    private var statusTint: Color {
-        if coordinator.isActive { return .green }
-        if coordinator.isEnabled { return .secondary }
         return .orange
     }
 }

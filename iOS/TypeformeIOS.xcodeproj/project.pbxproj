@@ -47,8 +47,6 @@
 		A10000000000000000000050 /* ../Sources/Typeforme/Models/KeyboardTouchGapPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000050 /* ../Sources/Typeforme/Models/KeyboardTouchGapPolicy.swift */; };
 		A10000000000000000000051 /* BridgeLivePreviewStreamer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000051 /* BridgeLivePreviewStreamer.swift */; };
 		A10000000000000000000052 /* PiPDictationCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000052 /* PiPDictationCoordinator.swift */; };
-		A10000000000000000000053 /* LiveActivityDictationCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000053 /* LiveActivityDictationCoordinator.swift */; };
-		A10000000000000000000054 /* Shared/TypeformeDictationActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000054 /* Shared/TypeformeDictationActivityAttributes.swift */; };
 		A10000000000000000000099 /* StandbyKeeper.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000099 /* StandbyKeeper.swift */; };
 		B10000000000000000000001 /* KeyboardViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000001 /* KeyboardViewController.swift */; };
 		B10000000000000000000002 /* TypeformeKeyboard.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = B20000000000000000000003 /* TypeformeKeyboard.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
@@ -64,9 +62,6 @@
 		B10000000000000000000030 /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = B40000000000000000000030 /* Localizable.strings */; };
 		B10000000000000000000045 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000046 /* PrivacyInfo.xcprivacy */; };
 		B10000000000000000000050 /* ../Sources/Typeforme/Models/KeyboardTouchGapPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000050 /* ../Sources/Typeforme/Models/KeyboardTouchGapPolicy.swift */; };
-		D10000000000000000000001 /* TypeformeLiveActivityBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000001 /* TypeformeLiveActivityBundle.swift */; };
-		D10000000000000000000002 /* Shared/TypeformeDictationActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000054 /* Shared/TypeformeDictationActivityAttributes.swift */; };
-		D10000000000000000000003 /* TypeformeLiveActivity.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = D20000000000000000000003 /* TypeformeLiveActivity.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -76,13 +71,6 @@
 			proxyType = 1;
 			remoteGlobalIDString = B50000000000000000000001;
 			remoteInfo = TypeformeKeyboard;
-		};
-		D80000000000000000000001 /* PBXContainerItemProxy */ = {
-			isa = PBXContainerItemProxy;
-			containerPortal = A80000000000000000000001 /* Project object */;
-			proxyType = 1;
-			remoteGlobalIDString = D50000000000000000000001;
-			remoteInfo = TypeformeLiveActivity;
 		};
 /* End PBXContainerItemProxy section */
 
@@ -94,7 +82,6 @@
 			dstSubfolderSpec = 13;
 			files = (
 				B10000000000000000000002 /* TypeformeKeyboard.appex in Embed Foundation Extensions */,
-				D10000000000000000000003 /* TypeformeLiveActivity.appex in Embed Foundation Extensions */,
 			);
 			name = "Embed Foundation Extensions";
 			runOnlyForDeploymentPostprocessing = 0;
@@ -146,8 +133,6 @@
 		A20000000000000000000050 /* ../Sources/Typeforme/Models/KeyboardTouchGapPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Sources/Typeforme/Models/KeyboardTouchGapPolicy.swift; sourceTree = SOURCE_ROOT; };
 		A20000000000000000000051 /* BridgeLivePreviewStreamer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BridgeLivePreviewStreamer.swift; sourceTree = "<group>"; };
 		A20000000000000000000052 /* PiPDictationCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PiPDictationCoordinator.swift; sourceTree = "<group>"; };
-		A20000000000000000000053 /* LiveActivityDictationCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveActivityDictationCoordinator.swift; sourceTree = "<group>"; };
-		A20000000000000000000054 /* Shared/TypeformeDictationActivityAttributes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Shared/TypeformeDictationActivityAttributes.swift; sourceTree = SOURCE_ROOT; };
 		A20000000000000000000099 /* StandbyKeeper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StandbyKeeper.swift; sourceTree = "<group>"; };
 		B20000000000000000000001 /* KeyboardViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardViewController.swift; sourceTree = "<group>"; };
 		B20000000000000000000002 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
@@ -160,9 +145,6 @@
 		B20000000000000000000045 /* TypeformeKeyboard.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = TypeformeKeyboard.entitlements; sourceTree = "<group>"; };
 		B20000000000000000000046 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		C20000000000000000000070 /* Typeforme.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Typeforme.xcconfig; sourceTree = "<group>"; };
-		D20000000000000000000001 /* TypeformeLiveActivityBundle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TypeformeLiveActivityBundle.swift; sourceTree = "<group>"; };
-		D20000000000000000000002 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
-		D20000000000000000000003 /* TypeformeLiveActivity.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = TypeformeLiveActivity.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -181,13 +163,6 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		D30000000000000000000001 /* Frameworks */ = {
-			isa = PBXFrameworksBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -198,7 +173,6 @@
 				A40000000000000000000008 /* Shared */,
 				C40000000000000000000070 /* Config */,
 				B40000000000000000000001 /* TypeformeKeyboard */,
-				D40000000000000000000001 /* TypeformeLiveActivity */,
 				A40000000000000000000007 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -211,7 +185,6 @@
 				A40000000000000000000003 /* Bridge */,
 				A40000000000000000000004 /* Recording */,
 				A40000000000000000000006 /* PiP */,
-				A40000000000000000000009 /* LiveActivity */,
 				A40000000000000000000005 /* Views */,
 				A2000000000000000000000F /* Assets.xcassets */,
 				A40000000000000000000030 /* Localizable.strings */,
@@ -276,7 +249,6 @@
 			children = (
 				A2000000000000000000000D /* Typeforme.app */,
 				B20000000000000000000003 /* TypeformeKeyboard.appex */,
-				D20000000000000000000003 /* TypeformeLiveActivity.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -299,17 +271,8 @@
 				A20000000000000000000050 /* ../Sources/Typeforme/Models/KeyboardTouchGapPolicy.swift */,
 				A20000000000000000000010 /* Shared/KeyboardBridgeModels.swift */,
 				A20000000000000000000020 /* Shared/DesignTokens.swift */,
-				A20000000000000000000054 /* Shared/TypeformeDictationActivityAttributes.swift */,
 			);
 			name = Shared;
-			sourceTree = "<group>";
-		};
-		A40000000000000000000009 /* LiveActivity */ = {
-			isa = PBXGroup;
-			children = (
-				A20000000000000000000053 /* LiveActivityDictationCoordinator.swift */,
-			);
-			path = LiveActivity;
 			sourceTree = "<group>";
 		};
 		B40000000000000000000001 /* TypeformeKeyboard */ = {
@@ -335,15 +298,6 @@
 			path = Config;
 			sourceTree = SOURCE_ROOT;
 		};
-		D40000000000000000000001 /* TypeformeLiveActivity */ = {
-			isa = PBXGroup;
-			children = (
-				D20000000000000000000001 /* TypeformeLiveActivityBundle.swift */,
-				D20000000000000000000002 /* Info.plist */,
-			);
-			path = TypeformeLiveActivity;
-			sourceTree = "<group>";
-		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -360,7 +314,6 @@
 			);
 			dependencies = (
 				B80000000000000000000002 /* PBXTargetDependency */,
-				D80000000000000000000002 /* PBXTargetDependency */,
 			);
 			name = TypeformeIOS;
 			productName = Typeforme;
@@ -388,23 +341,6 @@
 			productReference = B20000000000000000000003 /* TypeformeKeyboard.appex */;
 			productType = "com.apple.product-type.app-extension";
 		};
-		D50000000000000000000001 /* TypeformeLiveActivity */ = {
-			isa = PBXNativeTarget;
-			buildConfigurationList = D90000000000000000000003 /* Build configuration list for PBXNativeTarget "TypeformeLiveActivity" */;
-			buildPhases = (
-				D60000000000000000000001 /* Sources */,
-				D30000000000000000000001 /* Frameworks */,
-				D70000000000000000000001 /* Resources */,
-			);
-			buildRules = (
-			);
-			dependencies = (
-			);
-			name = TypeformeLiveActivity;
-			productName = TypeformeLiveActivity;
-			productReference = D20000000000000000000003 /* TypeformeLiveActivity.appex */;
-			productType = "com.apple.product-type.app-extension";
-		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -424,9 +360,6 @@
 						};
 					};
 					B50000000000000000000001 = {
-						CreatedOnToolsVersion = 16.0;
-					};
-					D50000000000000000000001 = {
 						CreatedOnToolsVersion = 16.0;
 					};
 				};
@@ -451,7 +384,6 @@
 			targets = (
 				A50000000000000000000001 /* TypeformeIOS */,
 				B50000000000000000000001 /* TypeformeKeyboard */,
-				D50000000000000000000001 /* TypeformeLiveActivity */,
 			);
 		};
 /* End PBXProject section */
@@ -474,13 +406,6 @@
 				B10000000000000000000030 /* Localizable.strings in Resources */,
 				B10000000000000000000007 /* RimeSharedSupport in Resources */,
 				B10000000000000000000045 /* PrivacyInfo.xcprivacy in Resources */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-		D70000000000000000000001 /* Resources */ = {
-			isa = PBXResourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -547,14 +472,12 @@
 				A10000000000000000000050 /* ../Sources/Typeforme/Models/KeyboardTouchGapPolicy.swift in Sources */,
 				A1000000000000000000000E /* Shared/KeyboardBridgeModels.swift in Sources */,
 				A10000000000000000000020 /* Shared/DesignTokens.swift in Sources */,
-				A10000000000000000000054 /* Shared/TypeformeDictationActivityAttributes.swift in Sources */,
 				A1000000000000000000000F /* KeyboardLocalServer.swift in Sources */,
 				A10000000000000000000042 /* BridgeService.swift in Sources */,
 				A10000000000000000000043 /* KeyboardCoordinator.swift in Sources */,
 				A10000000000000000000044 /* ReturnTracker.swift in Sources */,
 				A10000000000000000000051 /* BridgeLivePreviewStreamer.swift in Sources */,
 				A10000000000000000000052 /* PiPDictationCoordinator.swift in Sources */,
-				A10000000000000000000053 /* LiveActivityDictationCoordinator.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -574,15 +497,6 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		D60000000000000000000001 /* Sources */ = {
-			isa = PBXSourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-				D10000000000000000000001 /* TypeformeLiveActivityBundle.swift in Sources */,
-				D10000000000000000000002 /* Shared/TypeformeDictationActivityAttributes.swift in Sources */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -590,11 +504,6 @@
 			isa = PBXTargetDependency;
 			target = B50000000000000000000001 /* TypeformeKeyboard */;
 			targetProxy = B80000000000000000000001 /* PBXContainerItemProxy */;
-		};
-		D80000000000000000000002 /* PBXTargetDependency */ = {
-			isa = PBXTargetDependency;
-			target = D50000000000000000000001 /* TypeformeLiveActivity */;
-			targetProxy = D80000000000000000000001 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -747,7 +656,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = TypeformeIOS/TypeformeIOS.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 525;
+				CURRENT_PROJECT_VERSION = 529;
 				DEVELOPMENT_ASSET_PATHS = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = TypeformeIOS/Info.plist;
@@ -756,7 +665,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.1.516;
+				MARKETING_VERSION = 0.1.520;
 				PRODUCT_BUNDLE_IDENTIFIER = "$(TYPEFORME_HOST_BUNDLE_IDENTIFIER)";
 				PRODUCT_NAME = Typeforme;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
@@ -776,7 +685,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = TypeformeIOS/TypeformeIOS.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 525;
+				CURRENT_PROJECT_VERSION = 529;
 				DEVELOPMENT_ASSET_PATHS = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = TypeformeIOS/Info.plist;
@@ -785,7 +694,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.1.516;
+				MARKETING_VERSION = 0.1.520;
 				PRODUCT_BUNDLE_IDENTIFIER = "$(TYPEFORME_HOST_BUNDLE_IDENTIFIER)";
 				PRODUCT_NAME = Typeforme;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
@@ -804,7 +713,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = TypeformeKeyboard/TypeformeKeyboard.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 525;
+				CURRENT_PROJECT_VERSION = 529;
 				DEVELOPMENT_TEAM = MXAR756PC4;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = TypeformeKeyboard/Info.plist;
@@ -814,7 +723,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 0.1.516;
+				MARKETING_VERSION = 0.1.520;
 				PRODUCT_BUNDLE_IDENTIFIER = "$(TYPEFORME_KEYBOARD_BUNDLE_IDENTIFIER)";
 				PRODUCT_NAME = TypeformeKeyboard;
 				SKIP_INSTALL = YES;
@@ -834,7 +743,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = TypeformeKeyboard/TypeformeKeyboard.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 525;
+				CURRENT_PROJECT_VERSION = 529;
 				DEVELOPMENT_TEAM = MXAR756PC4;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = TypeformeKeyboard/Info.plist;
@@ -844,65 +753,9 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 0.1.516;
+				MARKETING_VERSION = 0.1.520;
 				PRODUCT_BUNDLE_IDENTIFIER = "$(TYPEFORME_KEYBOARD_BUNDLE_IDENTIFIER)";
 				PRODUCT_NAME = TypeformeKeyboard;
-				SKIP_INSTALL = YES;
-				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
-				SUPPORTS_MACCATALYST = NO;
-				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
-				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_VERSION = 6.0;
-				TARGETED_DEVICE_FAMILY = 1;
-			};
-			name = Release;
-		};
-		D90000000000000000000001 /* Debug */ = {
-			isa = XCBuildConfiguration;
-			baseConfigurationReference = C20000000000000000000070 /* Typeforme.xcconfig */;
-			buildSettings = {
-				APPLICATION_EXTENSION_API_ONLY = YES;
-				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 525;
-				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = TypeformeLiveActivity/Info.plist;
-				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-					"@executable_path/../../Frameworks",
-				);
-				MARKETING_VERSION = 0.1.516;
-				PRODUCT_BUNDLE_IDENTIFIER = "$(TYPEFORME_LIVE_ACTIVITY_BUNDLE_IDENTIFIER)";
-				PRODUCT_NAME = TypeformeLiveActivity;
-				SKIP_INSTALL = YES;
-				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
-				SUPPORTS_MACCATALYST = NO;
-				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
-				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_VERSION = 6.0;
-				TARGETED_DEVICE_FAMILY = 1;
-			};
-			name = Debug;
-		};
-		D90000000000000000000002 /* Release */ = {
-			isa = XCBuildConfiguration;
-			baseConfigurationReference = C20000000000000000000070 /* Typeforme.xcconfig */;
-			buildSettings = {
-				APPLICATION_EXTENSION_API_ONLY = YES;
-				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 525;
-				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = TypeformeLiveActivity/Info.plist;
-				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-					"@executable_path/../../Frameworks",
-				);
-				MARKETING_VERSION = 0.1.516;
-				PRODUCT_BUNDLE_IDENTIFIER = "$(TYPEFORME_LIVE_ACTIVITY_BUNDLE_IDENTIFIER)";
-				PRODUCT_NAME = TypeformeLiveActivity;
 				SKIP_INSTALL = YES;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SUPPORTS_MACCATALYST = NO;
@@ -939,15 +792,6 @@
 			buildConfigurations = (
 				B90000000000000000000001 /* Debug */,
 				B90000000000000000000002 /* Release */,
-			);
-			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Release;
-		};
-		D90000000000000000000003 /* Build configuration list for PBXNativeTarget "TypeformeLiveActivity" */ = {
-			isa = XCConfigurationList;
-			buildConfigurations = (
-				D90000000000000000000001 /* Debug */,
-				D90000000000000000000002 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

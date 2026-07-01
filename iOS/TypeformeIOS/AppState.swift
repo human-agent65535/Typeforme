@@ -211,7 +211,6 @@ enum HostAudioSessionLength: String, CaseIterable, Identifiable {
 enum KeyboardDictationCaptureMode: String, CaseIterable, Identifiable {
     case backgroundMic = "background_mic"
     case pictureInPicture = "picture_in_picture"
-    case liveActivity = "live_activity"
 
     var id: String { rawValue }
 
@@ -221,8 +220,6 @@ enum KeyboardDictationCaptureMode: String, CaseIterable, Identifiable {
             return NSLocalizedString("Background Mic", comment: "Keyboard dictation capture method")
         case .pictureInPicture:
             return NSLocalizedString("PiP", comment: "Keyboard dictation capture method")
-        case .liveActivity:
-            return NSLocalizedString("Live Activity", comment: "Keyboard dictation capture method")
         }
     }
 
@@ -237,11 +234,6 @@ enum KeyboardDictationCaptureMode: String, CaseIterable, Identifiable {
             return NSLocalizedString(
                 "When Typeforme is opened, the host app starts a small visible PiP session for keyboard dictation. The microphone opens only while recording.",
                 comment: "PiP capture mode detail"
-            )
-        case .liveActivity:
-            return NSLocalizedString(
-                "When Typeforme is opened, the host app shows a Live Activity in the Dynamic Island and Lock Screen for keyboard dictation. The microphone opens only while recording.",
-                comment: "Live Activity capture mode detail"
             )
         }
     }
@@ -449,7 +441,6 @@ final class AppState {
 
     let audioCoordinator = AudioCoordinator()
     @ObservationIgnored let pipDictationCoordinator = PiPDictationCoordinator()
-    @ObservationIgnored let liveActivityCoordinator = LiveActivityDictationCoordinator()
 
     private let bridgeService = BridgeService()
     private let keyboardCoordinator = KeyboardCoordinator()
@@ -502,7 +493,6 @@ final class AppState {
     private var initialRenderDelayTask: Task<Void, Never>?
     @ObservationIgnored private var autoStartPiPTask: Task<Void, Never>?
     private var suppressAutomaticPiPStart = false
-    private var suppressAutomaticLiveActivityStart = false
     private var automaticPiPStartAttemptsRemaining = 0
     private var automaticPiPStartShowsErrors = false
     private var lastPiPStopAt: Date?
@@ -924,10 +914,6 @@ final class AppState {
             cancelAutomaticPiPStart()
             pipDictationCoordinator.stop()
         }
-        if mode != .liveActivity {
-            suppressAutomaticLiveActivityStart = true
-            liveActivityCoordinator.stop()
-        }
         if mode != .backgroundMic || previousMode != .backgroundMic {
             stopBackgroundAudioCaptureForVisibleMode()
         }
@@ -969,27 +955,6 @@ final class AppState {
         publishKeyboardCaptureNotReady()
         showTransient(NSLocalizedString("Picture in Picture stopped.", comment: "PiP stopped toast"))
         syncPiPDictationPresentation()
-    }
-
-    @discardableResult
-    func startLiveActivityFromUserAction() async -> Bool {
-        suppressAutomaticLiveActivityStart = false
-        let didStart = await prepareSelectedHostCaptureMode(
-            showErrors: true,
-            honorManualSuppression: false
-        )
-        if didStart {
-            showTransient(NSLocalizedString("Live Activity is ready.", comment: "Live Activity ready toast"))
-        }
-        return didStart
-    }
-
-    func stopLiveActivityFromUserAction() {
-        suppressAutomaticLiveActivityStart = true
-        liveActivityCoordinator.stop()
-        stopBackgroundAudioCaptureForVisibleMode()
-        publishKeyboardCaptureNotReady()
-        showTransient(NSLocalizedString("Live Activity stopped.", comment: "Live Activity stopped toast"))
     }
 
     func setKeyboardAutoCapitalizationEnabled(_ enabled: Bool) {
@@ -2271,7 +2236,7 @@ final class AppState {
                 showKeyboardMicrophoneDeniedFeedbackIfNeeded()
             }
             return didPrepareKeyboardSession
-        case .pictureInPicture, .liveActivity:
+        case .pictureInPicture:
             stopBackgroundAudioCaptureForVisibleMode()
             let didStartVisibleCapture = await startSelectedVisibleCaptureMode(
                 showErrors: showErrors,
@@ -2408,10 +2373,6 @@ final class AppState {
             }
             requestAutomaticPiPVisibilityStart(showErrors: showErrors)
             return await startAutomaticPiPVisibilityIfNeeded(showErrors: showErrors)
-        case .liveActivity:
-            guard !honorManualSuppression || showErrors || !suppressAutomaticLiveActivityStart else { return false }
-            suppressAutomaticLiveActivityStart = false
-            return await startLiveActivityVisibility(showErrors: showErrors)
         }
     }
 
@@ -2444,22 +2405,6 @@ final class AppState {
             try? await Task.sleep(nanoseconds: 250_000_000)
         }
         return pipDictationCoordinator.isActive
-    }
-
-    @discardableResult
-    private func startLiveActivityVisibility(showErrors: Bool) async -> Bool {
-        guard keyboardDictationCaptureMode == .liveActivity else { return false }
-        syncLiveActivityPresentation()
-        let didStart = await liveActivityCoordinator.start()
-        if didStart {
-            syncLiveActivityPresentation()
-        } else if showErrors {
-            showTransient(
-                liveActivityCoordinator.lastErrorMessage
-                    ?? NSLocalizedString("Live Activity is unavailable.", comment: "Live Activity unavailable toast")
-            )
-        }
-        return didStart
     }
 
     @discardableResult
@@ -2566,7 +2511,6 @@ final class AppState {
             stopKeyboardStatusAudioLevelPush()
             keyboardServer.stop()
             pipDictationCoordinator.stop()
-            liveActivityCoordinator.stop()
             standbyKeeper.stop()
             keyboardAudioSession.stop()
             publishKeyboardStatus(.idle)
@@ -2669,7 +2613,6 @@ final class AppState {
         }
         keyboardServer.stop()
         pipDictationCoordinator.stop()
-        liveActivityCoordinator.stop()
         standbyKeeper.stop()
         publishKeyboardStatus(.idle, message: "Host audio session expired")
         if keyboardAudioSession.isActive {
@@ -4065,123 +4008,59 @@ final class AppState {
     // MARK: - Phase / transient state
 
     private func syncPiPDictationPresentation() {
-        let activityState = currentDictationLiveActivityState()
-        syncLiveActivityPresentation(activityState)
-        let stateLabel = localizedLiveActivityTitle(for: activityState.phase)
+        let presentation = currentPiPDictationPresentation()
 
         pipDictationCoordinator.updatePresentation(PiPDictationPresentation(
             title: NSLocalizedString("Typeforme", comment: "Product name"),
-            stateLabel: stateLabel,
-            isRecording: activityState.phase == .recording,
-            recordingStartedAt: activityState.startedAt
+            stateLabel: presentation.stateLabel,
+            isRecording: presentation.isRecording,
+            recordingStartedAt: presentation.recordingStartedAt
         ))
     }
 
-    private func syncLiveActivityPresentation(
-        _ state: TypeformeDictationActivityAttributes.ContentState? = nil
-    ) {
-        guard keyboardDictationCaptureMode == .liveActivity else { return }
-        liveActivityCoordinator.update(state ?? currentDictationLiveActivityState())
-    }
-
-    private func currentDictationLiveActivityState() -> TypeformeDictationActivityAttributes.ContentState {
-        let phase: TypeformeDictationActivityPhase
-        let detail: String
-        let startedAt: Date?
+    private func currentPiPDictationPresentation() -> (stateLabel: String, isRecording: Bool, recordingStartedAt: Date?) {
         func nonEmpty(_ value: String?, fallback: String) -> String {
             let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             return trimmed.isEmpty ? fallback : trimmed
         }
 
         if hasHostOwnedRecordingCapture || self.phase == .recording {
-            phase = .recording
-            detail = NSLocalizedString("Listening from Typeforme", comment: "Live Activity host recording detail")
-            startedAt = recordingStartedAt
-        } else {
-            switch keyboardBridgeStatus.state {
-            case .sending:
-                switch keyboardBridgeStatus.processingStage {
-                case .refining:
-                    phase = .refining
-                    detail = NSLocalizedString("Refining text on your paired Mac", comment: "Live Activity refining detail")
-                case .transcribing, nil:
-                    phase = .transcribing
-                    detail = NSLocalizedString("Transcribing audio on your paired Mac", comment: "Live Activity transcribing detail")
-                }
-                startedAt = nil
-            case .result:
-                phase = .result
-                detail = NSLocalizedString("Return to your text field to insert or review", comment: "Live Activity result detail")
-                startedAt = nil
-            case .error:
-                phase = .issue
-                detail = keyboardBridgeStatus.message.isEmpty
-                    ? NSLocalizedString("Open Typeforme to review the issue", comment: "Live Activity generic error detail")
-                    : keyboardBridgeStatus.message
-                startedAt = nil
-            case .standby, .idle:
-                switch self.phase {
-                case .sending:
-                    phase = .transcribing
-                    detail = nonEmpty(
-                        processingStatusMessage,
-                        fallback: NSLocalizedString("Transcribing audio on your paired Mac", comment: "Live Activity transcribing detail")
-                    )
-                    startedAt = nil
-                case .refining:
-                    phase = .refining
-                    detail = nonEmpty(
-                        processingStatusMessage,
-                        fallback: NSLocalizedString("Refining text on your paired Mac", comment: "Live Activity refining detail")
-                    )
-                    startedAt = nil
-                case .success:
-                    phase = .result
-                    detail = NSLocalizedString("Result ready", comment: "Live Activity host result ready detail")
-                    startedAt = nil
-                case .failure:
-                    phase = .issue
-                    detail = nonEmpty(
-                        errorMessage,
-                        fallback: NSLocalizedString("Open Typeforme to review the issue", comment: "Live Activity generic error detail")
-                    )
-                    startedAt = nil
-                default:
-                    phase = .ready
-                    detail = NSLocalizedString("Ready for dictation", comment: "Live Activity ready detail")
-                    startedAt = nil
-                }
-            case .recording:
-                phase = .recording
-                detail = NSLocalizedString("Listening from the Typeforme keyboard", comment: "Live Activity recording detail")
-                startedAt = recordingStartedAt
-            }
+            return (NSLocalizedString("Recording", comment: "PiP recording state"), true, recordingStartedAt)
         }
 
-        return TypeformeDictationActivityAttributes.ContentState(
-            phase: phase,
-            detail: detail,
-            startedAt: startedAt,
-            updatedAt: Date()
-        )
-    }
-
-    private func localizedLiveActivityTitle(for phase: TypeformeDictationActivityPhase) -> String {
-        switch phase {
-        case .ready:
-            return NSLocalizedString("Ready", comment: "Live Activity ready state")
+        switch keyboardBridgeStatus.state {
         case .recording:
-            return NSLocalizedString("Recording", comment: "Live Activity recording state")
-        case .transcribing:
+            return (NSLocalizedString("Recording", comment: "PiP recording state"), true, recordingStartedAt)
+        case .sending:
+            if keyboardBridgeStatus.processingStage == .refining {
+                return (NSLocalizedString("Refining", comment: "PiP refining state"), false, nil)
+            }
             return keyboardBridgeStatus.message.isEmpty
-                ? NSLocalizedString("Transcribing", comment: "Live Activity transcribing state")
-                : keyboardBridgeStatus.message
-        case .refining:
-            return NSLocalizedString("Refining", comment: "Live Activity refining state")
+                ? (NSLocalizedString("Transcribing", comment: "PiP transcribing state"), false, nil)
+                : (keyboardBridgeStatus.message, false, nil)
         case .result:
-            return NSLocalizedString("Result Ready", comment: "Live Activity result ready state")
-        case .issue:
-            return NSLocalizedString("Needs Attention", comment: "Live Activity error state")
+            return (NSLocalizedString("Result Ready", comment: "PiP result ready state"), false, nil)
+        case .error:
+            return (NSLocalizedString("Needs Attention", comment: "PiP error state"), false, nil)
+        case .standby, .idle:
+            switch self.phase {
+            case .sending:
+                return (nonEmpty(
+                    processingStatusMessage,
+                    fallback: NSLocalizedString("Transcribing", comment: "PiP transcribing state")
+                ), false, nil)
+            case .refining:
+                return (nonEmpty(
+                    processingStatusMessage,
+                    fallback: NSLocalizedString("Refining", comment: "PiP refining state")
+                ), false, nil)
+            case .success:
+                return (NSLocalizedString("Result Ready", comment: "PiP result ready state"), false, nil)
+            case .failure:
+                return (NSLocalizedString("Needs Attention", comment: "PiP error state"), false, nil)
+            default:
+                return (NSLocalizedString("Ready", comment: "PiP ready state"), false, nil)
+            }
         }
     }
 

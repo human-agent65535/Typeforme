@@ -41,14 +41,10 @@
 "Capture Method" = "Capture Method";
 "Background Mic" = "Background Mic";
 "PiP" = "PiP";
-"Live Activity" = "Live Activity";
 "When Typeforme is opened, the host app keeps a background microphone session ready for keyboard dictation." = "When Typeforme is opened, the host app keeps a background microphone session ready for keyboard dictation.";
 "When Typeforme is opened, the host app starts a small visible PiP session for keyboard dictation. The microphone opens only while recording." = "When Typeforme is opened, the host app starts a small visible PiP session for keyboard dictation. The microphone opens only while recording.";
-"When Typeforme is opened, the host app shows a Live Activity in the Dynamic Island and Lock Screen for keyboard dictation. The microphone opens only while recording." = "When Typeforme is opened, the host app shows a Live Activity in the Dynamic Island and Lock Screen for keyboard dictation. The microphone opens only while recording.";
 "Start PiP" = "Start PiP";
 "Stop PiP" = "Stop PiP";
-"Start Live Activity" = "Start Live Activity";
-"Stop Live Activity" = "Stop Live Activity";
 "Picture in Picture is active." = "Picture in Picture is active.";
 "Picture in Picture is ready." = "Picture in Picture is ready.";
 "Picture in Picture is preparing." = "Picture in Picture is preparing.";

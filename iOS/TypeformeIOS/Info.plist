@@ -54,8 +54,6 @@
 	<string>Typeforme connects to your paired Mac on the local network for dictation, settings, and keyboard status.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Typeforme can use Apple Speech for optional live preview while recording. On-device Only keeps preview audio on this iPhone; Cloud Fallback may use Apple servers for unsupported languages.</string>
-	<key>NSSupportsLiveActivities</key>
-	<true/>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
