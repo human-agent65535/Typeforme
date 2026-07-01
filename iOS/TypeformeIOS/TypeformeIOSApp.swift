@@ -45,6 +45,7 @@ struct TypeformeIOSApp: App {
                     updateHostForegroundPresence(for: phase)
                     guard phase == .active else { return }
                     state.refreshSetupReadinessStatuses()
+                    Task { await state.prepareHostForegroundCapture() }
                     guard !state.isEditingMacSettings else { return }
                     // Refresh dictation settings whenever the app comes to the
                     // foreground. Mac-side changes to ASR / correction /
