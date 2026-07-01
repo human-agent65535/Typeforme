@@ -32,6 +32,16 @@ struct ModelOutputCleanerTests {
         #expect(!cleaned.contains("```"))
     }
 
+    @Test func unwrapsSingleOuterCodeFence() {
+        let input = "```json\n{\"a\":1}\n```"
+        #expect(ModelOutputCleaner.unwrapSingleCodeFence(input) == "{\"a\":1}")
+    }
+
+    @Test func doesNotUnwrapProseBeforeCodeFence() {
+        let input = "Here:\n```json\n{\"a\":1}\n```"
+        #expect(ModelOutputCleaner.unwrapSingleCodeFence(input) == nil)
+    }
+
     @Test func extractsBalancedJSON() {
         let input = "noise {\"action\":\"commit\",\"text\":\"hi\",\"risk\":\"low\"} more noise"
         let extracted = ModelOutputCleaner.extractFirstJSONObject(input)

@@ -72,16 +72,17 @@ enum CorrectionValidator {
 
     private static func decodePayload(rawOutput: String) throws -> CorrectionPayload {
         let trimmed = rawOutput.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.contains("```"),
-              !trimmed.contains("<think>"),
-              !trimmed.contains("</think>")
+        let candidate = ModelOutputCleaner.unwrapSingleCodeFence(trimmed) ?? trimmed
+        guard !candidate.contains("```"),
+              !candidate.contains("<think>"),
+              !candidate.contains("</think>")
         else {
             throw CorrectionValidationError.parseFailed("output contains markup")
         }
-        guard let jsonString = ModelOutputCleaner.extractFirstJSONObject(trimmed) else {
+        guard let jsonString = ModelOutputCleaner.extractFirstJSONObject(candidate) else {
             throw CorrectionValidationError.parseFailed("no JSON object found")
         }
-        guard jsonString == trimmed else {
+        guard jsonString == candidate else {
             throw CorrectionValidationError.parseFailed("output must contain exactly one JSON object")
         }
         guard let data = jsonString.data(using: .utf8) else {

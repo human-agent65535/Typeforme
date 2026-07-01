@@ -100,6 +100,30 @@ struct CorrectorPipelineTests {
         #expect(requests.count == 1)
     }
 
+    @Test func formatRepairAcceptsFencedControlJSON() async throws {
+        let stub = CompletionStub(outputs: [
+            "去超市买三根黄瓜，两个番茄，一个西瓜，再买两个鸡爪。",
+            "```json\n{\"decision\":\"rewrap\",\"text\":\"去超市买三根黄瓜，两个番茄，一个西瓜，再买两个鸡爪。\"}\n```",
+        ])
+        let request = makeRequest(
+            raw: "去超市买三根黄瓜，两个番茄，一个西瓜，再买两个鸡爪。",
+            correctionMode: .structurePlus
+        )
+
+        let output = try await CorrectorPipeline.correct(
+            request: request,
+            timeoutMs: 1_000,
+            complete: { system, messages, timeoutMs in
+                try await stub.complete(system: system, messages: messages, timeoutMs: timeoutMs)
+            }
+        )
+
+        #expect(output.result.text == "去超市买三根黄瓜，两个番茄，一个西瓜，再买两个鸡爪。")
+        #expect(output.debugTrace.formatRepairAttempted)
+        #expect(output.debugTrace.formatRepairDecision == "rewrap")
+        #expect(output.debugTrace.formatRepairRawModelOutput?.contains("```json") == true)
+    }
+
     private func makeRequest(raw: String, correctionMode: CorrectionMode = .polishPlus) -> CorrectionRequest {
         CorrectionRequest(
             correctionMode: correctionMode,

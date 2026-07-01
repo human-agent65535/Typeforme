@@ -356,6 +356,20 @@ enum DebugLogStore {
         )
     }
 
+    static func beginRefine(
+        source: String,
+        selectedCorrectionMode: CorrectionMode,
+        languageIDs: [String]
+    ) -> DebugLogHandle? {
+        createCapture(
+            source: source,
+            audioURL: nil,
+            selectedCorrectionMode: "refine:\(selectedCorrectionMode.rawValue)",
+            languageIDs: languageIDs,
+            logLabel: "debug refine capture"
+        )
+    }
+
     private static func createCapture(
         source: String,
         audioURL: URL?,

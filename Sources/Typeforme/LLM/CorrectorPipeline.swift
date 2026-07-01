@@ -17,7 +17,7 @@ enum CorrectorPipeline {
         let (system, user) = PromptBuilder.build(for: request)
         let originalMessages: [CorrectorChatMessage] = [.user(user)]
         let rawOutput = try await complete(system, originalMessages, timeoutMs)
-        var trace = CorrectionDebugTrace(rawModelOutput: rawOutput)
+        let trace = CorrectionDebugTrace(rawModelOutput: rawOutput)
 
         return try await processCandidate(
             rawOutput: rawOutput,
@@ -109,7 +109,7 @@ enum CorrectorPipeline {
 
         let payload: FormatRepairPayload
         do {
-            payload = try decodeStrictJSONObject(repairOutput)
+            payload = try decodeStrictJSONObject(repairOutput, allowOutputWrappers: true)
         } catch {
             trace.formatRepairError = error.localizedDescription
             throw CorrectorError.validationFailed(error.localizedDescription, trace: trace)
@@ -218,7 +218,7 @@ enum CorrectorPipeline {
 
         let payload: VerifierPayload
         do {
-            payload = try decodeStrictJSONObject(verifierOutput)
+            payload = try decodeStrictJSONObject(verifierOutput, allowOutputWrappers: true)
         } catch {
             trace.verifierError = error.localizedDescription
             throw CorrectorError.validationFailed(error.localizedDescription, trace: trace)
@@ -261,18 +261,22 @@ enum CorrectorPipeline {
         }
     }
 
-    private static func decodeStrictJSONObject<Payload: Decodable>(_ rawOutput: String) throws -> Payload {
+    private static func decodeStrictJSONObject<Payload: Decodable>(
+        _ rawOutput: String,
+        allowOutputWrappers: Bool = false
+    ) throws -> Payload {
         let trimmed = rawOutput.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.contains("```"),
-              !trimmed.contains("<think>"),
-              !trimmed.contains("</think>")
+        let candidate = allowOutputWrappers ? ModelOutputCleaner.clean(trimmed) : trimmed
+        guard !candidate.contains("```"),
+              !candidate.contains("<think>"),
+              !candidate.contains("</think>")
         else {
             throw CorrectionValidationError.parseFailed("output contains markup")
         }
-        guard let jsonString = ModelOutputCleaner.extractFirstJSONObject(trimmed) else {
+        guard let jsonString = ModelOutputCleaner.extractFirstJSONObject(candidate) else {
             throw CorrectionValidationError.parseFailed("no JSON object found")
         }
-        guard jsonString == trimmed else {
+        guard jsonString == candidate else {
             throw CorrectionValidationError.parseFailed("output must contain exactly one JSON object")
         }
         guard let data = jsonString.data(using: .utf8) else {

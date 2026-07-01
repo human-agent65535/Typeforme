@@ -2086,16 +2086,18 @@ final class AppState {
     }
 
     private func currentRefineSource() -> RefineSource? {
-        // Refine acts on the visible Result editor. Passing the old session
-        // would make the Mac prefer the original raw transcript and discard
-        // manual edits or the previous style output.
-        let visibleText = resultText.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !visibleText.isEmpty {
-            return RefineSource(sessionID: nil, rawTranscript: visibleText)
-        }
         let rawText = rawTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !rawText.isEmpty else { return nil }
-        return RefineSource(sessionID: sessionID, rawTranscript: rawText)
+        if !rawText.isEmpty {
+            return RefineSource(sessionID: sessionID, rawTranscript: rawText)
+        }
+
+        // Host mode chips restyle a dictation from the captured raw transcript
+        // above. Only fall back to visible Result text when no raw source exists,
+        // so IME marked text, caret position, and keyboard selected-text flows do
+        // not change the source for generated dictations.
+        let visibleText = resultText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !visibleText.isEmpty else { return nil }
+        return RefineSource(sessionID: nil, rawTranscript: visibleText)
     }
 
     func handleOpenURL(_ url: URL) async {
@@ -3329,6 +3331,15 @@ final class AppState {
         let isRefiningCurrentDictationResult = source == existingResultText
             || source == existingGeneratedText
         let preservedRawTranscript = rawTranscript
+        let preservedSessionID = sessionID
+        let preservedRawSource = preservedRawTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+        let refineSessionID = isRefiningCurrentDictationResult ? preservedSessionID : nil
+        let refineSource: String
+        if isRefiningCurrentDictationResult && !preservedRawSource.isEmpty {
+            refineSource = preservedRawSource
+        } else {
+            refineSource = source
+        }
         correctionMode = requestedCorrectionMode
 
         publishKeyboardStatus(
@@ -3357,8 +3368,8 @@ final class AppState {
             let refineJobID = "ios_\(UUID().uuidString.replacingOccurrences(of: "-", with: "_"))"
             let keyboardCommandID = command.id
             let response = try await client.refine(
-                sessionID: nil,
-                rawTranscript: source,
+                sessionID: refineSessionID,
+                rawTranscript: refineSource,
                 languageIDs: activeLanguageIDs,
                 correctionMode: requestedCorrectionMode,
                 clientJobID: refineJobID,

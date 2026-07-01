@@ -710,9 +710,35 @@ final class BridgeService {
             bundleID: bundleID,
             defaultCategory: session?.appCategory ?? .unknown
         )
+        let editRequest = correctionRequest(
+            rawTranscript: rawTranscript,
+            languageIDs: languageIDs,
+            correctionMode: correctionMode,
+            appName: appName,
+            bundleID: bundleID,
+            appCategory: appCategory,
+            contextBefore: contextBefore,
+            contextAfter: contextAfter
+        )
+        let debugLog = DebugLogStore.beginRefine(
+            source: "bridge_refine",
+            selectedCorrectionMode: correctionMode,
+            languageIDs: languageIDs
+        )
 
         if !correctionMode.usesRefine {
             let correction = skippedFastCorrectionOutput(rawTranscript: rawTranscript)
+            DebugLogStore.recordCorrection(
+                debugLog,
+                mode: correctionMode,
+                text: correction.result.text,
+                status: correction.status,
+                error: correction.error,
+                latencyMs: 0,
+                request: editRequest,
+                debugTrace: correction.debugTrace,
+                timeoutMs: AppSettings.correctionTimeoutMs
+            )
             let sessionID = session?.id ?? UUID().uuidString
             storeSession(BridgeSession(
                 id: sessionID,
@@ -780,6 +806,17 @@ final class BridgeService {
             )
             correctionLatencyMs = latencyMs
         }
+        DebugLogStore.recordCorrection(
+            debugLog,
+            mode: correctionMode,
+            text: correction.result.text,
+            status: correction.status,
+            error: correction.error,
+            latencyMs: correctionLatencyMs,
+            request: editRequest,
+            debugTrace: correction.debugTrace,
+            timeoutMs: AppSettings.correctionTimeoutMs
+        )
         let sessionID = session?.id ?? UUID().uuidString
         storeSession(BridgeSession(
             id: sessionID,

@@ -42,10 +42,19 @@ struct CorrectionValidatorTests {
         }
     }
 
-    @Test func rejectsFencedJSONOutput() {
+    @Test func parsesSingleFencedJSONOutput() throws {
+        let result = try CorrectionValidator.parseAndValidate(
+            rawOutput: "```json\n{\"text\":\"ok\"}\n```",
+            for: makeRequest(raw: "ok")
+        )
+
+        #expect(result.text == "ok")
+    }
+
+    @Test func rejectsProseWithFencedJSONOutput() {
         #expect(throws: CorrectionValidationError.self) {
             _ = try CorrectionValidator.parseAndValidate(
-                rawOutput: "```json\n{\"text\":\"ok\"}\n```",
+                rawOutput: "Here it is:\n```json\n{\"text\":\"ok\"}\n```",
                 for: makeRequest(raw: "ok")
             )
         }

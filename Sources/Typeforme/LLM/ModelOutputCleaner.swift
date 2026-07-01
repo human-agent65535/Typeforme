@@ -17,6 +17,31 @@ enum ModelOutputCleaner {
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    /// Unwraps a single outer Markdown code fence only when the whole model
+    /// output is that fence. This is intentionally narrower than `clean(_:)`
+    /// so final-output validation does not accept prose plus fenced JSON.
+    static func unwrapSingleCodeFence(_ raw: String) -> String? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasPrefix("```"),
+              let openingEnd = trimmed.firstIndex(of: "\n")
+        else { return nil }
+
+        let opening = trimmed[..<openingEnd]
+        let tag = opening.dropFirst(3).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard tag.allSatisfy({ character in
+            character.isLetter || character.isNumber || character == "_" || character == "+" || character == "-"
+        }) else { return nil }
+
+        let bodyStart = trimmed.index(after: openingEnd)
+        let bodyAndClosing = trimmed[bodyStart...]
+        guard bodyAndClosing.hasSuffix("```") else { return nil }
+
+        let closingStart = bodyAndClosing.index(bodyAndClosing.endIndex, offsetBy: -3)
+        let body = bodyAndClosing[..<closingStart]
+        guard body.last == "\n" || body.last == "\r" else { return nil }
+        return body.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     /// Returns the first balanced `{ ... }` substring, respecting quoted strings
     /// and backslash escapes. Returns nil if no balanced object exists.
     static func extractFirstJSONObject(_ s: String) -> String? {
