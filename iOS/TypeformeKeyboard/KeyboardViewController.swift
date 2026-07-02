@@ -1,10 +1,94 @@
 import UIKit
+import SwiftUI
 import Darwin
 import ObjectiveC
 import OSLog
 import QuartzCore
 
 private let kbLog = Logger(subsystem: TypeformeBundleConfiguration.keyboardBundleIdentifier, category: "ui")
+
+@MainActor
+private final class KeyboardHostLinkOpener: ObservableObject {
+    struct Request: Identifiable {
+        let id = UUID()
+        let url: URL
+        let completion: @Sendable (Bool) -> Void
+    }
+
+    @Published fileprivate var request: Request?
+
+    private var hostController: UIHostingController<KeyboardHostLinkOpenerView>?
+
+    func installIfNeeded(in parent: UIViewController) {
+        if hostController?.parent === parent { return }
+        if let hostController {
+            hostController.willMove(toParent: nil)
+            hostController.view.removeFromSuperview()
+            hostController.removeFromParent()
+            self.hostController = nil
+        }
+
+        let controller = UIHostingController(rootView: KeyboardHostLinkOpenerView(opener: self))
+        controller.view.translatesAutoresizingMaskIntoConstraints = false
+        controller.view.backgroundColor = .clear
+        controller.view.alpha = 0.01
+        controller.view.isUserInteractionEnabled = false
+        controller.view.accessibilityElementsHidden = true
+        parent.addChild(controller)
+        parent.view.addSubview(controller.view)
+        NSLayoutConstraint.activate([
+            controller.view.widthAnchor.constraint(equalToConstant: 1),
+            controller.view.heightAnchor.constraint(equalToConstant: 1),
+            controller.view.leadingAnchor.constraint(equalTo: parent.view.leadingAnchor),
+            controller.view.topAnchor.constraint(equalTo: parent.view.topAnchor),
+        ])
+        controller.didMove(toParent: parent)
+        hostController = controller
+    }
+
+    func open(_ url: URL, completion: @escaping @Sendable (Bool) -> Void) {
+        guard hostController != nil else {
+            kbLog.notice("openHostApp: SwiftUI link opener unavailable")
+            completion(false)
+            return
+        }
+        request = Request(url: url, completion: completion)
+    }
+
+    fileprivate func finish(_ id: UUID, accepted: Bool) {
+        guard request?.id == id else { return }
+        let completion = request?.completion
+        request = nil
+        completion?(accepted)
+    }
+}
+
+private struct KeyboardHostLinkOpenerView: View {
+    @ObservedObject var opener: KeyboardHostLinkOpener
+    @Environment(\.openURL) private var openURL
+    @State private var handledRequestID: UUID?
+
+    var body: some View {
+        Color.clear
+            .frame(width: 1, height: 1)
+            .onAppear(perform: openPendingRequest)
+            .onChange(of: opener.request?.id) { _, _ in
+                openPendingRequest()
+            }
+    }
+
+    private func openPendingRequest() {
+        guard let request = opener.request,
+              handledRequestID != request.id
+        else { return }
+        handledRequestID = request.id
+        openURL(request.url) { accepted in
+            Task { @MainActor in
+                opener.finish(request.id, accepted: accepted)
+            }
+        }
+    }
+}
 
 fileprivate enum KeyboardTouchTarget {
     case textKey(UIButton)
@@ -335,6 +419,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private let textTouchLearningStatsKey = "keyboard.textTouchGaussianStats.v1"
     private let keyboardTouchTraceEnabledKey = "keyboard.touchTraceEnabled"
     private let keyPressOverlayTag = 0x74797065
+    private let hostLinkOpener = KeyboardHostLinkOpener()
 
     private var correctionMode: CorrectionMode = .polishPlus
     private var pendingDefaultCorrectionMode: CorrectionMode?
@@ -433,7 +518,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private var lastCorrectionModeButtonSignature = ""
     private var lastTextRecordingButtonsSignature = ""
     private var hasPresentedInitialFrame = false
-    private var lastKeyboardContentLayoutFrame: CGRect = .null
     private var isVoicePressActive = false
     private var voiceDragOutCancelArmed = false
     private var voiceUndoShowsCancel = false
@@ -2397,8 +2481,16 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             self.layoutKeyboardContentViewForCurrentBounds()
             self.view.setNeedsLayout()
             self.view.layoutIfNeeded()
-            self.updateCandidateGridCollapseButtonFrame()
-            self.updateCandidateTextOverlay()
+            self.keyboardContentView.layoutIfNeeded()
+            self.rootStack.layoutIfNeeded()
+            self.topRow.layoutIfNeeded()
+            self.topRowVoicePrint.layoutIfNeeded()
+            self.orbContainer.layoutIfNeeded()
+            self.correctionModePanel.layoutIfNeeded()
+            self.inputModeSwitch.layoutIfNeeded()
+            self.utilityRow.layoutIfNeeded()
+            self.textKeyboardContainer.layoutIfNeeded()
+            self.keyRowsStack.layoutIfNeeded()
         }
         CATransaction.commit()
     }
@@ -2439,43 +2531,25 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         return CGRect(x: bounds.minX, y: bounds.minY, width: width, height: bounds.height)
     }
 
-    @discardableResult
-    private func layoutKeyboardContentViewForCurrentBounds() -> Bool {
+    private func layoutKeyboardContentViewForCurrentBounds() {
         let frame = keyboardContentFrameForCurrentBounds()
-        var didChange = lastKeyboardContentLayoutFrame != frame
         if keyboardSurfaceView.frame != frame {
             keyboardSurfaceView.frame = frame
-            didChange = true
         }
         if keyboardContentView.frame != frame {
             keyboardContentView.frame = frame
-            didChange = true
         }
         if candidateTextOverlay.frame != frame {
             candidateTextOverlay.frame = frame
-            didChange = true
         }
         if keyboardTouchOverlay.frame != frame {
             keyboardTouchOverlay.frame = frame
-            didChange = true
         }
         let contentHeight = max(1, frame.height - Self.topChromeCoverHeight)
-        let textKeyboardHeight = Self.textKeyboardBodyHeight(for: contentHeight)
-        if textKeyboardContainerHeightConstraint?.constant != textKeyboardHeight {
-            textKeyboardContainerHeightConstraint?.constant = textKeyboardHeight
-            didChange = true
-        }
-        let orbHeight = Self.orbContainerHeight(for: contentHeight)
-        if orbContainerHeightConstraint?.constant != orbHeight {
-            orbContainerHeightConstraint?.constant = orbHeight
-            didChange = true
-        }
-        lastKeyboardContentLayoutFrame = frame
-        if didChange {
-            keyboardContentView.setNeedsLayout()
-        }
+        textKeyboardContainerHeightConstraint?.constant = Self.textKeyboardBodyHeight(for: contentHeight)
+        orbContainerHeightConstraint?.constant = Self.orbContainerHeight(for: contentHeight)
+        keyboardContentView.setNeedsLayout()
         updateKeyboardSurfaceMask()
-        return didChange
     }
 
     private func updateKeyboardSurfaceMask() {
@@ -3254,10 +3328,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         super.viewDidLayoutSubviews()
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        let contentLayoutChanged = layoutKeyboardContentViewForCurrentBounds()
-        if contentLayoutChanged {
-            keyboardContentView.layoutIfNeeded()
-        }
+        layoutKeyboardContentViewForCurrentBounds()
+        keyboardContentView.layoutIfNeeded()
         voiceGradient.frame = voiceButton.bounds
 
         // Position the specular ellipse upper-left, matching the host app's
@@ -3892,7 +3964,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         keyRowsStack.isHidden = false
         candidateGridScrollView.isHidden = true
         candidateGridCollapseButton.isHidden = true
-        clearCandidateGrid()
         NSLayoutConstraint.deactivate(keyboardRowConstraints)
         keyboardRowConstraints.removeAll()
         keyRowsStack.arrangedSubviews.forEach { row in
@@ -6019,17 +6090,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func openHostApp(_ url: URL, completion: @escaping @Sendable (Bool) -> Void) {
-        guard let extensionContext else {
-            kbLog.notice("openHostApp: extension context unavailable")
-            completion(false)
-            return
-        }
-        kbLog.debug("openHostApp: opening URL via extension context")
-        extensionContext.open(url) { success in
-            Task { @MainActor in
-                kbLog.debug("openHostApp: extension context success=\(success, privacy: .public)")
-                completion(success)
-            }
+        hostLinkOpener.installIfNeeded(in: self)
+        kbLog.debug("openHostApp: opening URL via SwiftUI link opener")
+        hostLinkOpener.open(url) { success in
+            kbLog.debug("openHostApp: SwiftUI link opener success=\(success, privacy: .public)")
+            completion(success)
         }
     }
 
@@ -7974,6 +8039,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         resetCandidateStackForReuse()
         updateCandidateToolbarControls(for: state)
         textToolbar.setNeedsLayout()
+        textToolbar.layoutIfNeeded()
         updateCandidateScrollViewport()
 
         if let errorMessage = state.errorMessage {
@@ -8014,16 +8080,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             candidateStack.layoutIfNeeded()
             candidateScrollView.setNeedsLayout()
             candidateScrollView.layoutIfNeeded()
-            if isCandidateGridExpanded {
-                candidateGridStack.setNeedsLayout()
-                candidateGridStack.layoutIfNeeded()
-                candidateGridScrollView.setNeedsLayout()
-                candidateGridScrollView.layoutIfNeeded()
-            }
-            if !textToolbar.isHidden {
-                textToolbar.setNeedsLayout()
-                textToolbar.layoutIfNeeded()
-            }
+            candidateGridStack.setNeedsLayout()
+            candidateGridStack.layoutIfNeeded()
+            candidateGridScrollView.setNeedsLayout()
+            candidateGridScrollView.layoutIfNeeded()
+            textToolbar.setNeedsLayout()
+            textToolbar.layoutIfNeeded()
             updateCandidateScrollViewport()
             updateKeyboardSurfaceMask()
             updateCandidateTextOverlay()
@@ -8527,9 +8589,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         keyRowsStack.isHidden = next
         candidateGridScrollView.isHidden = !next
         candidateGridCollapseButton.isHidden = !next
-        if !next {
-            clearCandidateGrid()
-        }
         configureCandidateExpandButton(isExpanded: next)
         configureCandidateGridCollapseButton(isExpanded: next)
         textCandidateGridButton.accessibilityLabel = next
@@ -8552,9 +8611,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func renderCandidateGrid(_ state: RimeKeyboardState) {
-        guard isCandidateGridExpanded else { return }
-        clearCandidateGrid()
-        guard state.isComposing, !state.candidates.isEmpty else { return }
+        candidateGridStack.arrangedSubviews.forEach { row in
+            candidateGridStack.removeArrangedSubview(row)
+            row.removeFromSuperview()
+        }
+        guard isCandidateGridExpanded, state.isComposing, !state.candidates.isEmpty else { return }
 
         // iOS-native expanded panel: compact length-aware rows with
         // single-line labels. The list starts from the first candidate so the
@@ -8615,13 +8676,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         // grid columns exactly.
         finishCurrentRow()
         candidateGridScrollView.setContentOffset(.zero, animated: false)
-    }
-
-    private func clearCandidateGrid() {
-        candidateGridStack.arrangedSubviews.forEach { row in
-            candidateGridStack.removeArrangedSubview(row)
-            row.removeFromSuperview()
-        }
     }
 
     private func candidateGridContentWidth() -> CGFloat {
@@ -10094,6 +10148,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             lastReportedKeyboardIssueSignature = ""
             return
         }
+        guard status.commandID != nil else { return }
         let message = status.message.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !message.isEmpty else { return }
         let signature = "\(status.commandID ?? "")|\(message)"
