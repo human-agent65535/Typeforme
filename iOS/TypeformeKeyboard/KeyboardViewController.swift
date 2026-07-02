@@ -1830,6 +1830,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         loadState()
         syncPrimaryLanguage()
         configureRoot()
+        hostLinkOpener.installIfNeeded(in: self)
         configureKeyPreview()
         configureTopRow()
         configureVoiceButton()
@@ -6090,7 +6091,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func openHostApp(_ url: URL, completion: @escaping @Sendable (Bool) -> Void) {
-        hostLinkOpener.installIfNeeded(in: self)
         kbLog.debug("openHostApp: opening URL via SwiftUI link opener")
         hostLinkOpener.open(url) { success in
             kbLog.debug("openHostApp: SwiftUI link opener success=\(success, privacy: .public)")
