@@ -12,17 +12,22 @@ struct PairingStore {
         }
 
         config.normalize()
+        config.token = PairingTokenStore.macBridge.load() ?? ""
         return config
     }
 
     func save(_ config: PairingConfig) {
         var persisted = config
         persisted.normalize()
+        let token = persisted.token
+        persisted.token = ""
+        _ = PairingTokenStore.macBridge.save(token)
         _ = persistConfig(persisted)
     }
 
     func delete() {
         UserDefaults.standard.removeObject(forKey: key)
+        PairingTokenStore.macBridge.delete()
     }
 
     private func persistConfig(_ config: PairingConfig) -> Bool {
@@ -33,9 +38,9 @@ struct PairingStore {
 }
 
 struct PairingTokenStore {
-    static let keyboardBridge = PairingTokenStore(
-        service: TypeformeBundleConfiguration.keyboardBundleIdentifier,
-        account: "keyboard-bridge-token"
+    static let macBridge = PairingTokenStore(
+        service: TypeformeBundleConfiguration.hostBundleIdentifier,
+        account: "mac-bridge-token"
     )
 
     private let service: String
@@ -62,23 +67,32 @@ struct PairingTokenStore {
         return trimmed.isEmpty ? nil : trimmed
     }
 
-    func save(_ token: String) {
-        let data = Data(token.utf8)
+    @discardableResult
+    func save(_ token: String) -> Bool {
+        let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return delete()
+        }
+
+        let data = Data(trimmed.utf8)
         var query = baseQuery(service: service)
         let update: [String: Any] = [
             kSecValueData as String: data,
             kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
         ]
         let status = SecItemUpdate(query as CFDictionary, update as CFDictionary)
-        if status == errSecSuccess { return }
+        if status == errSecSuccess { return true }
+        guard status == errSecItemNotFound else { return false }
 
         query[kSecValueData as String] = data
         query[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
-        _ = SecItemAdd(query as CFDictionary, nil)
+        return SecItemAdd(query as CFDictionary, nil) == errSecSuccess
     }
 
-    func delete() {
-        _ = SecItemDelete(baseQuery(service: service) as CFDictionary)
+    @discardableResult
+    func delete() -> Bool {
+        let status = SecItemDelete(baseQuery(service: service) as CFDictionary)
+        return status == errSecSuccess || status == errSecItemNotFound
     }
 
     private func baseQuery(service: String) -> [String: Any] {

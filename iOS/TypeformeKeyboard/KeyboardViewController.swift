@@ -2294,7 +2294,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private var hostKeyboardBridgeToken: String? {
-        guard let token = hostKeyboardDefaultsPayload()?.bridgeToken,
+        guard hasFullAccess,
+              let token = KeyboardSharedKeychain.keyboardBridgeToken(),
               !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else { return nil }
         return token

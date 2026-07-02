@@ -31,8 +31,8 @@ final class KeyboardCoordinator {
         touchLearningResetGeneration: Int,
         force: Bool = false
     ) {
+        KeyboardSharedKeychain.saveKeyboardBridgeToken(bridgeToken)
         var payload = KeyboardDefaultsPayload(
-            bridgeToken: bridgeToken,
             correctionMode: correctionMode,
             autoCapitalizationEnabled: autoCapitalizationEnabled,
             characterPreviewEnabled: characterPreviewEnabled,
@@ -60,17 +60,11 @@ final class KeyboardCoordinator {
     }
 
     private static func loadKeyboardBridgeToken() -> String {
-        let store = PairingTokenStore.keyboardBridge
-        if let sharedToken = KeyboardSharedDefaults.bridgeToken(from: KeyboardSharedDefaults.loadPayload()) {
-            store.save(sharedToken)
-            return sharedToken
-        }
-        if let token = store.load(),
-           !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if let token = KeyboardSharedKeychain.keyboardBridgeToken() {
             return token
         }
         let token = KeyboardSharedDefaults.makeBridgeToken()
-        store.save(token)
+        KeyboardSharedKeychain.saveKeyboardBridgeToken(token)
         return token
     }
 }

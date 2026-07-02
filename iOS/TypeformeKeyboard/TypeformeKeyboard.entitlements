@@ -6,5 +6,9 @@
 	<array>
 		<string>$(TYPEFORME_APP_GROUP_IDENTIFIER)</string>
 	</array>
+	<key>keychain-access-groups</key>
+	<array>
+		<string>$(TYPEFORME_KEYCHAIN_ACCESS_GROUP)</string>
+	</array>
 </dict>
 </plist>

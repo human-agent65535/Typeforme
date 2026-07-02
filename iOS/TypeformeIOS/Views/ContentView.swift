@@ -2209,6 +2209,13 @@ private struct MacSettingsView: View {
         return !draft.hasSameEditableSettings(as: initialDraft)
     }
 
+    private var macSettingsDoneButtonTitle: String {
+        if hasUnsavedChanges, selectedMacModelsNeedDownload {
+            return NSLocalizedString("Save & Download", comment: "Save Mac settings and start model downloads on the Mac")
+        }
+        return NSLocalizedString("Done", comment: "Close or save Mac settings button")
+    }
+
     private var visibleRecognitionSourceOptions: [BridgeSettingOption] {
         guard let draft else { return [] }
         return draft.recognitionSourceOptions
@@ -2217,6 +2224,48 @@ private struct MacSettingsView: View {
     private var visibleEnabledRecognitionSources: [RecognitionSource] {
         guard let draft else { return [] }
         return draft.enabledSources
+    }
+
+    private var selectedMacModelsNeedDownload: Bool {
+        selectedMacModelDownloadSummary != nil
+    }
+
+    private var visibleMacModelStatuses: [BridgeModelStatus] {
+        guard let draft else { return [] }
+        let selectedIDs = selectedMacModelStatusIDs(for: draft)
+        return draft.modelStatuses.filter { selectedIDs.contains($0.id) || $0.installing }
+    }
+
+    private var selectedMacModelDownloadSummary: String? {
+        guard let draft else { return nil }
+        let statuses = draft.modelStatuses.reduce(into: [String: BridgeModelStatus]()) { result, status in
+            result[status.id] = status
+        }
+        var missing: [String] = []
+        for source in draft.enabledSources where source.hasModelConfiguration {
+            let modelID = draft.asrModelID(for: source.rawValue)
+            let status = statuses["asr:\(source.rawValue):\(modelID)"]
+            if status?.installed != true {
+                missing.append("\(source.displayName) model")
+            }
+        }
+        if !isExternalCompatibleBackend(draft.correctionBackend) {
+            let status = statuses["refine:\(draft.correctionBackend)"]
+            if status?.installed != true {
+                missing.append("refine model")
+            }
+        }
+        guard !missing.isEmpty else { return nil }
+        return "Save will start downloading on the Mac: \(missing.joined(separator: ", "))."
+    }
+
+    private func selectedMacModelStatusIDs(for draft: BridgeMacSettingsPayload) -> Set<String> {
+        var ids = Set<String>()
+        for source in draft.enabledSources where source.hasModelConfiguration {
+            ids.insert("asr:\(source.rawValue):\(draft.asrModelID(for: source.rawValue))")
+        }
+        ids.insert("refine:\(draft.correctionBackend)")
+        return ids
     }
 
     var body: some View {
@@ -2362,9 +2411,9 @@ private struct MacSettingsView: View {
                     }
                 }
 
-                if !draft.modelStatuses.isEmpty {
+                if !visibleMacModelStatuses.isEmpty {
                     Section {
-                        ForEach(draft.modelStatuses) { status in
+                        ForEach(visibleMacModelStatuses) { status in
                             ModelStatusRow(status: status)
                         }
                     } header: {
@@ -2455,7 +2504,7 @@ private struct MacSettingsView: View {
                         }
                         Text(isSaving
                             ? NSLocalizedString("Saving…", comment: "Dictation settings save in progress")
-                            : NSLocalizedString("Done", comment: "Close or save Mac settings button"))
+                            : macSettingsDoneButtonTitle)
                     }
                 }
                 .disabled(isSaving || (draft == nil && isLoading))

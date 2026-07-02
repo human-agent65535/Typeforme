@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import Security
 
 enum TypeformeBundleConfiguration {
     static let productIdentifier = "typeforme"
@@ -18,6 +19,10 @@ enum TypeformeBundleConfiguration {
 
     static var appGroupIdentifier: String {
         requiredInfoString("TypeformeAppGroupIdentifier")
+    }
+
+    static var keychainAccessGroup: String? {
+        infoString("TypeformeKeychainAccessGroup")
     }
 
     static var currentBundleIdentifier: String {
@@ -76,12 +81,6 @@ enum KeyboardSharedDefaults {
     @discardableResult
     static func savePayload(_ payload: KeyboardDefaultsPayload) -> Bool {
         saveCodable(payload, key: keyboardDefaultsKey)
-    }
-
-    static func bridgeToken(from payload: KeyboardDefaultsPayload?) -> String? {
-        guard let token = payload?.bridgeToken else { return nil }
-        let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : trimmed
     }
 
     @discardableResult
@@ -239,6 +238,83 @@ enum KeyboardSharedDefaults {
     }
 }
 
+enum KeyboardSharedKeychain {
+    private static let keyboardBridgeService = "\(TypeformeBundleConfiguration.hostBundleIdentifier).keyboard-bridge"
+    private static let keyboardBridgeAccount = "keyboard-bridge-token"
+
+    static func keyboardBridgeToken() -> String? {
+        string(service: keyboardBridgeService, account: keyboardBridgeAccount)
+    }
+
+    @discardableResult
+    static func saveKeyboardBridgeToken(_ token: String) -> Bool {
+        save(token, service: keyboardBridgeService, account: keyboardBridgeAccount)
+    }
+
+    @discardableResult
+    static func deleteKeyboardBridgeToken() -> Bool {
+        delete(service: keyboardBridgeService, account: keyboardBridgeAccount)
+    }
+
+    private static func string(service: String, account: String) -> String? {
+        var query = baseQuery(service: service, account: account)
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        guard status == errSecSuccess,
+              let data = item as? Data,
+              let token = String(data: data, encoding: .utf8)
+        else {
+            return nil
+        }
+
+        let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    @discardableResult
+    private static func save(_ token: String, service: String, account: String) -> Bool {
+        let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return delete(service: service, account: account)
+        }
+
+        let data = Data(trimmed.utf8)
+        let query = baseQuery(service: service, account: account)
+        let update: [String: Any] = [
+            kSecValueData as String: data,
+        ]
+        let updateStatus = SecItemUpdate(query as CFDictionary, update as CFDictionary)
+        if updateStatus == errSecSuccess { return true }
+        guard updateStatus == errSecItemNotFound else { return false }
+
+        var addQuery = query
+        addQuery[kSecValueData as String] = data
+        addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        return SecItemAdd(addQuery as CFDictionary, nil) == errSecSuccess
+    }
+
+    @discardableResult
+    private static func delete(service: String, account: String) -> Bool {
+        let status = SecItemDelete(baseQuery(service: service, account: account) as CFDictionary)
+        return status == errSecSuccess || status == errSecItemNotFound
+    }
+
+    private static func baseQuery(service: String, account: String) -> [String: Any] {
+        var query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+        ]
+        if let accessGroup = TypeformeBundleConfiguration.keychainAccessGroup {
+            query[kSecAttrAccessGroup as String] = accessGroup
+        }
+        return query
+    }
+}
+
 enum KeyboardChinesePunctuationStyle: String, CaseIterable, Identifiable, Codable {
     case chinese
     case english
@@ -297,7 +373,6 @@ struct KeyboardDefaultsPayload: Codable, Equatable {
     static let currentVersion = 3
 
     var version: Int
-    var bridgeToken: String
     var correctionMode: CorrectionMode
     var autoCapitalizationEnabled: Bool
     var characterPreviewEnabled: Bool
@@ -318,7 +393,6 @@ struct KeyboardDefaultsPayload: Codable, Equatable {
 
     init(
         version: Int = Self.currentVersion,
-        bridgeToken: String,
         correctionMode: CorrectionMode,
         autoCapitalizationEnabled: Bool,
         characterPreviewEnabled: Bool,
@@ -339,7 +413,6 @@ struct KeyboardDefaultsPayload: Codable, Equatable {
     ) {
         let normalizedPhrases = Self.normalizedRimeUserPhrases(rimeUserPhrases)
         self.version = version
-        self.bridgeToken = bridgeToken
         self.correctionMode = correctionMode
         self.autoCapitalizationEnabled = autoCapitalizationEnabled
         self.characterPreviewEnabled = characterPreviewEnabled
@@ -364,7 +437,6 @@ struct KeyboardDefaultsPayload: Codable, Equatable {
         let phrases = try container.decode([String].self, forKey: .rimeUserPhrases)
         let normalizedPhrases = Self.normalizedRimeUserPhrases(phrases)
         version = try container.decode(Int.self, forKey: .version)
-        bridgeToken = try container.decode(String.self, forKey: .bridgeToken)
         correctionMode = try container.decode(CorrectionMode.self, forKey: .correctionMode)
         autoCapitalizationEnabled = try container.decode(Bool.self, forKey: .autoCapitalizationEnabled)
         characterPreviewEnabled = try container.decode(Bool.self, forKey: .characterPreviewEnabled)
@@ -395,7 +467,6 @@ struct KeyboardDefaultsPayload: Codable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case version
-        case bridgeToken = "bridge_token"
         case correctionMode = "correction_mode"
         case autoCapitalizationEnabled = "auto_capitalization_enabled"
         case characterPreviewEnabled = "character_preview_enabled"
