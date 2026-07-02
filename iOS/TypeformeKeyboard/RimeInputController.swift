@@ -175,6 +175,7 @@ final class RimeInputController: @unchecked Sendable {
     private var desiredUserPhraseContent = RimeInputController.customPhraseFileContent(from: [])
     private var desiredUserPhraseSignature = RimeInputController.customPhraseSignature(RimeInputController.customPhraseFileContent(from: []))
     private var appliedUserPhraseSignature: String?
+    private var runtimeSharedSupportURL: URL?
     private var englishWordCodes: Set<String>?
 
     var onStateChange: ((RimeKeyboardState) -> Void)?
@@ -204,11 +205,13 @@ final class RimeInputController: @unchecked Sendable {
             }
             lastErrorMessage = nil
         }
+        let requestedSchemaID = desiredProfile.schemaID
         startupState = .starting
         lastStartupAttemptAt = now
         stateLock.unlock()
 
         let startedAt = Date()
+        rimeLog.notice("Rime startup scheduled schema=\(requestedSchemaID, privacy: .public)")
         rimeQueue.async { [weak self] in
             guard let self else { return }
             let didStart = self.startOnQueue(bundle: bundle)
@@ -233,6 +236,7 @@ final class RimeInputController: @unchecked Sendable {
         guard let sharedSupportURL = bundle.resourceURL?.appendingPathComponent("RimeSharedSupport", isDirectory: true),
               FileManager.default.fileExists(atPath: sharedSupportURL.path)
         else {
+            runtimeSharedSupportURL = nil
             finishStartupOnQueue(.failed, errorMessage: "中文数据缺失")
             rimeLog.error("RimeSharedSupport is missing from the keyboard bundle")
             return false
@@ -240,11 +244,13 @@ final class RimeInputController: @unchecked Sendable {
 
         let prebuiltDataURL = sharedSupportURL.appendingPathComponent("build", isDirectory: true)
         guard FileManager.default.fileExists(atPath: prebuiltDataURL.appendingPathComponent("default.yaml").path) else {
+            runtimeSharedSupportURL = nil
             finishStartupOnQueue(.failed, errorMessage: "中文数据未编译")
             rimeLog.error("Rime prebuilt data is missing from RimeSharedSupport/build")
             return false
         }
-        loadEnglishWordCodesOnQueue(from: sharedSupportURL)
+        runtimeSharedSupportURL = sharedSupportURL
+        rimeLog.notice("Rime startup resources ready schema=\(self.desiredProfileOnQueue.schemaID, privacy: .public)")
 
         do {
             // The keyboard extension must only open prebuilt Rime data. Do not
@@ -702,12 +708,12 @@ final class RimeInputController: @unchecked Sendable {
         candidates: [RimeKeyboardCandidate]
     ) -> LiteralEnglishPlacement? {
         let code = input.lowercased()
-        let isKnownEnglishWord = englishWordCodes?.contains(code) == true
         guard Self.isEnglishWordLookupCode(code),
               !candidates.contains(where: { $0.text.lowercased() == code && Self.isEnglishWordLookupCode($0.text.lowercased()) }),
               preedit != input,
               Self.containsRimeSegmentDelimiter(preedit)
         else { return nil }
+        let isKnownEnglishWord = englishWordCodesOnQueue().contains(code)
         if code.unicodeScalars.count >= Self.englishCompletionMinimumInputLength,
            Self.containsNonTrailingStrandedConsonantSegment(preedit) {
             if Self.isShortLiteralLatinToken(code) {
@@ -930,8 +936,21 @@ final class RimeInputController: @unchecked Sendable {
         return userDataURL
     }
 
+    private func englishWordCodesOnQueue() -> Set<String> {
+        if let englishWordCodes {
+            return englishWordCodes
+        }
+        guard let runtimeSharedSupportURL else {
+            englishWordCodes = []
+            return []
+        }
+        loadEnglishWordCodesOnQueue(from: runtimeSharedSupportURL)
+        return englishWordCodes ?? []
+    }
+
     private func loadEnglishWordCodesOnQueue(from sharedSupportURL: URL) {
         guard englishWordCodes == nil else { return }
+        let startedAt = Date()
         let url = sharedSupportURL.appendingPathComponent("typeforme_english.dict.yaml")
         guard let content = try? String(contentsOf: url, encoding: .utf8) else {
             englishWordCodes = []
@@ -959,6 +978,8 @@ final class RimeInputController: @unchecked Sendable {
             codes.insert(code)
         }
         englishWordCodes = codes
+        let elapsedMS = Date().timeIntervalSince(startedAt) * 1000
+        rimeLog.notice("English word code cache loaded count=\(codes.count, privacy: .public) elapsedMs=\(elapsedMS, privacy: .public)")
     }
 
     private static func customPhraseFileContent(from phrases: [String]) -> String {

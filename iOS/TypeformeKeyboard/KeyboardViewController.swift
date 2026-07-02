@@ -1,87 +1,10 @@
 import UIKit
-import SwiftUI
 import Darwin
 import ObjectiveC
 import OSLog
 import QuartzCore
 
 private let kbLog = Logger(subsystem: TypeformeBundleConfiguration.keyboardBundleIdentifier, category: "ui")
-
-@MainActor
-private final class KeyboardHostLinkOpener: ObservableObject {
-    struct Request: Identifiable {
-        let id = UUID()
-        let url: URL
-        let completion: (Bool) -> Void
-    }
-
-    @Published fileprivate var request: Request?
-
-    private var hostController: UIHostingController<KeyboardHostLinkOpenerView>?
-
-    func install(in parent: UIViewController) {
-        guard hostController == nil else { return }
-        let controller = UIHostingController(rootView: KeyboardHostLinkOpenerView(opener: self))
-        controller.view.translatesAutoresizingMaskIntoConstraints = false
-        controller.view.backgroundColor = .clear
-        controller.view.alpha = 0.01
-        controller.view.isUserInteractionEnabled = false
-        controller.view.accessibilityElementsHidden = true
-        parent.addChild(controller)
-        parent.view.addSubview(controller.view)
-        NSLayoutConstraint.activate([
-            controller.view.widthAnchor.constraint(equalToConstant: 1),
-            controller.view.heightAnchor.constraint(equalToConstant: 1),
-            controller.view.leadingAnchor.constraint(equalTo: parent.view.leadingAnchor),
-            controller.view.topAnchor.constraint(equalTo: parent.view.topAnchor),
-        ])
-        controller.didMove(toParent: parent)
-        hostController = controller
-    }
-
-    func open(_ url: URL, completion: @escaping (Bool) -> Void) {
-        guard hostController != nil else {
-            kbLog.notice("openHostApp: SwiftUI link opener unavailable")
-            completion(false)
-            return
-        }
-        request = Request(url: url, completion: completion)
-    }
-
-    fileprivate func finish(_ id: UUID, accepted: Bool) {
-        guard request?.id == id else { return }
-        let completion = request?.completion
-        request = nil
-        completion?(accepted)
-    }
-}
-
-private struct KeyboardHostLinkOpenerView: View {
-    @ObservedObject var opener: KeyboardHostLinkOpener
-    @Environment(\.openURL) private var openURL
-    @State private var handledRequestID: UUID?
-
-    var body: some View {
-        Color.clear
-            .frame(width: 1, height: 1)
-            .onAppear(perform: openPendingRequest)
-            .onChange(of: opener.request?.id) { _, _ in
-                openPendingRequest()
-            }
-    }
-
-    private func openPendingRequest() {
-        guard let request = opener.request,
-              handledRequestID != request.id
-        else { return }
-        handledRequestID = request.id
-        openURL(request.url) { accepted in
-            Task { @MainActor in
-                opener.finish(request.id, accepted: accepted)
-            }
-        }
-    }
-}
 
 fileprivate enum KeyboardTouchTarget {
     case textKey(UIButton)
@@ -412,7 +335,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private let textTouchLearningStatsKey = "keyboard.textTouchGaussianStats.v1"
     private let keyboardTouchTraceEnabledKey = "keyboard.touchTraceEnabled"
     private let keyPressOverlayTag = 0x74797065
-    private let hostLinkOpener = KeyboardHostLinkOpener()
 
     private var correctionMode: CorrectionMode = .polishPlus
     private var pendingDefaultCorrectionMode: CorrectionMode?
@@ -837,6 +759,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private var lastTouchSurfaceLayoutLogKey = ""
     private var lastKeyboardPresentationLayoutLogKey = ""
     private var keyboardPresentationLayoutLogCount = 0
+    private var keyboardLifecycleStartedAt = CACurrentMediaTime()
+    private var keyboardStartupSnapshotCount = 0
+    private var didLogReadyKeyboardSnapshot = false
     private let activePressedControls = NSHashTable<UIControl>.weakObjects()
     private var pressCleanupWorkItems: [ObjectIdentifier: DispatchWorkItem] = [:]
 
@@ -904,6 +829,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     override func loadView() {
+        keyboardLifecycleStartedAt = CACurrentMediaTime()
         let initialHeight = currentKeyboardContentHeight + Self.topChromeCoverHeight
         beginInputModeCarryoverSuppression()
         let rootView = ClickFeedbackInputView(
@@ -927,6 +853,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         heightConstraint = initialHeightConstraint
         inputView = rootView
         view = rootView
+        logKeyboardStartupSnapshot("loadView", force: true)
         logKeyboardPresentationLayout("loadView", force: true)
     }
 
@@ -1818,7 +1745,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         loadState()
         syncPrimaryLanguage()
         configureRoot()
-        hostLinkOpener.install(in: self)
         configureKeyPreview()
         configureTopRow()
         configureVoiceButton()
@@ -1840,6 +1766,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 self.refreshDynamicAppearance()
             }
         }
+        logKeyboardStartupSnapshot("viewDidLoad", force: true)
         kbLog.debug("viewDidLoad complete; voiceButton enabled=\(self.voiceButton.isEnabled, privacy: .public), fullAccess=\(self.hasFullAccess, privacy: .public)")
     }
 
@@ -1883,6 +1810,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         keyboardHaptics.prepareForKeyboardReady()
         setKeyboardContentVisible(true)
         logKeyboardPresentationGateIfUnstable()
+        logKeyboardStartupSnapshot("viewWillAppear", force: true)
         logKeyboardPresentationLayout("viewWillAppear", force: true)
     }
 
@@ -1893,6 +1821,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         setKeyboardContentVisible(true)
         logKeyboardPresentationGateIfUnstable()
         keyboardHaptics.prepareForKeyboardReady()
+        logKeyboardStartupSnapshot("viewDidAppear", force: true)
         logKeyboardPresentationLayout("viewDidAppear", force: true)
         scheduleDeferredTextKeyboardLayoutRefresh()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
@@ -1900,6 +1829,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             self?.setKeyboardContentVisible(true)
             self?.logKeyboardPresentationGateIfUnstable()
             self?.keyboardHaptics.prepareForKeyboardReady()
+            self?.logKeyboardStartupSnapshot("viewDidAppear+100ms", force: true)
             self?.logKeyboardPresentationLayout("viewDidAppear+100ms", force: true)
         }
         scheduleDeferredStartupProbe()
@@ -3356,6 +3286,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         updateKeyboardOverlayOrdering()
         setKeyboardContentVisible(true)
         logKeyboardPresentationGateIfUnstable()
+        logKeyboardStartupSnapshot("layout")
         logKeyboardPresentationLayout("layout")
         logKeyboardTouchSurfaceLayoutIfNeeded()
         CATransaction.commit()
@@ -3403,6 +3334,57 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         guard key != lastTouchSurfaceLayoutLogKey else { return }
         lastTouchSurfaceLayoutLogKey = key
         kbLog.notice("touch layout surface=(\(Int(surfaceFrame.minX), privacy: .public),\(Int(surfaceFrame.minY), privacy: .public),\(Int(surfaceFrame.width), privacy: .public),\(Int(surfaceFrame.height), privacy: .public)) viewFrame=(\(Int(viewFrame.minX), privacy: .public),\(Int(viewFrame.minY), privacy: .public),\(Int(viewFrame.width), privacy: .public),\(Int(viewFrame.height), privacy: .public)) super=(\(Int(superviewFrame.minX), privacy: .public),\(Int(superviewFrame.minY), privacy: .public),\(Int(superviewFrame.width), privacy: .public),\(Int(superviewFrame.height), privacy: .public)) window=(\(Int(windowFrame.minX), privacy: .public),\(Int(windowFrame.minY), privacy: .public),\(Int(windowFrame.width), privacy: .public),\(Int(windowFrame.height), privacy: .public)) content=(\(Int(contentFrame.minX), privacy: .public),\(Int(contentFrame.minY), privacy: .public),\(Int(contentFrame.width), privacy: .public),\(Int(contentFrame.height), privacy: .public)) root=(\(Int(rootFrame.minX), privacy: .public),\(Int(rootFrame.minY), privacy: .public),\(Int(rootFrame.width), privacy: .public),\(Int(rootFrame.height), privacy: .public)) safe=(\(Int(safeInsets.left), privacy: .public),\(Int(safeInsets.top), privacy: .public),\(Int(safeInsets.right), privacy: .public),\(Int(safeInsets.bottom), privacy: .public)) charBand=(\(bandX, privacy: .public),\(bandY, privacy: .public),\(bandWidth, privacy: .public),\(bandHeight, privacy: .public)) focus=\(self.keyboardFocus.rawValue, privacy: .public)")
+    }
+
+    private func logKeyboardStartupSnapshot(_ event: String, force: Bool = false) {
+        guard isViewLoaded else { return }
+        if didLogReadyKeyboardSnapshot, !force {
+            return
+        }
+        let surfaceFrame = view.bounds
+        let viewFrame = view.frame
+        let windowFrame = view.convert(view.bounds, to: nil)
+        let hostWindowFrame = view.window?.frame
+        let contentFrame = frameInController(keyboardContentView)
+        let rootFrame = frameInController(rootStack)
+        let counts = keyboardControlCounts(in: rootStack)
+        let hasReadyFrame = surfaceFrame.width > 1
+            && surfaceFrame.height > 1
+            && (rootFrame?.width ?? 0) > 1
+            && (rootFrame?.height ?? 0) > 1
+            && keyboardContentView.alpha > 0.01
+            && !rootStack.isHidden
+            && counts.visible > 0
+
+        guard force || keyboardStartupSnapshotCount < 12 || (hasReadyFrame && !didLogReadyKeyboardSnapshot) else {
+            return
+        }
+        keyboardStartupSnapshotCount += 1
+        if hasReadyFrame {
+            didLogReadyKeyboardSnapshot = true
+        }
+        let elapsedMS = (CACurrentMediaTime() - keyboardLifecycleStartedAt) * 1000
+        kbLog.notice("keyboard startup event=\(event, privacy: .public) elapsedMs=\(elapsedMS, privacy: .public) readyFrame=\(hasReadyFrame, privacy: .public) fullAccess=\(self.hasFullAccess, privacy: .public) focus=\(self.keyboardFocus.rawValue, privacy: .public) hasWindow=\((self.view.window != nil), privacy: .public) surface=\(self.frameLogString(surfaceFrame), privacy: .public) view=\(self.frameLogString(viewFrame), privacy: .public) window=\(self.frameLogString(windowFrame), privacy: .public) hostWindow=\(self.frameLogString(hostWindowFrame), privacy: .public) content=\(self.frameLogString(contentFrame), privacy: .public) root=\(self.frameLogString(rootFrame), privacy: .public) contentAlpha=\(self.valueLogString(self.keyboardContentView.alpha), privacy: .public) rootHidden=\(self.rootStack.isHidden, privacy: .public) visibleControls=\(counts.visible, privacy: .public) totalControls=\(counts.total, privacy: .public)")
+    }
+
+    private func keyboardControlCounts(in view: UIView, ancestorsVisible: Bool = true) -> (visible: Int, total: Int) {
+        let isControl = view is UIControl
+        let subtreeVisible = ancestorsVisible
+            && !view.isHidden
+            && view.alpha > 0.01
+            && view.window != nil
+        let isVisibleControl = isControl
+            && subtreeVisible
+            && view.bounds.width > 0
+            && view.bounds.height > 0
+        var visible = isVisibleControl ? 1 : 0
+        var total = isControl ? 1 : 0
+        for subview in view.subviews {
+            let counts = keyboardControlCounts(in: subview, ancestorsVisible: subtreeVisible)
+            visible += counts.visible
+            total += counts.total
+        }
+        return (visible: visible, total: total)
     }
 
     private func logKeyboardPresentationLayout(_ event: String, force: Bool = false) {
@@ -6023,10 +6005,17 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func openHostApp(_ url: URL, completion: @escaping @Sendable (Bool) -> Void) {
-        kbLog.debug("openHostApp: opening URL via SwiftUI link opener")
-        hostLinkOpener.open(url) { success in
-            kbLog.debug("openHostApp: SwiftUI link opener success=\(success, privacy: .public)")
-            completion(success)
+        guard let extensionContext else {
+            kbLog.notice("openHostApp: extension context unavailable")
+            completion(false)
+            return
+        }
+        kbLog.debug("openHostApp: opening URL via extension context")
+        extensionContext.open(url) { success in
+            Task { @MainActor in
+                kbLog.debug("openHostApp: extension context success=\(success, privacy: .public)")
+                completion(success)
+            }
         }
     }
 
