@@ -73,11 +73,42 @@ scripts/vendor-llama.sh <path-to-llama.cpp/build/bin>
 scripts/build-nvidia-nemotron-helper.sh
 ```
 
-Build the macOS app:
+macOS build profiles are intentionally separate:
+
+- `dev`: local debug app installed and launched from `dist/mac/dev/`.
+- `release`: Developer ID app in `dist/mac/release/`, notarized, stapled, and zipped.
+- `github-release`: self-signed app in `dist/mac/github-release/` for GitHub
+  artifacts that should not expose Apple Developer identity metadata.
+
+Build, install, and launch the local debug app:
 
 ```sh
-scripts/build-app.sh debug
-scripts/build-app.sh debug --install
+scripts/run-mac-debug.sh
+```
+
+Build a Developer ID release, submit it for notarization, staple the app, and
+write a distributable zip:
+
+```sh
+scripts/build-mac-release.sh
+```
+
+Use `TYPEFORME_NOTARIZE=0 scripts/build-mac-release.sh` only for local signing
+checks that do not need Gatekeeper acceptance.
+
+Build a release-config app that Gatekeeper treats as an unidentified developer
+without exposing Apple Developer signing identity metadata. This profile
+intentionally ignores root `.env` so local signing settings do not leak into the
+public artifact:
+
+```sh
+IDENTITY="Typeforme Unidentified" scripts/create-signing-identity.sh
+scripts/build-mac-github-release.sh
+```
+
+For advanced signing or install options, call the underlying packager directly:
+
+```sh
 scripts/build-app.sh release
 IDENTITY="Developer ID Application: ..." scripts/build-app.sh release
 ```
@@ -126,7 +157,7 @@ For internet access, prefer placing the Bridge behind Cloudflare Tunnel and past
 
 ## Runtime Files
 
-`scripts/vendor-llama.sh` copies `llama-server-arm64` and its dynamic libraries into `vendor/`. `scripts/build-nvidia-nemotron-helper.sh` writes the NVIDIA helper into `vendor/nvidia-nemotron/`. `scripts/build-app.sh` packages available helpers into `dist/Typeforme.app`.
+`scripts/vendor-llama.sh` copies `llama-server-arm64` and its dynamic libraries into `vendor/`. `scripts/build-nvidia-nemotron-helper.sh` writes the NVIDIA helper into `vendor/nvidia-nemotron/`. `scripts/build-app.sh debug` packages available helpers into `dist/mac/dev/Typeforme.app`; `scripts/build-app.sh release` writes the signed Developer ID bundle to `dist/mac/release/Typeforme.app`; `scripts/build-mac-release.sh` notarizes, staples, and zips that Developer ID bundle for direct distribution; `scripts/build-mac-github-release.sh` writes the self-signed GitHub Release artifact build and versioned zip to `dist/mac/github-release/`.
 
 Runtime data lives by default in:
 

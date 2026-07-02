@@ -6,7 +6,7 @@
 #   scripts/build-app.sh [debug|release] [--install|--deploy]  # default: debug
 #   scripts/run-mac-debug.sh
 #   scripts/build-mac-release.sh
-#   scripts/build-mac-unidentified.sh
+#   scripts/build-mac-github-release.sh
 #   INSTALL_DIR=/Applications scripts/build-app.sh debug --install
 #   IDENTITY="Developer ID Application: ..." scripts/build-app.sh release --install
 #

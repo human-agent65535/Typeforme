@@ -1,18 +1,17 @@
 #!/usr/bin/env bash
-# Create a self-signed code-signing identity called "Typeforme Local Dev" in
-# the login keychain. Once this exists, build-app.sh will pick it up
-# automatically and every rebuild of dist/Typeforme.app gets the same
-# signature. macOS's TCC keys permission grants by signature, so this means
-# the Accessibility / Microphone grants you give Typeforme persist across
-# Xcode rebuilds.
+# Create a self-signed code-signing identity in the login keychain. Use it
+# explicitly with IDENTITY=... when you need a stable non-Apple signature.
+# macOS's TCC and Keychain trust decisions use the app's code requirement, so a
+# stable self-signed identity keeps grants and secure items stable across builds.
 #
 # Run once per machine:
 #   scripts/create-signing-identity.sh
+#   IDENTITY="Typeforme Unidentified" scripts/create-signing-identity.sh
 # Then rebuild:
-#   ./scripts/build-app.sh release
+#   IDENTITY="Typeforme Local Dev" ./scripts/build-app.sh debug
 set -euo pipefail
 
-IDENTITY="Typeforme Local Dev"
+IDENTITY="${IDENTITY:-Typeforme Local Dev}"
 KEYCHAIN="$HOME/Library/Keychains/login.keychain-db"
 
 if security find-identity -p codesigning -v "$KEYCHAIN" 2>/dev/null | grep -q "\"$IDENTITY\""; then
@@ -70,7 +69,12 @@ echo "✓ Created '$IDENTITY' in login keychain (trusted for code signing)."
 security find-identity -p codesigning -v "$KEYCHAIN" 2>/dev/null | grep "$IDENTITY" || true
 echo
 echo "Next: rebuild the .app so it gets signed with the stable identity:"
-echo "  ./scripts/build-app.sh release"
+echo "  IDENTITY=\"$IDENTITY\" ./scripts/build-app.sh debug"
+if [ "$IDENTITY" = "Typeforme Unidentified" ]; then
+    echo
+    echo "For the GitHub Release unidentified-developer profile:"
+    echo "  scripts/build-mac-github-release.sh"
+fi
 echo
 echo "Then in Typeforme Settings → General → Permissions:"
 echo "  1. Click \"Reset & re-prompt\" once (clears any stale TCC entry)"

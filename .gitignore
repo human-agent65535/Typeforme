@@ -21,6 +21,7 @@ xcuserdata/
 *.cer
 *.crt
 *.der
+*.p8
 *.mobileprovision
 *.provisionprofile
 *.keychain
@@ -29,9 +30,16 @@ xcuserdata/
 # Build outputs
 build/
 dist/
+release/
 target/
 *.app/
 *.dSYM/
+*.xcarchive/
+*.xcresult/
+*.ipa
+*.dmg
+*.pkg
+*.zip
 
 # Large local model weights — never commit
 **/Models/*.gguf
@@ -45,6 +53,7 @@ iOS/TypeformeKeyboard/RimeSharedSupport/user.yaml
 
 # Local config
 .env
+.env.*
 *.local
 .cloudflared/
 iOS/LocalSigning.xcconfig
