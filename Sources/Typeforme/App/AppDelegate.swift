@@ -20,6 +20,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let coordinator: DictationCoordinator
     let dictionary: UserDictionaryStore
     let settingsWindow: SettingsWindowController
+    let setupGuideWindow: SetupGuideWindowController
     private let bridgeServer: BridgeHTTPServer
     private let clientSettingsSync = ClientBridgeSettingsSync()
     private var hud: HUDWindowController!
@@ -50,6 +51,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.dictionary     = store
         self.coordinator    = DictationCoordinator(dictionary: store)
         self.settingsWindow = SettingsWindowController(dictionary: store)
+        self.setupGuideWindow = SetupGuideWindowController()
         self.bridgeServer   = BridgeHTTPServer(dictionary: store)
         super.init()
     }
@@ -127,6 +129,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             .store(in: &cancellables)
 
+        NotificationCenter.default
+            .publisher(for: .setupGuideRequested)
+            .sink { [weak self] _ in
+                self?.openSetupGuide()
+            }
+            .store(in: &cancellables)
+
         installEscMonitor()
 
         if !AppPermissions.accessibilityTrusted {
@@ -135,6 +144,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         applyProcessingMode(AppSettings.processingMode)
         syncLaunchAtLogin()
         clientSettingsSync.syncIfNeeded(force: true)
+        showSetupGuideIfNeeded()
         Log.app.info("Typeforme launched (accessory mode)")
     }
 
@@ -193,10 +203,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settingsWindow.show()
     }
 
+    func openSetupGuide() {
+        setupGuideWindow.show()
+    }
+
     /// Exposed for the menu bar: rescue path when the HUD has been dragged
     /// somewhere unreachable (e.g. onto a display that was unplugged).
     func resetHUDPosition() {
         hud.resetAnchor()
+    }
+
+    private func showSetupGuideIfNeeded() {
+        guard !AppSettings.setupGuideCompleted else { return }
+        AppSettings.setSetupGuideHasShown(true)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+            self?.openSetupGuide()
+        }
     }
 
     private func syncLaunchAtLogin() {

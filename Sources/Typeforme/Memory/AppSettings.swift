@@ -1,8 +1,9 @@
 import Foundation
 import os.lock
 
-/// Single source of truth for persisted settings. Backed by UserDefaults so
-/// SwiftUI `@AppStorage` and service-side reads stay in sync.
+/// Single source of truth for persisted settings. Non-secret values stay in
+/// UserDefaults so SwiftUI `@AppStorage` and service-side reads stay in sync;
+/// bearer tokens and API keys are stored in Keychain.
 /// Keys are grouped by feature area; Settings UI may present them under a
 /// different sidebar structure.
 enum AppSettings {
@@ -105,6 +106,10 @@ enum AppSettings {
         // Diagnostics
         static let diagnosticsDebugMode = "diagnostics.debugMode"
         static let diagnosticsDebugCaptureLimit = "diagnostics.debugCaptureLimit"
+
+        // Setup
+        static let setupGuideHasShown = "setup.guide.hasShown"
+        static let setupGuideCompleted = "setup.guide.completed"
     }
 
     static func registerDefaults() {
@@ -130,9 +135,9 @@ enum AppSettings {
             Keys.asrQwenLlamaModelDownloadURL: "https://huggingface.co/ggml-org/Qwen3-ASR-0.6B-GGUF/resolve/main/Qwen3-ASR-0.6B-Q8_0.gguf?download=true",
             Keys.asrQwenLlamaMMProjDownloadURL: "https://huggingface.co/ggml-org/Qwen3-ASR-0.6B-GGUF/resolve/main/mmproj-Qwen3-ASR-0.6B-Q8_0.gguf?download=true",
 
-            Keys.correctionBackend:       CorrectionBackendKind.qwen35_2B.rawValue,
+            Keys.correctionBackend:       CorrectionBackendKind.qwen35_4B.rawValue,
             Keys.correctionTimeoutMs:     1500,
-            Keys.correctionColdTimeoutMs: 8000,
+            Keys.correctionColdTimeoutMs: 30000,
             Keys.correctionMaxTokens:     128,
             Keys.correctionContextSize:   4096,
             Keys.correctionMode:   CorrectionMode.polishPlus.rawValue,
@@ -150,7 +155,6 @@ enum AppSettings {
             Keys.llama9BDownloadURL:      "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf?download=true",
             Keys.llamaUseFlashAttn:       true,
             Keys.externalLLMBaseURL:      "http://127.0.0.1:1234",
-            Keys.externalLLMAPIKey:       "",
             Keys.externalLLMModel:        "",
 
             Keys.promptOverrideFolder: AppPaths.promptsDir.path,
@@ -159,7 +163,6 @@ enum AppSettings {
             Keys.processingMode:    ProcessingMode.client.rawValue,
             Keys.clientLocalBridgeURLs: "",
             Keys.clientCloudBridgeURL: "",
-            Keys.clientBridgeToken: "",
             Keys.clientLanguageIDs: ASRLanguageSelection.defaultRawValue,
             Keys.clientBridgeEnabledRecognitionSources: "",
 
@@ -172,6 +175,8 @@ enum AppSettings {
 
             Keys.diagnosticsDebugMode: false,
             Keys.diagnosticsDebugCaptureLimit: 10,
+            Keys.setupGuideHasShown: false,
+            Keys.setupGuideCompleted: false,
         ]
         var registeredDefaults = defaults
         for spec in QwenASRModelCatalog.all {
@@ -189,15 +194,24 @@ enum AppSettings {
         _ = ensureBridgeAuthToken()
     }
 
-    private static func persistedObject(forKey key: String) -> Any? {
-        let domainName = BundleIdentity.mainBundleIdentifier
-        return UserDefaults.standard.persistentDomain(forName: domainName)?[key]
-    }
-
     // MARK: - Service-side accessors
 
     private static var ud: UserDefaults { .standard }
+    private static let secureSettingsStore = KeychainSecureSettingsStore()
     private static let cachedClientIdentityID = OSAllocatedUnfairLock<String?>(initialState: nil)
+
+    private static func secureSetting(forKey key: String) -> SecureSettingValue {
+        SecureSettingValue(key: key, store: secureSettingsStore)
+    }
+
+    private static func secureString(forKey key: String) -> String {
+        secureSetting(forKey: key).load()
+    }
+
+    @discardableResult
+    private static func setSecureString(_ value: String, forKey key: String) -> Bool {
+        secureSetting(forKey: key).save(value)
+    }
 
     private static func rawSetting<Value>(
         forKey key: String,
@@ -248,7 +262,6 @@ enum AppSettings {
         Keys.llama9BDownloadURL,
         Keys.llamaUseFlashAttn,
         Keys.externalLLMBaseURL,
-        Keys.externalLLMAPIKey,
         Keys.externalLLMModel,
         Keys.promptOverrideFolder,
         Keys.promptAdditionalSystem,
@@ -257,7 +270,6 @@ enum AppSettings {
         Keys.bridgeLANAdapter,
         Keys.bridgePublicEnabled,
         Keys.bridgePort,
-        Keys.bridgeAuthToken,
         Keys.bridgeHostname,
         Keys.diagnosticsDebugMode,
         Keys.diagnosticsDebugCaptureLimit,
@@ -270,7 +282,6 @@ enum AppSettings {
     static let clientScopedSettingKeys: [String] = [
         Keys.clientLocalBridgeURLs,
         Keys.clientCloudBridgeURL,
-        Keys.clientBridgeToken,
         Keys.clientLanguageIDs,
         Keys.clientBridgeEnabledRecognitionSources,
     ]
@@ -405,7 +416,7 @@ enum AppSettings {
     }
 
     static var correctionBackend: CorrectionBackendKind {
-        rawSetting(forKey: Keys.correctionBackend, default: .qwen35_2B)
+        rawSetting(forKey: Keys.correctionBackend, default: .qwen35_4B)
     }
     static var correctionTimeoutMs: Int     { max(100, ud.integer(forKey: Keys.correctionTimeoutMs)) }
     static var correctionColdTimeoutMs: Int { max(1000, ud.integer(forKey: Keys.correctionColdTimeoutMs)) }
@@ -424,6 +435,14 @@ enum AppSettings {
     static var diagnosticsDebugCaptureLimit: Int {
         min(200, max(1, ud.integer(forKey: Keys.diagnosticsDebugCaptureLimit)))
     }
+    static var setupGuideHasShown: Bool { ud.bool(forKey: Keys.setupGuideHasShown) }
+    static var setupGuideCompleted: Bool { ud.bool(forKey: Keys.setupGuideCompleted) }
+    static func setSetupGuideHasShown(_ shown: Bool) {
+        ud.set(shown, forKey: Keys.setupGuideHasShown)
+    }
+    static func setSetupGuideCompleted(_ completed: Bool) {
+        ud.set(completed, forKey: Keys.setupGuideCompleted)
+    }
     static var llama2BPath: String        { ud.string(forKey: Keys.llama2BPath) ?? AppPaths.llama2BFile.path }
     static var llama4BPath: String        { ud.string(forKey: Keys.llama4BPath) ?? AppPaths.llama4BFile.path }
     static var llama9BPath: String        { ud.string(forKey: Keys.llama9BPath) ?? AppPaths.llama9BFile.path }
@@ -437,7 +456,11 @@ enum AppSettings {
         return trimmed.isEmpty ? "http://127.0.0.1:1234" : trimmed
     }
     static var externalLLMAPIKey: String {
-        ud.string(forKey: Keys.externalLLMAPIKey)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        secureString(forKey: Keys.externalLLMAPIKey)
+    }
+    @discardableResult
+    static func setExternalLLMAPIKey(_ value: String) -> Bool {
+        setSecureString(value, forKey: Keys.externalLLMAPIKey)
     }
     static var externalLLMModel: String {
         ud.string(forKey: Keys.externalLLMModel)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -526,7 +549,11 @@ enum AppSettings {
         ud.string(forKey: Keys.clientCloudBridgeURL)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     }
     static var clientBridgeToken: String {
-        ud.string(forKey: Keys.clientBridgeToken)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        secureString(forKey: Keys.clientBridgeToken)
+    }
+    @discardableResult
+    static func setClientBridgeToken(_ value: String) -> Bool {
+        setSecureString(value, forKey: Keys.clientBridgeToken)
     }
     static var clientSettingsRevision: String {
         ud.string(forKey: Keys.clientSettingsRevision)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -573,21 +600,20 @@ enum AppSettings {
 
     @discardableResult
     static func ensureBridgeAuthToken() -> String {
-        if let token = ud.string(forKey: Keys.bridgeAuthToken)?
-            .trimmingCharacters(in: .whitespacesAndNewlines),
-           !token.isEmpty {
-            return token
+        let existing = secureString(forKey: Keys.bridgeAuthToken)
+        if !existing.isEmpty {
+            return existing
         }
 
         let token = newBridgeAuthToken()
-        ud.set(token, forKey: Keys.bridgeAuthToken)
+        setSecureString(token, forKey: Keys.bridgeAuthToken)
         return token
     }
 
     @discardableResult
     static func rotateBridgeAuthToken() -> String {
         let token = newBridgeAuthToken()
-        ud.set(token, forKey: Keys.bridgeAuthToken)
+        setSecureString(token, forKey: Keys.bridgeAuthToken)
         return token
     }
 

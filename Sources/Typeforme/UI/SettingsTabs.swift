@@ -106,6 +106,11 @@ struct GeneralSettingsView: View {
                     Spacer()
                     Text(appVersion()).foregroundStyle(.secondary)
                 }
+                Button {
+                    NotificationCenter.default.post(name: .setupGuideRequested, object: nil)
+                } label: {
+                    Label("Open Setup Guide", systemImage: "checklist")
+                }
                 HStack {
                     Text("Bundle ID")
                     Spacer()
@@ -182,7 +187,7 @@ struct GeneralSettingsView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                 if !axTrusted {
-                    Text("Still says \"Not granted\" after toggling? This local build is adhoc-signed, so each rebuild looks like a different app to macOS. Try \"Reset & re-prompt\" to clear the stale TCC record, then grant once more. Run scripts/create-signing-identity.sh once to make grants stick across rebuilds.")
+                    Text("Still says \"Not granted\" after toggling? Try \"Reset & re-prompt\" to clear the stale TCC record, then grant once more. Officially signed builds keep a stable app identity across rebuilds.")
                         .font(.footnote)
                         .foregroundStyle(.orange)
                         .fixedSize(horizontal: false, vertical: true)
@@ -339,13 +344,19 @@ struct GeneralSettingsView: View {
     }
 }
 
+// MARK: - Setup Guide
+
+extension Notification.Name {
+    static let setupGuideRequested = Notification.Name("TypeformeSetupGuideRequested")
+}
+
 // MARK: - Client Server
 
 struct ClientServerSettingsView: View {
     @AppStorage(AppSettings.Keys.clientLocalBridgeURLs) private var clientLocalBridgeURLsRaw = ""
     @AppStorage(AppSettings.Keys.clientCloudBridgeURL) private var clientCloudBridgeURL = ""
-    @AppStorage(AppSettings.Keys.clientBridgeToken) private var clientBridgeToken = ""
     @AppStorage(AppSettings.Keys.clientLanguageIDs) private var clientLanguageIDsRaw = ASRLanguageSelection.defaultRawValue
+    @State private var clientBridgeToken = AppSettings.clientBridgeToken
     @State private var draft: BridgeSettingsPayload?
     @State private var isChecking = false
     @State private var isLoading = false
@@ -556,11 +567,19 @@ struct ClientServerSettingsView: View {
                 }
 
                 Section {
+                    if let downloadSummary = serverDraftDownloadSummary {
+                        Label(downloadSummary, systemImage: "arrow.down.circle")
+                            .font(.footnote)
+                            .foregroundStyle(.orange)
+                    }
                     HStack {
                         Button {
                             Task { await saveSettings() }
                         } label: {
-                            Label(isSaving ? "Saving…" : "Save to Server", systemImage: "arrow.up.circle")
+                            Label(
+                                isSaving ? "Saving…" : (serverDraftNeedsDownload ? "Save & Download to Server" : "Save to Server"),
+                                systemImage: serverDraftNeedsDownload ? "arrow.down.circle" : "arrow.up.circle"
+                            )
                         }
                         .disabled(isSaving || isLoading)
 
@@ -594,6 +613,12 @@ struct ClientServerSettingsView: View {
             }
         }
         .formStyle(.grouped)
+        .onAppear {
+            clientBridgeToken = AppSettings.clientBridgeToken
+        }
+        .onChange(of: clientBridgeToken) { _, newValue in
+            AppSettings.setClientBridgeToken(newValue)
+        }
         .task {
             await loadSettings(force: false)
         }
@@ -730,6 +755,34 @@ struct ClientServerSettingsView: View {
 
     private var cloudEndpoint: String {
         clientConfig.cloudBridgeURL.isEmpty ? "Not configured" : clientConfig.cloudBridgeURL
+    }
+
+    private var serverDraftNeedsDownload: Bool {
+        serverDraftDownloadSummary != nil
+    }
+
+    private var serverDraftDownloadSummary: String? {
+        guard let current = draft else { return nil }
+        let statuses = current.modelStatuses.reduce(into: [String: BridgeModelStatus]()) { result, status in
+            result[status.id] = status
+        }
+        var missing: [String] = []
+        for source in current.enabledSources where source.hasModelConfiguration {
+            let modelID = current.asrModelID(for: source.rawValue)
+            let status = statuses[BridgeSettingsPayload.modelStatusID(source: source, modelID: modelID)]
+            if status?.installed != true {
+                missing.append("\(source.displayName) model")
+            }
+        }
+        if let backend = CorrectionBackendKind(rawValue: current.correctionBackend),
+           !backend.isExternalCompatible {
+            let status = statuses[BridgeSettingsPayload.refineModelStatusID(backend: backend)]
+            if status?.installed != true {
+                missing.append("\(backend.displayName) refine model")
+            }
+        }
+        guard !missing.isEmpty else { return nil }
+        return "Save will start downloading on the server: \(missing.joined(separator: ", "))."
     }
 
     private func correctionBackendOptions(for current: BridgeSettingsPayload) -> [BridgeSettingOption] {
@@ -1345,16 +1398,22 @@ private struct HoldModifierRecorder: View {
 // MARK: - ASR
 
 struct ASRSettingsView: View {
-    @AppStorage(AppSettings.Keys.asrQwenEnabled)     private var qwenEnabled: Bool = false
-    @AppStorage(AppSettings.Keys.asrNvidiaNemotronEnabled) private var nvidiaEnabled: Bool = false
+    @AppStorage(AppSettings.Keys.asrQwenEnabled)     private var savedQwenEnabled: Bool = false
+    @AppStorage(AppSettings.Keys.asrNvidiaNemotronEnabled) private var savedNvidiaEnabled: Bool = false
     @AppStorage(AppSettings.Keys.asrAppleSpeechEnabled) private var appleSpeechEnabled: Bool = true
     @AppStorage(AppSettings.Keys.asrLanguageIDs)     private var languageIDsRaw: String = ASRLanguageSelection.defaultRawValue
     @AppStorage(AppSettings.Keys.asrNvidiaNemotronTimeoutSec) private var nvidiaTimeoutSec: Double = 40
-    @AppStorage(AppSettings.Keys.asrNvidiaNemotronModelID) private var nvidiaModelID: String = NvidiaNemotronASRModelCatalog.defaultID
+    @AppStorage(AppSettings.Keys.asrNvidiaNemotronModelID) private var savedNvidiaModelID: String = NvidiaNemotronASRModelCatalog.defaultID
     @AppStorage(AppSettings.Keys.asrQwenLlamaTimeoutSec) private var qwenTimeoutSec: Double = 40
-    @AppStorage(AppSettings.Keys.asrQwenLlamaModelID) private var qwenModelID: String = QwenASRModelCatalog.defaultID
+    @AppStorage(AppSettings.Keys.asrQwenLlamaModelID) private var savedQwenModelID: String = QwenASRModelCatalog.defaultID
     @AppStorage(AppSettings.Keys.asrQwenLlamaMaxTokens) private var qwenMaxTokens: Int = 2048
     @AppStorage(AppSettings.Keys.correctionMode) private var correctionModeRaw: String = CorrectionMode.polishPlus.rawValue
+    @State private var draftQwenEnabled = false
+    @State private var draftNvidiaEnabled = false
+    @State private var draftQwenModelID = QwenASRModelCatalog.defaultID
+    @State private var draftNvidiaModelID = NvidiaNemotronASRModelCatalog.defaultID
+    @State private var asrSaveStatus: String?
+    @State private var asrSaveIsError = false
     @State private var showAllLanguages = false
     @State private var showAdvanced = false
     @State private var appleSpeechLanguageSupportRevision = 0
@@ -1385,11 +1444,34 @@ struct ASRSettingsView: View {
                             .foregroundStyle(.orange)
                     }
                 }
+
+                HStack(spacing: 10) {
+                    Button("Save ASR") {
+                        saveASRDraft()
+                    }
+                    .disabled(!canSaveASRDraft)
+                    Button("Revert") {
+                        syncASRDraftFromSettings()
+                    }
+                    .disabled(!asrDraftIsDirty)
+                    if let asrSaveStatus {
+                        Text(asrSaveStatus)
+                            .font(.caption)
+                            .foregroundStyle(asrSaveIsError ? .red : .secondary)
+                            .lineLimit(2)
+                    } else if let issue = asrDraftReadinessIssue {
+                        Text(issue)
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                            .lineLimit(2)
+                    }
+                    Spacer()
+                }
             }
 
-            if qwenEnabled {
+            if draftQwenEnabled {
                 Section("Qwen3-ASR") {
-                    Picker("Model", selection: $qwenModelID) {
+                    Picker("Model", selection: $draftQwenModelID) {
                         ForEach(QwenASRModelCatalog.all) { spec in
                             Text(spec.label).tag(spec.id)
                         }
@@ -1401,9 +1483,9 @@ struct ASRSettingsView: View {
                 }
             }
 
-            if nvidiaEnabled {
+            if draftNvidiaEnabled {
                 Section("NVIDIA Nemotron") {
-                    Picker("Model", selection: $nvidiaModelID) {
+                    Picker("Model", selection: $draftNvidiaModelID) {
                         ForEach(NvidiaNemotronASRModelCatalog.all) { spec in
                             Text(spec.label).tag(spec.id)
                         }
@@ -1452,13 +1534,13 @@ struct ASRSettingsView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
-            if qwenEnabled {
+            if draftQwenEnabled {
                 Section("Qwen3-ASR model") {
                     QwenASRModelRow(spec: selectedQwenModel)
                         .id(selectedQwenModel.id)
                 }
             }
-            if nvidiaEnabled {
+            if draftNvidiaEnabled {
                 Section("NVIDIA Nemotron model") {
                     NvidiaNemotronASRModelRow(spec: selectedNvidiaModel)
                         .id(selectedNvidiaModel.id)
@@ -1497,7 +1579,7 @@ struct ASRSettingsView: View {
                         range: 5...40,
                         suffix: "s"
                     )
-                    if qwenEnabled {
+                    if draftQwenEnabled {
                         IntegerSettingField(
                             title: "Max transcript tokens",
                             value: $qwenMaxTokens,
@@ -1513,32 +1595,33 @@ struct ASRSettingsView: View {
         }
         .formStyle(.grouped)
         .onAppear {
+            syncASRDraftFromSettings()
             normalizeSources()
             refreshAppleSpeechLanguageSupportIfNeeded()
             clampLanguageSelection()
         }
-        .onChange(of: qwenEnabled) { _, _ in
-            normalizeSources()
+        .onChange(of: draftQwenEnabled) { _, _ in
+            clearASRSaveStatus()
             clampLanguageSelection()
-            preloadEnabledASRModels()
         }
-        .onChange(of: nvidiaEnabled) { _, _ in
-            normalizeSources()
+        .onChange(of: draftNvidiaEnabled) { _, _ in
+            clearASRSaveStatus()
             clampLanguageSelection()
-            preloadEnabledASRModels()
         }
         .onChange(of: appleSpeechEnabled) { _, _ in
             normalizeSources()
             refreshAppleSpeechLanguageSupportIfNeeded()
             clampLanguageSelection()
         }
-        .onChange(of: qwenModelID) { _, _ in
+        .onChange(of: draftQwenModelID) { _, _ in clearASRSaveStatus() }
+        .onChange(of: draftNvidiaModelID) { _, _ in clearASRSaveStatus() }
+        .onChange(of: savedQwenModelID) { _, _ in
             Task { @MainActor in
                 await ASRFactory.shared.stopQwenLlama()
                 await ASRFactory.shared.preloadCachedActiveModel()
             }
         }
-        .onChange(of: nvidiaModelID) { _, _ in
+        .onChange(of: savedNvidiaModelID) { _, _ in
             Task { @MainActor in
                 ASRFactory.shared.stopNvidiaNemotron()
                 await ASRFactory.shared.preloadCachedActiveModel()
@@ -1555,8 +1638,8 @@ struct ASRSettingsView: View {
 
     private var selectedSources: [RecognitionSource] {
         var sources: [RecognitionSource] = []
-        if qwenEnabled { sources.append(.qwen) }
-        if nvidiaEnabled { sources.append(.nvidiaNemotron) }
+        if draftQwenEnabled { sources.append(.qwen) }
+        if draftNvidiaEnabled { sources.append(.nvidiaNemotron) }
         sources.append(.appleSpeech)
         return RecognitionSource.recognizedSources(sources.map(\.rawValue))
     }
@@ -1584,19 +1667,40 @@ struct ASRSettingsView: View {
     }
 
     private var selectedQwenModel: QwenASRModelSpec {
-        QwenASRModelCatalog.spec(for: qwenModelID)
+        QwenASRModelCatalog.spec(for: draftQwenModelID)
     }
 
     private var selectedNvidiaModel: NvidiaNemotronASRModelSpec {
-        NvidiaNemotronASRModelCatalog.spec(for: nvidiaModelID)
+        NvidiaNemotronASRModelCatalog.spec(for: draftNvidiaModelID)
     }
 
     /// Mirrors the install checks the download rows below use, so the Engine
     /// picker can warn about a missing model without scrolling.
     private var selectedEnginesInstalled: Bool {
-        if qwenEnabled, !qwenModelInstalled { return false }
-        if nvidiaEnabled, !nvidiaModelReady { return false }
+        if draftQwenEnabled, !qwenModelInstalled { return false }
+        if draftNvidiaEnabled, !nvidiaModelReady { return false }
         return true
+    }
+
+    private var asrDraftIsDirty: Bool {
+        draftQwenEnabled != savedQwenEnabled
+            || draftNvidiaEnabled != savedNvidiaEnabled
+            || draftQwenModelID != QwenASRModelCatalog.spec(for: savedQwenModelID).id
+            || draftNvidiaModelID != NvidiaNemotronASRModelCatalog.spec(for: savedNvidiaModelID).id
+    }
+
+    private var asrDraftReadinessIssue: String? {
+        if draftQwenEnabled, !qwenModelInstalled {
+            return "\(selectedQwenModel.label) is not installed."
+        }
+        if draftNvidiaEnabled, !nvidiaModelReady {
+            return "\(selectedNvidiaModel.label) is not ready."
+        }
+        return nil
+    }
+
+    private var canSaveASRDraft: Bool {
+        asrDraftIsDirty && asrDraftReadinessIssue == nil
     }
 
     private var qwenModelInstalled: Bool {
@@ -1698,14 +1802,16 @@ struct ASRSettingsView: View {
         if !appleSpeechEnabled {
             appleSpeechEnabled = true
         }
-        let normalizedQwenModelID = QwenASRModelCatalog.spec(for: qwenModelID).id
-        if qwenModelID != normalizedQwenModelID {
-            qwenModelID = normalizedQwenModelID
+        let normalizedSavedQwenModelID = QwenASRModelCatalog.spec(for: savedQwenModelID).id
+        if savedQwenModelID != normalizedSavedQwenModelID {
+            savedQwenModelID = normalizedSavedQwenModelID
         }
-        let normalizedNvidiaModelID = NvidiaNemotronASRModelCatalog.spec(for: nvidiaModelID).id
-        if nvidiaModelID != normalizedNvidiaModelID {
-            nvidiaModelID = normalizedNvidiaModelID
+        let normalizedSavedNvidiaModelID = NvidiaNemotronASRModelCatalog.spec(for: savedNvidiaModelID).id
+        if savedNvidiaModelID != normalizedSavedNvidiaModelID {
+            savedNvidiaModelID = normalizedSavedNvidiaModelID
         }
+        draftQwenModelID = QwenASRModelCatalog.spec(for: draftQwenModelID).id
+        draftNvidiaModelID = NvidiaNemotronASRModelCatalog.spec(for: draftNvidiaModelID).id
     }
 
     private func clampLanguageSelection() {
@@ -1723,9 +1829,9 @@ struct ASRSettingsView: View {
             get: {
                 switch source {
                 case .qwen:
-                    return qwenEnabled
+                    return draftQwenEnabled
                 case .nvidiaNemotron:
-                    return nvidiaEnabled
+                    return draftNvidiaEnabled
                 case .appleSpeech:
                     return true
                 }
@@ -1733,9 +1839,9 @@ struct ASRSettingsView: View {
             set: { enabled in
                 switch source {
                 case .qwen:
-                    qwenEnabled = enabled
+                    draftQwenEnabled = enabled
                 case .nvidiaNemotron:
-                    nvidiaEnabled = enabled
+                    draftNvidiaEnabled = enabled
                 case .appleSpeech:
                     appleSpeechEnabled = true
                     AppleSpeechLanguageSupport.refreshInBackgroundIfNeeded()
@@ -1743,6 +1849,37 @@ struct ASRSettingsView: View {
                 normalizeSources()
             }
         )
+    }
+
+    private func syncASRDraftFromSettings() {
+        draftQwenEnabled = savedQwenEnabled
+        draftNvidiaEnabled = savedNvidiaEnabled
+        draftQwenModelID = QwenASRModelCatalog.spec(for: savedQwenModelID).id
+        draftNvidiaModelID = NvidiaNemotronASRModelCatalog.spec(for: savedNvidiaModelID).id
+        asrSaveStatus = nil
+        asrSaveIsError = false
+    }
+
+    private func saveASRDraft() {
+        guard asrDraftReadinessIssue == nil else {
+            asrSaveStatus = asrDraftReadinessIssue
+            asrSaveIsError = true
+            return
+        }
+        savedQwenModelID = QwenASRModelCatalog.spec(for: draftQwenModelID).id
+        savedNvidiaModelID = NvidiaNemotronASRModelCatalog.spec(for: draftNvidiaModelID).id
+        savedQwenEnabled = draftQwenEnabled
+        savedNvidiaEnabled = draftNvidiaEnabled
+        appleSpeechEnabled = true
+        clampLanguageSelection()
+        asrSaveStatus = "ASR settings saved."
+        asrSaveIsError = false
+        preloadEnabledASRModels()
+    }
+
+    private func clearASRSaveStatus() {
+        asrSaveStatus = nil
+        asrSaveIsError = false
     }
 
     private func sourceCoverageText(for option: ASRLanguageOption) -> String {
@@ -2410,10 +2547,17 @@ private struct NvidiaNemotronASRModelRow: View {
 
 // MARK: - Correction
 
+private struct ExternalLLMDraftConfig: Equatable {
+    let backendRaw: String
+    let baseURL: String
+    let apiKey: String
+    let model: String
+}
+
 struct CorrectionSettingsView: View {
-    @AppStorage(AppSettings.Keys.correctionBackend)       private var backendRaw: String = CorrectionBackendKind.qwen35_2B.rawValue
+    @AppStorage(AppSettings.Keys.correctionBackend)       private var savedBackendRaw: String = CorrectionBackendKind.qwen35_4B.rawValue
     @AppStorage(AppSettings.Keys.correctionTimeoutMs)     private var timeoutMs: Int = 1500
-    @AppStorage(AppSettings.Keys.correctionColdTimeoutMs) private var coldTimeoutMs: Int = 8000
+    @AppStorage(AppSettings.Keys.correctionColdTimeoutMs) private var coldTimeoutMs: Int = 30000
     @AppStorage(AppSettings.Keys.correctionMaxTokens)     private var maxTokens: Int = 128
     @AppStorage(AppSettings.Keys.correctionContextSize)   private var contextSize: Int = 4096
     @AppStorage(AppSettings.Keys.correctionMode)   private var correctionModeRaw: String = CorrectionMode.polishPlus.rawValue
@@ -2422,9 +2566,12 @@ struct CorrectionSettingsView: View {
     @AppStorage(AppSettings.Keys.clientBridgeEnabledRecognitionSources) private var clientBridgeEnabledRecognitionSourcesRaw: String = ""
     @AppStorage(AppSettings.Keys.numberOutputPreference)  private var numberOutputPreferenceRaw: String = NumberOutputPreference.automatic.rawValue
     @AppStorage(AppSettings.Keys.punctuationPreference)   private var punctuationPreferenceRaw: String = PunctuationOutputPreference.normal.rawValue
-    @AppStorage(AppSettings.Keys.externalLLMBaseURL)      private var externalLLMBaseURL: String = "http://127.0.0.1:1234"
-    @AppStorage(AppSettings.Keys.externalLLMAPIKey)       private var externalLLMAPIKey: String = ""
-    @AppStorage(AppSettings.Keys.externalLLMModel)        private var externalLLMModel: String = ""
+    @AppStorage(AppSettings.Keys.externalLLMBaseURL)      private var savedExternalLLMBaseURL: String = "http://127.0.0.1:1234"
+    @AppStorage(AppSettings.Keys.externalLLMModel)        private var savedExternalLLMModel: String = ""
+    @State private var draftBackendRaw: String = CorrectionBackendKind.qwen35_4B.rawValue
+    @State private var draftExternalLLMBaseURL: String = "http://127.0.0.1:1234"
+    @State private var draftExternalLLMModel: String = ""
+    @State private var draftExternalLLMAPIKey: String = AppSettings.externalLLMAPIKey
     @State private var showAdvanced = false
     @State private var modelLoadStatus: String?
     @State private var modelLoadIsError = false
@@ -2433,6 +2580,8 @@ struct CorrectionSettingsView: View {
     @State private var externalLLMStatus = "Not checked"
     @State private var externalLLMDetail = "Configure an OpenAI-compatible or Anthropic-compatible server, then refresh models."
     @State private var externalLLMModels: [String] = []
+    @State private var checkedExternalLLMConfig: ExternalLLMDraftConfig?
+    @State private var suppressNextExternalLLMModelReset = false
     @State private var externalLLMCheckTask: Task<Void, Never>?
     @State private var externalLLMCheckID = UUID()
 
@@ -2447,35 +2596,52 @@ struct CorrectionSettingsView: View {
     var body: some View {
         Form {
             Section("Engine") {
-                Picker("Refine engine", selection: $backendRaw) {
+                Picker("Refine engine", selection: $draftBackendRaw) {
                     ForEach(selectableBackends, id: \.rawValue) { kind in
                         Text(backendLabel(kind)).tag(kind.rawValue)
                     }
                 }
                 .pickerStyle(.menu)
 
-                if let modelLoadStatus {
-                    HStack(spacing: 6) {
-                        if loadingBackendRaw != nil {
-                            ProgressView()
-                                .controlSize(.small)
-                        }
-                        Text(modelLoadStatus)
-                            .font(.caption)
-                            .foregroundStyle(modelLoadIsError ? .red : .secondary)
+                if let issue = correctionDraftReadinessIssue {
+                    Label(issue, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+                HStack(spacing: 10) {
+                    Button("Save Refine") {
+                        saveCorrectionDraft()
                     }
+                    .disabled(!canSaveCorrectionDraft)
+                    Button("Revert") {
+                        syncCorrectionDraftFromSettings()
+                    }
+                    .disabled(!correctionDraftIsDirty)
+                    if let modelLoadStatus {
+                        HStack(spacing: 6) {
+                            if loadingBackendRaw != nil {
+                                ProgressView()
+                                    .controlSize(.small)
+                            }
+                            Text(modelLoadStatus)
+                                .font(.caption)
+                                .foregroundStyle(modelLoadIsError ? .red : .secondary)
+                                .lineLimit(2)
+                        }
+                    }
+                    Spacer()
                 }
             }
             if selectedBackendKind?.isExternalCompatible == true {
                 Section("External correction server") {
-                    TextField("Base URL", text: $externalLLMBaseURL)
+                    TextField("Base URL", text: $draftExternalLLMBaseURL)
                         .textFieldStyle(.roundedBorder)
                     if externalLLMPickerModels.isEmpty {
-                        TextField("Model ID", text: $externalLLMModel)
+                        TextField("Model ID", text: $draftExternalLLMModel)
                             .textFieldStyle(.roundedBorder)
                     } else {
-                        Picker("Model", selection: $externalLLMModel) {
-                            if externalLLMModel.isEmpty {
+                        Picker("Model", selection: $draftExternalLLMModel) {
+                            if draftExternalLLMModel.isEmpty {
                                 Text("Select a model").tag("")
                             }
                             ForEach(externalLLMPickerModels, id: \.self) { model in
@@ -2484,7 +2650,7 @@ struct CorrectionSettingsView: View {
                         }
                         .pickerStyle(.menu)
                     }
-                    SecureField("API key (optional)", text: $externalLLMAPIKey)
+                    SecureField("API key (optional)", text: $draftExternalLLMAPIKey)
                         .textFieldStyle(.roundedBorder)
 
                     HStack(spacing: 10) {
@@ -2504,7 +2670,7 @@ struct CorrectionSettingsView: View {
 
                     HStack {
                         Button {
-                            startExternalLLMCheck(selectFirstModel: externalLLMModel.isEmpty)
+                            startExternalLLMCheck(selectFirstModel: draftExternalLLMModel.isEmpty)
                         } label: {
                             Label(isCheckingExternalLLM ? "Checking" : "Refresh Models", systemImage: "arrow.clockwise")
                         }
@@ -2552,7 +2718,7 @@ struct CorrectionSettingsView: View {
                 ForEach(localLlamaModels) { spec in
                     ModelDownloadRow(
                         spec: spec,
-                        isSelected: backendRaw == spec.backendKind.rawValue
+                        isSelected: draftBackendRaw == spec.backendKind.rawValue
                     )
                     if spec.id != (localLlamaModels.last?.id ?? "") {
                         Divider()
@@ -2585,7 +2751,7 @@ struct CorrectionSettingsView: View {
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
-                    IntegerSettingField(title: "Model startup timeout", value: $coldTimeoutMs, range: 1000...30000, suffix: "ms")
+                    IntegerSettingField(title: "Model startup timeout", value: $coldTimeoutMs, range: 1000...60000, suffix: "ms")
                     IntegerSettingField(title: "Max output tokens", value: $maxTokens, range: 32...512, suffix: "tokens")
                     IntegerSettingField(title: "Context size", value: $contextSize, range: 1024...8192, suffix: "tokens")
                 }
@@ -2593,22 +2759,33 @@ struct CorrectionSettingsView: View {
         }
         .formStyle(.grouped)
         .onAppear {
+            syncCorrectionDraftFromSettings()
             normalizeBackendSelection()
             if selectedBackendKind?.isExternalCompatible == true {
-                startExternalLLMCheck(selectFirstModel: externalLLMModel.isEmpty)
+                startExternalLLMCheck(selectFirstModel: draftExternalLLMModel.isEmpty)
             }
         }
         .onDisappear {
             cancelExternalLLMCheck()
         }
-        .onChange(of: backendRaw) { _, _ in
+        .onChange(of: draftBackendRaw) { _, _ in
             normalizeBackendSelection()
-            preloadSelectedBackend()
+            resetDraftModelStatus()
+            if selectedBackendKind?.isExternalCompatible == true {
+                resetExternalLLMCheck(detail: "Refresh models before saving this external backend.")
+            }
         }
-        .onChange(of: externalLLMBaseURL) { _, _ in
+        .onChange(of: draftExternalLLMBaseURL) { _, _ in
             resetExternalLLMCheck(detail: "Refresh models after changing the server URL.")
         }
-        .onChange(of: externalLLMAPIKey) { _, _ in
+        .onChange(of: draftExternalLLMModel) { _, _ in
+            if suppressNextExternalLLMModelReset {
+                suppressNextExternalLLMModelReset = false
+                return
+            }
+            handleExternalLLMModelSelectionChange()
+        }
+        .onChange(of: draftExternalLLMAPIKey) { _, _ in
             resetExternalLLMCheck(detail: "Refresh models after changing the API key.")
         }
     }
@@ -2618,7 +2795,7 @@ struct CorrectionSettingsView: View {
     }
 
     private var selectedBackendKind: CorrectionBackendKind? {
-        CorrectionBackendKind(rawValue: backendRaw)
+        CorrectionBackendKind(rawValue: draftBackendRaw)
     }
 
     private var correctionModeDescription: String {
@@ -2674,56 +2851,122 @@ struct CorrectionSettingsView: View {
         return nil
     }
 
+    private var correctionDraftIsDirty: Bool {
+        draftBackendRaw != savedBackendRaw
+            || draftExternalLLMBaseURL != savedExternalLLMBaseURL
+            || draftExternalLLMModel != savedExternalLLMModel
+            || draftExternalLLMAPIKey != AppSettings.externalLLMAPIKey
+    }
+
+    private var correctionDraftReadinessIssue: String? {
+        guard let kind = selectedBackendKind else {
+            return "Choose a refine engine."
+        }
+        if kind.isExternalCompatible {
+            let selectedModel = draftExternalLLMModel.trimmingCharacters(in: .whitespacesAndNewlines)
+            if selectedModel.isEmpty {
+                return "Select a listed external model before saving."
+            }
+            if checkedExternalLLMConfig != currentExternalLLMConfig || externalLLMStatus != "Ready" {
+                return "Refresh models and verify the selected external model before saving."
+            }
+            if !externalLLMModels.isEmpty, !externalLLMModels.contains(selectedModel) {
+                return "\(selectedModel) is not listed by the external server."
+            }
+            return nil
+        }
+        guard localDraftModelInstalled else {
+            return "\(kind.displayName) is not installed."
+        }
+        return nil
+    }
+
+    private var canSaveCorrectionDraft: Bool {
+        correctionDraftIsDirty && correctionDraftReadinessIssue == nil && !isCheckingExternalLLM
+    }
+
+    private var currentExternalLLMConfig: ExternalLLMDraftConfig {
+        ExternalLLMDraftConfig(
+            backendRaw: draftBackendRaw,
+            baseURL: draftExternalLLMBaseURL.trimmingCharacters(in: .whitespacesAndNewlines),
+            apiKey: draftExternalLLMAPIKey.trimmingCharacters(in: .whitespacesAndNewlines),
+            model: draftExternalLLMModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        )
+    }
+
+    private var localDraftModelInstalled: Bool {
+        guard let spec = localLlamaModels.first(where: { $0.backendKind.rawValue == draftBackendRaw }) else {
+            return false
+        }
+        let value = UserDefaults.standard.string(forKey: spec.pathKey)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let path = value.isEmpty ? spec.defaultPath : value
+        return FileManager.default.fileExists(atPath: path)
+    }
+
     private func normalizeBackendSelection() {
-        guard let kind = CorrectionBackendKind(rawValue: backendRaw),
+        guard let kind = CorrectionBackendKind(rawValue: draftBackendRaw),
               selectableBackends.contains(kind) else {
-            backendRaw = CorrectionBackendKind.qwen35_2B.rawValue
+            draftBackendRaw = CorrectionBackendKind.qwen35_4B.rawValue
             return
         }
     }
 
-    private func preloadSelectedBackend() {
-        guard let kind = CorrectionBackendKind(rawValue: backendRaw) else { return }
-        let raw = backendRaw
-        loadingBackendRaw = raw
-        modelLoadIsError = false
-        modelLoadStatus = "Loading \(backendLabel(kind))..."
-        Task { @MainActor in
-            await CorrectorFactory.shared.shutdownAll()
-            if kind.isExternalCompatible,
-               let apiKind = try? ExternalCompatibleCorrectorService.apiKind(for: kind) {
-                let report = await ExternalCompatibleCorrectorService.checkConfiguration(apiKind: apiKind)
-                guard backendRaw == raw else { return }
-                loadingBackendRaw = nil
-                applyExternalLLMReport(report, selectFirstModel: externalLLMModel.isEmpty)
-                modelLoadIsError = !report.ok
-                modelLoadStatus = report.ok ? "\(kind.displayName) server is reachable." : "\(kind.displayName) server is not ready."
-                return
-            }
-            if let path = localModelPath(for: kind),
-               !FileManager.default.fileExists(atPath: path) {
-                guard backendRaw == raw else { return }
-                loadingBackendRaw = nil
-                modelLoadIsError = true
-                modelLoadStatus = "Download \(backendLabel(kind)) before using it."
-                return
-            }
-            let result = await CorrectorFactory.shared.preloadActiveModels()
-            guard backendRaw == raw else { return }
-            loadingBackendRaw = nil
-            modelLoadIsError = !result.isReady
-            modelLoadStatus = result.isReady
-                ? result.message
-                : "Load failed for \(backendLabel(kind)): \(result.message)"
+    private func syncCorrectionDraftFromSettings() {
+        draftBackendRaw = CorrectionBackendKind(rawValue: savedBackendRaw)?.rawValue
+            ?? CorrectionBackendKind.qwen35_4B.rawValue
+        draftExternalLLMBaseURL = savedExternalLLMBaseURL
+        draftExternalLLMModel = savedExternalLLMModel
+        draftExternalLLMAPIKey = AppSettings.externalLLMAPIKey
+        resetDraftModelStatus()
+        if selectedBackendKind?.isExternalCompatible == true {
+            resetExternalLLMCheck(detail: "Refresh models before saving this external backend.")
         }
     }
 
-    private func localModelPath(for kind: CorrectionBackendKind) -> String? {
-        switch kind {
-        case .qwen35_2B: return AppSettings.llama2BPath
-        case .qwen35_4B: return AppSettings.llama4BPath
-        case .qwen35_9B: return AppSettings.llama9BPath
-        default: return nil
+    private func saveCorrectionDraft() {
+        guard correctionDraftReadinessIssue == nil else {
+            modelLoadStatus = correctionDraftReadinessIssue
+            modelLoadIsError = true
+            return
+        }
+        savedExternalLLMBaseURL = draftExternalLLMBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        savedExternalLLMModel = draftExternalLLMModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        AppSettings.setExternalLLMAPIKey(draftExternalLLMAPIKey)
+        savedBackendRaw = draftBackendRaw
+        preloadSavedBackend()
+    }
+
+    private func resetDraftModelStatus() {
+        modelLoadStatus = nil
+        modelLoadIsError = false
+        loadingBackendRaw = nil
+    }
+
+    private func preloadSavedBackend() {
+        guard let kind = CorrectionBackendKind(rawValue: savedBackendRaw) else { return }
+        let raw = savedBackendRaw
+        loadingBackendRaw = raw
+        modelLoadIsError = false
+        modelLoadStatus = kind.isExternalCompatible
+            ? "Refine settings saved."
+            : "Preparing \(backendLabel(kind))..."
+        Task { @MainActor in
+            await CorrectorFactory.shared.shutdownAll()
+            if kind.isExternalCompatible {
+                guard savedBackendRaw == raw else { return }
+                loadingBackendRaw = nil
+                modelLoadStatus = "Refine settings saved."
+                modelLoadIsError = false
+                return
+            }
+            let result = await CorrectorFactory.shared.preloadActiveModels()
+            guard savedBackendRaw == raw else { return }
+            loadingBackendRaw = nil
+            modelLoadIsError = !result.isReady
+            modelLoadStatus = result.isReady
+                ? "Refine settings saved. \(result.message)"
+                : "Load failed for \(backendLabel(kind)): \(result.message)"
         }
     }
 
@@ -2736,8 +2979,8 @@ struct CorrectionSettingsView: View {
 
     private var externalLLMPickerModels: [String] {
         var models = externalLLMModels
-        if !externalLLMModel.isEmpty && !models.contains(externalLLMModel) {
-            models.insert(externalLLMModel, at: 0)
+        if !draftExternalLLMModel.isEmpty && !models.contains(draftExternalLLMModel) {
+            models.insert(draftExternalLLMModel, at: 0)
         }
         return models
     }
@@ -2749,13 +2992,14 @@ struct CorrectionSettingsView: View {
               let apiKind = try? ExternalCompatibleCorrectorService.apiKind(for: kind)
         else { return }
         let checkID = UUID()
-        let baseURL = externalLLMBaseURL
-        let apiKey = externalLLMAPIKey
-        let model = externalLLMModel
+        let baseURL = draftExternalLLMBaseURL
+        let apiKey = draftExternalLLMAPIKey
+        let model = draftExternalLLMModel
         externalLLMCheckID = checkID
         isCheckingExternalLLM = true
         externalLLMStatus = "Checking"
         externalLLMDetail = baseURL
+        checkedExternalLLMConfig = nil
         externalLLMCheckTask = Task {
             let report = await ExternalCompatibleCorrectorService.checkConfiguration(
                 apiKind: apiKind,
@@ -2768,6 +3012,7 @@ struct CorrectionSettingsView: View {
                 externalLLMCheckTask = nil
                 isCheckingExternalLLM = false
                 applyExternalLLMReport(report, selectFirstModel: selectFirstModel)
+                checkedExternalLLMConfig = report.ok ? currentExternalLLMConfig : nil
                 modelLoadIsError = !report.ok
                 modelLoadStatus = report.ok ? "\(kind.displayName) server is reachable." : "\(kind.displayName) server is not ready."
             }
@@ -2778,6 +3023,7 @@ struct CorrectionSettingsView: View {
     private func resetExternalLLMCheck(detail: String) {
         cancelExternalLLMCheck()
         externalLLMModels = []
+        checkedExternalLLMConfig = nil
         externalLLMStatus = "Not checked"
         externalLLMDetail = detail
     }
@@ -2790,19 +3036,33 @@ struct CorrectionSettingsView: View {
         isCheckingExternalLLM = false
     }
 
+    private func handleExternalLLMModelSelectionChange() {
+        let selected = draftExternalLLMModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !selected.isEmpty, externalLLMModels.contains(selected) {
+            checkedExternalLLMConfig = currentExternalLLMConfig
+            externalLLMStatus = "Ready"
+            externalLLMDetail = "Selected \(selected)."
+            modelLoadStatus = "\(selectedBackendKind?.displayName ?? "External") server is reachable."
+            modelLoadIsError = false
+            return
+        }
+        resetExternalLLMCheck(detail: "Refresh models after changing the selected model.")
+    }
+
     private func applyExternalLLMReport(_ report: ExternalLLMCheckReport, selectFirstModel: Bool) {
         externalLLMStatus = report.status
         externalLLMDetail = report.detail
         externalLLMModels = report.modelIDs
         if report.ok {
-            let previousModel = externalLLMModel.trimmingCharacters(in: .whitespacesAndNewlines)
+            let previousModel = draftExternalLLMModel.trimmingCharacters(in: .whitespacesAndNewlines)
             let refreshedModel = ExternalCompatibleCorrectorService.modelSelectionAfterRefresh(
-                current: externalLLMModel,
+                current: draftExternalLLMModel,
                 available: report.modelIDs,
                 selectFirstModel: selectFirstModel
             )
-            if refreshedModel != externalLLMModel {
-                externalLLMModel = refreshedModel
+            if refreshedModel != draftExternalLLMModel {
+                suppressNextExternalLLMModelReset = true
+                draftExternalLLMModel = refreshedModel
                 if previousModel.isEmpty {
                     externalLLMDetail = "Selected \(refreshedModel). \(report.detail)"
                 } else {
@@ -3431,7 +3691,7 @@ struct BridgeSettingsView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-                Text("Mac stores this token in local app settings to avoid Keychain permission prompts during local development builds. Other clients cannot read it automatically, so pair by copying the token or JSON into the client. Pairing JSON contains the token plus enabled client URLs: lan_bridge_urls when LAN access is on, and public_bridge_url when Public Bridge URL is on. Clients pull languages and defaults from the server settings endpoint.")
+                Text("Mac stores this token in Keychain. Other clients cannot read it automatically, so pair by copying the token or JSON into the client. Pairing JSON contains the token plus enabled client URLs: lan_bridge_urls when LAN access is on, and public_bridge_url when Public Bridge URL is on. Clients pull languages and defaults from the server settings endpoint.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }

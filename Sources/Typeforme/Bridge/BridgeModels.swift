@@ -221,10 +221,7 @@ struct BridgeSettingsPayload: Codable, Sendable {
             debugMode: AppSettings.diagnosticsDebugMode,
             userDictionary: sortedUserDictionary,
             rimeUserPhrases: rimeUserPhrases,
-            modelStatuses: selectedModelStatuses(
-                sources: resolved.sources,
-                correctionBackend: resolved.correctionBackend
-            ),
+            modelStatuses: allModelStatuses(),
             settingsRevision: settingsRevision
         )
     }
@@ -307,59 +304,65 @@ struct BridgeSettingsPayload: Codable, Sendable {
         BridgeSettingsNormalization.rimeUserPhrases(from: entries.map(\.surface))
     }
 
-    private static func selectedModelStatuses(
-        sources: [RecognitionSource],
-        correctionBackend: CorrectionBackendKind
-    ) -> [BridgeModelStatus] {
-        selectedASRModelStatuses(sources: sources)
-            + [selectedRefineModelStatus(correctionBackend: correctionBackend)]
+    private static func allModelStatuses() -> [BridgeModelStatus] {
+        [appleSpeechModelStatus()]
+            + QwenASRModelCatalog.all.map(qwenASRModelStatus(spec:))
+            + NvidiaNemotronASRModelCatalog.all.map(nvidiaNemotronASRModelStatus(spec:))
+            + localLlamaModels.map(refineModelStatus(spec:))
+            + [
+                externalRefineModelStatus(.externalOpenAICompatible),
+                externalRefineModelStatus(.externalAnthropicCompatible),
+            ]
     }
 
     fileprivate static func currentASRModelID(sourceID: String) -> String {
         currentASRModelIDsByRecognitionSource[sourceID] ?? defaultASRModelID(sourceID: sourceID)
     }
 
-    private static func selectedASRModelStatuses(sources: [RecognitionSource]) -> [BridgeModelStatus] {
-        sources.map(selectedASRModelStatus(source:))
+    private static func qwenASRModelStatus(spec: QwenASRModelSpec) -> BridgeModelStatus {
+        let fileManager = FileManager.default
+        let modelPath = settingPath(forKey: spec.modelPathKey, fallback: spec.defaultModelPath)
+        let mmprojPath = settingPath(forKey: spec.mmprojPathKey, fallback: spec.defaultMMProjPath)
+        let installed = fileManager.fileExists(atPath: modelPath)
+            && fileManager.fileExists(atPath: mmprojPath)
+        let installing = ModelInstallRegistry.isInstalling(path: modelPath)
+            || ModelInstallRegistry.isInstalling(path: mmprojPath)
+        return BridgeModelStatus(
+            id: modelStatusID(source: .qwen, modelID: spec.id),
+            kind: "asr",
+            displayName: spec.label,
+            installed: installed,
+            installing: installing,
+            detail: modelStatusDetail(installed: installed, installing: installing)
+        )
     }
 
-    private static func selectedASRModelStatus(source: RecognitionSource) -> BridgeModelStatus {
-        let fileManager = FileManager.default
-        if source == .qwen {
-            let spec = QwenASRModelCatalog.spec(for: AppSettings.asrQwenLlamaModelID)
-            let modelPath = AppSettings.asrQwenLlamaModelPath
-            let mmprojPath = AppSettings.asrQwenLlamaMMProjPath
-            let installed = fileManager.fileExists(atPath: modelPath)
-                && fileManager.fileExists(atPath: mmprojPath)
-            let installing = ModelInstallRegistry.isInstalling(path: modelPath)
-                || ModelInstallRegistry.isInstalling(path: mmprojPath)
-            return BridgeModelStatus(
-                id: "asr:\(source.rawValue):\(spec.id)",
-                kind: "asr",
-                displayName: spec.label,
-                installed: installed,
-                installing: installing,
-                detail: modelStatusDetail(installed: installed, installing: installing)
-            )
-        }
-
-        if source == .nvidiaNemotron {
-            let spec = NvidiaNemotronASRModelCatalog.spec(for: AppSettings.asrNvidiaNemotronModelID)
-            let status = NvidiaNemotronASRService.bundledRuntimeStatus()
-            let installing = spec.files.contains {
-                ModelInstallRegistry.isInstalling(path: AppSettings.asrNvidiaNemotronPath(for: $0))
+    private static func nvidiaNemotronASRModelStatus(spec: NvidiaNemotronASRModelSpec) -> BridgeModelStatus {
+        let status = NvidiaNemotronASRService.runtimeStatus(
+            runnerURL: AppPaths.bundledNvidiaNemotronRunner,
+            modelFiles: spec.files.map { file in
+                NvidiaNemotronASRModelFileStatus(
+                    spec: file,
+                    url: URL(fileURLWithPath: settingPath(forKey: file.pathKey, fallback: file.defaultPath))
+                )
             }
-            return BridgeModelStatus(
-                id: "asr:\(source.rawValue):\(spec.id)",
-                kind: "asr",
-                displayName: spec.label,
-                installed: status.isReady,
-                installing: installing,
-                detail: installing ? "Installing" : status.detail
-            )
+        )
+        let installing = spec.files.contains {
+            ModelInstallRegistry.isInstalling(path: settingPath(forKey: $0.pathKey, fallback: $0.defaultPath))
         }
         return BridgeModelStatus(
-            id: "asr:\(source.rawValue):on-device",
+            id: modelStatusID(source: .nvidiaNemotron, modelID: spec.id),
+            kind: "asr",
+            displayName: spec.label,
+            installed: status.isReady,
+            installing: installing,
+            detail: installing ? "Installing" : status.detail
+        )
+    }
+
+    private static func appleSpeechModelStatus() -> BridgeModelStatus {
+        BridgeModelStatus(
+            id: modelStatusID(source: .appleSpeech, modelID: "on-device"),
             kind: "asr",
             displayName: "Apple Speech",
             installed: true,
@@ -368,49 +371,50 @@ struct BridgeSettingsPayload: Codable, Sendable {
         )
     }
 
-    private static func selectedRefineModelStatus(
-        correctionBackend: CorrectionBackendKind
-    ) -> BridgeModelStatus {
-        guard !correctionBackend.isExternalCompatible else {
-            return BridgeModelStatus(
-                id: "refine:\(correctionBackend.rawValue)",
-                kind: "refine",
-                displayName: correctionBackend.displayName,
-                installed: true,
-                installing: false,
-                detail: "External server"
-            )
-        }
-
-        let modelPath = refineModelPath(for: correctionBackend)
+    private static func refineModelStatus(spec: LocalLlamaModelSpec) -> BridgeModelStatus {
+        let modelPath = settingPath(forKey: spec.pathKey, fallback: spec.defaultPath)
         let installed = FileManager.default.fileExists(atPath: modelPath)
         let installing = ModelInstallRegistry.isInstalling(path: modelPath)
         return BridgeModelStatus(
-            id: "refine:\(correctionBackend.rawValue)",
+            id: refineModelStatusID(backend: spec.backendKind),
             kind: "refine",
-            displayName: correctionBackend.displayName,
+            displayName: spec.backendKind.displayName,
             installed: installed,
             installing: installing,
             detail: modelStatusDetail(installed: installed, installing: installing)
         )
     }
 
-    private static func refineModelPath(for backend: CorrectionBackendKind) -> String {
-        switch backend {
-        case .qwen35_2B:
-            return AppSettings.llama2BPath
-        case .qwen35_4B:
-            return AppSettings.llama4BPath
-        case .qwen35_9B:
-            return AppSettings.llama9BPath
-        case .externalOpenAICompatible, .externalAnthropicCompatible:
-            return ""
-        }
+    private static func externalRefineModelStatus(_ backend: CorrectionBackendKind) -> BridgeModelStatus {
+        let model = AppSettings.externalLLMModel
+        let installed = !model.isEmpty
+        return BridgeModelStatus(
+            id: refineModelStatusID(backend: backend),
+            kind: "refine",
+            displayName: backend.displayName,
+            installed: installed,
+            installing: false,
+            detail: installed ? "External model selected" : "No external model selected"
+        )
     }
 
     private static func modelStatusDetail(installed: Bool, installing: Bool) -> String {
         if installing { return "Installing" }
         return installed ? "Ready" : "Not installed"
+    }
+
+    static func modelStatusID(source: RecognitionSource, modelID: String) -> String {
+        "asr:\(source.rawValue):\(modelID)"
+    }
+
+    static func refineModelStatusID(backend: CorrectionBackendKind) -> String {
+        "refine:\(backend.rawValue)"
+    }
+
+    private static func settingPath(forKey key: String, fallback: String) -> String {
+        let value = UserDefaults.standard.string(forKey: key)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return value.isEmpty ? fallback : value
     }
 
     static func defaultASRModelID(sourceID: String) -> String {
@@ -434,7 +438,7 @@ struct BridgeSettingsPayload: Codable, Sendable {
     }
 
     static func normalizedCorrectionBackend(_ backend: CorrectionBackendKind) -> CorrectionBackendKind {
-        controllableCorrectionBackends.contains(backend) ? backend : .qwen35_2B
+        controllableCorrectionBackends.contains(backend) ? backend : .qwen35_4B
     }
 
     static func normalizedLivePreviewSource(

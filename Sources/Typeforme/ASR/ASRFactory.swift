@@ -32,6 +32,13 @@ final class ASRFactory {
             && AppPaths.bundledLlamaServer != nil
     }
 
+    var isNvidiaNemotronInstalledForCurrentSettings: Bool {
+        let spec = NvidiaNemotronASRModelCatalog.spec(for: AppSettings.asrNvidiaNemotronModelID)
+        return spec.files.allSatisfy { file in
+            FileManager.default.fileExists(atPath: AppSettings.asrNvidiaNemotronPath(for: file))
+        }
+    }
+
     func preloadCachedActiveModel() async {
         let sources = AppSettings.enabledRecognitionSources
         async let qwen: Void = preloadQwenLlamaIfEnabled(sources)
@@ -137,6 +144,11 @@ final class ASRFactory {
         return nvidiaNemotron!
     }
 
+    func nvidiaNemotronServiceIfInstalled() -> NvidiaNemotronASRService? {
+        guard isNvidiaNemotronInstalledForCurrentSettings else { return nil }
+        return nvidiaNemotronService()
+    }
+
     func qwenLlamaServiceAfterInstall() -> QwenLlamaASRService? {
         qwenLlamaService()
     }
@@ -223,13 +235,11 @@ private struct InstalledSingleSourceASRService: ASRService {
         do {
             switch source {
             case .qwen:
-                guard let service = await ASRFactory.shared.qwenLlamaServiceIfInstalled() else {
-                    throw ASRAudioSupportError.httpStatus(503, "Qwen3-ASR model is not installed")
-                }
-                text = try await service.transcribe(audioFileURL: audioFileURL, languageIDs: languageIDs)
+                text = try await InstalledQwenLlamaASRService()
+                    .transcribe(audioFileURL: audioFileURL, languageIDs: languageIDs)
                 output = ASRModelOutputFactory.qwen(role: "source", text: text)
             case .nvidiaNemotron:
-                text = try await AutoInstallingNvidiaNemotronASRService()
+                text = try await InstalledNvidiaNemotronASRService()
                     .transcribe(audioFileURL: audioFileURL, languageIDs: languageIDs)
                 output = ASRModelOutputFactory.nemotron(role: "source", text: text)
             case .appleSpeech:
@@ -273,11 +283,10 @@ private struct InstalledSingleSourceASRService: ASRService {
     }
 }
 
-private struct AutoInstallingQwenLlamaASRService: ASRService {
+private struct InstalledQwenLlamaASRService: ASRService {
     func transcribe(audioFileURL: URL, languageIDs: [String]) async throws -> String {
-        try await ASRFactory.shared.ensureQwenLlamaInstalled()
-        guard let service = await ASRFactory.shared.qwenLlamaServiceAfterInstall() else {
-            throw ASRAudioSupportError.httpStatus(503, "Bundled llama-server binary not found")
+        guard let service = await ASRFactory.shared.qwenLlamaServiceIfInstalled() else {
+            throw ASRAudioSupportError.httpStatus(503, "Qwen3-ASR model is not installed. Open Setup Guide to download it.")
         }
         return try await service.transcribe(audioFileURL: audioFileURL, languageIDs: languageIDs)
     }
@@ -308,10 +317,12 @@ private struct AutoInstallingQwenLlamaASRService: ASRService {
     }
 }
 
-private struct AutoInstallingNvidiaNemotronASRService: ASRService {
+private struct InstalledNvidiaNemotronASRService: ASRService {
     func transcribe(audioFileURL: URL, languageIDs: [String]) async throws -> String {
-        try await ASRFactory.shared.ensureNvidiaNemotronInstalled()
-        return try await ASRFactory.shared.nvidiaNemotronService().transcribe(
+        guard let service = await ASRFactory.shared.nvidiaNemotronServiceIfInstalled() else {
+            throw ASRAudioSupportError.httpStatus(503, "NVIDIA Nemotron ASR model is not installed. Open Setup Guide to download it.")
+        }
+        return try await service.transcribe(
             audioFileURL: audioFileURL,
             languageIDs: languageIDs
         )
@@ -569,10 +580,10 @@ private struct MultiSourceASRService: ASRService {
             group.addTask {
                 switch source {
                 case .qwen:
-                    return try await AutoInstallingQwenLlamaASRService()
+                    return try await InstalledQwenLlamaASRService()
                         .transcribe(audioFileURL: audioFileURL, languageIDs: languageIDs)
                 case .nvidiaNemotron:
-                    return try await AutoInstallingNvidiaNemotronASRService()
+                    return try await InstalledNvidiaNemotronASRService()
                         .transcribe(audioFileURL: audioFileURL, languageIDs: languageIDs)
                 case .appleSpeech:
                     return try await AppleSpeechASRService()

@@ -242,8 +242,8 @@ final class ExternalCompatibleCorrectorService: CorrectorService {
         }
         guard selected.isEmpty || modelIDs.contains(selected) else {
             return ExternalLLMCheckReport(
-                ok: true,
-                status: "Ready",
+                ok: false,
+                status: "Failed",
                 detail: "Selected model \(selected) is not listed. Select a listed model. \(modelListSummary(modelIDs: modelIDs))",
                 modelIDs: modelIDs
             )

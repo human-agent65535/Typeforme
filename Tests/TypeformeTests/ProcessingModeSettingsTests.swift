@@ -32,6 +32,8 @@ struct ProcessingModeSettingsTests {
         #expect(defaults.string(forKey: AppSettings.Keys.processingMode) == ProcessingMode.server.rawValue)
         #expect(defaults.string(forKey: AppSettings.Keys.correctionBackend) == CorrectionBackendKind.qwen35_9B.rawValue)
         #expect(defaults.bool(forKey: AppSettings.Keys.bridgeEnabled))
+        let clientSnapshot = defaults.dictionary(forKey: AppSettings.Keys.clientSettingsSnapshot) ?? [:]
+        #expect(clientSnapshot[AppSettings.Keys.clientBridgeToken] == nil)
 
         AppSettings.setProcessingMode(.client, defaults: defaults)
         #expect(defaults.string(forKey: AppSettings.Keys.processingMode) == ProcessingMode.client.rawValue)

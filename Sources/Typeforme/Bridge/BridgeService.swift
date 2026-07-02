@@ -164,6 +164,18 @@ final class BridgeService {
             )
         }
 
+        let proposedCorrectionBackend = try request.correctionBackend.map(resolveCorrectionBackend) ?? AppSettings.correctionBackend
+        let proposedExternalLLMBaseURL = try request.externalLLMBaseURL.map(normalizedExternalLLMBaseURL)
+            ?? AppSettings.externalLLMBaseURL
+        let proposedExternalLLMModel = request.externalLLMModel?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? AppSettings.externalLLMModel
+
+        try await validateExternalCorrectionBackendIfNeeded(
+            proposedCorrectionBackend,
+            externalLLMBaseURL: proposedExternalLLMBaseURL,
+            externalLLMModel: proposedExternalLLMModel
+        )
+
         if request.enabledRecognitionSources != nil {
             AppSettings.setEnabledRecognitionSources(sources)
         }
@@ -197,9 +209,8 @@ final class BridgeService {
             UserDefaults.standard.set(Double(clamped), forKey: AppSettings.Keys.asrNvidiaNemotronTimeoutSec)
         }
 
-        if let rawBackend = request.correctionBackend {
-            let backend = try resolveCorrectionBackend(rawBackend)
-            UserDefaults.standard.set(backend.rawValue, forKey: AppSettings.Keys.correctionBackend)
+        if request.correctionBackend != nil {
+            UserDefaults.standard.set(proposedCorrectionBackend.rawValue, forKey: AppSettings.Keys.correctionBackend)
         }
         if let timeoutMs = request.correctionTimeoutMs {
             UserDefaults.standard.set(
@@ -213,11 +224,11 @@ final class BridgeService {
                 forKey: AppSettings.Keys.correctionColdTimeoutMs
             )
         }
-        if let rawURL = request.externalLLMBaseURL {
-            UserDefaults.standard.set(try normalizedExternalLLMBaseURL(rawURL), forKey: AppSettings.Keys.externalLLMBaseURL)
+        if request.externalLLMBaseURL != nil {
+            UserDefaults.standard.set(proposedExternalLLMBaseURL, forKey: AppSettings.Keys.externalLLMBaseURL)
         }
-        if let rawModel = request.externalLLMModel {
-            UserDefaults.standard.set(rawModel.trimmingCharacters(in: .whitespacesAndNewlines), forKey: AppSettings.Keys.externalLLMModel)
+        if request.externalLLMModel != nil {
+            UserDefaults.standard.set(proposedExternalLLMModel, forKey: AppSettings.Keys.externalLLMModel)
         }
         if request.correctionMode != nil {
             UserDefaults.standard.set(settingsCorrectionMode.rawValue, forKey: AppSettings.Keys.correctionMode)
@@ -255,6 +266,7 @@ final class BridgeService {
         UserDefaults.standard.synchronize()
         let newSources = AppSettings.configuredRecognitionSources
         let newQwenASRModelID = AppSettings.asrQwenLlamaModelID
+        startDownloadsForCurrentServerSettings()
         Task { @MainActor in
             if (oldSources.contains(.qwen) && !newSources.contains(.qwen))
                 || oldQwenASRModelID != newQwenASRModelID {
@@ -1310,6 +1322,98 @@ final class BridgeService {
             throw BridgeServiceError.invalidRequest("Unknown correction backend: \(raw)")
         }
         return backend
+    }
+
+    private func validateExternalCorrectionBackendIfNeeded(
+        _ backend: CorrectionBackendKind,
+        externalLLMBaseURL: String,
+        externalLLMModel: String
+    ) async throws {
+        guard backend.isExternalCompatible else { return }
+        let model = externalLLMModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !model.isEmpty else {
+            throw BridgeServiceError.invalidRequest("External refine model is empty")
+        }
+        let apiKind = try ExternalCompatibleCorrectorService.apiKind(for: backend)
+        let report = await ExternalCompatibleCorrectorService.checkConfiguration(
+            apiKind: apiKind,
+            baseURL: externalLLMBaseURL,
+            apiKey: AppSettings.externalLLMAPIKey,
+            selectedModel: model
+        )
+        guard report.ok else {
+            throw BridgeServiceError.invalidRequest(report.detail)
+        }
+    }
+
+    private func settingPath(forKey key: String, fallback: String) -> String {
+        let value = UserDefaults.standard.string(forKey: key)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return value.isEmpty ? fallback : value
+    }
+
+    private func settingValue(forKey key: String, fallback: String) -> String {
+        let value = UserDefaults.standard.string(forKey: key)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return value.isEmpty ? fallback : value
+    }
+
+    private func startDownloadsForCurrentServerSettings() {
+        let sources = AppSettings.configuredRecognitionSources
+        if sources.contains(.qwen) {
+            let spec = QwenASRModelCatalog.spec(for: AppSettings.asrQwenLlamaModelID)
+            startModelDownloadIfMissing(
+                path: settingPath(forKey: spec.modelPathKey, fallback: spec.defaultModelPath),
+                downloadURLString: settingValue(forKey: spec.modelURLKey, fallback: spec.defaultModelURL),
+                label: "\(spec.label) model"
+            )
+            startModelDownloadIfMissing(
+                path: settingPath(forKey: spec.mmprojPathKey, fallback: spec.defaultMMProjPath),
+                downloadURLString: settingValue(forKey: spec.mmprojURLKey, fallback: spec.defaultMMProjURL),
+                label: "\(spec.label) mmproj"
+            )
+        }
+        if sources.contains(.nvidiaNemotron) {
+            let spec = NvidiaNemotronASRModelCatalog.spec(for: AppSettings.asrNvidiaNemotronModelID)
+            for file in spec.files {
+                startModelDownloadIfMissing(
+                    path: settingPath(forKey: file.pathKey, fallback: file.defaultPath),
+                    downloadURLString: settingValue(forKey: file.urlKey, fallback: file.defaultURL),
+                    label: "NVIDIA Nemotron \(file.label)",
+                    expectedBytes: file.expectedBytes
+                )
+            }
+        }
+        if let spec = localLlamaModels.first(where: { $0.backendKind == AppSettings.correctionBackend }) {
+            startModelDownloadIfMissing(
+                path: settingPath(forKey: spec.pathKey, fallback: spec.defaultPath),
+                downloadURLString: settingValue(forKey: spec.urlKey, fallback: ""),
+                label: spec.label
+            )
+        }
+    }
+
+    private func startModelDownloadIfMissing(
+        path: String,
+        downloadURLString: String,
+        label: String,
+        expectedBytes: Int64? = nil
+    ) {
+        guard !FileManager.default.fileExists(atPath: path) else { return }
+        ModelInstallRegistry.markInstalling(path: path, label: label)
+        Task {
+            defer { ModelInstallRegistry.markFinished(path: path) }
+            do {
+                try await ModelAutoInstaller.shared.ensureFile(
+                    atPath: path,
+                    downloadURLString: downloadURLString,
+                    label: label,
+                    expectedBytes: expectedBytes
+                )
+            } catch {
+                Log.store.error("model download after settings save failed: \(label, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            }
+        }
     }
 
     private func resolveLivePreviewSource(

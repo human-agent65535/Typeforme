@@ -52,7 +52,7 @@ actor LlamaCppServerManager {
          pidFile: URL = AppPaths.llamaPidFile,
          requiredFiles: [String] = [],
          extraArguments: [String] = [],
-         coldTimeoutSec: TimeInterval = 8) {
+         coldTimeoutSec: TimeInterval = 30) {
         self.modelPath = modelPath
         self.contextSize = contextSize
         self.useFlashAttn = useFlashAttn

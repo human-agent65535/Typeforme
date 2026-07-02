@@ -1,14 +1,18 @@
 #!/usr/bin/env bash
-# Build dist/Typeforme.app from the Xcode-built package executable, including
+# Build a macOS app bundle from the Xcode-built package executable, including
 # AppIcon and bundled helper binaries when present.
 #
 # Usage:
 #   scripts/build-app.sh [debug|release] [--install|--deploy]  # default: debug
+#   scripts/run-mac-debug.sh
+#   scripts/build-mac-release.sh
+#   scripts/build-mac-unidentified.sh
 #   INSTALL_DIR=/Applications scripts/build-app.sh debug --install
 #   IDENTITY="Developer ID Application: ..." scripts/build-app.sh release --install
 #
-# Adhoc signing (default) is fine for local-only use on this machine.
-# Pass IDENTITY=... to sign for distribution / notarization.
+# Release builds default to Developer ID Application when available so direct
+# downloads can be notarized. Pass IDENTITY=... to override, or IDENTITY="-"
+# for ad-hoc signing.
 set -euo pipefail
 
 CONFIG="debug"
@@ -18,12 +22,13 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP_NAME="Typeforme"
 BINARY_NAME="Typeforme"
 SCHEME="Typeforme"
-APP_DIR="$ROOT/dist/${APP_NAME}.app"
 INSTALL_DIR="${INSTALL_DIR:-/Applications}"
-BIN_DIR="$APP_DIR/Contents/MacOS"
-RES_DIR="$APP_DIR/Contents/Resources"
-LLAMA_DIR="$RES_DIR/llama"
-NVIDIA_NEMOTRON_DIR="$RES_DIR/nvidia-nemotron"
+TYPEFORME_MAC_DIST_ROOT="${TYPEFORME_MAC_DIST_ROOT:-$ROOT/dist/mac}"
+APP_DIR=""
+BIN_DIR=""
+RES_DIR=""
+LLAMA_DIR=""
+NVIDIA_NEMOTRON_DIR=""
 
 usage() {
     cat <<EOF
@@ -31,14 +36,18 @@ Usage:
   scripts/build-app.sh [debug|release] [--install|--deploy] [--launch]
 
 Environment:
-  IDENTITY=...     Codesigning identity. Defaults to Typeforme Local Dev or adhoc.
+  IDENTITY=...     Codesigning identity. Release defaults to Developer ID Application when available.
   INSTALL_DIR=...  Install destination directory. Defaults to /Applications.
+  TYPEFORME_MAC_DIST_ROOT=...  Root for macOS app outputs. Defaults to dist/mac.
+  TYPEFORME_MAC_OUTPUT_DIR=... Output directory for this build. Defaults to dist/mac/dev or dist/mac/release.
+  TYPEFORME_MAC_APP_DIR=...    Full .app output path override.
   TYPEFORME_BUNDLE_PREFIX=...         Bundle prefix. Defaults to com.example.
   TYPEFORME_MAC_BUNDLE_IDENTIFIER=... Full macOS bundle id override.
+  TYPEFORME_LOAD_ENV=0         Skip loading root .env. Defaults to 1.
 EOF
 }
 
-if [ -f "$ROOT/.env" ]; then
+if [ "${TYPEFORME_LOAD_ENV:-1}" != "0" ] && [ -f "$ROOT/.env" ]; then
     set -a
     # shellcheck disable=SC1091
     . "$ROOT/.env"
@@ -82,6 +91,17 @@ case "$CONFIG" in
     debug|release) ;;
     *) echo "config must be debug|release, got: $CONFIG" >&2; exit 1 ;;
 esac
+
+OUTPUT_PROFILE="dev"
+if [ "$CONFIG" = "release" ]; then
+    OUTPUT_PROFILE="release"
+fi
+TYPEFORME_MAC_OUTPUT_DIR="${TYPEFORME_MAC_OUTPUT_DIR:-$TYPEFORME_MAC_DIST_ROOT/$OUTPUT_PROFILE}"
+APP_DIR="${TYPEFORME_MAC_APP_DIR:-$TYPEFORME_MAC_OUTPUT_DIR/${APP_NAME}.app}"
+BIN_DIR="$APP_DIR/Contents/MacOS"
+RES_DIR="$APP_DIR/Contents/Resources"
+LLAMA_DIR="$RES_DIR/llama"
+NVIDIA_NEMOTRON_DIR="$RES_DIR/nvidia-nemotron"
 
 wait_for_installed_app_to_exit() {
     local installed_app="$1"
@@ -179,24 +199,50 @@ for lproj in "$ROOT/Resources"/*.lproj; do
     cp -R "$lproj" "$RES_DIR/"
 done
 
+find_codesign_identity() {
+    local prefix="$1"
+    security find-identity -p codesigning -v 2>/dev/null \
+        | sed -n "s/.*\"\(${prefix}[^\"]*\)\".*/\1/p" \
+        | head -n 1
+}
+
+select_default_sign_identity() {
+    local identity=""
+    if [ "$CONFIG" = "release" ]; then
+        identity="$(find_codesign_identity "Developer ID Application:")"
+        [ -n "$identity" ] && { printf '%s\n' "$identity"; return; }
+
+        identity="$(find_codesign_identity "Apple Distribution:")"
+        [ -n "$identity" ] && { printf '%s\n' "$identity"; return; }
+    fi
+
+    identity="$(find_codesign_identity "Apple Development:")"
+    [ -n "$identity" ] && { printf '%s\n' "$identity"; return; }
+
+    identity="$(find_codesign_identity "Typeforme Local Dev")"
+    [ -n "$identity" ] && { printf '%s\n' "$identity"; return; }
+
+    printf '%s\n' "-"
+}
+
 # Bundled llama-server (optional). When present, codesign with the
 # llama-server entitlements (allow-jit) so it can JIT Metal kernels.
-# Prefer the stable local development identity created by
-# scripts/create-signing-identity.sh so TCC permission grants survive rebuilds.
-# Public builds can still override this with IDENTITY="Developer ID ..."; pass
-# IDENTITY="-" explicitly for ad-hoc signing.
 SIGN_IDENTITY="${IDENTITY:-}"
 if [ -z "$SIGN_IDENTITY" ]; then
-    if security find-identity -p codesigning -v 2>/dev/null | grep -q '"Typeforme Local Dev"'; then
-        SIGN_IDENTITY="Typeforme Local Dev"
-    else
-        SIGN_IDENTITY="-"
-    fi
+    SIGN_IDENTITY="$(select_default_sign_identity)"
 fi
 if [ "$SIGN_IDENTITY" = "-" ]; then
     echo "signing identity: adhoc"
 else
-    echo "signing identity: configured via IDENTITY"
+    echo "signing identity: $SIGN_IDENTITY"
+    if [ "$CONFIG" = "release" ] && [ -z "${IDENTITY:-}" ]; then
+        case "$SIGN_IDENTITY" in
+            Developer\ ID\ Application:*) ;;
+            *)
+                echo "warn: release default is not Developer ID Application; direct-download distribution will need Developer ID signing before notarization." >&2
+                ;;
+        esac
+    fi
 fi
 LLAMA_ENT="$ROOT/Resources/llama-server.entitlements"
 LLAMA_SRC="$ROOT/vendor/llama-server-arm64"

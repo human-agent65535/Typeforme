@@ -45,19 +45,20 @@ final class CorrectorFactory {
     }
 
     private func makeLlama(modelPath: String, kind: CorrectionBackendKind) -> CorrectorService {
+        guard FileManager.default.fileExists(atPath: modelPath) else {
+            return UnavailableCorrectorService(
+                kind: kind,
+                reason: "\(kind.displayName) model is not installed. Open Setup Guide to download it."
+            )
+        }
         let key = [
             kind.rawValue,
-            modelPath,
-            downloadURLString(for: kind)
+            modelPath
         ].joined(separator: "|")
         if let service = correctorServices[key] {
             return service
         }
-        let service = AutoInstallingLlamaCorrectorService(
-            kind: kind,
-            modelPath: modelPath,
-            downloadURLString: downloadURLString(for: kind)
-        )
+        let service = installedLlamaService(modelPath: modelPath, kind: kind)
         correctorServices[key] = service
         return service
     }
@@ -119,19 +120,6 @@ final class CorrectorFactory {
         return server
     }
 
-    private func downloadURLString(for kind: CorrectionBackendKind) -> String {
-        switch kind {
-        case .qwen35_2B:
-            return AppSettings.llama2BDownloadURL
-        case .qwen35_4B:
-            return AppSettings.llama4BDownloadURL
-        case .qwen35_9B:
-            return AppSettings.llama9BDownloadURL
-        case .externalOpenAICompatible, .externalAnthropicCompatible:
-            return ""
-        }
-    }
-
     func shutdownAll() async {
         for server in servers.values {
             await server.stop()
@@ -172,33 +160,5 @@ private struct UnavailableCorrectorService: CorrectorService {
 
     func complete(system: String, messages: [CorrectorChatMessage], timeoutMs: Int) async throws -> String {
         throw CorrectorError.unavailable(reason)
-    }
-}
-
-private struct AutoInstallingLlamaCorrectorService: CorrectorService {
-    let kind: CorrectionBackendKind
-    let modelPath: String
-    let downloadURLString: String
-
-    func correct(_ request: CorrectionRequest, timeoutMs: Int) async throws -> CorrectorOutput {
-        try AppPaths.ensureDirectories()
-        try await ModelAutoInstaller.shared.ensureFile(
-            atPath: modelPath,
-            downloadURLString: downloadURLString,
-            label: kind.displayName
-        )
-        let service = await CorrectorFactory.shared.installedLlamaService(modelPath: modelPath, kind: kind)
-        return try await service.correct(request, timeoutMs: timeoutMs)
-    }
-
-    func complete(system: String, messages: [CorrectorChatMessage], timeoutMs: Int) async throws -> String {
-        try AppPaths.ensureDirectories()
-        try await ModelAutoInstaller.shared.ensureFile(
-            atPath: modelPath,
-            downloadURLString: downloadURLString,
-            label: kind.displayName
-        )
-        let service = await CorrectorFactory.shared.installedLlamaService(modelPath: modelPath, kind: kind)
-        return try await service.complete(system: system, messages: messages, timeoutMs: timeoutMs)
     }
 }

@@ -17,8 +17,7 @@ enum AccessibilityPermissions {
     /// Wipe the Accessibility TCC entry for this bundle id. Useful when an
     /// older signature of the app left a stale "Not granted" record that
     /// won't go away no matter how many times the user toggles the switch.
-    /// (Common with adhoc-signed local builds where each rebuild has a
-    /// different code-signing hash.)
+    /// (Common when the app identity changed between local builds.)
     ///
     /// IMPORTANT: `tccutil reset` only deletes the record — it does NOT
     /// register the app in the Accessibility list. The list stays empty

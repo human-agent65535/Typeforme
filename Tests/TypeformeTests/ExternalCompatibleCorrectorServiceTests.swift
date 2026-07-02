@@ -140,8 +140,8 @@ struct ExternalCompatibleCorrectorServiceTests {
             selectedModel: "qwen3.6-27b",
             apiKind: .openAI
         )
-        #expect(report.ok)
-        #expect(report.status == "Ready")
+        #expect(report.ok == false)
+        #expect(report.status == "Failed")
         #expect(report.detail.contains("Selected model qwen3.6-27b is not listed"))
         #expect(report.detail.contains("Using qwen3.6-35b") == false)
         #expect(report.detail.contains("Select a listed model"))
