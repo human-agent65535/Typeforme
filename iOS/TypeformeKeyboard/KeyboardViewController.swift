@@ -424,6 +424,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private var isSymbolKeyboard = false
     private var isAlternateSymbolKeyboard = false
     private var isPhoneSymbolKeyboard = false
+    private var showsStandardLayoutForNumericTraits = false
     private var renderedTextKeyboardLayoutKind: TextKeyboardLayoutKind?
     private var isAutoCapitalizationEnabled = true
     private var isCharacterPreviewEnabled = false
@@ -998,6 +999,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             returnButton,
             textCandidateGridButton,
             candidateGridCollapseButton,
+            textModeButton,
+            textGlobeButton,
             textWandButton,
             textStylePickerButton,
             textUndoButton,
@@ -1195,6 +1198,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     private func isTextToolbarDirectControlPoint(_ point: CGPoint) -> Bool {
         [
+            textModeButton,
+            textGlobeButton,
             textWandButton,
             textStylePickerButton,
             textUndoButton,
@@ -3814,6 +3819,15 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private var textKeyboardLayoutKindForCurrentTraits: TextKeyboardLayoutKind {
+        let traitLayoutKind = textKeyboardTraitLayoutKind
+        if showsStandardLayoutForNumericTraits,
+           case .numeric = traitLayoutKind {
+            return .standard
+        }
+        return traitLayoutKind
+    }
+
+    private var textKeyboardTraitLayoutKind: TextKeyboardLayoutKind {
         switch textDocumentProxy.keyboardType {
         case .numberPad, .asciiCapableNumberPad:
             return .numeric(decimalSeparator: nil, phoneSymbols: false)
@@ -3826,6 +3840,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
     }
 
+    private var isCurrentTextInputNumericTrait: Bool {
+        if case .numeric = textKeyboardTraitLayoutKind {
+            return true
+        }
+        return false
+    }
+
     private var isRenderedNumericTextKeyboard: Bool {
         if case .numeric = renderedTextKeyboardLayoutKind {
             return true
@@ -3835,12 +3856,16 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     private func refreshTextKeyboardLayoutForCurrentInputTraits() {
         guard renderedTextKeyboardLayoutKind != nil else { return }
+        if !isCurrentTextInputNumericTrait {
+            showsStandardLayoutForNumericTraits = false
+        }
         let next = textKeyboardLayoutKindForCurrentTraits
         guard renderedTextKeyboardLayoutKind != next else { return }
         if case .numeric = next {
             clearNumericIncompatibleCompositionState()
         }
         rebuildTextKeyboardRows(layoutKind: next)
+        applyKeyboardHeightForCurrentTraits()
         updateKeyboardSurfaceMask()
     }
 
@@ -3864,7 +3889,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     private func rebuildTextKeyboardRows(layoutKind explicitLayoutKind: TextKeyboardLayoutKind? = nil) {
         resetAllPressedControlStates(animated: false)
-        let layoutKind = explicitLayoutKind ?? renderedTextKeyboardLayoutKind ?? .standard
+        let layoutKind = explicitLayoutKind ?? renderedTextKeyboardLayoutKind ?? textKeyboardLayoutKindForCurrentTraits
         renderedTextKeyboardLayoutKind = layoutKind
         isCandidateGridExpanded = false
         textToolbar.isHidden = layoutKind != .standard
@@ -3877,6 +3902,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             keyRowsStack.removeArrangedSubview(row)
             row.removeFromSuperview()
         }
+        detachReusableTextControlButtons()
         textKeyboardButtons.removeAll()
         textKeyboardHitRows.removeAll()
         letterButtonMap.removeAll()
@@ -3909,6 +3935,55 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             addTextBottomRow()
         }
         refreshTextControlTitles()
+        refreshTextToolbarControlsForCurrentLayout()
+    }
+
+    private func detachReusableTextControlButtons() {
+        [textModeButton, textGlobeButton].forEach { button in
+            if let stack = button.superview as? UIStackView {
+                stack.removeArrangedSubview(button)
+            }
+            button.removeFromSuperview()
+        }
+    }
+
+    private func refreshTextToolbarControlsForCurrentLayout() {
+        if isRenderedNumericTextKeyboard {
+            attachNumericTextToolbarControls()
+            return
+        }
+        updateCandidateToolbarControls(for: rimeInput.state())
+    }
+
+    private func attachNumericTextToolbarControls() {
+        textToolbar.isHidden = false
+        if textModeButton.superview !== textToolbar {
+            textToolbar.insertArrangedSubview(textModeButton, at: 0)
+        }
+        if textGlobeButton.superview !== textToolbar {
+            textToolbar.addArrangedSubview(textGlobeButton)
+        }
+
+        textModeButton.isHidden = false
+        textModeButton.alpha = 1
+        textModeButton.isEnabled = true
+        textGlobeButton.isHidden = !needsInputModeSwitchKey
+        textGlobeButton.alpha = 1
+        textGlobeButton.isEnabled = needsInputModeSwitchKey
+
+        textWandButton.isHidden = true
+        textToolsButton.isHidden = true
+        textStylePickerButton.isHidden = true
+        textUndoButton.isHidden = true
+        textKeyboardSwitchButton.isHidden = true
+        textHostSettingsButton.isHidden = true
+        textCandidateGridButton.isHidden = true
+        candidateGridCollapseButton.isHidden = true
+        candidateGridScrollView.isHidden = true
+        candidateScrollView.isHidden = false
+        candidateScrollView.alpha = 1
+        resetCandidateStackForReuse()
+        updateCandidateScrollViewport()
     }
 
     private func symbolRowsForCurrentLanguage() -> [[String]] {
@@ -3988,10 +4063,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             textKeyCommitCharacters[ObjectIdentifier(decimalButton)] = decimalSeparator
             routedButtons.append(decimalButton)
             boundaryButtons.append(decimalButton)
-            if needsInputModeSwitchKey {
-                let globeButton = attachNumericGlobeOverlay(to: decimalButton)
-                directButtons.append(globeButton)
-            }
         } else if phoneSymbols {
             let phoneSymbolsButton = makeTextKeyButton(title: "+*#", weight: .utility)
             phoneSymbolsButton.accessibilityLabel = NSLocalizedString("Show phone symbols", comment: "Accessibility label for phone symbols key")
@@ -4000,12 +4071,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             textKeyboardButtons.append(phoneSymbolsButton)
             directButtons.append(phoneSymbolsButton)
             boundaryButtons.append(phoneSymbolsButton)
-        } else if needsInputModeSwitchKey {
-            let globeButton = makeNumericGlobeButton(compactOverlay: false)
-            row.addArrangedSubview(globeButton)
-            textKeyboardButtons.append(globeButton)
-            directButtons.append(globeButton)
-            boundaryButtons.append(globeButton)
         } else {
             let placeholder = makeNumericPlaceholderButton()
             row.addArrangedSubview(placeholder)
@@ -4075,33 +4140,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             boundaryButtons: boundaryButtons,
             kind: .character
         )
-    }
-
-    private func makeNumericGlobeButton(compactOverlay: Bool) -> UIButton {
-        let button = UIButton(type: .system)
-        if compactOverlay {
-            configureToolbarIconButton(button, image: "globe")
-        } else {
-            configureTextControlButton(button, title: "", image: "globe")
-        }
-        button.accessibilityLabel = NSLocalizedString("Next keyboard", comment: "Accessibility label for switching to the next keyboard")
-        button.addTarget(self, action: #selector(handleInputModeList(from:with:)), for: .allTouchEvents)
-        attachPressAnimation(button)
-        return button
-    }
-
-    private func attachNumericGlobeOverlay(to hostButton: UIButton) -> UIButton {
-        let button = makeNumericGlobeButton(compactOverlay: true)
-        button.translatesAutoresizingMaskIntoConstraints = false
-        hostButton.addSubview(button)
-        textKeyboardButtons.append(button)
-        NSLayoutConstraint.activate([
-            button.leadingAnchor.constraint(equalTo: hostButton.leadingAnchor, constant: 2),
-            button.bottomAnchor.constraint(equalTo: hostButton.bottomAnchor, constant: -2),
-            button.widthAnchor.constraint(equalToConstant: 28),
-            button.heightAnchor.constraint(equalToConstant: 28),
-        ])
-        return button
     }
 
     private func makeNumericDigitButton(_ digit: String) -> UIButton {
@@ -7208,8 +7246,21 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     @objc private func toggleSymbolKeyboard() {
-        guard !isRenderedNumericTextKeyboard else { return }
         clearTransientKeyboardErrorIfShowing()
+        if isRenderedNumericTextKeyboard {
+            showsStandardLayoutForNumericTraits = true
+            rebuildTextKeyboardRows(layoutKind: .standard)
+            updateKeyboardSurfaceMask()
+            return
+        }
+        if showsStandardLayoutForNumericTraits,
+           isCurrentTextInputNumericTrait {
+            showsStandardLayoutForNumericTraits = false
+            clearNumericIncompatibleCompositionState()
+            rebuildTextKeyboardRows(layoutKind: textKeyboardLayoutKindForCurrentTraits)
+            updateKeyboardSurfaceMask()
+            return
+        }
         if isSymbolKeyboard {
             isSymbolKeyboard = false
             isAlternateSymbolKeyboard = false
@@ -7291,7 +7342,23 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func refreshTextControlTitles() {
-        configureTextControlButton(textModeButton, title: isSymbolKeyboard ? "ABC" : "123", image: nil)
+        let modeTitle: String
+        if isRenderedNumericTextKeyboard {
+            modeTitle = "ABC"
+        } else if showsStandardLayoutForNumericTraits,
+                  isCurrentTextInputNumericTrait {
+            modeTitle = "123"
+        } else {
+            modeTitle = isSymbolKeyboard ? "ABC" : "123"
+        }
+        configureTextControlButton(textModeButton, title: modeTitle, image: nil)
+        if isRenderedNumericTextKeyboard {
+            textModeButton.accessibilityLabel = NSLocalizedString("Show text keyboard", comment: "Accessibility label for switching from numeric keypad to text keyboard")
+        } else if showsStandardLayoutForNumericTraits, isCurrentTextInputNumericTrait {
+            textModeButton.accessibilityLabel = NSLocalizedString("Show numeric keypad", comment: "Accessibility label for returning to numeric keypad")
+        } else {
+            textModeButton.accessibilityLabel = NSLocalizedString("Show numbers and symbols", comment: "Accessibility label for switching to numbers and symbols")
+        }
         configureTextControlButton(textAlternateSymbolButton, title: isAlternateSymbolKeyboard ? "123" : "#+=", image: nil)
         configureTextControlButton(textGlobeButton, title: "", image: "globe")
         textGlobeButton.accessibilityLabel = NSLocalizedString("Next keyboard", comment: "Accessibility label for switching to the next keyboard")
@@ -8046,6 +8113,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func updateCandidateToolbarControls(for state: RimeKeyboardState) {
+        guard !isRenderedNumericTextKeyboard else {
+            attachNumericTextToolbarControls()
+            return
+        }
+
         let isComposing = state.isComposing
         let hasCandidates = !state.candidates.isEmpty
 
