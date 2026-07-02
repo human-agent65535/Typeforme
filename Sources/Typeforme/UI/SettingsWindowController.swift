@@ -38,8 +38,8 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
-        // Defer so the close animation finishes before we drop back to
-        // accessory — otherwise the window appears to "snap" away.
+        // Defer so the close animation finishes before we restore the user's
+        // preferred Dock visibility; otherwise the window appears to snap away.
         DispatchQueue.main.async { [weak self] in
             guard let window = self?.window else { return }
             AppActivationPolicy.restoreAccessoryIfNoDocumentWindows(excluding: window)
