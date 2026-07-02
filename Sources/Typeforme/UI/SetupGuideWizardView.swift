@@ -853,9 +853,8 @@ struct SetupGuideWizardView: View {
     private func warmSelectedModelsAfterDone() {
         guard processingMode == .server else { return }
         Task { @MainActor in
-            async let asrPreload: Void = ASRFactory.shared.preloadCachedActiveModel()
-            async let correctionPreload: CorrectorPreloadResult = CorrectorFactory.shared.preloadActiveModels()
-            _ = await (asrPreload, correctionPreload)
+            await ASRFactory.shared.preloadCachedActiveModel()
+            _ = await CorrectorFactory.shared.preloadActiveModels()
         }
     }
 

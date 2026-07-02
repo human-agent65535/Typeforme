@@ -272,9 +272,8 @@ final class BridgeService {
                 || oldQwenASRModelID != newQwenASRModelID {
                 await ASRFactory.shared.stopQwenLlama()
             }
-            async let asrPreload: Void = ASRFactory.shared.preloadCachedActiveModel()
-            async let correctionPreload: CorrectorPreloadResult = CorrectorFactory.shared.preloadActiveModels()
-            _ = await (asrPreload, correctionPreload)
+            await ASRFactory.shared.preloadCachedActiveModel()
+            _ = await CorrectorFactory.shared.preloadActiveModels()
         }
         return BridgeSettingsPayload.current(userDictionary: dictionary.sortedSnapshot())
     }

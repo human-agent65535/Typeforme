@@ -1408,6 +1408,8 @@ private struct HoldModifierRecorder: View {
 // MARK: - ASR
 
 struct ASRSettingsView: View {
+    @EnvironmentObject private var modelDownloads: ModelDownloadRegistry
+    @EnvironmentObject private var modelStatusCache: SettingsModelStatusCache
     @AppStorage(AppSettings.Keys.asrQwenEnabled)     private var savedQwenEnabled: Bool = false
     @AppStorage(AppSettings.Keys.asrNvidiaNemotronEnabled) private var savedNvidiaEnabled: Bool = false
     @AppStorage(AppSettings.Keys.asrAppleSpeechEnabled) private var appleSpeechEnabled: Bool = true
@@ -1607,8 +1609,12 @@ struct ASRSettingsView: View {
         .onAppear {
             syncASRDraftFromSettings()
             normalizeSources()
+            refreshSelectedASRModelStatuses()
             refreshAppleSpeechLanguageSupportIfNeeded()
             clampLanguageSelection()
+        }
+        .task(id: selectedASRStatusSignature) {
+            refreshSelectedASRModelStatuses()
         }
         .onChange(of: draftQwenEnabled) { _, _ in
             clearASRSaveStatus()
@@ -1639,6 +1645,12 @@ struct ASRSettingsView: View {
         }
         .onChange(of: languageIDsRaw) { _, _ in
             preloadEnabledASRModels()
+        }
+        .onChange(of: selectedASRDownloadRefreshToken) { _, _ in
+            refreshSelectedASRModelStatuses()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)) { _ in
+            refreshSelectedASRModelStatuses()
         }
         .onReceive(NotificationCenter.default.publisher(for: .appleSpeechLanguageSupportDidChange)) { _ in
             appleSpeechLanguageSupportRevision &+= 1
@@ -1687,8 +1699,8 @@ struct ASRSettingsView: View {
     /// Mirrors the install checks the download rows below use, so the Engine
     /// picker can warn about a missing model without scrolling.
     private var selectedEnginesInstalled: Bool {
-        if draftQwenEnabled, !qwenModelInstalled { return false }
-        if draftNvidiaEnabled, !nvidiaModelReady { return false }
+        if draftQwenEnabled, qwenModelStatusLoaded, !qwenModelInstalled { return false }
+        if draftNvidiaEnabled, nvidiaModelStatusLoaded, !nvidiaModelReady { return false }
         return true
     }
 
@@ -1700,8 +1712,14 @@ struct ASRSettingsView: View {
     }
 
     private var asrDraftReadinessIssue: String? {
+        if draftQwenEnabled, !qwenModelStatusLoaded {
+            return "Checking \(selectedQwenModel.label) install status."
+        }
         if draftQwenEnabled, !qwenModelInstalled {
             return "\(selectedQwenModel.label) is not installed."
+        }
+        if draftNvidiaEnabled, !nvidiaModelStatusLoaded {
+            return "Checking \(selectedNvidiaModel.label) install status."
         }
         if draftNvidiaEnabled, !nvidiaModelReady {
             return "\(selectedNvidiaModel.label) is not ready."
@@ -1713,30 +1731,50 @@ struct ASRSettingsView: View {
         asrDraftIsDirty && asrDraftReadinessIssue == nil
     }
 
+    private var qwenModelStatusLoaded: Bool {
+        modelStatusCache.qwenASRModelLoaded(selectedQwenModel)
+    }
+
     private var qwenModelInstalled: Bool {
-        let spec = selectedQwenModel
-        return FileManager.default.fileExists(atPath: effectivePath(forKey: spec.modelPathKey, fallback: spec.defaultModelPath))
-            && FileManager.default.fileExists(atPath: effectivePath(forKey: spec.mmprojPathKey, fallback: spec.defaultMMProjPath))
+        modelStatusCache.qwenASRModelInstalled(selectedQwenModel)
+    }
+
+    private var nvidiaModelStatusLoaded: Bool {
+        modelStatusCache.nvidiaNemotronSnapshot(selectedNvidiaModel).loaded
     }
 
     private var nvidiaModelReady: Bool {
-        let spec = selectedNvidiaModel
-        let status = NvidiaNemotronASRService.runtimeStatus(
-            runnerURL: AppPaths.bundledNvidiaNemotronRunner,
-            modelFiles: spec.files.map { file in
-                NvidiaNemotronASRModelFileStatus(
-                    spec: file,
-                    url: URL(fileURLWithPath: effectivePath(forKey: file.pathKey, fallback: file.defaultPath))
-                )
-            }
-        )
-        return status.isReady
+        modelStatusCache.nvidiaNemotronSnapshot(selectedNvidiaModel).status.isReady
     }
 
-    private func effectivePath(forKey key: String, fallback: String) -> String {
-        let value = UserDefaults.standard.string(forKey: key)?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return value.isEmpty ? fallback : value
+    private var selectedASRStatusSignature: String {
+        let qwen = selectedQwenModel
+        let nvidia = selectedNvidiaModel
+        let qwenPaths = [
+            modelStatusCache.effectivePath(forKey: qwen.modelPathKey, fallback: qwen.defaultModelPath),
+            modelStatusCache.effectivePath(forKey: qwen.mmprojPathKey, fallback: qwen.defaultMMProjPath),
+        ]
+        let nvidiaPaths = nvidia.files.map {
+            modelStatusCache.effectivePath(forKey: $0.pathKey, fallback: $0.defaultPath)
+        }
+        return ([qwen.id] + qwenPaths + [nvidia.id] + nvidiaPaths).joined(separator: "||")
+    }
+
+    private var selectedASRDownloadRefreshToken: String {
+        let qwen = selectedQwenModel
+        let nvidia = selectedNvidiaModel
+        let states = [
+            settingsDownloaderRefreshToken(modelDownloads.downloader(for: SettingsModelDownloadKey.qwenModel(qwen)).state),
+            settingsDownloaderRefreshToken(modelDownloads.downloader(for: SettingsModelDownloadKey.qwenMMProj(qwen)).state),
+        ] + nvidia.files.map {
+            settingsDownloaderRefreshToken(modelDownloads.downloader(for: SettingsModelDownloadKey.nvidiaNemotronFile(model: nvidia, file: $0)).state)
+        }
+        return states.joined(separator: "||")
+    }
+
+    private func refreshSelectedASRModelStatuses() {
+        modelStatusCache.refreshQwenASRModel(selectedQwenModel)
+        modelStatusCache.refreshNvidiaNemotronModel(selectedNvidiaModel)
     }
 
     private var selectedLanguageSummary: String {
@@ -1940,10 +1978,24 @@ private func strictDownloadChecksumPolicy(
     }
 }
 
+private func settingsDownloaderRefreshToken(_ state: ModelDownloader.State) -> String {
+    switch state {
+    case .idle:
+        return "idle"
+    case .downloading:
+        return "downloading"
+    case .completed(let url):
+        return "completed:\(url.path)"
+    case .failed:
+        return "failed"
+    }
+}
+
 private struct QwenASRModelRow: View {
     let spec: QwenASRModelSpec
 
     @EnvironmentObject private var modelDownloads: ModelDownloadRegistry
+    @EnvironmentObject private var modelStatusCache: SettingsModelStatusCache
     @AppStorage private var modelPath: String
     @AppStorage private var mmprojPath: String
     @AppStorage private var modelURL: String
@@ -1979,13 +2031,26 @@ private struct QwenASRModelRow: View {
             }
         }
         .padding(.vertical, 4)
+        .task(id: modelStatusSignature) {
+            refreshModelStatus()
+        }
+        .onChange(of: modelDownloadRefreshToken) { _, _ in
+            refreshModelStatus()
+        }
     }
 
+    @ViewBuilder
     private var combinedStatusLabel: some View {
-        let installed = modelExists && mmprojExists
-        return Text(installed ? "Installed" : (anyModelFileExists ? "Incomplete" : "Not installed"))
-            .font(.caption)
-            .foregroundStyle(installed ? .green : .secondary)
+        if !modelSnapshot.loaded || !mmprojSnapshot.loaded {
+            Text("Checking...")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        } else {
+            let installed = modelExists && mmprojExists
+            Text(installed ? "Installed" : (anyModelFileExists ? "Incomplete" : "Not installed"))
+                .font(.caption)
+                .foregroundStyle(installed ? .green : .secondary)
+        }
     }
 
     @ViewBuilder
@@ -2098,6 +2163,7 @@ private struct QwenASRModelRow: View {
                 }
                 modelDownloader.reset()
                 mmprojDownloader.reset()
+                refreshModelStatus()
             } catch {
                 deleteError = error.localizedDescription
             }
@@ -2130,12 +2196,20 @@ private struct QwenASRModelRow: View {
         modelDownloads.downloader(for: SettingsModelDownloadKey.qwenMMProj(spec))
     }
 
+    private var modelSnapshot: SettingsModelFileSnapshot {
+        modelStatusCache.fileSnapshot(path: effectiveModelPath)
+    }
+
+    private var mmprojSnapshot: SettingsModelFileSnapshot {
+        modelStatusCache.fileSnapshot(path: effectiveMMProjPath)
+    }
+
     private var modelExists: Bool {
-        FileManager.default.fileExists(atPath: effectiveModelPath)
+        modelSnapshot.exists
     }
 
     private var mmprojExists: Bool {
-        FileManager.default.fileExists(atPath: effectiveMMProjPath)
+        mmprojSnapshot.exists
     }
 
     private var anyModelFileExists: Bool {
@@ -2218,7 +2292,22 @@ private struct QwenASRModelRow: View {
     }
 
     private func existingByteCount(atPath path: String) -> Int64 {
-        (try? ModelDownloadIntegrity.byteCount(of: URL(fileURLWithPath: path))) ?? 0
+        modelStatusCache.fileSnapshot(path: path).byteCount
+    }
+
+    private var modelStatusSignature: String {
+        [effectiveModelPath, effectiveMMProjPath].joined(separator: "||")
+    }
+
+    private var modelDownloadRefreshToken: String {
+        [
+            settingsDownloaderRefreshToken(modelDownloader.state),
+            settingsDownloaderRefreshToken(mmprojDownloader.state),
+        ].joined(separator: "||")
+    }
+
+    private func refreshModelStatus() {
+        modelStatusCache.refreshFiles(paths: [effectiveModelPath, effectiveMMProjPath])
     }
 }
 
@@ -2227,6 +2316,7 @@ private struct NvidiaNemotronASRModelRow: View {
     let files: [NvidiaNemotronASRFileSpec]
 
     @EnvironmentObject private var modelDownloads: ModelDownloadRegistry
+    @EnvironmentObject private var modelStatusCache: SettingsModelStatusCache
     @AppStorage private var encoderPath: String
     @AppStorage private var encoderDataPath: String
     @AppStorage private var decoderJointPath: String
@@ -2251,7 +2341,7 @@ private struct NvidiaNemotronASRModelRow: View {
     }
 
     var body: some View {
-        let status = runtimeStatus
+        let snapshot = runtimeSnapshot
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
@@ -2261,12 +2351,12 @@ private struct NvidiaNemotronASRModelRow: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                Text(statusLabel(status))
+                Text(statusLabel(snapshot))
                     .font(.caption)
-                    .foregroundStyle(statusColor(status))
+                    .foregroundStyle(statusColor(snapshot))
             }
             downloadControls
-            if let message = userVisibleProblem(status) {
+            if let message = userVisibleProblem(snapshot) {
                 Text(message)
                     .font(.caption)
                     .foregroundStyle(.red)
@@ -2274,6 +2364,12 @@ private struct NvidiaNemotronASRModelRow: View {
             }
         }
         .padding(.vertical, 4)
+        .task(id: runtimeStatusSignature) {
+            refreshRuntimeStatus()
+        }
+        .onChange(of: downloadRefreshToken) { _, _ in
+            refreshRuntimeStatus()
+        }
     }
 
     @ViewBuilder
@@ -2387,6 +2483,7 @@ private struct NvidiaNemotronASRModelRow: View {
                 encoderDataDownloader.reset()
                 decoderJointDownloader.reset()
                 tokenizerDownloader.reset()
+                refreshRuntimeStatus()
             } catch {
                 deleteError = error.localizedDescription
             }
@@ -2399,16 +2496,8 @@ private struct NvidiaNemotronASRModelRow: View {
         NSWorkspace.shared.open(dir)
     }
 
-    private var runtimeStatus: NvidiaNemotronASRRuntimeStatus {
-        NvidiaNemotronASRService.runtimeStatus(
-            runnerURL: AppPaths.bundledNvidiaNemotronRunner,
-            modelFiles: [
-                NvidiaNemotronASRModelFileStatus(spec: files[0], url: URL(fileURLWithPath: effectiveEncoderPath)),
-                NvidiaNemotronASRModelFileStatus(spec: files[1], url: URL(fileURLWithPath: effectiveEncoderDataPath)),
-                NvidiaNemotronASRModelFileStatus(spec: files[2], url: URL(fileURLWithPath: effectiveDecoderJointPath)),
-                NvidiaNemotronASRModelFileStatus(spec: files[3], url: URL(fileURLWithPath: effectiveTokenizerPath)),
-            ]
-        )
+    private var runtimeSnapshot: SettingsNemotronRuntimeSnapshot {
+        modelStatusCache.nvidiaNemotronSnapshot(spec, paths: effectiveModelPaths)
     }
 
     private var effectiveEncoderPath: String { effectivePath(encoderPath, fallback: files[0].defaultPath) }
@@ -2441,11 +2530,11 @@ private struct NvidiaNemotronASRModelRow: View {
     }
 
     private var modelInstalled: Bool {
-        runtimeStatus.isReady
+        runtimeSnapshot.loaded && runtimeSnapshot.status.isReady
     }
 
     private var anyModelFileExists: Bool {
-        effectiveModelPaths.contains { FileManager.default.fileExists(atPath: $0) }
+        runtimeSnapshot.anyModelFileExists
     }
 
     private var anyDownloadURLEmpty: Bool {
@@ -2484,7 +2573,8 @@ private struct NvidiaNemotronASRModelRow: View {
     }
 
     private var aggregateReceivedBytes: Int64 {
-        zip(files, [encoderDownloader, encoderDataDownloader, decoderJointDownloader, tokenizerDownloader])
+        let snapshot = runtimeSnapshot
+        return zip(files, [encoderDownloader, encoderDataDownloader, decoderJointDownloader, tokenizerDownloader])
             .map { file, downloader in
                 switch downloader.state {
                 case .completed:
@@ -2492,46 +2582,34 @@ private struct NvidiaNemotronASRModelRow: View {
                 case .downloading(let received, _):
                     return received
                 default:
-                    let path = effectivePathForFile(file)
-                    return runtimeStatus.modelFiles.first { $0.spec.id == file.id }?.installed == true
+                    return snapshot.status.modelFiles.first { $0.spec.id == file.id }?.installed == true
                         ? file.expectedBytes
-                        : existingByteCount(atPath: path)
+                        : snapshot.byteCount(for: file)
                 }
             }
             .reduce(0, +)
     }
 
-    private func effectivePathForFile(_ file: NvidiaNemotronASRFileSpec) -> String {
-        if file.id == files[0].id {
-            return effectiveEncoderPath
-        }
-        if file.id == files[1].id {
-            return effectiveEncoderDataPath
-        }
-        if file.id == files[2].id {
-            return effectiveDecoderJointPath
-        }
-        return effectiveTokenizerPath
-    }
-
-    private func existingByteCount(atPath path: String) -> Int64 {
-        (try? ModelDownloadIntegrity.byteCount(of: URL(fileURLWithPath: path))) ?? 0
-    }
-
-    private func statusLabel(_ status: NvidiaNemotronASRRuntimeStatus) -> String {
+    private func statusLabel(_ snapshot: SettingsNemotronRuntimeSnapshot) -> String {
+        guard snapshot.loaded else { return "Checking..." }
+        let status = snapshot.status
         if !status.runnerReady { return "Runtime missing" }
         if status.isReady { return "Installed" }
         if anyModelFileExists { return "Incomplete" }
         return "Not installed"
     }
 
-    private func statusColor(_ status: NvidiaNemotronASRRuntimeStatus) -> Color {
+    private func statusColor(_ snapshot: SettingsNemotronRuntimeSnapshot) -> Color {
+        guard snapshot.loaded else { return .secondary }
+        let status = snapshot.status
         if status.isReady { return .green }
         if !status.runnerReady { return .red }
         return .secondary
     }
 
-    private func userVisibleProblem(_ status: NvidiaNemotronASRRuntimeStatus) -> String? {
+    private func userVisibleProblem(_ snapshot: SettingsNemotronRuntimeSnapshot) -> String? {
+        guard snapshot.loaded else { return nil }
+        let status = snapshot.status
         if !status.runnerReady {
             return "Nemotron runtime is missing from the app bundle. Rebuild the app and try again."
         }
@@ -2547,6 +2625,23 @@ private struct NvidiaNemotronASRModelRow: View {
     private func effectivePath(_ value: String, fallback: String) -> String {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? fallback : trimmed
+    }
+
+    private var runtimeStatusSignature: String {
+        ([spec.id] + effectiveModelPaths).joined(separator: "||")
+    }
+
+    private var downloadRefreshToken: String {
+        [
+            settingsDownloaderRefreshToken(encoderDownloader.state),
+            settingsDownloaderRefreshToken(encoderDataDownloader.state),
+            settingsDownloaderRefreshToken(decoderJointDownloader.state),
+            settingsDownloaderRefreshToken(tokenizerDownloader.state),
+        ].joined(separator: "||")
+    }
+
+    private func refreshRuntimeStatus() {
+        modelStatusCache.refreshNvidiaNemotronModel(spec, paths: effectiveModelPaths)
     }
 
     private func format(_ b: Int64) -> String {
@@ -2565,6 +2660,8 @@ private struct ExternalLLMDraftConfig: Equatable {
 }
 
 struct CorrectionSettingsView: View {
+    @EnvironmentObject private var modelDownloads: ModelDownloadRegistry
+    @EnvironmentObject private var modelStatusCache: SettingsModelStatusCache
     @AppStorage(AppSettings.Keys.correctionBackend)       private var savedBackendRaw: String = CorrectionBackendKind.qwen35_4B.rawValue
     @AppStorage(AppSettings.Keys.correctionTimeoutMs)     private var timeoutMs: Int = 1500
     @AppStorage(AppSettings.Keys.correctionColdTimeoutMs) private var coldTimeoutMs: Int = 30000
@@ -2771,9 +2868,13 @@ struct CorrectionSettingsView: View {
         .onAppear {
             syncCorrectionDraftFromSettings()
             normalizeBackendSelection()
+            refreshSelectedCorrectionModelStatus()
             if selectedBackendKind?.isExternalCompatible == true {
                 startExternalLLMCheck(selectFirstModel: draftExternalLLMModel.isEmpty)
             }
+        }
+        .task(id: selectedCorrectionModelStatusSignature) {
+            refreshSelectedCorrectionModelStatus()
         }
         .onDisappear {
             cancelExternalLLMCheck()
@@ -2795,8 +2896,14 @@ struct CorrectionSettingsView: View {
             }
             handleExternalLLMModelSelectionChange()
         }
+        .onChange(of: selectedCorrectionDownloadRefreshToken) { _, _ in
+            refreshSelectedCorrectionModelStatus()
+        }
         .onChange(of: draftExternalLLMAPIKey) { _, _ in
             resetExternalLLMCheck(detail: "Refresh models after changing the API key.")
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)) { _ in
+            refreshSelectedCorrectionModelStatus()
         }
     }
 
@@ -2885,6 +2992,9 @@ struct CorrectionSettingsView: View {
             }
             return nil
         }
+        guard localDraftModelStatusLoaded else {
+            return "Checking \(kind.displayName) install status."
+        }
         guard localDraftModelInstalled else {
             return "\(kind.displayName) is not installed."
         }
@@ -2904,14 +3014,44 @@ struct CorrectionSettingsView: View {
         )
     }
 
-    private var localDraftModelInstalled: Bool {
-        guard let spec = localLlamaModels.first(where: { $0.backendKind.rawValue == draftBackendRaw }) else {
+    private var selectedLocalLlamaSpec: LocalLlamaModelSpec? {
+        localLlamaModels.first { $0.backendKind.rawValue == draftBackendRaw }
+    }
+
+    private var localDraftModelStatusLoaded: Bool {
+        guard let spec = selectedLocalLlamaSpec else {
             return false
         }
-        let value = UserDefaults.standard.string(forKey: spec.pathKey)?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let path = value.isEmpty ? spec.defaultPath : value
-        return FileManager.default.fileExists(atPath: path)
+        return modelStatusCache.localLlamaSnapshot(spec).loaded
+    }
+
+    private var localDraftModelInstalled: Bool {
+        guard let spec = selectedLocalLlamaSpec else {
+            return false
+        }
+        return modelStatusCache.localLlamaSnapshot(spec).exists
+    }
+
+    private var selectedCorrectionModelStatusSignature: String {
+        guard let spec = selectedLocalLlamaSpec else {
+            return draftBackendRaw
+        }
+        let path = modelStatusCache.effectivePath(forKey: spec.pathKey, fallback: spec.defaultPath)
+        return [draftBackendRaw, path].joined(separator: "||")
+    }
+
+    private var selectedCorrectionDownloadRefreshToken: String {
+        guard let spec = selectedLocalLlamaSpec else {
+            return "external"
+        }
+        return settingsDownloaderRefreshToken(
+            modelDownloads.downloader(for: SettingsModelDownloadKey.localLlama(spec)).state
+        )
+    }
+
+    private func refreshSelectedCorrectionModelStatus() {
+        guard let spec = selectedLocalLlamaSpec else { return }
+        modelStatusCache.refreshLocalLlamaModel(spec)
     }
 
     private func normalizeBackendSelection() {
@@ -3090,6 +3230,7 @@ private struct ModelDownloadRow: View {
     let isSelected: Bool
 
     @EnvironmentObject private var modelDownloads: ModelDownloadRegistry
+    @EnvironmentObject private var modelStatusCache: SettingsModelStatusCache
     @AppStorage private var path: String
     @AppStorage private var url:  String
     @State private var deleteError: String?
@@ -3132,17 +3273,29 @@ private struct ModelDownloadRow: View {
             }
         }
         .padding(.vertical, 4)
+        .task(id: modelStatusSignature) {
+            refreshModelStatus()
+        }
+        .onChange(of: modelDownloadRefreshToken) { _, _ in
+            refreshModelStatus()
+        }
     }
 
     // MARK: - Sub-views
 
+    @ViewBuilder
     private var statusLabel: some View {
-        let exists = FileManager.default.fileExists(atPath: effectivePath)
-        let size: Int64 = (try? FileManager.default.attributesOfItem(atPath: effectivePath)[.size] as? Int64) ?? 0
-        return Text(exists ? "Installed (\(ByteCountFormatter.string(fromByteCount: size, countStyle: .file)))"
-                           : "Not installed")
-            .font(.caption)
-            .foregroundStyle(exists ? .green : .secondary)
+        let snapshot = modelSnapshot
+        if !snapshot.loaded {
+            Text("Checking...")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        } else {
+            Text(snapshot.exists ? "Installed (\(ByteCountFormatter.string(fromByteCount: snapshot.byteCount, countStyle: .file)))"
+                               : "Not installed")
+                .font(.caption)
+                .foregroundStyle(snapshot.exists ? .green : .secondary)
+        }
     }
 
     @ViewBuilder
@@ -3237,6 +3390,7 @@ private struct ModelDownloadRow: View {
                     try FileManager.default.removeItem(at: target)
                 }
                 downloader.reset()
+                refreshModelStatus()
             } catch {
                 deleteError = error.localizedDescription
             }
@@ -3265,8 +3419,12 @@ private struct ModelDownloadRow: View {
         modelDownloads.downloader(for: SettingsModelDownloadKey.localLlama(spec))
     }
 
+    private var modelSnapshot: SettingsModelFileSnapshot {
+        modelStatusCache.fileSnapshot(path: effectivePath)
+    }
+
     private var modelExists: Bool {
-        FileManager.default.fileExists(atPath: effectivePath)
+        modelSnapshot.exists
     }
 
     private var isDownloading: Bool {
@@ -3279,6 +3437,18 @@ private struct ModelDownloadRow: View {
             return "Model download URL is missing."
         }
         return nil
+    }
+
+    private var modelStatusSignature: String {
+        effectivePath
+    }
+
+    private var modelDownloadRefreshToken: String {
+        settingsDownloaderRefreshToken(downloader.state)
+    }
+
+    private func refreshModelStatus() {
+        modelStatusCache.refreshFile(path: effectivePath)
     }
 }
 

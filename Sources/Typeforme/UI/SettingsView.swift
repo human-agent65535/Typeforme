@@ -11,6 +11,7 @@ import SwiftUI
 struct SettingsView: View {
     @ObservedObject var dictionary: UserDictionaryStore
     @StateObject private var modelDownloads = ModelDownloadRegistry()
+    @StateObject private var modelStatusCache = SettingsModelStatusCache()
     @State private var selection: Section = .general
     @AppStorage(AppSettings.Keys.processingMode) private var processingModeRaw = ProcessingMode.client.rawValue
 
@@ -59,6 +60,7 @@ struct SettingsView: View {
         }
         .frame(minWidth: 760, minHeight: 520)
         .environmentObject(modelDownloads)
+        .environmentObject(modelStatusCache)
         .onChange(of: processingModeRaw) { _, _ in
             if !visibleSections.contains(selection) {
                 selection = .general
