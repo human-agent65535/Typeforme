@@ -433,6 +433,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private var lastCorrectionModeButtonSignature = ""
     private var lastTextRecordingButtonsSignature = ""
     private var hasPresentedInitialFrame = false
+    private var lastKeyboardContentLayoutFrame: CGRect = .null
     private var isVoicePressActive = false
     private var voiceDragOutCancelArmed = false
     private var voiceUndoShowsCancel = false
@@ -2396,16 +2397,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             self.layoutKeyboardContentViewForCurrentBounds()
             self.view.setNeedsLayout()
             self.view.layoutIfNeeded()
-            self.keyboardContentView.layoutIfNeeded()
-            self.rootStack.layoutIfNeeded()
-            self.topRow.layoutIfNeeded()
-            self.topRowVoicePrint.layoutIfNeeded()
-            self.orbContainer.layoutIfNeeded()
-            self.correctionModePanel.layoutIfNeeded()
-            self.inputModeSwitch.layoutIfNeeded()
-            self.utilityRow.layoutIfNeeded()
-            self.textKeyboardContainer.layoutIfNeeded()
-            self.keyRowsStack.layoutIfNeeded()
+            self.updateCandidateGridCollapseButtonFrame()
+            self.updateCandidateTextOverlay()
         }
         CATransaction.commit()
     }
@@ -2446,25 +2439,43 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         return CGRect(x: bounds.minX, y: bounds.minY, width: width, height: bounds.height)
     }
 
-    private func layoutKeyboardContentViewForCurrentBounds() {
+    @discardableResult
+    private func layoutKeyboardContentViewForCurrentBounds() -> Bool {
         let frame = keyboardContentFrameForCurrentBounds()
+        var didChange = lastKeyboardContentLayoutFrame != frame
         if keyboardSurfaceView.frame != frame {
             keyboardSurfaceView.frame = frame
+            didChange = true
         }
         if keyboardContentView.frame != frame {
             keyboardContentView.frame = frame
+            didChange = true
         }
         if candidateTextOverlay.frame != frame {
             candidateTextOverlay.frame = frame
+            didChange = true
         }
         if keyboardTouchOverlay.frame != frame {
             keyboardTouchOverlay.frame = frame
+            didChange = true
         }
         let contentHeight = max(1, frame.height - Self.topChromeCoverHeight)
-        textKeyboardContainerHeightConstraint?.constant = Self.textKeyboardBodyHeight(for: contentHeight)
-        orbContainerHeightConstraint?.constant = Self.orbContainerHeight(for: contentHeight)
-        keyboardContentView.setNeedsLayout()
+        let textKeyboardHeight = Self.textKeyboardBodyHeight(for: contentHeight)
+        if textKeyboardContainerHeightConstraint?.constant != textKeyboardHeight {
+            textKeyboardContainerHeightConstraint?.constant = textKeyboardHeight
+            didChange = true
+        }
+        let orbHeight = Self.orbContainerHeight(for: contentHeight)
+        if orbContainerHeightConstraint?.constant != orbHeight {
+            orbContainerHeightConstraint?.constant = orbHeight
+            didChange = true
+        }
+        lastKeyboardContentLayoutFrame = frame
+        if didChange {
+            keyboardContentView.setNeedsLayout()
+        }
         updateKeyboardSurfaceMask()
+        return didChange
     }
 
     private func updateKeyboardSurfaceMask() {
@@ -3243,8 +3254,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         super.viewDidLayoutSubviews()
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        layoutKeyboardContentViewForCurrentBounds()
-        keyboardContentView.layoutIfNeeded()
+        let contentLayoutChanged = layoutKeyboardContentViewForCurrentBounds()
+        if contentLayoutChanged {
+            keyboardContentView.layoutIfNeeded()
+        }
         voiceGradient.frame = voiceButton.bounds
 
         // Position the specular ellipse upper-left, matching the host app's
@@ -3879,6 +3892,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         keyRowsStack.isHidden = false
         candidateGridScrollView.isHidden = true
         candidateGridCollapseButton.isHidden = true
+        clearCandidateGrid()
         NSLayoutConstraint.deactivate(keyboardRowConstraints)
         keyboardRowConstraints.removeAll()
         keyRowsStack.arrangedSubviews.forEach { row in
@@ -7960,7 +7974,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         resetCandidateStackForReuse()
         updateCandidateToolbarControls(for: state)
         textToolbar.setNeedsLayout()
-        textToolbar.layoutIfNeeded()
         updateCandidateScrollViewport()
 
         if let errorMessage = state.errorMessage {
@@ -8001,12 +8014,16 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             candidateStack.layoutIfNeeded()
             candidateScrollView.setNeedsLayout()
             candidateScrollView.layoutIfNeeded()
-            candidateGridStack.setNeedsLayout()
-            candidateGridStack.layoutIfNeeded()
-            candidateGridScrollView.setNeedsLayout()
-            candidateGridScrollView.layoutIfNeeded()
-            textToolbar.setNeedsLayout()
-            textToolbar.layoutIfNeeded()
+            if isCandidateGridExpanded {
+                candidateGridStack.setNeedsLayout()
+                candidateGridStack.layoutIfNeeded()
+                candidateGridScrollView.setNeedsLayout()
+                candidateGridScrollView.layoutIfNeeded()
+            }
+            if !textToolbar.isHidden {
+                textToolbar.setNeedsLayout()
+                textToolbar.layoutIfNeeded()
+            }
             updateCandidateScrollViewport()
             updateKeyboardSurfaceMask()
             updateCandidateTextOverlay()
@@ -8510,6 +8527,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         keyRowsStack.isHidden = next
         candidateGridScrollView.isHidden = !next
         candidateGridCollapseButton.isHidden = !next
+        if !next {
+            clearCandidateGrid()
+        }
         configureCandidateExpandButton(isExpanded: next)
         configureCandidateGridCollapseButton(isExpanded: next)
         textCandidateGridButton.accessibilityLabel = next
@@ -8532,11 +8552,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func renderCandidateGrid(_ state: RimeKeyboardState) {
-        candidateGridStack.arrangedSubviews.forEach { row in
-            candidateGridStack.removeArrangedSubview(row)
-            row.removeFromSuperview()
-        }
-        guard isCandidateGridExpanded, state.isComposing, !state.candidates.isEmpty else { return }
+        guard isCandidateGridExpanded else { return }
+        clearCandidateGrid()
+        guard state.isComposing, !state.candidates.isEmpty else { return }
 
         // iOS-native expanded panel: compact length-aware rows with
         // single-line labels. The list starts from the first candidate so the
@@ -8597,6 +8615,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         // grid columns exactly.
         finishCurrentRow()
         candidateGridScrollView.setContentOffset(.zero, animated: false)
+    }
+
+    private func clearCandidateGrid() {
+        candidateGridStack.arrangedSubviews.forEach { row in
+            candidateGridStack.removeArrangedSubview(row)
+            row.removeFromSuperview()
+        }
     }
 
     private func candidateGridContentWidth() -> CGFloat {
@@ -11912,12 +11937,16 @@ private final class TextKeyTouchLearner {
     private static let maxMeanY = 0.28
     private static let persistDebounceInterval: TimeInterval = 0.5
     private static let persistSampleBatchSize = 5
+    private static let sharedSnapshotDebounceInterval: TimeInterval = 30
+    private static let sharedSnapshotSampleBatchSize = 50
 
     private let defaults: UserDefaults
     private let storageKey: String
     private var state: StoredState
     private var pendingPersistWorkItem: DispatchWorkItem?
+    private var pendingSharedSnapshotWorkItem: DispatchWorkItem?
     private var dirtySampleCount = 0
+    private var dirtySharedSnapshotSampleCount = 0
 
     init(defaults: UserDefaults, storageKey: String) {
         self.defaults = defaults
@@ -11932,7 +11961,10 @@ private final class TextKeyTouchLearner {
     func reset() {
         pendingPersistWorkItem?.cancel()
         pendingPersistWorkItem = nil
+        pendingSharedSnapshotWorkItem?.cancel()
+        pendingSharedSnapshotWorkItem = nil
         dirtySampleCount = 0
+        dirtySharedSnapshotSampleCount = 0
         state = StoredState(version: Self.storageVersion, keys: [:])
         defaults.removeObject(forKey: storageKey)
         KeyboardSharedDefaults.clearTouchLearningSnapshot()
@@ -11941,7 +11973,10 @@ private final class TextKeyTouchLearner {
     func flush() {
         pendingPersistWorkItem?.cancel()
         pendingPersistWorkItem = nil
+        pendingSharedSnapshotWorkItem?.cancel()
+        pendingSharedSnapshotWorkItem = nil
         persistIfNeeded()
+        publishSharedSnapshotIfNeeded(force: true)
     }
 
     func areHorizontalNeighbors(_ first: CGRect, _ second: CGRect) -> Bool {
@@ -11993,6 +12028,7 @@ private final class TextKeyTouchLearner {
         let dyPercent = Int((observedY * 100).rounded())
         kbLog.debug("touch gaussian learn kind=\(kind.logName, privacy: .public) key=\(character, privacy: .private) samples=\(sampleCount, privacy: .public) dxPct=\(dxPercent, privacy: .public) dyPct=\(dyPercent, privacy: .public)")
         schedulePersist(immediate: kind == .correction)
+        scheduleSharedSnapshotPublish(immediate: false)
     }
 
     func gutterWinner(
@@ -12080,7 +12116,9 @@ private final class TextKeyTouchLearner {
     private func schedulePersist(immediate: Bool) {
         dirtySampleCount += 1
         if immediate || dirtySampleCount >= Self.persistSampleBatchSize {
-            flush()
+            pendingPersistWorkItem?.cancel()
+            pendingPersistWorkItem = nil
+            persistIfNeeded()
             return
         }
         guard pendingPersistWorkItem == nil else { return }
@@ -12101,11 +12139,35 @@ private final class TextKeyTouchLearner {
     private func persist() {
         guard let data = try? JSONEncoder().encode(state) else { return }
         defaults.set(data, forKey: storageKey)
+    }
+
+    private func scheduleSharedSnapshotPublish(immediate: Bool) {
+        dirtySharedSnapshotSampleCount += 1
+        if immediate || dirtySharedSnapshotSampleCount >= Self.sharedSnapshotSampleBatchSize {
+            pendingSharedSnapshotWorkItem?.cancel()
+            pendingSharedSnapshotWorkItem = nil
+            publishSharedSnapshotIfNeeded(force: true)
+            return
+        }
+        guard pendingSharedSnapshotWorkItem == nil else { return }
+        let work = DispatchWorkItem { [weak self] in
+            self?.pendingSharedSnapshotWorkItem = nil
+            self?.publishSharedSnapshotIfNeeded(force: false)
+        }
+        pendingSharedSnapshotWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.sharedSnapshotDebounceInterval, execute: work)
+    }
+
+    private func publishSharedSnapshotIfNeeded(force: Bool) {
+        guard force || dirtySharedSnapshotSampleCount > 0 else { return }
         publishSharedSnapshot()
+        dirtySharedSnapshotSampleCount = 0
     }
 
     /// Mirror into the App Group (best-effort; requires Full Access) so the
-    /// host app's Keyboard Settings can show what has been learned.
+    /// host app's Keyboard Settings can show what has been learned. Keep this
+    /// lower-frequency than the internal learner persist because App Group
+    /// writes are only for inspection, not for routing live touches.
     private func publishSharedSnapshot() {
         var keys: [String: KeyboardTouchLearningKeyStats] = [:]
         for (character, stats) in state.keys {

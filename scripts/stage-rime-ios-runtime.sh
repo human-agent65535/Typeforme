@@ -42,6 +42,29 @@ copy_optional_file() {
     fi
 }
 
+generate_compact_english_codes() {
+    local source="$RIME_DIR/typeforme_english.dict.yaml"
+    local target="$DEST/typeforme_english.codes.txt"
+    if [ ! -f "$source" ]; then
+        echo "error: required English Rime dictionary missing: $source" >&2
+        exit 1
+    fi
+    awk '
+        BEGIN { in_entries = 0 }
+        $0 == "..." { in_entries = 1; next }
+        !in_entries || $0 == "" || $0 ~ /^#/ { next }
+        {
+            field_count = split($0, fields, "\t")
+            if (field_count >= 2) {
+                code = tolower(fields[2])
+                if (code ~ /^[a-z][a-z]+$/) {
+                    print code
+                }
+            }
+        }
+    ' "$source" | LC_ALL=C sort -u > "$target"
+}
+
 copy_required_file "$RIME_DIR/default.yaml" "$DEST"
 copy_optional_file "$RIME_DIR/LICENSE.rime-ice.txt" "$DEST"
 copy_optional_file "$RIME_DIR/SOURCES.md" "$DEST"
@@ -55,6 +78,8 @@ shopt -u nullglob
 while IFS= read -r -d '' file; do
     cp "$file" "$DEST/build/"
 done < <(find "$BUILD_DIR" -maxdepth 1 -type f -print0)
+
+generate_compact_english_codes
 
 if [ -d "$DEST/cn_dicts" ]; then
     echo "error: source Chinese dictionaries must not be copied into the keyboard bundle" >&2

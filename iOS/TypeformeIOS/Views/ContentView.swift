@@ -3072,8 +3072,8 @@ private struct ChineseLearningStatsView: View {
 // MARK: - Touch learning inspector
 
 /// Read-only view of the keyboard's per-key touch-offset learning. The
-/// keyboard mirrors its stats into the App Group on every persist; without
-/// this view the model was invisible and impossible to verify.
+/// keyboard mirrors throttled stats into the App Group; without this view the
+/// model was invisible and impossible to verify.
 private struct TouchLearningStatsView: View {
     @State private var snapshot: KeyboardTouchLearningSnapshot?
     @State private var displayMode: TouchLearningDisplayMode = .centers

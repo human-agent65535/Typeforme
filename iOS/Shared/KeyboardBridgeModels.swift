@@ -517,7 +517,7 @@ struct KeyboardDefaultsPayload: Codable, Equatable {
 }
 
 /// Read-only mirror of the keyboard's touch-learning model. Written by the
-/// keyboard extension on every stats persist; read by the host app's
+/// keyboard extension on a throttled stats mirror; read by the host app's
 /// Keyboard Settings inspector. Offsets are normalized to key size
 /// (positive x = right of key center, positive y = below key center).
 struct KeyboardTouchLearningKeyStats: Codable, Equatable {

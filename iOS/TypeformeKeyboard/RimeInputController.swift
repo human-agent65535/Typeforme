@@ -158,7 +158,63 @@ final class RimeInputController: @unchecked Sendable {
     private static let englishCompletionDisplayLimit = 1
     private static let shortLiteralLatinMaximumInputLength = 6
     private static let startupRetryInterval: TimeInterval = 2.0
+    private static let startupAttemptDefaultsKey = "rime.startupAttempt.v1"
+    private static let startupFallbackDefaultsKey = "rime.startupFallback.v1"
+    private static let startupAttemptMaxAge: TimeInterval = 24 * 60 * 60
+    private static let startupFallbackFailureWindow: TimeInterval = 30 * 60
+    private static let startupFallbackDurations: [TimeInterval] = [
+        2 * 60,
+        10 * 60,
+        30 * 60,
+        2 * 60 * 60,
+    ]
+    private static let compactEnglishCodesFileName = "typeforme_english.codes.txt"
     private static let globalLifecycle = GlobalLifecycle()
+
+    private struct StartupAttemptMarker: Codable {
+        let schemaID: String
+        let dictionaryTier: KeyboardRimeDictionaryTier
+        let startedAt: TimeInterval
+    }
+
+    private struct StartupFallbackMarker: Codable {
+        let dictionaryTier: KeyboardRimeDictionaryTier
+        let failureCount: Int
+        let firstFailedAt: TimeInterval
+        let lastFailedAt: TimeInterval
+        let expiresAt: TimeInterval
+
+        enum CodingKeys: String, CodingKey {
+            case dictionaryTier
+            case failureCount
+            case firstFailedAt
+            case lastFailedAt
+            case expiresAt
+        }
+
+        init(
+            dictionaryTier: KeyboardRimeDictionaryTier,
+            failureCount: Int,
+            firstFailedAt: TimeInterval,
+            lastFailedAt: TimeInterval,
+            expiresAt: TimeInterval
+        ) {
+            self.dictionaryTier = dictionaryTier
+            self.failureCount = failureCount
+            self.firstFailedAt = firstFailedAt
+            self.lastFailedAt = lastFailedAt
+            self.expiresAt = expiresAt
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            dictionaryTier = try container.decode(KeyboardRimeDictionaryTier.self, forKey: .dictionaryTier)
+            expiresAt = try container.decode(TimeInterval.self, forKey: .expiresAt)
+            failureCount = try container.decodeIfPresent(Int.self, forKey: .failureCount) ?? 1
+            lastFailedAt = try container.decodeIfPresent(TimeInterval.self, forKey: .lastFailedAt) ?? expiresAt
+            firstFailedAt = try container.decodeIfPresent(TimeInterval.self, forKey: .firstFailedAt) ?? lastFailedAt
+        }
+    }
 
     private let api = IRimeAPI()
     private let rimeQueue = DispatchQueue(label: "\(TypeformeBundleConfiguration.keyboardBundleIdentifier).rime", qos: .userInitiated)
@@ -183,9 +239,10 @@ final class RimeInputController: @unchecked Sendable {
     var isReady: Bool {
         stateLock.lock()
         defer { stateLock.unlock() }
+        let expectedProfile = Self.activeEffectiveProfile(for: desiredProfile, now: Date().timeIntervalSince1970)
         return startupState == .ready
             && session != 0
-            && selectedSchemaID == desiredProfile.schemaID
+            && selectedSchemaID == expectedProfile.schemaID
             && lastErrorMessage == nil
     }
 
@@ -205,16 +262,26 @@ final class RimeInputController: @unchecked Sendable {
             }
             lastErrorMessage = nil
         }
-        let requestedSchemaID = desiredProfile.schemaID
+        let requestedProfile = desiredProfile
+        let effectiveProfile = Self.effectiveStartupProfile(for: requestedProfile, now: now)
+        if effectiveProfile != requestedProfile {
+            lastErrorMessage = nil
+        }
+        let requestedSchemaID = effectiveProfile.schemaID
         startupState = .starting
         lastStartupAttemptAt = now
         stateLock.unlock()
 
+        Self.recordStartupAttempt(profile: effectiveProfile, now: now)
         let startedAt = Date()
         rimeLog.notice("Rime startup scheduled schema=\(requestedSchemaID, privacy: .public)")
         rimeQueue.async { [weak self] in
-            guard let self else { return }
+            guard let self else {
+                Self.clearStartupAttempt()
+                return
+            }
             let didStart = self.startOnQueue(bundle: bundle)
+            Self.clearStartupAttempt()
             let elapsedMS = Date().timeIntervalSince(startedAt) * 1000
             if didStart {
                 rimeLog.notice("Rime startup ready in \(elapsedMS, privacy: .public) ms")
@@ -250,7 +317,7 @@ final class RimeInputController: @unchecked Sendable {
             return false
         }
         runtimeSharedSupportURL = sharedSupportURL
-        rimeLog.notice("Rime startup resources ready schema=\(self.desiredProfileOnQueue.schemaID, privacy: .public)")
+        rimeLog.notice("Rime startup resources ready schema=\(self.effectiveDesiredProfileOnQueue.schemaID, privacy: .public)")
 
         do {
             // The keyboard extension must only open prebuilt Rime data. Do not
@@ -287,7 +354,7 @@ final class RimeInputController: @unchecked Sendable {
                     return false
                 }
             }
-            let schemaID = desiredProfileOnQueue.schemaID
+            let schemaID = effectiveDesiredProfileOnQueue.schemaID
             if selectedSchemaID != schemaID {
                 let didSelectSchema = api.selectSchema(session, andSchameId: schemaID)
                 if !didSelectSchema {
@@ -345,17 +412,18 @@ final class RimeInputController: @unchecked Sendable {
         stateLock.unlock()
         guard startIfNeeded() else { return notReadyState() }
         return rimeQueue.sync {
-            if selectedSchemaID != profile.schemaID {
+            let targetProfile = effectiveDesiredProfileOnQueue
+            if selectedSchemaID != targetProfile.schemaID {
                 api.cleanComposition(session)
-                let didSelectSchema = api.selectSchema(session, andSchameId: profile.schemaID)
+                let didSelectSchema = api.selectSchema(session, andSchameId: targetProfile.schemaID)
                 guard didSelectSchema else {
                     finishStartupOnQueue(.failed, errorMessage: "中文数据不可用")
                     return notReadyState()
                 }
-                selectedSchemaID = profile.schemaID
+                selectedSchemaID = targetProfile.schemaID
                 if probeSession != 0 {
                     api.cleanComposition(probeSession)
-                    if !api.selectSchema(probeSession, andSchameId: profile.schemaID) {
+                    if !api.selectSchema(probeSession, andSchameId: targetProfile.schemaID) {
                         probeSession = 0
                     }
                 }
@@ -562,13 +630,17 @@ final class RimeInputController: @unchecked Sendable {
     }
 
     private var isReadyOnQueue: Bool {
-        session != 0 && selectedSchemaID == desiredProfileOnQueue.schemaID && lastErrorMessage == nil
+        session != 0 && selectedSchemaID == effectiveDesiredProfileOnQueue.schemaID && lastErrorMessage == nil
     }
 
     private var desiredProfileOnQueue: RimeKeyboardProfile {
         stateLock.lock()
         defer { stateLock.unlock() }
         return desiredProfile
+    }
+
+    private var effectiveDesiredProfileOnQueue: RimeKeyboardProfile {
+        Self.activeEffectiveProfile(for: desiredProfileOnQueue, now: Date().timeIntervalSince1970)
     }
 
     private var desiredUserPhraseSignatureOnQueue: String {
@@ -801,7 +873,7 @@ final class RimeInputController: @unchecked Sendable {
             rimeLog.error("Rime probe session creation failed")
             return
         }
-        let schemaID = desiredProfileOnQueue.schemaID
+        let schemaID = effectiveDesiredProfileOnQueue.schemaID
         guard api.selectSchema(created, andSchameId: schemaID) else {
             rimeLog.error("Rime probe schema select failed")
             return
@@ -951,6 +1023,9 @@ final class RimeInputController: @unchecked Sendable {
     private func loadEnglishWordCodesOnQueue(from sharedSupportURL: URL) {
         guard englishWordCodes == nil else { return }
         let startedAt = Date()
+        if loadCompactEnglishWordCodesOnQueue(from: sharedSupportURL, startedAt: startedAt) {
+            return
+        }
         let url = sharedSupportURL.appendingPathComponent("typeforme_english.dict.yaml")
         guard let content = try? String(contentsOf: url, encoding: .utf8) else {
             englishWordCodes = []
@@ -980,6 +1055,175 @@ final class RimeInputController: @unchecked Sendable {
         englishWordCodes = codes
         let elapsedMS = Date().timeIntervalSince(startedAt) * 1000
         rimeLog.notice("English word code cache loaded count=\(codes.count, privacy: .public) elapsedMs=\(elapsedMS, privacy: .public)")
+    }
+
+    private func loadCompactEnglishWordCodesOnQueue(from sharedSupportURL: URL, startedAt: Date) -> Bool {
+        let url = sharedSupportURL.appendingPathComponent(Self.compactEnglishCodesFileName)
+        guard let content = try? String(contentsOf: url, encoding: .utf8) else {
+            return false
+        }
+        var codes = Set<String>()
+        codes.reserveCapacity(80_000)
+        content.enumerateLines { line, _ in
+            let code = line.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard Self.isEnglishWordLookupCode(code) else { return }
+            codes.insert(code)
+        }
+        englishWordCodes = codes
+        let elapsedMS = Date().timeIntervalSince(startedAt) * 1000
+        rimeLog.notice("Compact English word code cache loaded count=\(codes.count, privacy: .public) elapsedMs=\(elapsedMS, privacy: .public)")
+        return true
+    }
+
+    private static func effectiveStartupProfile(
+        for profile: RimeKeyboardProfile,
+        now: TimeInterval
+    ) -> RimeKeyboardProfile {
+        guard profile.dictionaryTier != .standard else { return profile }
+        if let fallback = activeStartupFallback(now: now),
+           fallback.dictionaryTier == profile.dictionaryTier {
+            return standardFallbackProfile(from: profile, reason: "active fallback")
+        }
+        guard let attempt = unresolvedStartupAttempt(now: now),
+              attempt.dictionaryTier == profile.dictionaryTier
+        else { return profile }
+        let fallback = saveStartupFallback(dictionaryTier: profile.dictionaryTier, now: now)
+        reportStartupFallbackToHost(
+            dictionaryTier: profile.dictionaryTier,
+            retryAfter: max(0, fallback.expiresAt - now)
+        )
+        return standardFallbackProfile(from: profile, reason: "previous startup did not finish")
+    }
+
+    private static func activeEffectiveProfile(
+        for profile: RimeKeyboardProfile,
+        now: TimeInterval
+    ) -> RimeKeyboardProfile {
+        guard profile.dictionaryTier != .standard,
+              let fallback = activeStartupFallback(now: now),
+              fallback.dictionaryTier == profile.dictionaryTier
+        else { return profile }
+        var effective = profile
+        effective.dictionaryTier = .standard
+        return effective
+    }
+
+    private static func standardFallbackProfile(
+        from profile: RimeKeyboardProfile,
+        reason: String
+    ) -> RimeKeyboardProfile {
+        var fallback = profile
+        fallback.dictionaryTier = .standard
+        rimeLog.error(
+            "Rime startup falling back to standard dictionary from \(profile.dictionaryTier.rawValue, privacy: .public): \(reason, privacy: .public)"
+        )
+        return fallback
+    }
+
+    private static func unresolvedStartupAttempt(now: TimeInterval) -> StartupAttemptMarker? {
+        guard let data = UserDefaults.standard.data(forKey: startupAttemptDefaultsKey),
+              let attempt = try? JSONDecoder().decode(StartupAttemptMarker.self, from: data)
+        else { return nil }
+        let age = now - attempt.startedAt
+        guard age >= 0, age <= startupAttemptMaxAge else {
+            UserDefaults.standard.removeObject(forKey: startupAttemptDefaultsKey)
+            return nil
+        }
+        return attempt
+    }
+
+    private static func activeStartupFallback(now: TimeInterval) -> StartupFallbackMarker? {
+        guard let fallback = storedStartupFallback(now: now),
+              now <= fallback.expiresAt
+        else { return nil }
+        return fallback
+    }
+
+    private static func storedStartupFallback(now: TimeInterval) -> StartupFallbackMarker? {
+        guard let data = UserDefaults.standard.data(forKey: startupFallbackDefaultsKey),
+              let fallback = try? JSONDecoder().decode(StartupFallbackMarker.self, from: data)
+        else { return nil }
+        let historyExpiresAt = max(fallback.expiresAt, fallback.lastFailedAt + startupFallbackFailureWindow)
+        guard now <= historyExpiresAt else {
+            UserDefaults.standard.removeObject(forKey: startupFallbackDefaultsKey)
+            return nil
+        }
+        return fallback
+    }
+
+    private static func recordStartupAttempt(profile: RimeKeyboardProfile, now: TimeInterval) {
+        let marker = StartupAttemptMarker(
+            schemaID: profile.schemaID,
+            dictionaryTier: profile.dictionaryTier,
+            startedAt: now
+        )
+        guard let data = try? JSONEncoder().encode(marker) else { return }
+        UserDefaults.standard.set(data, forKey: startupAttemptDefaultsKey)
+    }
+
+    private static func clearStartupAttempt() {
+        UserDefaults.standard.removeObject(forKey: startupAttemptDefaultsKey)
+    }
+
+    @discardableResult
+    private static func saveStartupFallback(
+        dictionaryTier: KeyboardRimeDictionaryTier,
+        now: TimeInterval
+    ) -> StartupFallbackMarker {
+        let previous = storedStartupFallback(now: now)
+        let continuesRecentFailure: Bool
+        if let previous {
+            continuesRecentFailure = previous.dictionaryTier == dictionaryTier
+                && now - previous.lastFailedAt <= startupFallbackFailureWindow
+        } else {
+            continuesRecentFailure = false
+        }
+        let failureCount = continuesRecentFailure ? min((previous?.failureCount ?? 0) + 1, startupFallbackDurations.count) : 1
+        let firstFailedAt = continuesRecentFailure ? (previous?.firstFailedAt ?? now) : now
+        let duration = startupFallbackDuration(forFailureCount: failureCount)
+        let marker = StartupFallbackMarker(
+            dictionaryTier: dictionaryTier,
+            failureCount: failureCount,
+            firstFailedAt: firstFailedAt,
+            lastFailedAt: now,
+            expiresAt: now + duration
+        )
+        if let data = try? JSONEncoder().encode(marker) {
+            UserDefaults.standard.set(data, forKey: startupFallbackDefaultsKey)
+        }
+        return marker
+    }
+
+    private static func startupFallbackDuration(forFailureCount failureCount: Int) -> TimeInterval {
+        let index = min(max(failureCount, 1) - 1, startupFallbackDurations.count - 1)
+        return startupFallbackDurations[index]
+    }
+
+    private static func reportStartupFallbackToHost(
+        dictionaryTier: KeyboardRimeDictionaryTier,
+        retryAfter: TimeInterval
+    ) {
+        let retryText = startupFallbackRetryText(retryAfter)
+        let issue = KeyboardHostIssueReport(
+            commandID: nil,
+            message: "中文词典 \(dictionaryTier.title) 上次启动未完成，已临时切回 Standard，约 \(retryText) 后会自动重试。"
+        )
+        if KeyboardSharedDefaults.saveKeyboardHostIssue(issue) {
+            KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.keyboardIssueReported)
+        }
+    }
+
+    private static func startupFallbackRetryText(_ interval: TimeInterval) -> String {
+        let seconds = max(1, Int(interval.rounded(.up)))
+        if seconds < 60 {
+            return "\(seconds) 秒"
+        }
+        let minutes = max(1, Int(ceil(Double(seconds) / 60.0)))
+        if minutes < 60 {
+            return "\(minutes) 分钟"
+        }
+        let hours = max(1, Int(ceil(Double(minutes) / 60.0)))
+        return "\(hours) 小时"
     }
 
     private static func customPhraseFileContent(from phrases: [String]) -> String {

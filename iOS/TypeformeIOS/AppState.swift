@@ -532,6 +532,8 @@ final class AppState {
     private static let networkPathSameSignatureRefreshInterval: TimeInterval = 15
     private static let canceledKeyboardCommandTTL: TimeInterval = 10
     private static let bridgeProgressStatusDelay: TimeInterval = 1.2
+    private static let keyboardStatusAudioLevelInterval: UInt64 = 100_000_000
+    private static let keyboardStatusAudioLevelMinimumDelta: Float = 0.025
     /// How long a `.success` / `.failure` phase sticks before reverting to
     /// `.idle`. Long enough to read, short enough not to block the next press.
     private static let phaseAutoResetDelay: TimeInterval = 2.4
@@ -3703,19 +3705,36 @@ final class AppState {
         }
         guard keyboardStatusAudioLevelTask == nil else { return }
         keyboardStatusAudioLevelTask = Task { @MainActor [weak self] in
+            var lastPublishedLevel: Float?
             while !Task.isCancelled {
                 guard let self else { return }
                 guard self.keyboardBridgeStatus.state == .recording else {
                     self.stopKeyboardStatusAudioLevelPush()
                     return
                 }
-                let level = self.keyboardAudioSession.isRecording
-                    ? self.keyboardAudioSession.level
-                    : self.recorder.level
-                self.keyboardServer.publishStatus(self.keyboardBridgeStatus.withAudioLevel(level))
-                try? await Task.sleep(nanoseconds: 50_000_000)
+                let level = self.currentKeyboardStatusAudioLevel()
+                if Self.shouldPublishKeyboardStatusAudioLevel(level, after: lastPublishedLevel) {
+                    self.keyboardServer.publishStatus(self.keyboardBridgeStatus.withAudioLevel(level))
+                    lastPublishedLevel = level
+                }
+                try? await Task.sleep(nanoseconds: Self.keyboardStatusAudioLevelInterval)
             }
         }
+    }
+
+    private func currentKeyboardStatusAudioLevel() -> Float {
+        let level = keyboardAudioSession.isRecording
+            ? keyboardAudioSession.level
+            : recorder.level
+        return max(0, min(1, level))
+    }
+
+    private static func shouldPublishKeyboardStatusAudioLevel(_ level: Float, after previous: Float?) -> Bool {
+        guard let previous else { return true }
+        if abs(level - previous) >= keyboardStatusAudioLevelMinimumDelta {
+            return true
+        }
+        return level <= 0.001 && previous > 0.001
     }
 
     private func stopKeyboardStatusAudioLevelPush() {
