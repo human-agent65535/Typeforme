@@ -3,6 +3,8 @@ import KeyboardShortcuts
 import AppKit
 import CoreImage.CIFilterBuiltins
 
+private let typeformePrivacyPolicyURL = URL(string: "https://github.com/human-agent65535/Typeforme/blob/main/docs/app-store/privacy-policy.md")!
+
 private struct IntegerSettingField: View {
     let title: String
     @Binding var value: Int
@@ -110,6 +112,9 @@ struct GeneralSettingsView: View {
                     NotificationCenter.default.post(name: .setupGuideRequested, object: nil)
                 } label: {
                     Label("Open Setup Guide", systemImage: "checklist")
+                }
+                Link(destination: typeformePrivacyPolicyURL) {
+                    Label("Privacy Policy", systemImage: "hand.raised")
                 }
                 HStack {
                     Text("Bundle ID")
@@ -4371,6 +4376,9 @@ struct DiagnosticsSettingsView: View {
                     .font(.footnote).foregroundStyle(.secondary)
             }
             Section("Privacy") {
+                Link(destination: typeformePrivacyPolicyURL) {
+                    Label("Privacy Policy", systemImage: "hand.raised")
+                }
                 Text(debugMode ? "Debug mode stores raw audio and text locally in the debug capture folder. Turn it off when you are done." : "Normal live logs use provider / latency / length / hash / error-code only. They do not include raw user text.")
                     .font(.footnote).foregroundStyle(.secondary)
             }

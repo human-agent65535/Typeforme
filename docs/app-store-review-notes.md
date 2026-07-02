@@ -1,7 +1,9 @@
-# App Store Review Notes Draft
+# App Store Review Notes
 
-Use this as the starting point for App Review notes. Update the bundle id,
-test account details, and public privacy policy URL before submission.
+Use this as the starting point for App Review notes. Update the bundle id and
+any public test details before submission.
+
+Privacy Policy URL: https://github.com/human-agent65535/Typeforme/blob/main/docs/app-store/privacy-policy.md
 
 ## What the reviewer needs
 
@@ -31,8 +33,11 @@ test account details, and public privacy policy URL before submission.
 
 ## Privacy notes
 
+- App Privacy is submitted as Data Not Collected. Typeforme does not operate a
+  backend that receives, stores, analyzes, or tracks app data.
 - Dictation audio is recorded by the iOS host app and sent to the user-paired
-  Mac Bridge for transcription.
+  Mac Bridge for transcription. The paired Mac is configured and controlled by
+  the user.
 - The host app uses the background audio mode for keyboard dictation readiness:
   Background Mic keeps a user-visible host audio session ready after the user
   enables it, and PiP capture keeps a visible Typeforme Picture in Picture
@@ -41,6 +46,9 @@ test account details, and public privacy policy URL before submission.
   extension does not record audio directly.
 - The keyboard may send selected text or nearby text context only when the user
   explicitly starts dictation, a repair command, or a refine action.
+- If the user configures an external LLM-compatible endpoint, Typeforme sends
+  the relevant prompt and text to that user-selected endpoint. Typeforme does
+  not proxy that traffic through developer infrastructure.
 - Keyboard learning data is stored locally in the app group and can be reset
   from Keyboard Settings.
 - Typeforme does not use tracking.
@@ -51,3 +59,7 @@ test account details, and public privacy policy URL before submission.
   prefix owned by the developer team.
 - Keep the background audio mode explanation aligned with the shipped Keyboard
   Settings capture options.
+- Publish the privacy policy URL before submitting for App Review.
+- Revisit `docs/app-store/privacy-label-data-not-collected.md` before release if
+  any analytics, crash reporting, support upload, sync, account, or
+  developer-operated backend is added.

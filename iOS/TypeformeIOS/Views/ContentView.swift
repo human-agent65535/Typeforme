@@ -1,6 +1,8 @@
 import SwiftUI
 import UIKit
 
+private let typeformePrivacyPolicyURL = URL(string: "https://github.com/human-agent65535/Typeforme/blob/main/docs/app-store/privacy-policy.md")!
+
 struct ContentView: View {
     @Environment(AppState.self) private var state
     @State private var showingPairing = false
@@ -43,6 +45,11 @@ struct ContentView: View {
                                 showingKeyboardGuide = true
                             } label: {
                                 Label("Keyboard Guide", systemImage: "questionmark.circle")
+                            }
+                            Button {
+                                UIApplication.shared.open(typeformePrivacyPolicyURL)
+                            } label: {
+                                Label("Privacy Policy", systemImage: "hand.raised")
                             }
                         } label: {
                             Image(systemName: "gearshape")
@@ -466,6 +473,9 @@ private struct SetupReadinessView: View {
                 onShowGuide()
             } label: {
                 Label("Keyboard Guide", systemImage: "questionmark.circle")
+            }
+            Link(destination: typeformePrivacyPolicyURL) {
+                Label("Privacy Policy", systemImage: "hand.raised")
             }
         } header: {
             Text("Help")
