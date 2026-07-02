@@ -95,6 +95,7 @@ private struct RecognitionSourceSettingsLabel: View {
 struct GeneralSettingsView: View {
     @AppStorage(AppSettings.Keys.processingMode) private var processingModeRaw = ProcessingMode.client.rawValue
     @AppStorage(AppSettings.Keys.launchAtLogin) private var launchAtLogin = true
+    @AppStorage(AppSettings.Keys.showDockIcon) private var showDockIcon = false
     @State private var axTrusted = AppPermissions.accessibilityTrusted
     @State private var microphoneStatus = AppPermissions.microphoneStatus
     @State private var launchAtLoginStatus = LaunchAtLoginController.status
@@ -144,6 +145,10 @@ struct GeneralSettingsView: View {
                         .foregroundStyle(.red)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+                Toggle("Show Dock icon", isOn: $showDockIcon)
+                    .onChange(of: showDockIcon) { _, _ in
+                        AppActivationPolicy.applyPreferredPolicy()
+                    }
             }
             Section("Role") {
                 Picker("This Mac", selection: processingModeBinding) {

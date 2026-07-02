@@ -17,6 +17,7 @@ enum AppSettings {
         static let voiceLivePreviewSource = "recording.voiceLivePreviewSource"
         static let soundFeedback        = "recording.soundFeedback" // Bool — start/stop/error cues
         static let launchAtLogin        = "app.launchAtLogin"
+        static let showDockIcon         = "app.showDockIcon"
 
         // ASR
         static let asrQwenEnabled      = "asr.qwen3.enabled"
@@ -120,6 +121,7 @@ enum AppSettings {
             Keys.voiceLivePreviewSource: VoiceLivePreviewSource.appleSpeech.rawValue,
             Keys.soundFeedback:        true,
             Keys.launchAtLogin:        true,
+            Keys.showDockIcon:         false,
 
             Keys.asrQwenEnabled:    false,
             Keys.asrNvidiaNemotronEnabled: false,
@@ -288,6 +290,7 @@ enum AppSettings {
 
     static var maxRecordingDuration: TimeInterval     { ud.double(forKey: Keys.maxRecordingDuration) }
     static var launchAtLogin: Bool                    { ud.bool(forKey: Keys.launchAtLogin) }
+    static var showDockIcon: Bool                     { ud.bool(forKey: Keys.showDockIcon) }
     static var soundFeedback: Bool                    { ud.bool(forKey: Keys.soundFeedback) }
     /// When `true`, the recorder feeds PCM into the selected live-preview
     /// source so the HUD can show a transcript while the user is still

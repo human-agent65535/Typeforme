@@ -34,8 +34,7 @@ final class SetupGuideWindowController: NSObject, NSWindowDelegate {
     }
 
     func show() {
-        NSApp.setActivationPolicy(.regular)
-        NSApp.activate(ignoringOtherApps: true)
+        AppActivationPolicy.showDocumentWindow()
         window.makeKeyAndOrderFront(nil)
     }
 
@@ -46,12 +45,7 @@ final class SetupGuideWindowController: NSObject, NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
         DispatchQueue.main.async { [weak self] in
             guard let window = self?.window else { return }
-            let otherVisibleWindow = NSApp.windows.contains { candidate in
-                candidate !== window && candidate.isVisible
-            }
-            if !otherVisibleWindow {
-                NSApp.setActivationPolicy(.accessory)
-            }
+            AppActivationPolicy.restoreAccessoryIfNoDocumentWindows(excluding: window)
         }
     }
 }

@@ -57,7 +57,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.setActivationPolicy(.accessory)
+        AppActivationPolicy.applyPreferredPolicy()
 
         hud = HUDWindowController(coordinator: coordinator, onOpenSettings: { [weak self] in
             self?.openSettings()
