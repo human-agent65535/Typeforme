@@ -29,6 +29,7 @@ final class BridgeLivePreviewStreamer: @unchecked Sendable {
     private let audioQueue = DispatchQueue(label: "typeforme.ios.bridge-live-preview.audio")
     private var sessionID: String?
     private var pendingPackets: [LivePreviewOpusPacket] = []
+    private var pendingPacketHeadIndex = 0
     private var pendingPacketBytes = 0
     private var startInFlight = false
     private var finished = false
@@ -245,14 +246,44 @@ final class BridgeLivePreviewStreamer: @unchecked Sendable {
 
     private func clearPendingPackets(keepingCapacity: Bool) {
         pendingPackets.removeAll(keepingCapacity: keepingCapacity)
+        pendingPacketHeadIndex = 0
         pendingPacketBytes = 0
     }
 
+    private func popPendingPacketOnAudioQueue() -> LivePreviewOpusPacket? {
+        guard pendingPacketHeadIndex < pendingPackets.count else {
+            compactPendingPacketsIfNeeded(force: true, keepingCapacity: true)
+            return nil
+        }
+        let packet = pendingPackets[pendingPacketHeadIndex]
+        pendingPacketHeadIndex += 1
+        pendingPacketBytes -= packet.data.count
+        compactPendingPacketsIfNeeded(force: false, keepingCapacity: true)
+        return packet
+    }
+
     private func trimPendingPacketsToLimit() {
-        while pendingPacketBytes > Self.maxPendingByteCount, !pendingPackets.isEmpty {
-            let removed = pendingPackets.removeFirst()
+        while pendingPacketBytes > Self.maxPendingByteCount,
+              pendingPacketHeadIndex < pendingPackets.count {
+            let removed = pendingPackets[pendingPacketHeadIndex]
+            pendingPacketHeadIndex += 1
             pendingPacketBytes -= removed.data.count
         }
+        compactPendingPacketsIfNeeded(force: false, keepingCapacity: true)
+    }
+
+    private func compactPendingPacketsIfNeeded(force: Bool, keepingCapacity: Bool) {
+        guard pendingPacketHeadIndex > 0 else { return }
+        if pendingPacketHeadIndex >= pendingPackets.count {
+            pendingPackets.removeAll(keepingCapacity: keepingCapacity)
+            pendingPacketHeadIndex = 0
+            return
+        }
+        guard force || (pendingPacketHeadIndex >= 64 && pendingPacketHeadIndex * 2 >= pendingPackets.count) else {
+            return
+        }
+        pendingPackets.removeFirst(pendingPacketHeadIndex)
+        pendingPacketHeadIndex = 0
     }
 
     private func cancelOnAudioQueue() {
@@ -330,9 +361,7 @@ final class BridgeLivePreviewStreamer: @unchecked Sendable {
 
     private func flushWebSocketOnAudioQueue() {
         guard !sendInFlight, let task = webSocketTask else { return }
-        if !pendingPackets.isEmpty {
-            let packet = pendingPackets.removeFirst()
-            pendingPacketBytes -= packet.data.count
+        if let packet = popPendingPacketOnAudioQueue() {
             let data = packet.data
             let byteCount = data.count
             let sampleCount = packet.sampleCount

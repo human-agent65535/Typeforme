@@ -556,11 +556,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private var statusStreamBridgeToken: String?
     private var lastStatusStreamFrameAt: TimeInterval = 0
     private var statusStreamStopTask: Task<Void, Never>?
+    private var activeStatusReconcileTask: Task<Void, Never>?
     private var refineTimeoutTask: Task<Void, Never>?
     private var refineTimeoutGeneration: UInt64 = 0
     private var refineTimeoutKey: String?
     private var lastSlowUpdateUILogAt: TimeInterval = 0
     private var lastStatusStreamFailureLogAt: TimeInterval = 0
+    private var lastActiveStatusReconcileLogAt: TimeInterval = 0
     private var bridgeCommandTasks: [String: Task<Void, Never>] = [:]
     private var styleRewriteTask: Task<Void, Never>?
     private var styleConfigureTask: Task<Void, Never>?
@@ -593,6 +595,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private static let sharedStandbyLivenessSnapshotMaxAge: TimeInterval = 8
     private static let sharedStandbyPresentationSnapshotMaxAge: TimeInterval = 20 * 60
     private static let statusStreamFreshnessAfterDarwinStart: TimeInterval = 1.0
+    private static let activeStatusStreamStaleAge: TimeInterval = 4.5
+    private static let activeBridgeStatusReconcileInterval: TimeInterval = 2.5
     private static let textSpaceCursorPointsPerCharacter: CGFloat = 9
     private static let containingAppBundleIdentifier = TypeformeBundleConfiguration.hostBundleIdentifier
     private let deleteRepeatInitialDelay: UInt64 = 450_000_000
@@ -2866,6 +2870,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                     self.lastDarwinAwakeAt = Date().timeIntervalSince1970
                     self.finishStoppedNotification()
                     let appliedSnapshot = self.applySharedBridgeStatusSnapshot()
+                    let shouldReconcileStoppedStatus = self.currentBridgeStatus?.state == .sending
+                        || self.pendingStopCommandID != nil
                     if wasStarting {
                         if appliedSnapshot,
                            self.currentBridgeStatus?.state == .idle {
@@ -2881,6 +2887,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                             self.bridgeStatus = KeyboardBridgeStatus(state: .standby, message: "Ready")
                         }
                         self.updateUI()
+                    }
+                    if shouldReconcileStoppedStatus {
+                        self.refreshBridgeStatus(captureSelection: false, force: true)
+                        self.recoverBridgeStatusSnapshotForActiveCommand()
+                        self.updateActiveStatusReconcileLoopForCurrentStatus()
                     }
                 }
             },
@@ -10567,11 +10578,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             case .configure, .refineText:
                 message = "Ready"
             }
-            bridgeStatus = KeyboardBridgeStatus(
+            let status = KeyboardBridgeStatus(
                 commandID: command.id,
                 state: command.action == .start ? .standby : (command.action == .cancel ? .standby : .sending),
                 message: message
             )
+            bridgeStatus = status
+            updateActiveStatusReconcileLoop(for: status)
             lastBridgeContactAt = Date().timeIntervalSince1970
             updateUI()
         }
@@ -10648,11 +10661,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 isCommandPressActive = false
                 pendingStopCommandID = commandID
             }
-            bridgeStatus = KeyboardBridgeStatus(
+            let status = KeyboardBridgeStatus(
                 commandID: commandID,
                 state: action == .start ? .standby : .sending,
                 message: action == .start ? "Starting recording" : stopProcessingStatusTitle
             )
+            bridgeStatus = status
+            updateActiveStatusReconcileLoop(for: status)
             lastBridgeContactAt = Date().timeIntervalSince1970
             updateUI()
         }
@@ -10858,6 +10873,64 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         statusStreamStopTask = Task {
             await client.shutdown()
         }
+    }
+
+    private func updateActiveStatusReconcileLoopForCurrentStatus() {
+        guard let status = currentBridgeStatus else {
+            cancelActiveStatusReconcileLoop()
+            return
+        }
+        updateActiveStatusReconcileLoop(for: status)
+    }
+
+    private func updateActiveStatusReconcileLoop(for status: KeyboardBridgeStatus) {
+        guard status.state == .recording || status.state == .sending else {
+            cancelActiveStatusReconcileLoop()
+            return
+        }
+        guard activeStatusReconcileTask == nil else { return }
+        activeStatusReconcileTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: UInt64(Self.activeBridgeStatusReconcileInterval * 1_000_000_000))
+                guard !Task.isCancelled else { return }
+                await self?.reconcileActiveBridgeStatusIfNeeded()
+            }
+        }
+    }
+
+    private func cancelActiveStatusReconcileLoop() {
+        activeStatusReconcileTask?.cancel()
+        activeStatusReconcileTask = nil
+    }
+
+    @MainActor
+    private func reconcileActiveBridgeStatusIfNeeded() async {
+        guard shouldRecoverActiveBridgeStatus else {
+            cancelActiveStatusReconcileLoop()
+            return
+        }
+        let now = Date().timeIntervalSince1970
+        let statusStreamAge = lastStatusStreamFrameAt > 0 ? now - lastStatusStreamFrameAt : .infinity
+        let statusStreamIsStale = statusStreamAge > Self.activeStatusStreamStaleAge
+        if statusStreamIsStale {
+            logActiveStatusReconcileIfNeeded(statusStreamAge: statusStreamAge)
+            refreshBridgeStatus(captureSelection: false, force: true)
+        }
+
+        guard currentBridgeStatus?.state == .sending || statusStreamIsStale else { return }
+        let expectedCommandID = activeBridgeResultCommandID
+        _ = await recoverBridgeStatusSnapshot(expectedCommandID: expectedCommandID)
+        if shouldRecoverActiveBridgeStatus, statusStreamIsStale {
+            refreshBridgeStatus(captureSelection: false, force: true)
+        }
+    }
+
+    private func logActiveStatusReconcileIfNeeded(statusStreamAge: TimeInterval) {
+        let now = Date().timeIntervalSince1970
+        guard now - lastActiveStatusReconcileLogAt >= 5 else { return }
+        lastActiveStatusReconcileLogAt = now
+        let ageMs = statusStreamAge.isFinite ? Int(statusStreamAge * 1_000) : -1
+        kbLog.notice("reconciling active keyboard status stream_age_ms=\(ageMs, privacy: .public)")
     }
 
     private func cancelRefineTimeoutWatchdog() {
@@ -11246,6 +11319,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         bridgeStatus = status
         isApplyingHostBridgeStatus = false
         updateRefineTimeoutWatchdog(for: status)
+        updateActiveStatusReconcileLoop(for: status)
         if recordsLiveContact {
             lastBridgeContactAt = Date().timeIntervalSince1970
         }

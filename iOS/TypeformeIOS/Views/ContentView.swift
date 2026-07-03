@@ -63,6 +63,9 @@ struct ContentView: View {
                         onSave: { newConfig in
                             state.saveConfig(newConfig)
                         },
+                        onSaveConnection: { bridgeEndpoints in
+                            state.saveBridgeEndpoints(bridgeEndpoints)
+                        },
                         onUnpair: {
                             state.unpair()
                         }
@@ -870,49 +873,75 @@ private struct RouteStatusBar: View {
     @Environment(AppState.self) private var state
 
     var body: some View {
-        // The whole bar is a tap target for a forced route refresh — the
-        // toolbar's refresh arrow does the same but is far from the status
-        // it refreshes.
-        Button {
-            Task { await state.refreshRoute(force: true) }
-        } label: {
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 10) {
-                    Circle()
-                        .fill(dotColor)
-                        .frame(width: 9, height: 9)
-                    Text(state.routeStatus.activeKind.rawValue)
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.primary)
-                    if let detail = latencyDetail {
-                        Text("· \(detail)")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
+        HStack(alignment: .top, spacing: 8) {
+            Button {
+                refreshRoute()
+            } label: {
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 10) {
+                        Circle()
+                            .fill(dotColor)
+                            .frame(width: 9, height: 9)
+                        Text(state.routeStatus.activeKind.rawValue)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.primary)
+                        if let detail = latencyDetail {
+                            Text("· \(detail)")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
                     }
-                    Spacer()
+                    // Install state and server timing coexist — previously the
+                    // installing line suppressed timings for its whole duration.
+                    if let installing = state.activeModelInstallText {
+                        Text(installing)
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                            .lineLimit(1)
+                    }
+                    if let timing = state.latestServerTiming?.displayText {
+                        Text(timing)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
                 }
-                // Install state and server timing coexist — previously the
-                // installing line suppressed timings for its whole duration.
-                if let installing = state.activeModelInstallText {
-                    Text(installing)
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                        .lineLimit(1)
-                }
-                if let timing = state.latestServerTiming?.displayText {
-                    Text(timing)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
             }
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+            .disabled(!canRefresh)
+            .accessibilityLabel("Bridge route: \(state.routeStatus.activeKind.rawValue)")
+            .accessibilityHint("Double tap to re-check the connection")
+
+            Button {
+                refreshRoute()
+            } label: {
+                Group {
+                    if state.isRefreshingRoute {
+                        ProgressView()
+                    } else {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                }
+                .font(.subheadline.weight(.semibold))
+                .frame(width: 32, height: 32)
+            }
+            .buttonStyle(.borderless)
+            .disabled(!canRefresh)
+            .accessibilityLabel("Refresh Bridge")
+            .accessibilityHint("Re-check the host connection")
         }
-        .buttonStyle(.plain)
-        .disabled(state.isRefreshingRoute || state.isBusy)
-        .accessibilityLabel("Bridge route: \(state.routeStatus.activeKind.rawValue)")
-        .accessibilityHint("Double tap to re-check the connection")
         .padding(.horizontal, 16)
+    }
+
+    private var canRefresh: Bool {
+        !state.isRefreshingRoute && !state.isBusy
+    }
+
+    private func refreshRoute() {
+        Task { await state.refreshRoute(force: true) }
     }
 
     private var dotColor: Color {

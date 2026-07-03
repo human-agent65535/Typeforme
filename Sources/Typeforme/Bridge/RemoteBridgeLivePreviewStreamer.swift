@@ -25,6 +25,7 @@ final class RemoteBridgeLivePreviewStreamer: @unchecked Sendable {
 
     private var sessionID: String?
     private var pendingPackets: [RemoteLivePreviewOpusPacket] = []
+    private var pendingPacketHeadIndex = 0
     private var pendingPacketBytes = 0
     private var startInFlight = false
     private var finished = false
@@ -38,8 +39,13 @@ final class RemoteBridgeLivePreviewStreamer: @unchecked Sendable {
     private var converterInputSampleRate = 0.0
     private var lastTranscript = ""
     private var startedAt: Date?
+    private var startRequestStartedAt: Date?
     private var queuedSampleCount = 0
     private var sentSampleCount = 0
+    private var nextQueueLogSampleCount = 16_000
+    private var nextSendLogSampleCount = 16_000
+    private var firstQueueLogged = false
+    private var firstSendLogged = false
     private var eventCount = 0
     private var finishWaiters: [CheckedContinuation<String?, Never>] = []
     private var finishResultText: String?
@@ -132,6 +138,7 @@ final class RemoteBridgeLivePreviewStreamer: @unchecked Sendable {
         guard !startInFlight, sessionID == nil, !finished else { return }
         startInFlight = true
         startedAt = Date()
+        startRequestStartedAt = startedAt
         Log.bridge.notice("Mac client live preview start request")
         let client = self.client
         let languageIDs = self.languageIDs
@@ -169,7 +176,7 @@ final class RemoteBridgeLivePreviewStreamer: @unchecked Sendable {
             return
         }
         Log.bridge.notice(
-            "Mac client live preview socket starting session=\(self.logSessionID, privacy: .public) queued_audio_ms=\(self.queuedAudioMS, privacy: .public)"
+            "Mac client live preview start response session=\(self.logSessionID, privacy: .public) start_ms=\(Self.elapsedMS(since: self.startRequestStartedAt), privacy: .public) queued_audio_ms=\(self.queuedAudioMS, privacy: .public)"
         )
         guard !finished else {
             if suppressSocketResult {
@@ -202,6 +209,7 @@ final class RemoteBridgeLivePreviewStreamer: @unchecked Sendable {
             return
         }
         queuedSampleCount += frameCount
+        logQueuedAudioIfNeeded(frameCount: frameCount, sourceSampleRate: mono.format.sampleRate)
         flushWebSocketOnAudioQueue()
     }
 
@@ -222,7 +230,7 @@ final class RemoteBridgeLivePreviewStreamer: @unchecked Sendable {
         }
         finished = true
         Log.bridge.notice(
-            "Mac client live preview finish requested session=\(self.logSessionID, privacy: .public) queued_audio_ms=\(self.queuedAudioMS, privacy: .public) sent_audio_ms=\(self.sentAudioMS, privacy: .public)"
+            "Mac client live preview finish requested session=\(self.logSessionID, privacy: .public) queued_audio_ms=\(self.queuedAudioMS, privacy: .public) sent_audio_ms=\(self.sentAudioMS, privacy: .public) pending_bytes=\(self.pendingPacketBytes, privacy: .public) elapsed_ms=\(self.elapsedMS, privacy: .public)"
         )
         if webSocketTask != nil {
             queueControlOnAudioQueue(.finish)
@@ -247,15 +255,49 @@ final class RemoteBridgeLivePreviewStreamer: @unchecked Sendable {
         guard !packets.isEmpty else { return }
         pendingPackets.append(contentsOf: packets)
         pendingPacketBytes += packets.reduce(0) { $0 + $1.data.count }
-        while pendingPacketBytes > Self.maxPendingByteCount, !pendingPackets.isEmpty {
-            let removed = pendingPackets.removeFirst()
+        trimPendingPacketsToLimit()
+    }
+
+    private func popPendingPacketOnAudioQueue() -> RemoteLivePreviewOpusPacket? {
+        guard pendingPacketHeadIndex < pendingPackets.count else {
+            compactPendingPacketsIfNeeded(force: true, keepingCapacity: true)
+            return nil
+        }
+        let packet = pendingPackets[pendingPacketHeadIndex]
+        pendingPacketHeadIndex += 1
+        pendingPacketBytes -= packet.data.count
+        compactPendingPacketsIfNeeded(force: false, keepingCapacity: true)
+        return packet
+    }
+
+    private func trimPendingPacketsToLimit() {
+        while pendingPacketBytes > Self.maxPendingByteCount,
+              pendingPacketHeadIndex < pendingPackets.count {
+            let removed = pendingPackets[pendingPacketHeadIndex]
+            pendingPacketHeadIndex += 1
             pendingPacketBytes -= removed.data.count
         }
+        compactPendingPacketsIfNeeded(force: false, keepingCapacity: true)
     }
 
     private func clearPendingPackets(keepingCapacity: Bool) {
         pendingPackets.removeAll(keepingCapacity: keepingCapacity)
+        pendingPacketHeadIndex = 0
         pendingPacketBytes = 0
+    }
+
+    private func compactPendingPacketsIfNeeded(force: Bool, keepingCapacity: Bool) {
+        guard pendingPacketHeadIndex > 0 else { return }
+        if pendingPacketHeadIndex >= pendingPackets.count {
+            pendingPackets.removeAll(keepingCapacity: keepingCapacity)
+            pendingPacketHeadIndex = 0
+            return
+        }
+        guard force || (pendingPacketHeadIndex >= 64 && pendingPacketHeadIndex * 2 >= pendingPackets.count) else {
+            return
+        }
+        pendingPackets.removeFirst(pendingPacketHeadIndex)
+        pendingPacketHeadIndex = 0
     }
 
     private func handleFailureOnAudioQueue(message: String) {
@@ -280,7 +322,9 @@ final class RemoteBridgeLivePreviewStreamer: @unchecked Sendable {
         do {
             let task = try client.livePreviewWebSocketTask(sessionID: sessionID)
             webSocketTask = task
-            Log.bridge.notice("Mac client live preview socket opened session=\(self.logSessionID, privacy: .public)")
+            Log.bridge.notice(
+                "Mac client live preview websocket resume session=\(self.logSessionID, privacy: .public) elapsed_ms=\(self.elapsedMS, privacy: .public)"
+            )
             task.resume()
             startReceiveLoopOnAudioQueue(task: task)
         } catch {
@@ -313,17 +357,22 @@ final class RemoteBridgeLivePreviewStreamer: @unchecked Sendable {
 
     private func flushWebSocketOnAudioQueue() {
         guard !sendInFlight, let task = webSocketTask else { return }
-        if !pendingPackets.isEmpty {
-            let packet = pendingPackets.removeFirst()
-            pendingPacketBytes -= packet.data.count
+        if let packet = popPendingPacketOnAudioQueue() {
+            let data = packet.data
+            let byteCount = data.count
+            let sampleCount = packet.sampleCount
+            let sendStartedAt = Date()
             sendInFlight = true
             Task {
                 do {
-                    try await task.send(.data(packet.data))
+                    try await task.send(.data(data))
                     self.audioQueue.async {
-                        self.sendInFlight = false
-                        self.sentSampleCount += packet.sampleCount
-                        self.flushWebSocketOnAudioQueue()
+                        self.handleWebSocketSendCompletionOnAudioQueue(
+                            sentControl: nil,
+                            sentAudioSamples: sampleCount,
+                            sentBytes: byteCount,
+                            sendMS: Self.elapsedMS(since: sendStartedAt)
+                        )
                     }
                 } catch {
                     self.audioQueue.async {
@@ -336,20 +385,22 @@ final class RemoteBridgeLivePreviewStreamer: @unchecked Sendable {
         guard let control = pendingControl else { return }
         pendingControl = nil
         sendInFlight = true
+        let payload = BridgeLivePreviewSocketControl(type: control)
+        let sendStartedAt = Date()
         Task {
             do {
-                let data = try JSONEncoder().encode(BridgeLivePreviewSocketControl(type: control))
+                let data = try JSONEncoder().encode(payload)
                 guard let text = String(data: data, encoding: .utf8) else {
                     throw RemoteBridgeClientError.invalidResponse
                 }
                 try await task.send(.string(text))
                 self.audioQueue.async {
-                    self.sendInFlight = false
-                    if control == .cancel {
-                        self.closeWebSocketOnAudioQueue()
-                    } else {
-                        self.flushWebSocketOnAudioQueue()
-                    }
+                    self.handleWebSocketSendCompletionOnAudioQueue(
+                        sentControl: control,
+                        sentAudioSamples: 0,
+                        sentBytes: data.count,
+                        sendMS: Self.elapsedMS(since: sendStartedAt)
+                    )
                 }
             } catch {
                 self.audioQueue.async {
@@ -357,6 +408,28 @@ final class RemoteBridgeLivePreviewStreamer: @unchecked Sendable {
                 }
             }
         }
+    }
+
+    private func handleWebSocketSendCompletionOnAudioQueue(
+        sentControl: BridgeLivePreviewSocketControl.ControlType?,
+        sentAudioSamples: Int,
+        sentBytes: Int,
+        sendMS: Int
+    ) {
+        sendInFlight = false
+        if sentAudioSamples > 0 {
+            sentSampleCount += sentAudioSamples
+            logSentAudioIfNeeded(byteCount: sentBytes, sendMS: sendMS)
+        } else if let sentControl {
+            Log.bridge.notice(
+                "Mac client live preview websocket control sent session=\(self.logSessionID, privacy: .public) type=\(sentControl.rawValue, privacy: .public) bytes=\(sentBytes, privacy: .public) send_ms=\(sendMS, privacy: .public) sent_audio_ms=\(self.sentAudioMS, privacy: .public) elapsed_ms=\(self.elapsedMS, privacy: .public)"
+            )
+        }
+        if sentControl == .cancel {
+            closeWebSocketOnAudioQueue()
+            return
+        }
+        flushWebSocketOnAudioQueue()
     }
 
     private func handleWebSocketSendFailureOnAudioQueue(message: String) {
@@ -419,6 +492,9 @@ final class RemoteBridgeLivePreviewStreamer: @unchecked Sendable {
     private func handleLivePreviewEventOnAudioQueue(_ event: BridgeLivePreviewEvent) {
         guard event.sessionID == sessionID else { return }
         eventCount += 1
+        Log.bridge.debug(
+            "Mac client live preview event session=\(self.logSessionID, privacy: .public) final=\(event.isFinal, privacy: .public) event_count=\(self.eventCount, privacy: .public) text_chars=\(event.text?.count ?? 0, privacy: .public) sent_audio_ms=\(self.sentAudioMS, privacy: .public) server_age_ms=\(Self.serverAgeMS(event.updatedAt), privacy: .public) elapsed_ms=\(self.elapsedMS, privacy: .public)"
+        )
         if !suppressSocketResult,
            let text = event.text?.trimmingCharacters(in: .whitespacesAndNewlines),
            !text.isEmpty,
@@ -447,7 +523,7 @@ final class RemoteBridgeLivePreviewStreamer: @unchecked Sendable {
     private func closeWebSocketOnAudioQueue() {
         if webSocketTask != nil {
             Log.bridge.notice(
-                "Mac client live preview socket closed session=\(self.logSessionID, privacy: .public) sent_audio_ms=\(self.sentAudioMS, privacy: .public) events=\(self.eventCount, privacy: .public)"
+                "Mac client live preview websocket closed session=\(self.logSessionID, privacy: .public) sent_audio_ms=\(self.sentAudioMS, privacy: .public) events=\(self.eventCount, privacy: .public) elapsed_ms=\(self.elapsedMS, privacy: .public)"
             )
         }
         receiveTask?.cancel()
@@ -505,7 +581,10 @@ final class RemoteBridgeLivePreviewStreamer: @unchecked Sendable {
             outStatus.pointee = .haveData
             return mono
         }
-        if conversionError != nil { return nil }
+        if let conversionError {
+            Log.bridge.notice("Mac client live preview resample failed: \(conversionError.localizedDescription, privacy: .public)")
+            return nil
+        }
         switch status {
         case .haveData, .inputRanDry, .endOfStream:
             return output
@@ -514,6 +593,32 @@ final class RemoteBridgeLivePreviewStreamer: @unchecked Sendable {
         @unknown default:
             return output
         }
+    }
+
+    private func logQueuedAudioIfNeeded(frameCount: Int, sourceSampleRate: Double) {
+        let shouldLog = !firstQueueLogged || queuedSampleCount >= nextQueueLogSampleCount
+        guard shouldLog else { return }
+        let isFirst = !firstQueueLogged
+        firstQueueLogged = true
+        while queuedSampleCount >= nextQueueLogSampleCount {
+            nextQueueLogSampleCount += 16_000
+        }
+        Log.bridge.debug(
+            "Mac client live preview audio queued session=\(self.logSessionID, privacy: .public) first=\(isFirst, privacy: .public) frames=\(frameCount, privacy: .public) source_hz=\(Int(sourceSampleRate.rounded()), privacy: .public) queued_audio_ms=\(self.queuedAudioMS, privacy: .public) pending_bytes=\(self.pendingPacketBytes, privacy: .public) elapsed_ms=\(self.elapsedMS, privacy: .public)"
+        )
+    }
+
+    private func logSentAudioIfNeeded(byteCount: Int, sendMS: Int) {
+        let shouldLog = !firstSendLogged || sentSampleCount >= nextSendLogSampleCount || sendMS >= 100
+        guard shouldLog else { return }
+        let isFirst = !firstSendLogged
+        firstSendLogged = true
+        while sentSampleCount >= nextSendLogSampleCount {
+            nextSendLogSampleCount += 16_000
+        }
+        Log.bridge.debug(
+            "Mac client live preview audio sent session=\(self.logSessionID, privacy: .public) first=\(isFirst, privacy: .public) bytes=\(byteCount, privacy: .public) sent_audio_ms=\(self.sentAudioMS, privacy: .public) send_ms=\(sendMS, privacy: .public) elapsed_ms=\(self.elapsedMS, privacy: .public)"
+        )
     }
 
     private var logSessionID: String {
@@ -527,6 +632,23 @@ final class RemoteBridgeLivePreviewStreamer: @unchecked Sendable {
 
     private var sentAudioMS: Int {
         sentSampleCount * 1_000 / 16_000
+    }
+
+    private var elapsedMS: Int {
+        Self.elapsedMS(since: startedAt)
+    }
+
+    private static func elapsedMS(since date: Date?) -> Int {
+        guard let date else { return 0 }
+        return elapsedMS(since: date)
+    }
+
+    private static func elapsedMS(since date: Date) -> Int {
+        max(0, Int(Date().timeIntervalSince(date) * 1_000))
+    }
+
+    private static func serverAgeMS(_ timestamp: TimeInterval) -> Int {
+        Int((Date().timeIntervalSince1970 - timestamp) * 1_000)
     }
 
     private static func copyBuffer(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {

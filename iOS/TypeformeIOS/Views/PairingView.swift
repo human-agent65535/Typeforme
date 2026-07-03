@@ -15,17 +15,20 @@ struct PairingView: View {
     @State private var pairingParseTask: Task<Void, Never>?
 
     let onSave: (PairingConfig) -> Void
+    let onSaveConnection: (BridgeEndpoints) -> Void
     let onUnpair: () -> Void
 
     init(
         config: PairingConfig,
         routeStatus: BridgeRouteResolutionStatus,
         onSave: @escaping (PairingConfig) -> Void,
+        onSaveConnection: @escaping (BridgeEndpoints) -> Void,
         onUnpair: @escaping () -> Void
     ) {
         self._config = State(initialValue: config)
         self._routeStatus = State(initialValue: routeStatus)
         self.onSave = onSave
+        self.onSaveConnection = onSaveConnection
         self.onUnpair = onUnpair
     }
 
@@ -271,10 +274,15 @@ struct PairingView: View {
             }
             await MainActor.run {
                 routeStatus = route
+                let previousConfig = config
                 if let refreshedConfig {
                     config.bridgeEndpoints = refreshedConfig.bridgeEndpoints
                 } else if route.activeKind == .local, let activeURL = route.activeURL?.absoluteString {
                     config.promoteLocalBridgeURL(activeURL)
+                }
+                config.normalizeBridgeEndpoints()
+                if config.bridgeEndpoints != previousConfig.bridgeEndpoints {
+                    onSaveConnection(config.bridgeEndpoints)
                 }
                 isPulling = false
             }

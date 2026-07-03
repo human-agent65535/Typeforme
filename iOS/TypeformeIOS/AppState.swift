@@ -863,6 +863,20 @@ final class AppState {
         }
     }
 
+    func saveBridgeEndpoints(_ bridgeEndpoints: BridgeEndpoints) {
+        var normalized = config
+        normalized.bridgeEndpoints = bridgeEndpoints
+        normalized.normalizeBridgeEndpoints()
+        guard normalized.bridgeEndpoints != config.bridgeEndpoints else { return }
+        config.bridgeEndpoints = normalized.bridgeEndpoints
+        store.save(config)
+        publishKeyboardDefaults()
+        routeFetchedAt = nil
+        Task {
+            await refreshRoute(force: true)
+        }
+    }
+
     func unpair() {
         let empty = PairingConfig.empty
         config = empty
@@ -1380,8 +1394,8 @@ final class AppState {
     }
 
     private func activeBridgeClient() async throws -> BridgeClient {
-        if routeStatus.activeURL == nil {
-            await refreshRoute(force: true, probeAllEndpoints: false, showIndicator: false)
+        if shouldPreflightBridgeRouteBeforeRequest(routeIsFresh: currentBridgeRouteIsFresh()) {
+            await preflightActiveBridgeRoute()
         }
         guard let baseURL = routeStatus.activeURL else {
             throw BridgeClientError.unauthorizedOrUnavailable
@@ -1760,15 +1774,10 @@ final class AppState {
 
         var baseURL = routeStatus.activeURL
         let isKeyboardPath = shouldPublishKeyboardProgress || isKeyboardCapture
-        // Happy-path: only spend the GET /v1/health round-trip when we don't
-        // already trust the cached route. A fresh route within its cache TTL
-        // (5s local / 30s cloud) was just validated successfully, so the next
-        // POST will tell us if anything changed faster than a probe would.
-        let routeIsFresh: Bool = {
-            guard let routeFetchedAt, baseURL != nil else { return false }
-            let cacheTTL = routeStatus.activeKind == .local ? Self.localRouteCacheTTL : Self.routeCacheTTL
-            return Date().timeIntervalSince(routeFetchedAt) < cacheTTL
-        }()
+        // Local routes can disappear while Cloud remains reachable. Probe Local
+        // before shipping the recorded file so route changes cost the short
+        // health timeout instead of the full dictate POST timeout.
+        let routeIsFresh = currentBridgeRouteIsFresh(activeURL: baseURL)
         if isKeyboardPath {
             if let effectiveKeyboardCommandID {
                 publishKeyboardStatus(
@@ -1778,12 +1787,9 @@ final class AppState {
                     processingStage: .transcribing
                 )
             }
-            if !routeIsFresh {
-                await preflightActiveBridgeRoute()
-                baseURL = routeStatus.activeURL
-            }
-        } else if baseURL == nil {
-            await refreshRoute(force: false, probeAllEndpoints: false, showIndicator: false)
+        }
+        if shouldPreflightBridgeRouteBeforeRequest(routeIsFresh: routeIsFresh) {
+            await preflightActiveBridgeRoute()
             baseURL = routeStatus.activeURL
         }
         guard let baseURL else {
@@ -1829,7 +1835,6 @@ final class AppState {
                     || keyboardTextEditContext != nil,
                 recordingInfo: recordingInfo
             )
-            let client = BridgeClient(baseURL: routeStatus.activeURL ?? baseURL, token: config.token)
             let spokenTranscript = response.text.trimmingCharacters(in: .whitespacesAndNewlines)
             var text = response.text.trimmingCharacters(in: .whitespacesAndNewlines)
             var resultMessage = "Inserted \(recordingInfo.durationLabel) audio"
@@ -1860,6 +1865,7 @@ final class AppState {
                     )
                 }
                 let editJobID = "ios_\(UUID().uuidString.replacingOccurrences(of: "-", with: "_"))"
+                let client = try await activeBridgeClient()
                 let editResponse = try await client.editText(
                     intent: editContext.intent.rawValue,
                     contextBefore: editContext.contextBefore,
@@ -1992,6 +1998,18 @@ final class AppState {
         try? await Task.sleep(nanoseconds: UInt64(remaining * 1_000_000_000))
     }
 
+    private func shouldPreflightBridgeRouteBeforeRequest(routeIsFresh: Bool) -> Bool {
+        guard routeStatus.activeURL != nil else { return true }
+        guard routeIsFresh else { return true }
+        return routeStatus.activeKind == .local
+    }
+
+    private func currentBridgeRouteIsFresh(activeURL: URL? = nil) -> Bool {
+        guard let routeFetchedAt, (activeURL ?? routeStatus.activeURL) != nil else { return false }
+        let cacheTTL = routeStatus.activeKind == .local ? Self.localRouteCacheTTL : Self.routeCacheTTL
+        return Date().timeIntervalSince(routeFetchedAt) < cacheTTL
+    }
+
     func applyCorrectionMode(_ newMode: CorrectionMode) async {
         // Block mode changes while a request is mid-flight to avoid a stale
         // result coming back in the old mode while the UI shows the new one.
@@ -2010,18 +2028,10 @@ final class AppState {
         }
         correctionMode = newMode
         constrainKeyboardLivePreviewSourceToMacSettings()
-        // Happy-path: reuse the cached route (5-30s TTL) instead of re-probing
-        // local + cloud before every Refine tap. If the cache is stale,
-        // refreshRoute does a full resolve; if it's fresh we go straight to
-        // POST. Errors below invalidate the cache so the next attempt re-probes.
-        await refreshRoute(force: false, probeAllEndpoints: false, showIndicator: false)
-        guard let baseURL = routeStatus.activeURL else {
-            setFailure("Bridge unavailable. Check pairing, Local URL, or Cloud URL.")
-            return
-        }
         do {
+            await refreshRoute(force: false, probeAllEndpoints: false, showIndicator: false)
+            let client = try await activeBridgeClient()
             setPhase(.refining)
-            let client = BridgeClient(baseURL: baseURL, token: config.token)
             let refineJobID = "ios_\(UUID().uuidString.replacingOccurrences(of: "-", with: "_"))"
             let response = try await client.refine(
                 sessionID: source.sessionID,
@@ -3349,16 +3359,9 @@ final class AppState {
             commandID: command.id,
             message: NSLocalizedString("Refining", comment: "Bridge job stage")
         )
-        // Happy-path: reuse cached route. Errors invalidate the cache below so
-        // the next attempt re-probes naturally.
-        await refreshRoute(force: false, probeAllEndpoints: false, showIndicator: false)
-        guard let baseURL = routeStatus.activeURL else {
-            setFailure("Bridge unavailable. Check pairing, Local URL, or Cloud URL.")
-            publishKeyboardStatus(.error, commandID: command.id, message: errorMessage ?? "Bridge unavailable")
-            return
-        }
-
         do {
+            await refreshRoute(force: false, probeAllEndpoints: false, showIndicator: false)
+            let client = try await activeBridgeClient()
             setPhase(.refining)
             publishKeyboardStatus(
                 .sending,
@@ -3366,7 +3369,6 @@ final class AppState {
                 message: NSLocalizedString("Refining", comment: "Bridge job stage"),
                 processingStage: .refining
             )
-            let client = BridgeClient(baseURL: baseURL, token: config.token)
             let refineJobID = "ios_\(UUID().uuidString.replacingOccurrences(of: "-", with: "_"))"
             let keyboardCommandID = command.id
             let response = try await client.refine(

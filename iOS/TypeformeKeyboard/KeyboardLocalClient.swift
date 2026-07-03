@@ -5,6 +5,8 @@ import Foundation
 /// Status is a host-pushed stream. Commands stay on dedicated connections so
 /// command acks never interleave with pushed status frames.
 actor KeyboardLocalClient {
+    fileprivate static let statusStreamReceiveTimeout: TimeInterval = 6.0
+
     private let url = URL(string: "ws://127.0.0.1:18082/keyboard")!
     private let session = URLSession(configuration: .ephemeral)
     private var statusStreamTask: URLSessionWebSocketTask?
@@ -182,7 +184,7 @@ private func keyboardBridgeStatusStream(
     let firstStatus = try JSONDecoder().decode(KeyboardBridgeStatus.self, from: try messageData(firstMessage))
     await onStatus(firstStatus)
     while !Task.isCancelled {
-        let message = try await task.receive()
+        let message = try await receiveMessage(on: task, timeout: KeyboardLocalClient.statusStreamReceiveTimeout)
         let status = try JSONDecoder().decode(KeyboardBridgeStatus.self, from: try messageData(message))
         await onStatus(status)
     }

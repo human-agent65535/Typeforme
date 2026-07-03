@@ -4,6 +4,7 @@ import Network
 final class KeyboardLocalServer: @unchecked Sendable {
     static let port: UInt16 = 18082
     private static let maxMessageBytes = 1 * 1024 * 1024
+    private static let statusStreamHeartbeatIntervalNanoseconds: UInt64 = 2_000_000_000
 
     var onCommand: ((KeyboardBridgeCommand) async -> KeyboardBridgeStatus)?
     var statusProvider: (() async -> KeyboardBridgeStatus)?
@@ -15,6 +16,7 @@ final class KeyboardLocalServer: @unchecked Sendable {
     private var activeConnections: [ObjectIdentifier: NWConnection] = [:]
     private var activeStatusStreams: [ObjectIdentifier: NWConnection] = [:]
     private var activeTasks: [UUID: Task<Void, Never>] = [:]
+    private var statusStreamHeartbeatTask: Task<Void, Never>?
     private var generation: UInt = 0
 
     var isRunning: Bool {
@@ -60,11 +62,14 @@ final class KeyboardLocalServer: @unchecked Sendable {
         activeStatusStreams.removeAll()
         let tasks = Array(activeTasks.values)
         activeTasks.removeAll()
+        let heartbeatTask = statusStreamHeartbeatTask
+        statusStreamHeartbeatTask = nil
         stateLock.unlock()
 
         currentListener?.cancel()
         connections.forEach { $0.cancel() }
         tasks.forEach { $0.cancel() }
+        heartbeatTask?.cancel()
     }
 
     private func handle(_ connection: NWConnection, generation: UInt) {
@@ -273,12 +278,66 @@ final class KeyboardLocalServer: @unchecked Sendable {
     private func registerStatusStream(_ connection: NWConnection, generation: UInt) -> Bool {
         let id = ObjectIdentifier(connection)
         stateLock.lock()
-        defer { stateLock.unlock() }
         guard generation == self.generation, listener != nil, activeConnections[id] != nil else {
+            stateLock.unlock()
             return false
         }
         activeStatusStreams[id] = connection
+        let shouldStartHeartbeat = statusStreamHeartbeatTask == nil
+        stateLock.unlock()
+        if shouldStartHeartbeat {
+            startStatusStreamHeartbeatIfNeeded(generation: generation)
+        }
         return true
+    }
+
+    private func startStatusStreamHeartbeatIfNeeded(generation: UInt) {
+        stateLock.lock()
+        guard generation == self.generation,
+              listener != nil,
+              statusStreamHeartbeatTask == nil,
+              !activeStatusStreams.isEmpty
+        else {
+            stateLock.unlock()
+            return
+        }
+        let task = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: Self.statusStreamHeartbeatIntervalNanoseconds)
+                guard !Task.isCancelled, let self else { return }
+                guard self.hasStatusStreams(generation: generation) else {
+                    self.finishStatusStreamHeartbeat(generation: generation)
+                    return
+                }
+                let status = await self.statusProvider?() ?? .idle
+                self.publishStatus(status)
+            }
+        }
+        statusStreamHeartbeatTask = task
+        stateLock.unlock()
+    }
+
+    private func hasStatusStreams(generation: UInt) -> Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return generation == self.generation
+            && listener != nil
+            && !activeStatusStreams.isEmpty
+    }
+
+    private func finishStatusStreamHeartbeat(generation: UInt) {
+        let shouldRestart: Bool
+        stateLock.lock()
+        if generation == self.generation {
+            statusStreamHeartbeatTask = nil
+            shouldRestart = listener != nil && !activeStatusStreams.isEmpty
+        } else {
+            shouldRestart = false
+        }
+        stateLock.unlock()
+        if shouldRestart {
+            startStatusStreamHeartbeatIfNeeded(generation: generation)
+        }
     }
 
     private func statusStreamSnapshot() -> [NWConnection] {
@@ -307,7 +366,15 @@ final class KeyboardLocalServer: @unchecked Sendable {
         stateLock.lock()
         activeConnections[id] = nil
         activeStatusStreams[id] = nil
+        let heartbeatTask: Task<Void, Never>?
+        if activeStatusStreams.isEmpty {
+            heartbeatTask = statusStreamHeartbeatTask
+            statusStreamHeartbeatTask = nil
+        } else {
+            heartbeatTask = nil
+        }
         stateLock.unlock()
+        heartbeatTask?.cancel()
     }
 
     private func isCurrentGeneration(_ generation: UInt) -> Bool {
