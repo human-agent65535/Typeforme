@@ -2536,6 +2536,35 @@ final class AppState {
         standbyKeeper.isActive || keyboardAudioSession.isActive
     }
 
+    private var isSelectedKeyboardCaptureReady: Bool {
+        switch keyboardDictationCaptureMode {
+        case .backgroundMic:
+            return isKeyboardHostSessionActive
+        case .pictureInPicture:
+            return pipDictationCoordinator.isActive
+        }
+    }
+
+    private func shouldReportKeyboardCaptureNotReady(for status: KeyboardBridgeStatus) -> Bool {
+        switch status.state {
+        case .recording, .sending, .result, .error:
+            return false
+        case .idle, .standby:
+            return !isSelectedKeyboardCaptureReady
+        }
+    }
+
+    private func keyboardCaptureNotReadyStatus(from status: KeyboardBridgeStatus) -> KeyboardBridgeStatus {
+        KeyboardBridgeStatus(
+            commandID: status.commandID,
+            state: .idle,
+            message: keyboardMicrophonePreparationMessage,
+            defaultCorrectionMode: status.defaultCorrectionMode,
+            backendReachable: status.backendReachable,
+            correctionTimeoutMs: status.correctionTimeoutMs
+        )
+    }
+
     private func prepareKeyboardInputStandby(
         requestMicrophoneIfNeeded: Bool,
         warmInputEngine: Bool = true,
@@ -3046,6 +3075,9 @@ final class AppState {
                     message: "Recording stopped because the audio session ended."
                 )
                 let base = self.keyboardBridgeStatus
+                if self.shouldReportKeyboardCaptureNotReady(for: base) {
+                    return self.keyboardCaptureNotReadyStatus(from: base)
+                }
                 guard base.state == .recording else {
                     return base
                 }
@@ -3222,14 +3254,14 @@ final class AppState {
     }
 
     private var shouldReportKeyboardSessionStarted: Bool {
-        if isKeyboardHostSessionActive {
+        if isSelectedKeyboardCaptureReady {
             return true
         }
         guard keyboardServer.isRunning else { return false }
         switch keyboardBridgeStatus.state {
-        case .standby, .recording, .sending, .result:
+        case .recording, .sending, .result:
             return true
-        case .idle, .error:
+        case .standby, .idle, .error:
             return false
         }
     }
@@ -3436,7 +3468,23 @@ final class AppState {
         if let commandID {
             activeKeyboardRecordingCommandID = commandID
         }
-        await startSelectedVisibleCaptureMode(showErrors: false)
+        if keyboardDictationCaptureMode == .pictureInPicture,
+           !pipDictationCoordinator.isActive {
+            clearKeyboardCaptureContext()
+            resetCorrectionModeToDefault()
+            publishKeyboardStatus(.idle, commandID: commandID, message: keyboardMicrophonePreparationMessage)
+            KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.dictationStopped)
+            return
+        }
+        let didStartVisibleCapture = await startSelectedVisibleCaptureMode(showErrors: false)
+        if keyboardDictationCaptureMode == .pictureInPicture,
+           !didStartVisibleCapture {
+            clearKeyboardCaptureContext()
+            resetCorrectionModeToDefault()
+            publishKeyboardStatus(.idle, commandID: commandID, message: keyboardMicrophonePreparationMessage)
+            KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.dictationStopped)
+            return
+        }
         if keyboardAudioSession.isRecording {
             guard phase == .recording else {
                 publishKeyboardBusyStatus(for: commandID)

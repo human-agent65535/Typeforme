@@ -531,7 +531,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private var isStartRequestInFlight = false
     private var shouldStopWhenStartCompletes = false
     private var shouldCancelWhenStartCompletes = false
-    private var optimisticRecordingCommandID: String?
+    private var pendingStartCommandID: String?
+    private var confirmedRecordingCommandID: String?
     private var tapRecordingActive = false
     private var isCommandPressActive = false
     private var activeRecordingCommandID: String?
@@ -552,6 +553,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private var hostWakeResetTask: Task<Void, Never>?
     private var deleteRepeatTask: Task<Void, Never>?
     private var bridgeProbeTask: Task<Void, Never>?
+    private var startConfirmationTask: Task<Void, Never>?
     private var statusStreamGeneration: UInt64 = 0
     private var statusStreamBridgeToken: String?
     private var lastStatusStreamFrameAt: TimeInterval = 0
@@ -560,6 +562,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private var refineTimeoutTask: Task<Void, Never>?
     private var refineTimeoutGeneration: UInt64 = 0
     private var refineTimeoutKey: String?
+    private var sendingTimeoutTask: Task<Void, Never>?
+    private var sendingTimeoutGeneration: UInt64 = 0
+    private var sendingTimeoutKey: String?
     private var lastSlowUpdateUILogAt: TimeInterval = 0
     private var lastStatusStreamFailureLogAt: TimeInterval = 0
     private var lastActiveStatusReconcileLogAt: TimeInterval = 0
@@ -597,6 +602,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private static let statusStreamFreshnessAfterDarwinStart: TimeInterval = 1.0
     private static let activeStatusStreamStaleAge: TimeInterval = 4.5
     private static let activeBridgeStatusReconcileInterval: TimeInterval = 2.5
+    private static let startProbeTimeout: TimeInterval = 0.20
+    private static let startCommandTimeout: TimeInterval = 0.28
+    private static let startConfirmationTimeout: TimeInterval = 0.30
+    private static let activeSendingTimeoutMinimum: TimeInterval = 30
+    private static let activeSendingTimeoutMaximum: TimeInterval = 90
     private static let textSpaceCursorPointsPerCharacter: CGFloat = 9
     private static let containingAppBundleIdentifier = TypeformeBundleConfiguration.hostBundleIdentifier
     private let deleteRepeatInitialDelay: UInt64 = 450_000_000
@@ -1896,7 +1906,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         configureKeyboardDarwinBridge()
         _ = applySharedStandbySnapshotForFastStart()
             || applySharedStandbySnapshotForPresentation()
-        requestSessionStatusChallenge()
         keyboardHaptics.prepareForKeyboardReady()
         setKeyboardContentVisible(true)
         logKeyboardPresentationGateIfUnstable()
@@ -2840,7 +2849,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                     self.cancelHostWakeResetTask()
                     self.openingHostUntil = 0
                     self.isStartRequestInFlight = false
-                    self.optimisticRecordingCommandID = nil
                     self.tapRecordingActive = false
                     self.bridgeStatus = KeyboardBridgeStatus(state: .idle, message: self.inputMode.idleTitle)
                     self.lastBridgeContactAt = 0
@@ -2852,14 +2860,16 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 DispatchQueue.main.async {
                     guard let self else { return }
                     let shouldRefreshStatusStream = self.needsStatusStreamRefreshAfterDarwinStart()
-                    let fallbackStatus = KeyboardBridgeStatus(state: .recording, message: "Recording")
                     self.cancelScheduledHostOpen()
                     self.cancelHostWakeResetTask()
                     self.lastDarwinAwakeAt = Date().timeIntervalSince1970
-                    if !self.applySharedBridgeStatusSnapshot(allowActiveState: true) {
-                        self.applyBridgeStatus(fallbackStatus)
+                    if self.applySharedBridgeStatusSnapshot(allowActiveState: true),
+                       let status = self.currentBridgeStatus,
+                       self.isLiveStartConfirmation(status) {
+                        self.finishStartRequestIfNeeded(status: status)
+                    } else if self.isStartRequestInFlight {
+                        self.recoverBridgeStatusSnapshotForActiveCommand()
                     }
-                    self.finishStartRequestIfNeeded(status: self.currentBridgeStatus ?? fallbackStatus)
                     self.refreshBridgeStatusAfterDarwinStartIfNeeded(shouldRefreshStatusStream)
                 }
             },
@@ -4945,6 +4955,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let updates = {
             self.statusLabel.text = self.statusText
             self.statusDot.backgroundColor = self.statusDotColor
+            let showsStatusGroup = self.shouldShowStatusGroup
+            self.statusGroup.isHidden = !showsStatusGroup
+            self.statusGroup.alpha = showsStatusGroup ? 1 : 0
 
             if self.keyboardFocus == .text {
                 self.voiceTitleLabel.text = NSLocalizedString("中文键盘", comment: "Title for Chinese keyboard focus")
@@ -5019,10 +5032,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             self.correctionModePanel.alpha = voiceModeDim ? 0.48 : 1
             self.voiceButton.layer.shadowColor = self.voiceShadowColor.cgColor
 
-            // Voice-first readiness lives in the top-left status dot. Text
-            // mode mirrors the same readiness signal on the toolbar mic.
-            let readyColor = self.readyDotColor
-            self.textToolsReadyDot.backgroundColor = readyColor
+            self.textToolsReadyDot.alpha = 0
+            self.textToolsReadyDot.isHidden = true
 
             if showsSpinner {
                 self.voiceSpinner.startAnimating()
@@ -5823,29 +5834,41 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         continuesAfterRelease: Bool
     ) {
         guard !isStartRequestInFlight else { return }
-        _ = applySharedStandbySnapshotForFastStart()
-        if canStartFromPreparedHostSession(textEditContext: textEditContext) {
+        if canStartFromFreshHostStatus(textEditContext: textEditContext) {
             startDictationCommand(textEditContext: textEditContext, target: target)
             return
         }
-        guard isBridgeAwake else {
-            probeBridgeThenBeginDictation(
-                textEditContext: textEditContext,
-                target: target,
-                continuesAfterRelease: continuesAfterRelease
-            )
-            return
-        }
-
-        startDictationCommand(textEditContext: textEditContext, target: target)
+        probeBridgeThenBeginDictation(
+            textEditContext: textEditContext,
+            target: target,
+            continuesAfterRelease: continuesAfterRelease
+        )
     }
 
-    private func canStartFromPreparedHostSession(textEditContext: KeyboardTextEditContext?) -> Bool {
-        guard textEditContext == nil else { return false }
-        switch currentBridgeStatus?.state {
-        case .standby, .recording, .result:
+    private func canStartFromFreshHostStatus(textEditContext _: KeyboardTextEditContext?) -> Bool {
+        guard let status = currentBridgeStatus else { return false }
+        guard isFreshLiveHostStatus(status) else { return false }
+        return isStartableHostStatus(status)
+    }
+
+    private func isFreshLiveHostStatus(_ status: KeyboardBridgeStatus, now: TimeInterval = Date().timeIntervalSince1970) -> Bool {
+        guard status.updatedAt <= now else { return false }
+        if lastStatusStreamFrameAt > 0,
+           now - lastStatusStreamFrameAt <= Self.statusStreamFreshnessAfterDarwinStart {
             return true
-        default:
+        }
+        return lastBridgeContactAt > 0
+            && now - lastBridgeContactAt <= Self.statusStreamFreshnessAfterDarwinStart
+            && now - status.updatedAt <= Self.statusStreamFreshnessAfterDarwinStart
+    }
+
+    private func isStartableHostStatus(_ status: KeyboardBridgeStatus) -> Bool {
+        switch status.state {
+        case .standby, .result:
+            return true
+        case .recording:
+            return isConfirmedRecordingStatus(status)
+        case .idle, .sending, .error:
             return false
         }
     }
@@ -5855,51 +5878,38 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         target: TextRewriteTarget?,
         continuesAfterRelease: Bool
     ) {
-        kbLog.debug("probeBridgeThenBeginDictation: waiting for local keyboard status stream")
-        let probeStartedAt = Date().timeIntervalSince1970
+        kbLog.debug("probeBridgeThenBeginDictation: probing local keyboard status")
         isStartRequestInFlight = true
         shouldStopWhenStartCompletes = false
         shouldCancelWhenStartCompletes = false
         updateUI()
-        refreshBridgeStatus()
 
         bridgeProbeTask?.cancel()
         bridgeProbeTask = Task { [weak self] in
             guard let self else { return }
-            try? await Task.sleep(nanoseconds: 350_000_000)
-            guard !Task.isCancelled else { return }
+            let bridgeToken = await MainActor.run { self.hostKeyboardBridgeToken }
+            let status: KeyboardBridgeStatus?
+            do {
+                status = try await self.localClient.statusSnapshot(
+                    bridgeToken: bridgeToken,
+                    timeout: Self.startProbeTimeout
+                )
+            } catch {
+                status = nil
+            }
             await MainActor.run {
                 guard !Task.isCancelled else { return }
+                self.bridgeProbeTask = nil
                 self.isStartRequestInFlight = false
-                let hasFreshDarwinSignal = self.lastDarwinAwakeAt >= probeStartedAt
-                let hasFreshStatusFrame = self.lastBridgeContactAt >= probeStartedAt
-                guard hasFreshDarwinSignal || hasFreshStatusFrame else {
+                guard let status else {
                     self.openHostForDictation()
                     return
                 }
-
-                guard let status = self.currentBridgeStatus, hasFreshStatusFrame else {
-                    guard self.shouldContinueAfterBridgeProbe(continuesAfterRelease: continuesAfterRelease) else {
-                        self.updateUI()
-                        return
-                    }
-                    self.startDictationCommand(textEditContext: textEditContext, target: target)
-                    return
-                }
-
-                guard status.state != .idle else {
-                    if hasFreshDarwinSignal {
-                        guard self.shouldContinueAfterBridgeProbe(continuesAfterRelease: continuesAfterRelease) else {
-                            self.updateUI()
-                            return
-                        }
-                        self.startDictationCommand(textEditContext: textEditContext, target: target)
-                        return
-                    }
+                self.applyBridgeStatus(status)
+                guard self.isStartableHostStatus(status) else {
                     self.openHostForDictation()
                     return
                 }
-
                 if status.state == .recording {
                     if self.inputMode == .tap {
                         self.stopDictationAfterMinimumHoldIfNeeded()
@@ -5918,7 +5928,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                     }
                     return
                 }
-
                 guard self.shouldContinueAfterBridgeProbe(continuesAfterRelease: continuesAfterRelease) else {
                     self.updateUI()
                     return
@@ -5945,7 +5954,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         isStartRequestInFlight = false
         shouldStopWhenStartCompletes = false
         shouldCancelWhenStartCompletes = false
-        optimisticRecordingCommandID = nil
+        pendingStartCommandID = nil
+        confirmedRecordingCommandID = nil
+        cancelStartConfirmationTimeout()
         // Bridge is unreachable — drop the durable awake signal so the next
         // press takes the probe path instead of optimistically fast-pathing.
         lastDarwinAwakeAt = 0
@@ -6117,6 +6128,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         isStartRequestInFlight = true
         shouldStopWhenStartCompletes = false
         shouldCancelWhenStartCompletes = false
+        confirmedRecordingCommandID = nil
         pendingCancelCommandID = nil
         let recordingMode = currentDefaultCorrectionMode()
         if correctionMode != recordingMode {
@@ -6131,6 +6143,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         )
         livePartialPreviewState = nil
         activeRecordingCommandID = command.id
+        pendingStartCommandID = command.id
         activeRecordingTextEditIntent = textEditContext?.intent
         activeRecordingTextTarget = target.map {
             PendingRecordingTextTarget(commandID: command.id, target: $0)
@@ -6138,17 +6151,22 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         if activeMarkedTextOwner == .livePartial {
             replaceMarkedText("")
         }
+        scheduleStartConfirmationTimeout(commandID: command.id)
         sendBridgeCommand(command)
     }
 
     private func finishStartRequestIfNeeded(status: KeyboardBridgeStatus?) {
         cancelScheduledHostOpen()
+        cancelStartConfirmationTimeout()
         isStartRequestInFlight = false
-        optimisticRecordingCommandID = nil
+        pendingStartCommandID = nil
+        if let status, status.state == .recording {
+            confirmedRecordingCommandID = status.commandID ?? activeRecordingCommandID
+        }
         if shouldCancelWhenStartCompletes {
             shouldCancelWhenStartCompletes = false
             shouldStopWhenStartCompletes = false
-            if status?.state == .recording || currentBridgeStatus?.state == .recording {
+            if isCurrentRecordingConfirmed {
                 sendBridgeCommand(.cancel)
             }
             activeRecordingTextEditIntent = nil
@@ -6157,9 +6175,72 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
         guard shouldStopWhenStartCompletes else { return }
         shouldStopWhenStartCompletes = false
-        if status?.state == .recording || currentBridgeStatus?.state == .recording {
+        if isCurrentRecordingConfirmed {
             stopDictationAfterMinimumHoldIfNeeded()
         }
+    }
+
+    private func handleStartCommandResponse(_ status: KeyboardBridgeStatus, commandID: String) {
+        guard pendingStartCommandID == commandID || activeRecordingCommandID == commandID else { return }
+        if isLiveStartConfirmation(status) {
+            finishStartRequestIfNeeded(status: status)
+            return
+        }
+        isStartRequestInFlight = false
+        pendingStartCommandID = nil
+        confirmedRecordingCommandID = nil
+        cancelStartConfirmationTimeout()
+        if status.state == .error {
+            activeRecordingCommandID = nil
+            activeRecordingTextEditIntent = nil
+            activeRecordingTextTarget = nil
+            tapRecordingActive = false
+            isVoicePressActive = false
+            isCommandPressActive = false
+            updateUI()
+            return
+        }
+        openHostForDictation()
+    }
+
+    private func scheduleStartConfirmationTimeout(commandID: String) {
+        cancelStartConfirmationTimeout()
+        startConfirmationTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(Self.startConfirmationTimeout * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                guard let self,
+                      !Task.isCancelled,
+                      self.isStartRequestInFlight,
+                      self.pendingStartCommandID == commandID,
+                      !self.isCurrentRecordingConfirmed
+                else { return }
+                self.isStartRequestInFlight = false
+                self.pendingStartCommandID = nil
+                self.activeRecordingCommandID = nil
+                self.activeRecordingTextEditIntent = nil
+                self.activeRecordingTextTarget = nil
+                self.tapRecordingActive = false
+                self.openHostForDictation()
+            }
+        }
+    }
+
+    private func cancelStartConfirmationTimeout() {
+        startConfirmationTask?.cancel()
+        startConfirmationTask = nil
+    }
+
+    private var isCurrentRecordingConfirmed: Bool {
+        guard let status = currentBridgeStatus else { return false }
+        return isConfirmedRecordingStatus(status)
+    }
+
+    private func isConfirmedRecordingStatus(_ status: KeyboardBridgeStatus) -> Bool {
+        guard status.state == .recording,
+              let commandID = status.commandID
+        else { return false }
+        return commandID == confirmedRecordingCommandID
     }
 
     private func cancelActiveRecordingForKeyboardDismissal() {
@@ -6178,7 +6259,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         isVoicePressActive = false
         isCommandPressActive = false
         tapRecordingActive = false
-        optimisticRecordingCommandID = nil
+        pendingStartCommandID = nil
+        confirmedRecordingCommandID = nil
+        cancelStartConfirmationTimeout()
         cancelScheduledHostOpen()
         shouldCancelWhenStartCompletes = isStartRequestInFlight
         sendBridgeCommand(.cancel)
@@ -6198,7 +6281,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         activeRecordingTextTarget = nil
         activeRecordingTextEditIntent = nil
         activeRecordingCommandID = nil
-        optimisticRecordingCommandID = nil
+        pendingStartCommandID = nil
+        confirmedRecordingCommandID = nil
+        cancelStartConfirmationTimeout()
         pendingStopCommandID = nil
         livePartialPreviewState = nil
     }
@@ -6208,6 +6293,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         tapRecordingActive = false
         isCommandPressActive = false
         guard currentBridgeStatus?.state == .recording else { return }
+        guard isCurrentRecordingConfirmed else { return }
         let now = Date().timeIntervalSince1970
         let startedAt = keyboardRecordingStartedAt > 0 ? keyboardRecordingStartedAt : voicePressBeganAt
         let elapsed = now - startedAt
@@ -6224,6 +6310,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             try? await Task.sleep(nanoseconds: nanos)
             await MainActor.run {
                 guard let self, self.currentBridgeStatus?.state == .recording else { return }
+                guard self.isCurrentRecordingConfirmed else { return }
                 self.scheduledStopTask = nil
                 kbLog.debug("stopDictationAfterMinimumHoldIfNeeded: delayed .stop command")
                 self.sendBridgeCommand(.stop)
@@ -10400,11 +10487,24 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     private var statusDotColor: UIColor {
         if isOpeningHostApp { return .systemBlue }
+        if isStartRequestInFlight { return .systemBlue }
         switch currentBridgeStatus?.state {
         case .recording: return .systemRed
         case .sending: return .systemBlue
         case .error where isBridgeAwake: return .systemOrange
-        default: return readyDotColor
+        case .error: return .systemRed
+        case .result: return .systemGreen
+        default: return .clear
+        }
+    }
+
+    private var shouldShowStatusGroup: Bool {
+        if !hasFullAccess || isOpeningHostApp || isStartRequestInFlight { return true }
+        switch currentBridgeStatus?.state {
+        case .recording, .sending, .result, .error:
+            return true
+        case .idle, .standby, .none:
+            return false
         }
     }
 
@@ -10418,10 +10518,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         if isOpeningHostApp {
             return NSLocalizedString("Opening", comment: "Status while host opens")
         }
-        guard let status = currentBridgeStatus else { return readinessStatusText }
+        if isStartRequestInFlight {
+            return NSLocalizedString("Starting", comment: "Status while keyboard asks host to start recording")
+        }
+        guard let status = currentBridgeStatus else { return "" }
         switch status.state {
         case .standby:
-            return readinessStatusText
+            return ""
         case .recording:
             return Self.recordingStatusText(startedAt: keyboardRecordingStartedAt)
         case .sending:
@@ -10433,7 +10536,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 ? NSLocalizedString("Issue", comment: "Status when bridge errored")
                 : readinessStatusText
         case .idle:
-            return readinessStatusText
+            return ""
         }
     }
 
@@ -10529,10 +10632,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let action = command.action
         if action != .configure {
             if action == .start || action == .stop || action == .cancel {
-                if action == .start, command.textEditContext == nil {
-                    sendDarwinBridgeCommand(command)
-                    return
-                }
                 sendLocalBridgeCommand(command)
                 return
             }
@@ -10596,7 +10695,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 let status = try await localClient.send(
                     command,
                     bridgeToken: bridgeToken,
-                    timeout: command.action.requestTimeout
+                    timeout: command.action == .start ? Self.startCommandTimeout : command.action.requestTimeout
                 )
                 guard !Task.isCancelled else { return }
                 await MainActor.run {
@@ -10604,7 +10703,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                     self.bridgeCommandTasks[command.id] = nil
                     self.applyBridgeStatus(status)
                     if command.action == .start {
-                        self.finishStartRequestIfNeeded(status: status)
+                        self.handleStartCommandResponse(status, commandID: command.id)
                     }
                 }
             } catch {
@@ -10617,11 +10716,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                         return
                     }
                     if command.action == .start {
-                        if command.textEditContext == nil {
-                            self.sendDarwinBridgeCommand(command)
-                            return
-                        }
                         self.isStartRequestInFlight = false
+                        self.pendingStartCommandID = nil
+                        self.cancelStartConfirmationTimeout()
                         self.activeRecordingTextEditIntent = nil
                         self.activeRecordingTextTarget = nil
                         self.openHostForDictation()
@@ -10676,18 +10773,17 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         case .start:
             guard KeyboardSharedDefaults.saveDarwinCommand(command) else {
                 isStartRequestInFlight = false
-                optimisticRecordingCommandID = nil
+                pendingStartCommandID = nil
+                cancelStartConfirmationTimeout()
                 openHostForDictation()
                 return
             }
             if postAuthenticatedKeyboardRequest(KeyboardDarwinNotificationName.requestStartDictation) {
-                if canShowOptimisticRecordingStart {
-                    applyOptimisticRecordingStart(commandID: commandID)
-                }
                 scheduleHostOpenIfStartStalls(commandID: commandID)
             } else {
                 isStartRequestInFlight = false
-                optimisticRecordingCommandID = nil
+                pendingStartCommandID = nil
+                cancelStartConfirmationTimeout()
                 openHostForDictation()
             }
         case .stop:
@@ -10728,7 +10824,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         cancelScheduledHostOpen()
         guard isStartRequestInFlight else { return }
         isStartRequestInFlight = false
-        optimisticRecordingCommandID = nil
+        pendingStartCommandID = nil
+        confirmedRecordingCommandID = nil
+        cancelStartConfirmationTimeout()
         shouldStopWhenStartCompletes = false
         shouldCancelWhenStartCompletes = false
         isVoicePressActive = false
@@ -10742,117 +10840,24 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     private func scheduleHostOpenIfStartStalls(commandID: String) {
         cancelScheduledHostOpen()
-        let scheduledAt = Date().timeIntervalSince1970
         scheduledHostOpenTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 350_000_000)
-            let shouldWaitForAwakeHost = await MainActor.run {
-                guard let self else { return false }
-                guard self.isStartRequestInFlight,
-                      self.isWaitingForRealStart(commandID: commandID),
-                      !self.isOpeningHostApp
-                else { return false }
-                return self.hasDurableHostAwakeSignal
-                    || self.lastDarwinAwakeAt >= scheduledAt
-                    || self.lastStatusStreamFrameAt >= scheduledAt
-            }
+            try? await Task.sleep(nanoseconds: UInt64(Self.startConfirmationTimeout * 1_000_000_000))
             guard !Task.isCancelled else { return }
-            if shouldWaitForAwakeHost {
-                try? await Task.sleep(nanoseconds: 900_000_000)
-            }
             await MainActor.run {
                 guard let self else { return }
                 guard self.isStartRequestInFlight,
-                      self.isWaitingForRealStart(commandID: commandID),
+                      self.pendingStartCommandID == commandID,
+                      !self.isCurrentRecordingConfirmed,
                       !self.isOpeningHostApp
                 else { return }
-                if self.optimisticRecordingCommandID == commandID,
-                   self.hasDurableHostAwakeSignal {
-                    kbLog.notice("scheduleHostOpenIfStartStalls: keeping optimistic recording while waiting for host confirmation")
-                    Task { [weak self] in
-                        try? await Task.sleep(nanoseconds: 1_400_000_000)
-                        guard !Task.isCancelled else { return }
-                        await MainActor.run {
-                            guard let self,
-                                  self.isStartRequestInFlight,
-                                  self.optimisticRecordingCommandID == commandID,
-                                  self.currentBridgeStatus?.state == .recording
-                            else { return }
-                            self.finishStartStallWithoutOpeningHost()
-                        }
-                    }
-                    return
-                }
-                guard !self.hasDurableHostAwakeSignal else {
-                    self.finishStartStallWithoutOpeningHost()
-                    return
-                }
                 self.isStartRequestInFlight = false
+                self.pendingStartCommandID = nil
+                self.activeRecordingCommandID = nil
+                self.activeRecordingTextEditIntent = nil
+                self.activeRecordingTextTarget = nil
                 self.openHostForDictation()
             }
         }
-    }
-
-    private var canShowOptimisticRecordingStart: Bool {
-        guard hasDurableHostAwakeSignal else { return false }
-        switch currentBridgeStatus?.state {
-        case .standby, .result:
-            return true
-        default:
-            return false
-        }
-    }
-
-    private func applyOptimisticRecordingStart(commandID: String) {
-        optimisticRecordingCommandID = commandID
-        applyBridgeStatus(
-            KeyboardBridgeStatus(
-                commandID: commandID,
-                state: .recording,
-                message: "Recording",
-                backendReachable: currentBridgeStatus?.backendReachable
-            ),
-            recordsLiveContact: false
-        )
-    }
-
-    private func isWaitingForRealStart(commandID: String) -> Bool {
-        if currentBridgeStatus?.state != .recording {
-            return true
-        }
-        return optimisticRecordingCommandID == commandID
-    }
-
-    private var hasDurableHostAwakeSignal: Bool {
-        if lastDarwinAwakeAt > 0 {
-            return true
-        }
-        let now = Date().timeIntervalSince1970
-        return lastStatusStreamFrameAt > 0
-            && now - lastStatusStreamFrameAt <= Self.statusStreamFreshnessAfterDarwinStart
-    }
-
-    private func finishStartStallWithoutOpeningHost() {
-        kbLog.notice("scheduleHostOpenIfStartStalls: host is awake; suppressing automatic host open")
-        isStartRequestInFlight = false
-        shouldStopWhenStartCompletes = false
-        shouldCancelWhenStartCompletes = false
-        optimisticRecordingCommandID = nil
-        if inputMode == .tap {
-            tapRecordingActive = false
-        }
-        isVoicePressActive = false
-        isCommandPressActive = false
-        activeRecordingCommandID = nil
-        activeRecordingTextEditIntent = nil
-        activeRecordingTextTarget = nil
-        pendingCancelCommandID = nil
-        bridgeStatus = KeyboardBridgeStatus(
-            state: .standby,
-            message: "Ready",
-            backendReachable: currentBridgeStatus?.backendReachable
-        )
-        lastBridgeContactAt = Date().timeIntervalSince1970
-        updateUI()
     }
 
     private func cancelScheduledHostOpen() {
@@ -10940,6 +10945,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         refineTimeoutKey = nil
     }
 
+    private func cancelSendingTimeoutWatchdog() {
+        sendingTimeoutGeneration &+= 1
+        sendingTimeoutTask?.cancel()
+        sendingTimeoutTask = nil
+        sendingTimeoutKey = nil
+    }
+
     private func updateRefineTimeoutWatchdog(for status: KeyboardBridgeStatus) {
         guard status.state == .sending,
               status.processingStage == .refining,
@@ -11019,6 +11031,78 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         return abs(current.updatedAt - statusUpdatedAt) < 0.001
     }
 
+    private func updateSendingTimeoutWatchdog(for status: KeyboardBridgeStatus) {
+        guard status.state == .sending,
+              let commandID = status.commandID
+        else {
+            cancelSendingTimeoutWatchdog()
+            return
+        }
+        let stage = status.processingStage?.rawValue ?? "unknown"
+        let key = "\(commandID):\(stage):\(Int(status.updatedAt * 1000))"
+        guard sendingTimeoutKey != key else { return }
+        cancelSendingTimeoutWatchdog()
+        sendingTimeoutKey = key
+        sendingTimeoutGeneration &+= 1
+        let generation = sendingTimeoutGeneration
+        let statusUpdatedAt = status.updatedAt
+        let delay = sendingTimeoutDelay(for: status)
+        sendingTimeoutTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            await self?.reconcileSendingTimeout(
+                commandID: commandID,
+                statusUpdatedAt: statusUpdatedAt,
+                key: key,
+                generation: generation
+            )
+        }
+    }
+
+    private func sendingTimeoutDelay(for status: KeyboardBridgeStatus) -> TimeInterval {
+        if status.processingStage == .refining {
+            return refineTimeoutDelay(for: status) + 3
+        }
+        let audioDuration = max(0, status.audioDurationSeconds ?? 0)
+        let dynamicDelay = audioDuration * 4 + 20
+        return min(Self.activeSendingTimeoutMaximum, max(Self.activeSendingTimeoutMinimum, dynamicDelay))
+    }
+
+    @MainActor
+    private func reconcileSendingTimeout(
+        commandID: String,
+        statusUpdatedAt: TimeInterval,
+        key: String,
+        generation: UInt64
+    ) async {
+        _ = await recoverBridgeStatusSnapshot(expectedCommandID: commandID)
+        guard sendingTimeoutGeneration == generation,
+              sendingTimeoutKey == key,
+              let current = currentBridgeStatus,
+              current.state == .sending,
+              current.commandID == commandID,
+              abs(current.updatedAt - statusUpdatedAt) < 0.001
+        else { return }
+        let message = current.processingStage == .refining
+            ? NSLocalizedString("Refine timed out.", comment: "Keyboard bridge timeout while refining")
+            : NSLocalizedString("Transcription timed out.", comment: "Keyboard bridge timeout while transcribing")
+        applyBridgeStatus(
+            KeyboardBridgeStatus(
+                commandID: commandID,
+                state: .error,
+                message: message,
+                audioDurationSeconds: current.audioDurationSeconds,
+                audioByteCount: current.audioByteCount,
+                rawTranscriptLength: current.rawTranscriptLength,
+                defaultCorrectionMode: current.defaultCorrectionMode,
+                backendReachable: current.backendReachable,
+                processingStage: current.processingStage,
+                correctionTimeoutMs: current.correctionTimeoutMs
+            ),
+            recordsLiveContact: false
+        )
+    }
+
     private func scheduleSessionStatusChallengeTimeout(sentAt: TimeInterval) {
         sessionStatusChallengeGeneration &+= 1
         let generation = sessionStatusChallengeGeneration
@@ -11059,8 +11143,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let workItem = DispatchWorkItem { [weak self] in
             guard let self, self.view.window != nil else { return }
             _ = self.applySharedBridgeStatusSnapshot()
-            self.refreshBridgeStatus(captureSelection: false)
-            self.requestSessionStatusChallenge()
+            if self.currentBridgeStatus?.state == .recording
+                || self.currentBridgeStatus?.state == .sending
+                || self.pendingStopCommandID != nil {
+                self.refreshBridgeStatus(captureSelection: false, force: true)
+                self.requestSessionStatusChallenge()
+            }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.20) { [weak self] in
                 guard let self, self.view.window != nil else { return }
                 self.hasPresentedInitialFrame = true
@@ -11260,6 +11348,16 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
            activeRecordingCommandID != nil {
             return
         }
+        if isLiveStartConfirmation(status) {
+            confirmedRecordingCommandID = status.commandID
+        } else if status.state == .recording,
+                  isStartRequestInFlight || pendingStartCommandID != nil {
+            return
+        }
+        let isConfirmedRecording = isConfirmedRecordingStatus(status)
+        if status.state == .recording, !isConfirmedRecording {
+            return
+        }
         if status.state == .recording, currentBridgeStatus?.state != .recording {
             keyboardRecordingStartedAt = Date().timeIntervalSince1970
             livePartialPreviewState = nil
@@ -11283,6 +11381,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         if status.state == .result || status.state == .error || status.state == .idle || status.state == .standby {
             pendingStopCommandID = nil
             pendingCancelCommandID = nil
+            pendingStartCommandID = nil
+            confirmedRecordingCommandID = nil
+            cancelStartConfirmationTimeout()
         }
         if status.state == .result, currentBridgeStatus?.state != .result, keyboardFocus == .text {
             beginInsertedFlash()
@@ -11319,6 +11420,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         bridgeStatus = status
         isApplyingHostBridgeStatus = false
         updateRefineTimeoutWatchdog(for: status)
+        updateSendingTimeoutWatchdog(for: status)
         updateActiveStatusReconcileLoop(for: status)
         if recordsLiveContact {
             lastBridgeContactAt = Date().timeIntervalSince1970
@@ -11435,9 +11537,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     private func isLiveStartConfirmation(_ status: KeyboardBridgeStatus) -> Bool {
         guard status.state == .recording else { return false }
-        guard let commandID = status.commandID else { return true }
+        guard let commandID = status.commandID else { return false }
         return commandID == activeRecordingCommandID
-            || commandID == optimisticRecordingCommandID
+            || commandID == pendingStartCommandID
             || commandID == activeRecordingTextTarget?.commandID
     }
 
