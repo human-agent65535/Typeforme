@@ -1,5 +1,11 @@
 import Foundation
 import Network
+import OSLog
+
+private let keyboardLocalServerLog = Logger(
+    subsystem: TypeformeBundleConfiguration.hostBundleIdentifier,
+    category: "keyboard-local-server"
+)
 
 final class KeyboardLocalServer: @unchecked Sendable {
     static let port: UInt16 = 18082
@@ -29,7 +35,14 @@ final class KeyboardLocalServer: @unchecked Sendable {
         stateLock.lock()
         let alreadyRunning = listener != nil
         stateLock.unlock()
-        guard !alreadyRunning else { return }
+        guard !alreadyRunning else {
+            keyboardLocalServerLog.debug("server start skipped: already running")
+            KeyboardDiagnosticEventLog.record(
+                source: "host-local-server",
+                event: "server_start_skipped_already_running"
+            )
+            return
+        }
 
         let parameters = NWParameters.tcp
         let webSocketOptions = NWProtocolWebSocket.Options()
@@ -45,11 +58,23 @@ final class KeyboardLocalServer: @unchecked Sendable {
             self?.handle(connection, generation: currentGeneration)
         }
         listener.stateUpdateHandler = { [weak self] state in
+            keyboardLocalServerLog.notice("listener state=\(String(describing: state), privacy: .public)")
+            KeyboardDiagnosticEventLog.record(
+                source: "host-local-server",
+                event: "listener_state",
+                fields: ["state": String(describing: state)]
+            )
             if case .failed = state {
                 self?.stop()
             }
         }
         listener.start(queue: queue)
+        keyboardLocalServerLog.notice("server start requested generation=\(currentGeneration, privacy: .public)")
+        KeyboardDiagnosticEventLog.record(
+            source: "host-local-server",
+            event: "server_start_requested",
+            fields: ["generation": "\(currentGeneration)"]
+        )
     }
 
     func stop() {
@@ -70,17 +95,46 @@ final class KeyboardLocalServer: @unchecked Sendable {
         connections.forEach { $0.cancel() }
         tasks.forEach { $0.cancel() }
         heartbeatTask?.cancel()
+        keyboardLocalServerLog.notice("server stopped connections=\(connections.count, privacy: .public) tasks=\(tasks.count, privacy: .public)")
+        KeyboardDiagnosticEventLog.record(
+            source: "host-local-server",
+            event: "server_stopped",
+            fields: [
+                "connections": "\(connections.count)",
+                "tasks": "\(tasks.count)",
+            ]
+        )
     }
 
     private func handle(_ connection: NWConnection, generation: UInt) {
         guard Self.isLoopback(connection.endpoint) else {
+            keyboardLocalServerLog.notice("connection rejected: non-loopback endpoint=\(String(describing: connection.endpoint), privacy: .public)")
+            KeyboardDiagnosticEventLog.record(
+                source: "host-local-server",
+                event: "connection_rejected_non_loopback",
+                fields: ["endpoint": String(describing: connection.endpoint)]
+            )
             connection.cancel()
             return
         }
+        keyboardLocalServerLog.notice("connection accepted endpoint=\(String(describing: connection.endpoint), privacy: .public) generation=\(generation, privacy: .public)")
+        KeyboardDiagnosticEventLog.record(
+            source: "host-local-server",
+            event: "connection_accepted",
+            fields: [
+                "endpoint": String(describing: connection.endpoint),
+                "generation": "\(generation)",
+            ]
+        )
         let id = ObjectIdentifier(connection)
         stateLock.lock()
         guard generation == self.generation, listener != nil else {
             stateLock.unlock()
+            keyboardLocalServerLog.notice("connection cancelled: stale generation")
+            KeyboardDiagnosticEventLog.record(
+                source: "host-local-server",
+                event: "connection_cancelled_stale_generation"
+            )
             connection.cancel()
             return
         }
@@ -108,6 +162,11 @@ final class KeyboardLocalServer: @unchecked Sendable {
                   !expectedToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                   let hello = KeyboardLocalBridgeAuth.makeServerHello(bridgeToken: expectedToken)
             else {
+                keyboardLocalServerLog.notice("hello unavailable: missing expected token")
+                KeyboardDiagnosticEventLog.record(
+                    source: "host-local-server",
+                    event: "hello_unavailable_missing_token"
+                )
                 self.send(
                     KeyboardBridgeStatus(state: .error, message: "Keyboard bridge unavailable"),
                     connection: connection
@@ -123,10 +182,21 @@ final class KeyboardLocalServer: @unchecked Sendable {
             self.sendHello(hello, connection: connection) { [weak self] sent in
                 guard let self else { return }
                 guard sent, self.isCurrentGeneration(generation) else {
+                    keyboardLocalServerLog.notice("hello send failed or stale generation sent=\(sent, privacy: .public)")
+                    KeyboardDiagnosticEventLog.record(
+                        source: "host-local-server",
+                        event: "hello_send_failed_or_stale",
+                        fields: ["sent": "\(sent)"]
+                    )
                     connection.cancel()
                     self.removeTask(taskID)
                     return
                 }
+                keyboardLocalServerLog.notice("hello sent")
+                KeyboardDiagnosticEventLog.record(
+                    source: "host-local-server",
+                    event: "hello_sent"
+                )
                 self.receiveMessage(from: connection, generation: generation, expectedToken: expectedToken)
                 self.removeTask(taskID)
             }
@@ -153,10 +223,22 @@ final class KeyboardLocalServer: @unchecked Sendable {
 
             // Transport error or peer close — nothing left to answer.
             guard error == nil, let data else {
+                keyboardLocalServerLog.notice("receive failed error=\(error?.localizedDescription ?? "none", privacy: .public)")
+                KeyboardDiagnosticEventLog.record(
+                    source: "host-local-server",
+                    event: "receive_failed",
+                    fields: ["error": error?.localizedDescription ?? "none"]
+                )
                 connection.cancel()
                 return
             }
             guard data.count <= Self.maxMessageBytes else {
+                keyboardLocalServerLog.notice("request rejected: oversized bytes=\(data.count, privacy: .public)")
+                KeyboardDiagnosticEventLog.record(
+                    source: "host-local-server",
+                    event: "request_rejected_oversized",
+                    fields: ["bytes": "\(data.count)"]
+                )
                 self.send(
                     KeyboardBridgeStatus(state: .error, message: "Bad keyboard bridge request"),
                     connection: connection
@@ -168,6 +250,12 @@ final class KeyboardLocalServer: @unchecked Sendable {
             do {
                 request = try JSONDecoder().decode(KeyboardLocalBridgeRequest.self, from: data)
             } catch {
+                keyboardLocalServerLog.notice("request rejected: decode failed error=\(error.localizedDescription, privacy: .public)")
+                KeyboardDiagnosticEventLog.record(
+                    source: "host-local-server",
+                    event: "request_rejected_decode_failed",
+                    fields: ["error": error.localizedDescription]
+                )
                 self.send(
                     KeyboardBridgeStatus(state: .error, message: "Invalid keyboard bridge request"),
                     connection: connection
@@ -185,7 +273,29 @@ final class KeyboardLocalServer: @unchecked Sendable {
                     return
                 }
                 let authorized = self.isAuthorized(request, expectedToken: expectedToken)
+                let actionName = request.command?.action.rawValue ?? request.action.rawValue
+                keyboardLocalServerLog.notice("request received action=\(actionName, privacy: .public) authorized=\(authorized, privacy: .public) command_id=\(request.command?.id ?? "none", privacy: .public)")
+                KeyboardDiagnosticEventLog.record(
+                    source: "host-local-server",
+                    event: "request_received",
+                    fields: [
+                        "action": actionName,
+                        "authorized": "\(authorized)",
+                        "command_id": request.command?.id ?? "none",
+                    ]
+                )
                 let status = await self.status(for: request, authorized: authorized)
+                keyboardLocalServerLog.notice("request status action=\(actionName, privacy: .public) authorized=\(authorized, privacy: .public) state=\(status.state.rawValue, privacy: .public) status_command_id=\(status.commandID ?? "none", privacy: .public)")
+                KeyboardDiagnosticEventLog.record(
+                    source: "host-local-server",
+                    event: "request_status",
+                    fields: [
+                        "action": actionName,
+                        "authorized": "\(authorized)",
+                        "state": status.state.rawValue,
+                        "status_command_id": status.commandID ?? "none",
+                    ]
+                )
                 guard !Task.isCancelled, self.isCurrentGeneration(generation) else {
                     connection.cancel()
                     self.removeTask(taskID)

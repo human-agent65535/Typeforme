@@ -60,6 +60,84 @@ enum TypeformeBundleConfiguration {
     }
 }
 
+enum KeyboardDiagnosticEventLog {
+    private struct Entry: Encodable {
+        var timestamp: TimeInterval
+        var bundle: String
+        var source: String
+        var event: String
+        var fields: [String: String]
+    }
+
+    private static let maxBytes: UInt64 = 256 * 1024
+    private static let lock = NSLock()
+
+    static func record(source: String, event: String, fields: [String: String] = [:]) {
+        let fileManager = FileManager.default
+        guard let baseURL = fileManager.containerURL(
+            forSecurityApplicationGroupIdentifier: TypeformeBundleConfiguration.appGroupIdentifier
+        ) else { return }
+
+        let directory = baseURL
+            .appendingPathComponent("Library", isDirectory: true)
+            .appendingPathComponent("Caches", isDirectory: true)
+            .appendingPathComponent("KeyboardDiagnostics", isDirectory: true)
+        let fileURL = directory.appendingPathComponent("\(fileComponent(source)).jsonl")
+        let entry = Entry(
+            timestamp: Date().timeIntervalSince1970,
+            bundle: TypeformeBundleConfiguration.currentBundleIdentifier,
+            source: sanitized(source),
+            event: sanitized(event),
+            fields: fields.mapValues(sanitized)
+        )
+
+        lock.lock()
+        defer { lock.unlock() }
+        do {
+            try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+            try rotateIfNeeded(fileURL, fileManager: fileManager)
+            var data = try JSONEncoder().encode(entry)
+            data.append(0x0A)
+            if fileManager.fileExists(atPath: fileURL.path) {
+                let handle = try FileHandle(forWritingTo: fileURL)
+                defer { try? handle.close() }
+                handle.seekToEndOfFile()
+                handle.write(data)
+            } else {
+                try data.write(to: fileURL, options: .atomic)
+            }
+        } catch {
+            // Diagnostics must never affect keyboard availability.
+        }
+    }
+
+    private static func rotateIfNeeded(_ fileURL: URL, fileManager: FileManager) throws {
+        guard let size = try? fileManager.attributesOfItem(atPath: fileURL.path)[.size] as? UInt64,
+              size >= maxBytes
+        else { return }
+        let rotatedURL = fileURL.deletingPathExtension().appendingPathExtension("previous.jsonl")
+        if fileManager.fileExists(atPath: rotatedURL.path) {
+            try? fileManager.removeItem(at: rotatedURL)
+        }
+        try? fileManager.moveItem(at: fileURL, to: rotatedURL)
+    }
+
+    private static func fileComponent(_ value: String) -> String {
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
+        let scalars = value.unicodeScalars.map { allowed.contains($0) ? Character($0) : "-" }
+        let result = String(scalars).trimmingCharacters(in: CharacterSet(charactersIn: "-_"))
+        return result.isEmpty ? "unknown" : result
+    }
+
+    private static func sanitized(_ value: String) -> String {
+        let normalized = value
+            .replacingOccurrences(of: "\r", with: " ")
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\t", with: " ")
+        return String(normalized.prefix(240))
+    }
+}
+
 enum KeyboardSharedDefaults {
     static var appGroupIdentifier: String { TypeformeBundleConfiguration.appGroupIdentifier }
     static let keyboardDefaultsKey = "keyboard.defaults.v3"

@@ -2238,6 +2238,19 @@ final class AppState {
         honorManualSuppression: Bool = true,
         requestMicrophoneIfNeeded: Bool = false
     ) async -> Bool {
+        appLog.notice("prepare selected capture begin mode=\(self.keyboardDictationCaptureMode.rawValue, privacy: .public) show_errors=\(showErrors, privacy: .public) honor_suppression=\(honorManualSuppression, privacy: .public) request_mic=\(requestMicrophoneIfNeeded, privacy: .public) pip_active=\(self.pipDictationCoordinator.isActive, privacy: .public) keyboard_active=\(self.keyboardAudioSession.isActive, privacy: .public)")
+        KeyboardDiagnosticEventLog.record(
+            source: "host-app",
+            event: "prepare_selected_capture_begin",
+            fields: [
+                "mode": self.keyboardDictationCaptureMode.rawValue,
+                "show_errors": "\(showErrors)",
+                "honor_suppression": "\(honorManualSuppression)",
+                "request_mic": "\(requestMicrophoneIfNeeded)",
+                "pip_active": "\(self.pipDictationCoordinator.isActive)",
+                "keyboard_active": "\(self.keyboardAudioSession.isActive)",
+            ]
+        )
         switch keyboardDictationCaptureMode {
         case .backgroundMic:
             let didPrepareKeyboardSession = await setKeyboardStandby(
@@ -2249,6 +2262,16 @@ final class AppState {
             if !didPrepareKeyboardSession, showErrors {
                 showKeyboardMicrophoneDeniedFeedbackIfNeeded()
             }
+            appLog.notice("prepare selected capture result mode=background_mic ready=\(didPrepareKeyboardSession, privacy: .public) keyboard_active=\(self.keyboardAudioSession.isActive, privacy: .public)")
+            KeyboardDiagnosticEventLog.record(
+                source: "host-app",
+                event: "prepare_selected_capture_result",
+                fields: [
+                    "mode": "background_mic",
+                    "ready": "\(didPrepareKeyboardSession)",
+                    "keyboard_active": "\(self.keyboardAudioSession.isActive)",
+                ]
+            )
             return didPrepareKeyboardSession
         case .pictureInPicture:
             stopBackgroundAudioCaptureForVisibleMode()
@@ -2257,10 +2280,33 @@ final class AppState {
                 honorManualSuppression: honorManualSuppression
             )
             guard didStartVisibleCapture else {
+                appLog.notice("prepare selected capture result mode=picture_in_picture ready=false reason=visible_capture_failed pip_active=\(self.pipDictationCoordinator.isActive, privacy: .public)")
+                KeyboardDiagnosticEventLog.record(
+                    source: "host-app",
+                    event: "prepare_selected_capture_result",
+                    fields: [
+                        "mode": "picture_in_picture",
+                        "ready": "false",
+                        "reason": "visible_capture_failed",
+                        "pip_active": "\(self.pipDictationCoordinator.isActive)",
+                    ]
+                )
                 publishKeyboardCaptureNotReady()
                 return false
             }
-            return prepareKeyboardBridgeForOnDemandCapture(showErrors: showErrors)
+            let bridgeReady = prepareKeyboardBridgeForOnDemandCapture(showErrors: showErrors)
+            appLog.notice("prepare selected capture result mode=picture_in_picture ready=\(bridgeReady, privacy: .public) pip_active=\(self.pipDictationCoordinator.isActive, privacy: .public) server_running=\(self.keyboardServer.isRunning, privacy: .public)")
+            KeyboardDiagnosticEventLog.record(
+                source: "host-app",
+                event: "prepare_selected_capture_result",
+                fields: [
+                    "mode": "picture_in_picture",
+                    "ready": "\(bridgeReady)",
+                    "pip_active": "\(self.pipDictationCoordinator.isActive)",
+                    "server_running": "\(self.keyboardServer.isRunning)",
+                ]
+            )
+            return bridgeReady
         }
     }
 
@@ -2272,6 +2318,12 @@ final class AppState {
             try keyboardServer.start()
         } catch {
             let message = NSLocalizedString("Keyboard bridge is unavailable.", comment: "Keyboard local bridge unavailable")
+            appLog.notice("prepare keyboard bridge failed error=\(error.localizedDescription, privacy: .public)")
+            KeyboardDiagnosticEventLog.record(
+                source: "host-app",
+                event: "prepare_keyboard_bridge_failed",
+                fields: ["error": error.localizedDescription]
+            )
             if showErrors {
                 errorMessage = "\(message) \(error.localizedDescription)"
             }
@@ -2281,6 +2333,12 @@ final class AppState {
         keyboardAudioUnavailableMessage = nil
         publishKeyboardStatus(.standby, message: "Ready")
         KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.sessionStarted)
+        appLog.notice("prepare keyboard bridge ready server_running=\(self.keyboardServer.isRunning, privacy: .public)")
+        KeyboardDiagnosticEventLog.record(
+            source: "host-app",
+            event: "prepare_keyboard_bridge_ready",
+            fields: ["server_running": "\(self.keyboardServer.isRunning)"]
+        )
         return true
     }
 
@@ -2299,6 +2357,16 @@ final class AppState {
 
     private func publishKeyboardCaptureNotReady() {
         guard !keyboardAudioSession.isRecording, !recorder.isRecording else { return }
+        appLog.notice("keyboard capture not ready mode=\(self.keyboardDictationCaptureMode.rawValue, privacy: .public) pip_active=\(self.pipDictationCoordinator.isActive, privacy: .public) keyboard_active=\(self.keyboardAudioSession.isActive, privacy: .public)")
+        KeyboardDiagnosticEventLog.record(
+            source: "host-app",
+            event: "keyboard_capture_not_ready",
+            fields: [
+                "mode": self.keyboardDictationCaptureMode.rawValue,
+                "pip_active": "\(self.pipDictationCoordinator.isActive)",
+                "keyboard_active": "\(self.keyboardAudioSession.isActive)",
+            ]
+        )
         publishKeyboardStatus(.idle, message: keyboardMicrophonePreparationMessage)
         KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.sessionEnded)
     }
@@ -3191,16 +3259,53 @@ final class AppState {
                 Task { @MainActor [weak self] in
                     guard let self else { return }
                     self.markKeyboardEverContacted()
-                    guard self.keyboardStandbyEnabled || self.keyboardAudioSession.isRecording else { return }
+                    appLog.notice("darwin requestStart received mode=\(self.keyboardDictationCaptureMode.rawValue, privacy: .public) standby=\(self.keyboardStandbyEnabled, privacy: .public) keyboard_active=\(self.keyboardAudioSession.isActive, privacy: .public) keyboard_recording=\(self.keyboardAudioSession.isRecording, privacy: .public) pip_active=\(self.pipDictationCoordinator.isActive, privacy: .public) bridge_state=\(self.keyboardBridgeStatus.state.rawValue, privacy: .public)")
+                    KeyboardDiagnosticEventLog.record(
+                        source: "host-app",
+                        event: "darwin_request_start_received",
+                        fields: [
+                            "mode": self.keyboardDictationCaptureMode.rawValue,
+                            "standby": "\(self.keyboardStandbyEnabled)",
+                            "keyboard_active": "\(self.keyboardAudioSession.isActive)",
+                            "keyboard_recording": "\(self.keyboardAudioSession.isRecording)",
+                            "pip_active": "\(self.pipDictationCoordinator.isActive)",
+                            "bridge_state": self.keyboardBridgeStatus.state.rawValue,
+                        ]
+                    )
+                    guard self.keyboardStandbyEnabled || self.keyboardAudioSession.isRecording else {
+                        appLog.notice("darwin requestStart ignored: standby disabled and keyboard audio not recording")
+                        KeyboardDiagnosticEventLog.record(
+                            source: "host-app",
+                            event: "darwin_request_start_ignored_standby_disabled"
+                        )
+                        return
+                    }
                     guard let command = KeyboardSharedDefaults.consumeDarwinCommand(action: .start) else {
+                        appLog.notice("darwin requestStart failed: command missing or expired")
+                        KeyboardDiagnosticEventLog.record(
+                            source: "host-app",
+                            event: "darwin_request_start_missing_command"
+                        )
                         self.clearKeyboardCaptureContext()
                         self.publishKeyboardStatus(.error, message: "Keyboard start command expired")
                         return
                     }
+                    appLog.notice("darwin requestStart command consumed command_id=\(command.id, privacy: .public)")
+                    KeyboardDiagnosticEventLog.record(
+                        source: "host-app",
+                        event: "darwin_request_start_command_consumed",
+                        fields: ["command_id": command.id]
+                    )
                     if let requestedMode = CorrectionMode(rawValue: command.correctionMode) {
                         self.applyKeyboardDefaultCorrectionMode(requestedMode)
                     }
                     guard !self.consumeCanceledKeyboardCommand(command.id) else {
+                        appLog.notice("darwin requestStart command was canceled command_id=\(command.id, privacy: .public)")
+                        KeyboardDiagnosticEventLog.record(
+                            source: "host-app",
+                            event: "darwin_request_start_command_cancelled",
+                            fields: ["command_id": command.id]
+                        )
                         self.clearKeyboardCaptureContext()
                         self.publishKeyboardStatus(.standby, commandID: command.id, message: "Ready")
                         KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.dictationStopped)
@@ -3242,6 +3347,18 @@ final class AppState {
             KeyboardDarwinBridge.observe(requestSessionStatusName) { [weak self] in
                 Task { @MainActor [weak self] in
                     guard let self else { return }
+                    appLog.notice("darwin requestSessionStatus received should_report=\(self.shouldReportKeyboardSessionStarted, privacy: .public) keyboard_recording=\(self.keyboardAudioSession.isRecording, privacy: .public) mode=\(self.keyboardDictationCaptureMode.rawValue, privacy: .public) pip_active=\(self.pipDictationCoordinator.isActive, privacy: .public) bridge_state=\(self.keyboardBridgeStatus.state.rawValue, privacy: .public)")
+                    KeyboardDiagnosticEventLog.record(
+                        source: "host-app",
+                        event: "darwin_request_session_status_received",
+                        fields: [
+                            "should_report": "\(self.shouldReportKeyboardSessionStarted)",
+                            "keyboard_recording": "\(self.keyboardAudioSession.isRecording)",
+                            "mode": self.keyboardDictationCaptureMode.rawValue,
+                            "pip_active": "\(self.pipDictationCoordinator.isActive)",
+                            "bridge_state": self.keyboardBridgeStatus.state.rawValue,
+                        ]
+                    )
                     if self.shouldReportKeyboardSessionStarted {
                         KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.sessionStarted)
                     }
@@ -3267,23 +3384,71 @@ final class AppState {
     }
 
     private func handleKeyboardCommand(_ command: KeyboardBridgeCommand) async -> KeyboardBridgeStatus {
+        appLog.notice("local keyboard command received action=\(command.action.rawValue, privacy: .public) command_id=\(command.id, privacy: .public) mode=\(self.keyboardDictationCaptureMode.rawValue, privacy: .public) standby=\(self.keyboardStandbyEnabled, privacy: .public) keyboard_active=\(self.keyboardAudioSession.isActive, privacy: .public) keyboard_recording=\(self.keyboardAudioSession.isRecording, privacy: .public) pip_active=\(self.pipDictationCoordinator.isActive, privacy: .public) bridge_state=\(self.keyboardBridgeStatus.state.rawValue, privacy: .public)")
+        KeyboardDiagnosticEventLog.record(
+            source: "host-app",
+            event: "local_keyboard_command_received",
+            fields: [
+                "action": command.action.rawValue,
+                "command_id": command.id,
+                "mode": self.keyboardDictationCaptureMode.rawValue,
+                "standby": "\(self.keyboardStandbyEnabled)",
+                "keyboard_active": "\(self.keyboardAudioSession.isActive)",
+                "keyboard_recording": "\(self.keyboardAudioSession.isRecording)",
+                "pip_active": "\(self.pipDictationCoordinator.isActive)",
+                "bridge_state": self.keyboardBridgeStatus.state.rawValue,
+            ]
+        )
         guard keyboardStandbyEnabled || keyboardAudioSession.isRecording else {
+            appLog.notice("local keyboard command rejected: standby disabled action=\(command.action.rawValue, privacy: .public) command_id=\(command.id, privacy: .public)")
+            KeyboardDiagnosticEventLog.record(
+                source: "host-app",
+                event: "local_keyboard_command_rejected_standby_disabled",
+                fields: [
+                    "action": command.action.rawValue,
+                    "command_id": command.id,
+                ]
+            )
             publishKeyboardStatus(.idle, commandID: command.id, message: "Keyboard standby is off")
             return keyboardBridgeStatus
         }
         guard Date().timeIntervalSince1970 - command.createdAt < 60 else {
+            appLog.notice("local keyboard command rejected: expired action=\(command.action.rawValue, privacy: .public) command_id=\(command.id, privacy: .public)")
+            KeyboardDiagnosticEventLog.record(
+                source: "host-app",
+                event: "local_keyboard_command_rejected_expired",
+                fields: [
+                    "action": command.action.rawValue,
+                    "command_id": command.id,
+                ]
+            )
             publishKeyboardStatus(.error, commandID: command.id, message: "Keyboard command expired")
             return keyboardBridgeStatus
         }
         switch command.action {
         case .start:
             guard !consumeCanceledKeyboardCommand(command.id) else {
+                appLog.notice("local start command canceled command_id=\(command.id, privacy: .public)")
+                KeyboardDiagnosticEventLog.record(
+                    source: "host-app",
+                    event: "local_start_command_cancelled",
+                    fields: ["command_id": command.id]
+                )
                 clearKeyboardCaptureContext()
                 publishKeyboardStatus(.standby, commandID: command.id, message: "Ready")
                 KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.dictationStopped)
                 return keyboardBridgeStatus
             }
             guard phase == .recording || phase.allowsRecordingStart else {
+                appLog.notice("local start command busy command_id=\(command.id, privacy: .public) bridge_state=\(self.keyboardBridgeStatus.state.rawValue, privacy: .public)")
+                KeyboardDiagnosticEventLog.record(
+                    source: "host-app",
+                    event: "local_start_command_busy",
+                    fields: [
+                        "command_id": command.id,
+                        "bridge_state": self.keyboardBridgeStatus.state.rawValue,
+                    ]
+                )
                 publishKeyboardBusyStatus(for: command.id)
                 return keyboardBridgeStatus
             }
@@ -3465,11 +3630,40 @@ final class AppState {
         commandID: String?,
         allowSessionStart: Bool
     ) async {
+        let startAttemptedAt = Date().timeIntervalSince1970
+        let audioSession = AVAudioSession.sharedInstance()
+        let otherAudioPlaying = audioSession.isOtherAudioPlaying
+        let secondaryAudioSilenced = audioSession.secondaryAudioShouldBeSilencedHint
+        appLog.notice("start keyboard recording begin command_id=\(commandID ?? "none", privacy: .public) allow_session_start=\(allowSessionStart, privacy: .public) mode=\(self.keyboardDictationCaptureMode.rawValue, privacy: .public) pip_active=\(self.pipDictationCoordinator.isActive, privacy: .public) keyboard_active=\(self.keyboardAudioSession.isActive, privacy: .public) keyboard_recording=\(self.keyboardAudioSession.isRecording, privacy: .public) bridge_state=\(self.keyboardBridgeStatus.state.rawValue, privacy: .public)")
+        KeyboardDiagnosticEventLog.record(
+            source: "host-app",
+            event: "start_keyboard_recording_begin",
+            fields: [
+                "command_id": commandID ?? "none",
+                "allow_session_start": "\(allowSessionStart)",
+                "mode": self.keyboardDictationCaptureMode.rawValue,
+                "pip_active": "\(self.pipDictationCoordinator.isActive)",
+                "keyboard_active": "\(self.keyboardAudioSession.isActive)",
+                "keyboard_recording": "\(self.keyboardAudioSession.isRecording)",
+                "bridge_state": self.keyboardBridgeStatus.state.rawValue,
+                "other_audio_playing": "\(otherAudioPlaying)",
+                "secondary_audio_silenced": "\(secondaryAudioSilenced)",
+            ]
+        )
         if let commandID {
             activeKeyboardRecordingCommandID = commandID
         }
         if keyboardDictationCaptureMode == .pictureInPicture,
            !pipDictationCoordinator.isActive {
+            appLog.notice("start keyboard recording failed: pip inactive command_id=\(commandID ?? "none", privacy: .public)")
+            KeyboardDiagnosticEventLog.record(
+                source: "host-app",
+                event: "start_keyboard_recording_failed_pip_inactive",
+                fields: [
+                    "command_id": commandID ?? "none",
+                    "elapsed_ms": "\(Int((Date().timeIntervalSince1970 - startAttemptedAt) * 1_000))",
+                ]
+            )
             clearKeyboardCaptureContext()
             resetCorrectionModeToDefault()
             publishKeyboardStatus(.idle, commandID: commandID, message: keyboardMicrophonePreparationMessage)
@@ -3477,8 +3671,27 @@ final class AppState {
             return
         }
         let didStartVisibleCapture = await startSelectedVisibleCaptureMode(showErrors: false)
+        appLog.notice("start keyboard recording visible capture result command_id=\(commandID ?? "none", privacy: .public) did_start=\(didStartVisibleCapture, privacy: .public) pip_active=\(self.pipDictationCoordinator.isActive, privacy: .public)")
+        KeyboardDiagnosticEventLog.record(
+            source: "host-app",
+            event: "start_keyboard_recording_visible_capture_result",
+            fields: [
+                "command_id": commandID ?? "none",
+                "did_start": "\(didStartVisibleCapture)",
+                "pip_active": "\(self.pipDictationCoordinator.isActive)",
+            ]
+        )
         if keyboardDictationCaptureMode == .pictureInPicture,
            !didStartVisibleCapture {
+            appLog.notice("start keyboard recording failed: visible capture unavailable command_id=\(commandID ?? "none", privacy: .public)")
+            KeyboardDiagnosticEventLog.record(
+                source: "host-app",
+                event: "start_keyboard_recording_failed_visible_capture_unavailable",
+                fields: [
+                    "command_id": commandID ?? "none",
+                    "elapsed_ms": "\(Int((Date().timeIntervalSince1970 - startAttemptedAt) * 1_000))",
+                ]
+            )
             clearKeyboardCaptureContext()
             resetCorrectionModeToDefault()
             publishKeyboardStatus(.idle, commandID: commandID, message: keyboardMicrophonePreparationMessage)
@@ -3487,16 +3700,40 @@ final class AppState {
         }
         if keyboardAudioSession.isRecording {
             guard phase == .recording else {
+                appLog.notice("start keyboard recording busy: audio already recording but phase not recording command_id=\(commandID ?? "none", privacy: .public)")
+                KeyboardDiagnosticEventLog.record(
+                    source: "host-app",
+                    event: "start_keyboard_recording_busy_audio_already_recording",
+                    fields: [
+                        "command_id": commandID ?? "none",
+                        "bridge_state": self.keyboardBridgeStatus.state.rawValue,
+                    ]
+                )
                 publishKeyboardBusyStatus(for: commandID)
                 return
             }
             keyboardCaptureStartedFromKeyboard = true
             publishKeyboardStatus(.recording, commandID: commandID, message: "Recording")
             KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.dictationStarted)
+            appLog.notice("start keyboard recording reused active recording command_id=\(commandID ?? "none", privacy: .public)")
+            KeyboardDiagnosticEventLog.record(
+                source: "host-app",
+                event: "start_keyboard_recording_reused_active_recording",
+                fields: ["command_id": commandID ?? "none"]
+            )
             return
         }
         if !keyboardAudioSession.isActive {
             guard allowSessionStart else {
+                appLog.notice("start keyboard recording failed: audio inactive and session start not allowed command_id=\(commandID ?? "none", privacy: .public)")
+                KeyboardDiagnosticEventLog.record(
+                    source: "host-app",
+                    event: "start_keyboard_recording_failed_audio_inactive_session_start_not_allowed",
+                    fields: [
+                        "command_id": commandID ?? "none",
+                        "elapsed_ms": "\(Int((Date().timeIntervalSince1970 - startAttemptedAt) * 1_000))",
+                    ]
+                )
                 clearKeyboardCaptureContext()
                 resetCorrectionModeToDefault()
                 publishKeyboardStatus(.idle, commandID: commandID, message: "Keyboard audio session is not active")
@@ -3509,6 +3746,15 @@ final class AppState {
                     waitForApplicationActive: keyboardDictationCaptureMode != .pictureInPicture
                 )
                 guard isInputReady else {
+                    appLog.notice("start keyboard recording failed: input standby not ready command_id=\(commandID ?? "none", privacy: .public)")
+                    KeyboardDiagnosticEventLog.record(
+                        source: "host-app",
+                        event: "start_keyboard_recording_failed_input_standby_not_ready",
+                        fields: [
+                            "command_id": commandID ?? "none",
+                            "elapsed_ms": "\(Int((Date().timeIntervalSince1970 - startAttemptedAt) * 1_000))",
+                        ]
+                    )
                     clearKeyboardCaptureContext()
                     resetCorrectionModeToDefault()
                     startSilentStandbyKeeperIfNeeded()
@@ -3521,6 +3767,16 @@ final class AppState {
                 clearKeyboardCaptureContext()
                 resetCorrectionModeToDefault()
                 let message = keyboardAudioStatusMessage(for: error)
+                appLog.notice("start keyboard recording failed: standby error command_id=\(commandID ?? "none", privacy: .public) error=\(message, privacy: .public)")
+                KeyboardDiagnosticEventLog.record(
+                    source: "host-app",
+                    event: "start_keyboard_recording_failed_standby_error",
+                    fields: [
+                        "command_id": commandID ?? "none",
+                        "error": message,
+                        "elapsed_ms": "\(Int((Date().timeIntervalSince1970 - startAttemptedAt) * 1_000))",
+                    ]
+                )
                 if IOSRecordingAudioSession.isPriorityConflict(error) {
                     startSilentStandbyKeeperIfNeeded()
                     publishKeyboardStatus(.idle, commandID: commandID, message: message)
@@ -3548,9 +3804,28 @@ final class AppState {
             setPhase(.recording)
             publishKeyboardStatus(.recording, commandID: commandID, message: "Recording")
             KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.dictationStarted)
+            appLog.notice("start keyboard recording succeeded command_id=\(commandID ?? "none", privacy: .public)")
+            KeyboardDiagnosticEventLog.record(
+                source: "host-app",
+                event: "start_keyboard_recording_succeeded",
+                fields: [
+                    "command_id": commandID ?? "none",
+                    "elapsed_ms": "\(Int((Date().timeIntervalSince1970 - startAttemptedAt) * 1_000))",
+                ]
+            )
         } catch {
             clearKeyboardCaptureContext()
             let message = keyboardAudioStatusMessage(for: error)
+            appLog.notice("start keyboard recording failed: begin recording error command_id=\(commandID ?? "none", privacy: .public) error=\(message, privacy: .public)")
+            KeyboardDiagnosticEventLog.record(
+                source: "host-app",
+                event: "start_keyboard_recording_failed_begin_recording_error",
+                fields: [
+                    "command_id": commandID ?? "none",
+                    "error": message,
+                    "elapsed_ms": "\(Int((Date().timeIntervalSince1970 - startAttemptedAt) * 1_000))",
+                ]
+            )
             if IOSRecordingAudioSession.isPriorityConflict(error) {
                 startSilentStandbyKeeperIfNeeded()
                 publishKeyboardStatus(.idle, commandID: commandID, message: message)
