@@ -72,6 +72,25 @@ struct ASRTranscriptModelOutput: Sendable {
     let status: String
     let text: String?
     let error: String?
+    let latencyMs: Int?
+
+    init(
+        role: String,
+        provider: String,
+        model: String,
+        status: String,
+        text: String?,
+        error: String?,
+        latencyMs: Int? = nil
+    ) {
+        self.role = role
+        self.provider = provider
+        self.model = model
+        self.status = status
+        self.text = text
+        self.error = error
+        self.latencyMs = latencyMs
+    }
 }
 
 /// Recognition sources return final text for an audio file. Live partial preview is

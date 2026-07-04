@@ -10,9 +10,9 @@
 #   INSTALL_DIR=/Applications scripts/build-app.sh debug --install
 #   IDENTITY="Developer ID Application: ..." scripts/build-app.sh release --install
 #
-# Release builds default to Developer ID Application when available so direct
-# downloads can be notarized. Pass IDENTITY=... to override, or IDENTITY="-"
-# for ad-hoc signing.
+# Release builds without IDENTITY are Developer ID direct-download builds.
+# Other release channels pass their own IDENTITY explicitly, for example the
+# GitHub release script's stable self-signed identity.
 set -euo pipefail
 
 CONFIG="debug"
@@ -36,7 +36,7 @@ Usage:
   scripts/build-app.sh [debug|release] [--install|--deploy] [--launch]
 
 Environment:
-  IDENTITY=...     Codesigning identity. Release defaults to Developer ID Application when available.
+  IDENTITY=...     Codesigning identity. Release without IDENTITY requires Developer ID Application.
   INSTALL_DIR=...  Install destination directory. Defaults to /Applications.
   TYPEFORME_MAC_DIST_ROOT=...  Root for macOS app outputs. Defaults to dist/mac.
   TYPEFORME_MAC_OUTPUT_DIR=... Output directory for this build. Defaults to dist/mac/dev or dist/mac/release.
@@ -201,9 +201,22 @@ done
 
 find_codesign_identity() {
     local prefix="$1"
-    security find-identity -p codesigning -v 2>/dev/null \
+    local identities preferred
+    identities="$(security find-identity -p codesigning -v 2>/dev/null \
         | sed -n "s/.*\"\(${prefix}[^\"]*\)\".*/\1/p" \
-        | head -n 1
+        || true)"
+    if [ "$prefix" = "Apple Development:" ]; then
+        # Prefer modern person-name development certificates over older
+        # email-labelled ones. The latter can linger in the keychain after
+        # revocation and still pass `security find-identity`, then helpers get
+        # killed at runtime by Gatekeeper.
+        preferred="$(printf '%s\n' "$identities" | grep -v '@' | head -n 1 || true)"
+        if [ -n "$preferred" ]; then
+            printf '%s\n' "$preferred"
+            return
+        fi
+    fi
+    printf '%s\n' "$identities" | head -n 1
 }
 
 select_default_sign_identity() {
@@ -212,8 +225,19 @@ select_default_sign_identity() {
         identity="$(find_codesign_identity "Developer ID Application:")"
         [ -n "$identity" ] && { printf '%s\n' "$identity"; return; }
 
-        identity="$(find_codesign_identity "Apple Distribution:")"
-        [ -n "$identity" ] && { printf '%s\n' "$identity"; return; }
+        cat >&2 <<EOF
+error: release builds need an explicit signing identity for the target channel.
+
+Direct download:
+  IDENTITY="Developer ID Application: ..." scripts/build-app.sh release
+
+GitHub release:
+  scripts/build-mac-github-release.sh
+
+App Store / TestFlight:
+  use the Xcode archive/export flow, or pass an explicit channel-appropriate IDENTITY.
+EOF
+        exit 2
     fi
 
     identity="$(find_codesign_identity "Apple Development:")"
@@ -235,11 +259,14 @@ if [ "$SIGN_IDENTITY" = "-" ]; then
     echo "signing identity: adhoc"
 else
     echo "signing identity: $SIGN_IDENTITY"
-    if [ "$CONFIG" = "release" ] && [ -z "${IDENTITY:-}" ]; then
+    if [ "$CONFIG" = "release" ]; then
         case "$SIGN_IDENTITY" in
-            Developer\ ID\ Application:*) ;;
+            Developer\ ID\ Application:*|Typeforme\ Unidentified) ;;
+            Apple\ Distribution:*)
+                echo "warn: Apple Distribution is only appropriate for App Store-style distribution, not direct downloads." >&2
+                ;;
             *)
-                echo "warn: release default is not Developer ID Application; direct-download distribution will need Developer ID signing before notarization." >&2
+                echo "warn: explicit release identity is not Developer ID Application; verify the target channel expects this certificate." >&2
                 ;;
         esac
     fi
@@ -287,6 +314,12 @@ codesign --force --options runtime --entitlements "$APP_ENT" \
 
 # Sanity check
 codesign --verify --deep --strict --verbose=1 "$APP_DIR" 2>&1 | sed 's/^/verify: /'
+SPCTL_OUTPUT="$(spctl -a -vv "$APP_DIR" 2>&1 || true)"
+if grep -q 'CSSMERR_TP_CERT_REVOKED' <<<"$SPCTL_OUTPUT"; then
+    printf '%s\n' "$SPCTL_OUTPUT" | sed 's/^/gatekeeper: /' >&2
+    echo "error: $APP_DIR was signed with a revoked certificate; choose a different IDENTITY for this distribution channel." >&2
+    exit 2
+fi
 
 echo "built: $APP_DIR"
 if [ -x "$LLAMA_DIR/llama-server-arm64" ]; then

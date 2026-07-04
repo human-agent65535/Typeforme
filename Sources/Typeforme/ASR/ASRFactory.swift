@@ -226,10 +226,11 @@ private struct InstalledSingleSourceASRService: ASRService {
                 text: text,
                 hypotheses: [text],
                 modelOutputs: [
-                    ASRModelOutputFactory.output(for: source, text: text)
+                    ASRModelOutputFactory.output(for: source, text: text, latencyMs: 0)
                 ]
             )
         }
+        let started = Date()
         let text: String
         let output: ASRTranscriptModelOutput
         do {
@@ -237,17 +238,29 @@ private struct InstalledSingleSourceASRService: ASRService {
             case .qwen:
                 text = try await InstalledQwenLlamaASRService()
                     .transcribe(audioFileURL: audioFileURL, languageIDs: languageIDs)
-                output = ASRModelOutputFactory.qwen(role: "source", text: text)
+                output = ASRModelOutputFactory.qwen(
+                    role: "source",
+                    text: text,
+                    latencyMs: elapsedASRMS(since: started)
+                )
             case .nvidiaNemotron:
                 text = try await InstalledNvidiaNemotronASRService()
                     .transcribe(audioFileURL: audioFileURL, languageIDs: languageIDs)
-                output = ASRModelOutputFactory.nemotron(role: "source", text: text)
+                output = ASRModelOutputFactory.nemotron(
+                    role: "source",
+                    text: text,
+                    latencyMs: elapsedASRMS(since: started)
+                )
             case .appleSpeech:
                 text = try await Self.transcribeWithTimeout(timeoutSeconds: AppSettings.asrTimeoutSeconds) {
                     try await AppleSpeechASRService()
                         .transcribe(audioFileURL: audioFileURL, languageIDs: languageIDs)
                 }
-                output = ASRModelOutputFactory.appleSpeech(role: "source", text: text)
+                output = ASRModelOutputFactory.appleSpeech(
+                    role: "source",
+                    text: text,
+                    latencyMs: elapsedASRMS(since: started)
+                )
             }
         } catch {
             if let progress {
@@ -303,6 +316,7 @@ private struct InstalledQwenLlamaASRService: ASRService {
         if let progress {
             await progress(ASRTranscriptionProgress(completedSources: 0, totalSources: 1, source: .qwen))
         }
+        let started = Date()
         let text = try await transcribe(audioFileURL: audioFileURL, languageIDs: languageIDs)
         if let progress {
             await progress(ASRTranscriptionProgress(completedSources: 1, totalSources: 1, source: .qwen))
@@ -311,7 +325,11 @@ private struct InstalledQwenLlamaASRService: ASRService {
             text: text,
             hypotheses: [text],
             modelOutputs: [
-                ASRModelOutputFactory.qwen(role: "source", text: text)
+                ASRModelOutputFactory.qwen(
+                    role: "source",
+                    text: text,
+                    latencyMs: elapsedASRMS(since: started)
+                )
             ]
         )
     }
@@ -340,6 +358,7 @@ private struct InstalledNvidiaNemotronASRService: ASRService {
         if let progress {
             await progress(ASRTranscriptionProgress(completedSources: 0, totalSources: 1, source: .nvidiaNemotron))
         }
+        let started = Date()
         let text = try await transcribe(audioFileURL: audioFileURL, languageIDs: languageIDs)
         if let progress {
             await progress(ASRTranscriptionProgress(completedSources: 1, totalSources: 1, source: .nvidiaNemotron))
@@ -348,7 +367,11 @@ private struct InstalledNvidiaNemotronASRService: ASRService {
             text: text,
             hypotheses: [text],
             modelOutputs: [
-                ASRModelOutputFactory.nemotron(role: "source", text: text)
+                ASRModelOutputFactory.nemotron(
+                    role: "source",
+                    text: text,
+                    latencyMs: elapsedASRMS(since: started)
+                )
             ]
         )
     }
@@ -398,7 +421,8 @@ private struct MultiSourceASRService: ASRService {
                     index: index,
                     status: "ok",
                     text: reusableSeedsBySource[source]?.normalizedText,
-                    error: nil
+                    error: nil,
+                    latencyMs: 0
                 )
             }
             if let progress, enabledSources.count > 1 {
@@ -509,6 +533,7 @@ private struct MultiSourceASRService: ASRService {
         timeoutSeconds: TimeInterval,
         reusableSeed: ASRTranscriptionSeed?
     ) async -> ASRSourceAttemptResult {
+        let started = Date()
         if let reusableSeed,
            reusableSeed.source == source,
            reusableSeed.isUsable {
@@ -517,7 +542,8 @@ private struct MultiSourceASRService: ASRService {
                 index: index,
                 status: "ok",
                 text: reusableSeed.normalizedText,
-                error: nil
+                error: nil,
+                latencyMs: 0
             )
         }
         let effectiveLanguageIDs = ASRLanguageSelection.effectiveIDs(selectedLanguageIDs, for: source)
@@ -527,7 +553,8 @@ private struct MultiSourceASRService: ASRService {
                 index: index,
                 status: "skipped_unsupported_language",
                 text: nil,
-                error: "No selected language is supported by this source"
+                error: "No selected language is supported by this source",
+                latencyMs: elapsedASRMS(since: started)
             )
         }
         do {
@@ -543,7 +570,8 @@ private struct MultiSourceASRService: ASRService {
                 index: index,
                 status: trimmed.isEmpty ? "empty" : "ok",
                 text: trimmed.isEmpty ? nil : trimmed,
-                error: nil
+                error: nil,
+                latencyMs: elapsedASRMS(since: started)
             )
         } catch {
             if ASRAudioSupport.isBenignEmptyTranscript(error) {
@@ -552,7 +580,8 @@ private struct MultiSourceASRService: ASRService {
                     index: index,
                     status: "empty",
                     text: nil,
-                    error: nil
+                    error: nil,
+                    latencyMs: elapsedASRMS(since: started)
                 )
             }
             return ASRSourceAttemptResult(
@@ -560,7 +589,8 @@ private struct MultiSourceASRService: ASRService {
                 index: index,
                 status: "error",
                 text: nil,
-                error: error.localizedDescription
+                error: error.localizedDescription,
+                latencyMs: elapsedASRMS(since: started)
             )
         }
     }
@@ -609,6 +639,7 @@ private struct ASRSourceAttemptResult: Sendable {
     let status: String
     let text: String?
     let error: String?
+    let latencyMs: Int?
 
     var successText: String? {
         guard status == "ok" else { return nil }
@@ -621,7 +652,13 @@ private struct ASRSourceAttemptResult: Sendable {
     }
 
     var modelOutput: ASRTranscriptModelOutput {
-        ASRModelOutputFactory.output(for: source, text: text ?? "", status: status, error: error)
+        ASRModelOutputFactory.output(
+            for: source,
+            text: text ?? "",
+            status: status,
+            error: error,
+            latencyMs: latencyMs
+        )
     }
 }
 
@@ -630,15 +667,16 @@ private enum ASRModelOutputFactory {
         for source: RecognitionSource,
         text: String,
         status: String? = nil,
-        error: String? = nil
+        error: String? = nil,
+        latencyMs: Int? = nil
     ) -> ASRTranscriptModelOutput {
         switch source {
         case .qwen:
-            return qwen(role: "source", text: text, status: status, error: error)
+            return qwen(role: "source", text: text, status: status, error: error, latencyMs: latencyMs)
         case .nvidiaNemotron:
-            return nemotron(role: "source", text: text, status: status, error: error)
+            return nemotron(role: "source", text: text, status: status, error: error, latencyMs: latencyMs)
         case .appleSpeech:
-            return appleSpeech(role: "source", text: text, status: status, error: error)
+            return appleSpeech(role: "source", text: text, status: status, error: error, latencyMs: latencyMs)
         }
     }
 
@@ -646,7 +684,8 @@ private enum ASRModelOutputFactory {
         role: String,
         text: String,
         status: String? = nil,
-        error: String? = nil
+        error: String? = nil,
+        latencyMs: Int? = nil
     ) -> ASRTranscriptModelOutput {
         ASRTranscriptModelOutput(
             role: role,
@@ -654,7 +693,8 @@ private enum ASRModelOutputFactory {
             model: AppSettings.asrQwenLlamaModelID,
             status: status ?? (error == nil ? "ok" : "error"),
             text: text,
-            error: error
+            error: error,
+            latencyMs: latencyMs
         )
     }
 
@@ -662,7 +702,8 @@ private enum ASRModelOutputFactory {
         role: String,
         text: String,
         status: String? = nil,
-        error: String? = nil
+        error: String? = nil,
+        latencyMs: Int? = nil
     ) -> ASRTranscriptModelOutput {
         ASRTranscriptModelOutput(
             role: role,
@@ -670,7 +711,8 @@ private enum ASRModelOutputFactory {
             model: AppSettings.asrNvidiaNemotronModelID,
             status: status ?? (error == nil ? "ok" : "error"),
             text: text,
-            error: error
+            error: error,
+            latencyMs: latencyMs
         )
     }
 
@@ -678,7 +720,8 @@ private enum ASRModelOutputFactory {
         role: String,
         text: String,
         status: String? = nil,
-        error: String? = nil
+        error: String? = nil,
+        latencyMs: Int? = nil
     ) -> ASRTranscriptModelOutput {
         ASRTranscriptModelOutput(
             role: role,
@@ -686,7 +729,12 @@ private enum ASRModelOutputFactory {
             model: "on-device",
             status: status ?? (error == nil ? "ok" : "error"),
             text: text,
-            error: error
+            error: error,
+            latencyMs: latencyMs
         )
     }
+}
+
+private func elapsedASRMS(since date: Date) -> Int {
+    max(0, Int(Date().timeIntervalSince(date) * 1_000))
 }

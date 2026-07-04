@@ -139,6 +139,17 @@ private struct DebugLogTranscriptModelOutput: Codable, Sendable {
     var status: String
     var text: String?
     var error: String?
+    var latencyMs: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case role
+        case provider
+        case model
+        case status
+        case text
+        case error
+        case latencyMs = "latency_ms"
+    }
 }
 
 private struct DebugLogCorrection: Codable, Sendable {
@@ -631,7 +642,8 @@ enum DebugLogStore {
                 model: output.model,
                 status: output.status,
                 text: text,
-                error: error
+                error: error,
+                latencyMs: output.latencyMs
             )
         }
     }

@@ -523,9 +523,19 @@ final class NvidiaNemotronLivePreviewSession: ASRLivePreviewSession, @unchecked 
     ) async -> Bool {
         await withCheckedContinuation { continuation in
             let waiterID = UUID()
+            var shouldResumeImmediately = false
             lock.lock()
-            decodedChunkContinuations[waiterID] = continuation
+            if processTerminated || !process.isRunning {
+                shouldResumeImmediately = true
+            } else {
+                decodedChunkContinuations[waiterID] = continuation
+            }
             lock.unlock()
+
+            if shouldResumeImmediately {
+                continuation.resume(returning: false)
+                return
+            }
 
             action()
 
@@ -588,17 +598,19 @@ final class NvidiaNemotronLivePreviewSession: ASRLivePreviewSession, @unchecked 
     private func waitForFinal(timeout: TimeInterval) async -> Bool {
         await withCheckedContinuation { continuation in
             let waiterID = UUID()
-            var shouldResumeImmediately = false
+            var immediateResult: Bool?
             lock.lock()
             if finalEventReceived {
-                shouldResumeImmediately = true
+                immediateResult = true
+            } else if processTerminated || !process.isRunning {
+                immediateResult = false
             } else {
                 finalContinuations[waiterID] = continuation
             }
             lock.unlock()
 
-            if shouldResumeImmediately {
-                continuation.resume(returning: true)
+            if let immediateResult {
+                continuation.resume(returning: immediateResult)
                 return
             }
 
@@ -617,17 +629,19 @@ final class NvidiaNemotronLivePreviewSession: ASRLivePreviewSession, @unchecked 
     private func waitForReset(timeout: TimeInterval) async -> Bool {
         await withCheckedContinuation { continuation in
             let waiterID = UUID()
-            var shouldResumeImmediately = false
+            var immediateResult: Bool?
             lock.lock()
             if resetEventReceived {
-                shouldResumeImmediately = true
+                immediateResult = true
+            } else if processTerminated || !process.isRunning {
+                immediateResult = false
             } else {
                 resetContinuations[waiterID] = continuation
             }
             lock.unlock()
 
-            if shouldResumeImmediately {
-                continuation.resume(returning: true)
+            if let immediateResult {
+                continuation.resume(returning: immediateResult)
                 return
             }
 
