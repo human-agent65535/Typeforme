@@ -603,8 +603,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private static let activeStatusStreamStaleAge: TimeInterval = 4.5
     private static let activeBridgeStatusReconcileInterval: TimeInterval = 2.5
     private static let startProbeTimeout: TimeInterval = 0.20
-    private static let startCommandTimeout: TimeInterval = 0.28
-    private static let startConfirmationTimeout: TimeInterval = 0.30
+    private static let startCommandTimeout: TimeInterval = 1.20
+    private static let startConfirmationTimeout: TimeInterval = 1.20
+    private static let startRecoverySnapshotTimeout: TimeInterval = 0.35
     private static let activeSendingTimeoutMinimum: TimeInterval = 30
     private static let activeSendingTimeoutMaximum: TimeInterval = 90
     private static let textSpaceCursorPointsPerCharacter: CGFloat = 9
@@ -5956,6 +5957,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         shouldCancelWhenStartCompletes = false
         pendingStartCommandID = nil
         confirmedRecordingCommandID = nil
+        activeRecordingCommandID = nil
         cancelStartConfirmationTimeout()
         // Bridge is unreachable — drop the durable awake signal so the next
         // press takes the probe path instead of optimistically fast-pathing.
@@ -6151,7 +6153,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         if activeMarkedTextOwner == .livePartial {
             replaceMarkedText("")
         }
-        scheduleStartConfirmationTimeout(commandID: command.id)
         sendBridgeCommand(command)
     }
 
@@ -6252,6 +6253,17 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             || activeRecordingTextTarget != nil
             || currentBridgeStatus?.state == .recording
         guard shouldCancel else { return }
+
+        if isOpeningHostApp, isStartRequestInFlight {
+            kbLog.notice("keyboard disappearing during host handoff with start pending; leaving host recording active")
+            cancelScheduledStop()
+            shouldStopWhenStartCompletes = false
+            shouldCancelWhenStartCompletes = false
+            isVoicePressActive = false
+            isCommandPressActive = false
+            tapRecordingActive = false
+            return
+        }
 
         kbLog.notice("keyboard disappearing during dictation; canceling host recording")
         cancelScheduledStop()
@@ -10708,6 +10720,16 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 }
             } catch {
                 guard !Task.isCancelled else { return }
+                let recoveredStartStatus: KeyboardBridgeStatus?
+                if command.action == .start {
+                    recoveredStartStatus = try? await self.localClient.statusSnapshot(
+                        bridgeToken: bridgeToken,
+                        timeout: Self.startRecoverySnapshotTimeout
+                    )
+                } else {
+                    recoveredStartStatus = nil
+                }
+                guard !Task.isCancelled else { return }
                 await MainActor.run {
                     guard !Task.isCancelled else { return }
                     self.bridgeCommandTasks[command.id] = nil
@@ -10716,6 +10738,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                         return
                     }
                     if command.action == .start {
+                        if let recoveredStartStatus {
+                            self.applyBridgeStatus(recoveredStartStatus)
+                            if self.isLiveStartConfirmation(recoveredStartStatus) {
+                                self.finishStartRequestIfNeeded(status: recoveredStartStatus)
+                                return
+                            }
+                        }
                         self.isStartRequestInFlight = false
                         self.pendingStartCommandID = nil
                         self.cancelStartConfirmationTimeout()
@@ -10843,13 +10872,37 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         scheduledHostOpenTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(Self.startConfirmationTimeout * 1_000_000_000))
             guard !Task.isCancelled else { return }
+            guard let self else { return }
+            let shouldRecover = await MainActor.run {
+                guard self.isStartRequestInFlight,
+                      self.pendingStartCommandID == commandID,
+                      !self.isCurrentRecordingConfirmed,
+                      !self.isOpeningHostApp
+                else { return false }
+                return true
+            }
+            guard shouldRecover, !Task.isCancelled else { return }
+
+            let bridgeToken = await MainActor.run { self.hostKeyboardBridgeToken }
+            let recoveredStatus = try? await self.localClient.statusSnapshot(
+                bridgeToken: bridgeToken,
+                timeout: Self.startRecoverySnapshotTimeout
+            )
+            guard !Task.isCancelled else { return }
+
             await MainActor.run {
-                guard let self else { return }
                 guard self.isStartRequestInFlight,
                       self.pendingStartCommandID == commandID,
                       !self.isCurrentRecordingConfirmed,
                       !self.isOpeningHostApp
                 else { return }
+                if let recoveredStatus {
+                    self.applyBridgeStatus(recoveredStatus)
+                    if self.isLiveStartConfirmation(recoveredStatus) {
+                        self.finishStartRequestIfNeeded(status: recoveredStatus)
+                        return
+                    }
+                }
                 self.isStartRequestInFlight = false
                 self.pendingStartCommandID = nil
                 self.activeRecordingCommandID = nil
