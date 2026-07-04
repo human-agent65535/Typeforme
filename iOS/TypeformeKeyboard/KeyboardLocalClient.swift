@@ -1,5 +1,10 @@
 import Foundation
 
+enum KeyboardLocalProbeResult: Sendable {
+    case unreachable
+    case reachable(status: KeyboardBridgeStatus?)
+}
+
 /// Keyboard-side client for the host's loopback WebSocket bridge.
 ///
 /// Status is a host-pushed stream. Commands stay on dedicated connections so
@@ -105,6 +110,53 @@ actor KeyboardLocalClient {
         }
     }
 
+    func probeStatus(
+        bridgeToken: String?,
+        helloTimeout: TimeInterval,
+        statusTimeout: TimeInterval
+    ) async -> KeyboardLocalProbeResult {
+        guard let bridgeToken,
+              !bridgeToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else {
+            return .unreachable
+        }
+        let generation = shutdownGeneration
+        var urlRequest = URLRequest(url: url)
+        urlRequest.timeoutInterval = max(helloTimeout + statusTimeout + 0.2, 0.2)
+        let task = session.webSocketTask(with: urlRequest)
+        task.maximumMessageSize = 1 * 1024 * 1024
+        task.resume()
+
+        do {
+            let helloData = try messageData(try await receiveMessage(on: task, timeout: helloTimeout))
+            let hello = try JSONDecoder().decode(KeyboardLocalBridgeHello.self, from: helloData)
+            guard KeyboardLocalBridgeAuth.verifyServerHello(hello, bridgeToken: bridgeToken),
+                  shutdownGeneration == generation
+            else {
+                task.cancel(with: .normalClosure, reason: nil)
+                return .unreachable
+            }
+
+            do {
+                let request = KeyboardLocalBridgeRequest.statusSnapshot(bridgeToken: bridgeToken)
+                let payload = try JSONEncoder().encode(request)
+                try await task.send(.data(payload))
+                let message = try await receiveMessage(on: task, timeout: statusTimeout)
+                let status = try JSONDecoder().decode(KeyboardBridgeStatus.self, from: try messageData(message))
+                task.cancel(with: .normalClosure, reason: nil)
+                guard shutdownGeneration == generation else { return .unreachable }
+                return .reachable(status: status)
+            } catch {
+                task.cancel(with: .normalClosure, reason: nil)
+                guard shutdownGeneration == generation else { return .unreachable }
+                return .reachable(status: nil)
+            }
+        } catch {
+            task.cancel(with: .normalClosure, reason: nil)
+            return .unreachable
+        }
+    }
+
     func send(_ command: KeyboardBridgeCommand, bridgeToken: String?, timeout: TimeInterval) async throws -> KeyboardBridgeStatus {
         guard let bridgeToken,
               !bridgeToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -133,6 +185,54 @@ actor KeyboardLocalClient {
         } catch {
             task.cancel(with: .normalClosure, reason: nil)
             throw error
+        }
+    }
+
+    func sendWithReachability(
+        _ command: KeyboardBridgeCommand,
+        bridgeToken: String?,
+        helloTimeout: TimeInterval,
+        responseTimeout: TimeInterval
+    ) async -> KeyboardLocalProbeResult {
+        guard let bridgeToken,
+              !bridgeToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else {
+            return .unreachable
+        }
+        let request = KeyboardLocalBridgeRequest.command(command, bridgeToken: bridgeToken)
+        let generation = shutdownGeneration
+        var urlRequest = URLRequest(url: url)
+        urlRequest.timeoutInterval = max(helloTimeout + responseTimeout + 0.2, 0.2)
+        let task = session.webSocketTask(with: urlRequest)
+        task.maximumMessageSize = 1 * 1024 * 1024
+        task.resume()
+
+        do {
+            let helloData = try messageData(try await receiveMessage(on: task, timeout: helloTimeout))
+            let hello = try JSONDecoder().decode(KeyboardLocalBridgeHello.self, from: helloData)
+            guard KeyboardLocalBridgeAuth.verifyServerHello(hello, bridgeToken: bridgeToken),
+                  shutdownGeneration == generation
+            else {
+                task.cancel(with: .normalClosure, reason: nil)
+                return .unreachable
+            }
+
+            do {
+                let payload = try JSONEncoder().encode(request)
+                try await task.send(.data(payload))
+                let message = try await receiveMessage(on: task, timeout: responseTimeout)
+                let status = try JSONDecoder().decode(KeyboardBridgeStatus.self, from: try messageData(message))
+                task.cancel(with: .normalClosure, reason: nil)
+                guard shutdownGeneration == generation else { return .unreachable }
+                return .reachable(status: status)
+            } catch {
+                task.cancel(with: .normalClosure, reason: nil)
+                guard shutdownGeneration == generation else { return .unreachable }
+                return .reachable(status: nil)
+            }
+        } catch {
+            task.cancel(with: .normalClosure, reason: nil)
+            return .unreachable
         }
     }
 
