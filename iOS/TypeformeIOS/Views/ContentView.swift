@@ -2332,13 +2332,10 @@ private struct MacSettingsView: View {
                     }
 
                     ForEach(visibleEnabledRecognitionSources.filter(\.hasModelConfiguration)) { source in
-                        if !draft.asrModelOptions(for: source.rawValue).isEmpty {
-                            Picker("\(source.displayName) Model", selection: asrModelBinding(source)) {
-                                ForEach(draft.asrModelOptions(for: source.rawValue)) { option in
-                                    Text(option.displayName).tag(option.id)
-                                }
-                            }
-                            .pickerStyle(.menu)
+                        LabeledContent("\(source.displayName) Model") {
+                            Text(asrModelDisplayName(for: source, in: draft))
+                                .foregroundStyle(.secondary)
+                                .multilineTextAlignment(.trailing)
                         }
                     }
 
@@ -2372,25 +2369,21 @@ private struct MacSettingsView: View {
                 }
 
                 Section {
-                    Picker("Engine", selection: correctionBackendBinding) {
-                        ForEach(draft.correctionBackendOptions) { option in
-                            Text(option.displayName).tag(option.id)
-                        }
+                    LabeledContent("Engine") {
+                        Text(correctionBackendDisplayName(in: draft))
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.trailing)
                     }
-                    .pickerStyle(.menu)
 
                     if isExternalCompatibleBackend(draft.correctionBackend) {
                         LabeledContent("External URL") {
-                            TextField("http://127.0.0.1:1234", text: externalLLMBaseURLBinding)
-                                .textInputAutocapitalization(.never)
-                                .keyboardType(.URL)
-                                .autocorrectionDisabled()
+                            Text(readOnlyExternalValue(draft.externalLLMBaseURL))
+                                .foregroundStyle(.secondary)
                                 .multilineTextAlignment(.trailing)
                         }
                         LabeledContent("External Model") {
-                            TextField("model id", text: externalLLMModelBinding)
-                                .textInputAutocapitalization(.never)
-                                .autocorrectionDisabled()
+                            Text(readOnlyExternalValue(draft.externalLLMModel))
+                                .foregroundStyle(.secondary)
                                 .multilineTextAlignment(.trailing)
                         }
                     }
@@ -2422,8 +2415,6 @@ private struct MacSettingsView: View {
                     .pickerStyle(.menu)
                 } header: {
                     Text("Mac Refine Engine")
-                } footer: {
-                    Text("Used by Clean, Polish+, Structure+, and Formal+. Fast skips refine.")
                 }
 
                 Section("Vocabulary") {
@@ -2606,45 +2597,20 @@ private struct MacSettingsView: View {
         mode.title
     }
 
-    private func asrModelBinding(_ source: RecognitionSource) -> Binding<String> {
-        Binding {
-            guard let draft else { return "" }
-            return draft.asrModelID(for: source.rawValue)
-        } set: { value in
-            updateDraft(normalize: true) { draft in
-                draft.asrModelIDsByRecognitionSource[source.rawValue] = value
-            }
-        }
+    private func asrModelDisplayName(for source: RecognitionSource, in draft: BridgeMacSettingsPayload) -> String {
+        let modelID = draft.asrModelID(for: source.rawValue)
+        return draft.asrModelOptions(for: source.rawValue).first { $0.id == modelID }?.displayName
+            ?? source.displayName
     }
 
-    private var correctionBackendBinding: Binding<String> {
-        Binding {
-            draft?.correctionBackend ?? ""
-        } set: { value in
-            updateDraft { draft in
-                draft.correctionBackend = value
-            }
-        }
+    private func correctionBackendDisplayName(in draft: BridgeMacSettingsPayload) -> String {
+        draft.correctionBackendOptions.first { $0.id == draft.correctionBackend }?.displayName
+            ?? draft.correctionBackend
     }
 
-    private var externalLLMBaseURLBinding: Binding<String> {
-        Binding {
-            draft?.externalLLMBaseURL ?? ""
-        } set: { value in
-            updateDraft { draft in
-                draft.externalLLMBaseURL = value
-            }
-        }
-    }
-
-    private var externalLLMModelBinding: Binding<String> {
-        Binding {
-            draft?.externalLLMModel ?? ""
-        } set: { value in
-            updateDraft { draft in
-                draft.externalLLMModel = value
-            }
-        }
+    private func readOnlyExternalValue(_ value: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "Not set" : trimmed
     }
 
     private func isExternalCompatibleBackend(_ backend: String) -> Bool {

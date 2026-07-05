@@ -170,7 +170,7 @@ final class BridgeService {
         let proposedExternalLLMModel = request.externalLLMModel?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? AppSettings.externalLLMModel
 
-        try await validateExternalCorrectionBackendIfNeeded(
+        try Self.validateExternalCorrectionSettingsIfNeeded(
             proposedCorrectionBackend,
             externalLLMBaseURL: proposedExternalLLMBaseURL,
             externalLLMModel: proposedExternalLLMModel
@@ -1323,25 +1323,26 @@ final class BridgeService {
         return backend
     }
 
-    private func validateExternalCorrectionBackendIfNeeded(
+    static func validateExternalCorrectionSettingsIfNeeded(
         _ backend: CorrectionBackendKind,
         externalLLMBaseURL: String,
         externalLLMModel: String
-    ) async throws {
+    ) throws {
         guard backend.isExternalCompatible else { return }
         let model = externalLLMModel.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !model.isEmpty else {
             throw BridgeServiceError.invalidRequest("External refine model is empty")
         }
-        let apiKind = try ExternalCompatibleCorrectorService.apiKind(for: backend)
-        let report = await ExternalCompatibleCorrectorService.checkConfiguration(
-            apiKind: apiKind,
-            baseURL: externalLLMBaseURL,
-            apiKey: AppSettings.externalLLMAPIKey,
-            selectedModel: model
-        )
-        guard report.ok else {
-            throw BridgeServiceError.invalidRequest(report.detail)
+        do {
+            let apiKind = try ExternalCompatibleCorrectorService.apiKind(for: backend)
+            _ = try ExternalCompatibleCorrectorService.completionsEndpoint(
+                baseURL: externalLLMBaseURL,
+                apiKind: apiKind
+            )
+        } catch let error as BridgeServiceError {
+            throw error
+        } catch {
+            throw BridgeServiceError.invalidRequest(error.localizedDescription)
         }
     }
 

@@ -41,6 +41,39 @@ struct BridgeServiceTests {
         }
     }
 
+    @Test @MainActor func externalCorrectionSettingsSaveDoesNotRequireReachableListedModel() throws {
+        try BridgeService.validateExternalCorrectionSettingsIfNeeded(
+            .externalOpenAICompatible,
+            externalLLMBaseURL: "http://127.0.0.1:1234",
+            externalLLMModel: "model-that-is-not-currently-listed"
+        )
+    }
+
+    @Test @MainActor func externalCorrectionSettingsStillRequireModelAndHTTPURL() {
+        #expect(throws: BridgeServiceError.self) {
+            try BridgeService.validateExternalCorrectionSettingsIfNeeded(
+                .externalOpenAICompatible,
+                externalLLMBaseURL: "http://127.0.0.1:1234",
+                externalLLMModel: " "
+            )
+        }
+        #expect(throws: BridgeServiceError.self) {
+            try BridgeService.validateExternalCorrectionSettingsIfNeeded(
+                .externalAnthropicCompatible,
+                externalLLMBaseURL: "file:///tmp/model",
+                externalLLMModel: "claude-sonnet-4-5"
+            )
+        }
+    }
+
+    @Test @MainActor func localCorrectionSettingsSaveDoesNotRequireInstalledModel() throws {
+        try BridgeService.validateExternalCorrectionSettingsIfNeeded(
+            .qwen35_9B,
+            externalLLMBaseURL: "",
+            externalLLMModel: ""
+        )
+    }
+
     @Test func remoteClientAcceptsDegradedRefineResponsesWithText() throws {
         try RemoteBridgeClient.validateTextResponse(text: "raw transcript", status: "refine_timeout", error: "Correction timed out")
         try RemoteBridgeClient.validateTextResponse(text: "raw transcript", status: "refine_error", error: "Backend error")
