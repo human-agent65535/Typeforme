@@ -68,6 +68,7 @@ final class QwenLlamaLivePreviewSession: ASRLivePreviewSession, @unchecked Senda
     private static let minimumPreviewSamples = 19_200
     private static let requestStrideSamples = 16_000
     private static let rollingWindowSamples = 8 * 16_000
+    private static let minimumPreviewRMS: Float = 0.004
     private static let requestTimeout: TimeInterval = 12
     private static let requestMaxTokens = 256
     private static let outputFormat = AVAudioFormat(
@@ -90,7 +91,7 @@ final class QwenLlamaLivePreviewSession: ASRLivePreviewSession, @unchecked Senda
     private var pcmWindow = Data()
     private var fullPCM = Data()
     private var totalSampleCount = 0
-    private var lastRequestedSampleCount = 0
+    private var lastPreviewEvaluationSampleCount = 0
     private var inFlightTask: Task<Void, Never>?
     private var inFlightTaskID: UUID?
     private var lastTranscript: String?
@@ -225,10 +226,14 @@ final class QwenLlamaLivePreviewSession: ASRLivePreviewSession, @unchecked Senda
 
     static func shouldRequestPreview(
         totalSamples: Int,
-        lastRequestedSamples: Int
+        lastRequestedSamples lastEvaluatedSamples: Int
     ) -> Bool {
         guard totalSamples >= minimumPreviewSamples else { return false }
-        return totalSamples - lastRequestedSamples >= requestStrideSamples
+        return totalSamples - lastEvaluatedSamples >= requestStrideSamples
+    }
+
+    static func hasAudiblePreviewSignal(_ pcm16kMonoFloat32Data: Data) -> Bool {
+        previewRMS(pcm16kMonoFloat32Data) >= minimumPreviewRMS
     }
 
     private var logID: String {
@@ -272,7 +277,7 @@ final class QwenLlamaLivePreviewSession: ASRLivePreviewSession, @unchecked Senda
               !isClosedOnQueue,
               Self.shouldRequestPreview(
                   totalSamples: totalSampleCount,
-                  lastRequestedSamples: lastRequestedSampleCount
+                  lastRequestedSamples: lastPreviewEvaluationSampleCount
               )
         else { return }
 
@@ -280,13 +285,20 @@ final class QwenLlamaLivePreviewSession: ASRLivePreviewSession, @unchecked Senda
         let audio = Data(pcmWindow)
         let totalSamples = totalSampleCount
         let windowStart = Self.rollingWindowStartSample(totalSamples: totalSamples)
+        lastPreviewEvaluationSampleCount = totalSamples
+        let rms = Self.previewRMS(audio)
+        guard rms >= Self.minimumPreviewRMS else {
+            Log.asr.debug(
+                "Qwen3-ASR live preview skipped low-energy window session=\(self.logID, privacy: .public) rms=\(rms, privacy: .public) input_audio_ms=\(totalSamples * 1_000 / 16_000, privacy: .public) elapsed_ms=\(Self.elapsedMS(since: self.startedAt), privacy: .public)"
+            )
+            return
+        }
         let languageIDs = self.languageIDs
         let service = self.service
         let logID = self.logID
         let startedAt = self.startedAt
         let isFirst = !firstRequestLogged
         firstRequestLogged = true
-        lastRequestedSampleCount = totalSamples
         QwenLlamaLivePreviewTaskRegistry.shared.reserve(id: requestID)
         let startGate = QwenLivePreviewStartGate()
 
@@ -580,6 +592,28 @@ final class QwenLlamaLivePreviewSession: ASRLivePreviewSession, @unchecked Senda
             }
         }
         return data
+    }
+
+    private static func previewRMS(_ pcm16kMonoFloat32Data: Data) -> Float {
+        guard !pcm16kMonoFloat32Data.isEmpty,
+              pcm16kMonoFloat32Data.count % MemoryLayout<Float>.size == 0
+        else { return 0 }
+        let sampleCount = pcm16kMonoFloat32Data.count / MemoryLayout<Float>.size
+        guard sampleCount > 0 else { return 0 }
+
+        let sum = pcm16kMonoFloat32Data.withUnsafeBytes { rawBuffer in
+            let words = rawBuffer.bindMemory(to: UInt32.self)
+            var total = 0.0
+            for word in words {
+                let sample = Float(bitPattern: UInt32(littleEndian: word))
+                guard sample.isFinite else { continue }
+                let clamped = max(-1, min(1, sample))
+                total += Double(clamped * clamped)
+            }
+            return total
+        }
+        guard sum.isFinite, sum > 0 else { return 0 }
+        return Float(sqrt(sum / Double(sampleCount)))
     }
 
     private static func elapsedMS(since date: Date) -> Int {

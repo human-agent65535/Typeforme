@@ -539,6 +539,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private var activeRecordingTextTarget: PendingRecordingTextTarget?
     private var activeRecordingTextEditIntent: TextEditIntent?
     private var livePartialPreviewState: LivePartialPreviewState?
+    private var suppressedRefineResultCommandIDs: [String: TimeInterval] = [:]
     private var pendingStopCommandID: String?
     private var pendingCancelCommandID: String?
     private var recentSelectionTarget: TextRewriteTarget?
@@ -588,6 +589,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private let minimumIntentReleaseDuration: TimeInterval = 0.10
     private let selectionSnapshotTTL: TimeInterval = 1.25
     private let refineUndoStateTTL: TimeInterval = 10 * 60
+    private static let suppressedRefineResultTTL: TimeInterval = 10 * 60
     private static let dictationContextLimit = 600
     private static let textRewriteContextExpansionLimit = 2_000
     private static let textRewriteContextExpansionMaxSteps = 40
@@ -3289,11 +3291,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
               currentBridgeStatus?.state != .sending,
               !isStartRequestInFlight
         else { return }
-        if consumeActiveRefineForUserSubmit() {
-            clearRefineUndoStateForManualEdit()
-            lightHaptic()
-            return
-        }
         clearRefineUndoStateForManualEdit()
         textDocumentProxy.insertText("\n")
         lightHaptic()
@@ -4618,12 +4615,31 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     /// Swaps the space key label to the recording-stop hint and back. Driven
     /// from `updateUI` so the title tracks the bridge recording state.
-    private func updateSpaceKeyTitleForRecording(_ recording: Bool) {
+    private func updateSpaceKeyTitleForRecording(_ recording: Bool, stopsRefine: Bool = false) {
         guard let spaceKey = textSpaceKeyButton else { return }
-        let title = recording
-            ? NSLocalizedString("点击发送", comment: "Space key label during text-keyboard dictation")
-            : spaceKeyTitle
-        configureTextKeyButton(spaceKey, title: title, image: nil, weight: .primary)
+        if recording {
+            configureTextKeyButton(
+                spaceKey,
+                title: NSLocalizedString("点击发送", comment: "Space key label during text-keyboard dictation"),
+                image: nil,
+                weight: .primary
+            )
+        } else if stopsRefine {
+            configureTextKeyButton(
+                spaceKey,
+                title: stopRefineSpaceKeyTitle,
+                image: nil,
+                weight: .primary
+            )
+        } else {
+            configureTextKeyButton(spaceKey, title: spaceKeyTitle, image: nil, weight: .primary)
+        }
+    }
+
+    private var stopRefineSpaceKeyTitle: String {
+        textInputLanguage == .chinese
+            ? NSLocalizedString("发送", comment: "Space key label while accepting active refine")
+            : NSLocalizedString("send", comment: "Space key label while accepting active refine")
     }
 
     private var returnKeyTitle: String {
@@ -5007,15 +5023,20 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 self.voiceTitleLabel.textColor = self.voiceTitleColor
                 self.voiceTitleLabel.alpha = isHoldRecording ? 0 : 1
             }
+            let canStopRefine = self.canStopActiveRefine
+            self.voiceIconView.preferredSymbolConfiguration = UIImage.SymbolConfiguration(
+                pointSize: canStopRefine ? 42 : 52,
+                weight: .medium
+            )
             self.voiceIconView.image = Self.cachedSymbolImage(named: self.voiceIconName)
-            let showsSpinner = isSendingState || (!isRecordingState && (self.isStartRequestInFlight || self.isOpeningHostApp))
+            let showsSpinner = (isSendingState && !canStopRefine) || (!isRecordingState && (self.isStartRequestInFlight || self.isOpeningHostApp))
             self.voiceIconView.alpha = (isRecordingState || showsSpinner) ? 0 : 1
             self.voicePrint.alpha = showsInOrbVoicePrint ? 1 : 0
             self.topRowVoicePrint.alpha = (self.keyboardFocus == .text ? false : showsTopRowVoicePrint) ? 1 : 0
             self.voiceButton.alpha = 1
             self.voiceSpinner.alpha = showsSpinner ? 1 : 0
 
-            let acceptsVoiceTouch = !isSendingState || self.isVoicePressActive
+            let acceptsVoiceTouch = !isSendingState || self.isVoicePressActive || canStopRefine
             self.voiceButton.isEnabled = acceptsVoiceTouch
             self.voiceButton.accessibilityValue = self.inputMode.title
             let commandCanStopActiveCommand = isRecordingState
@@ -5032,16 +5053,15 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 button.isEnabled = voiceUtilityEnabled
                 button.alpha = voiceUtilityEnabled ? 1 : 0.45
             }
-            let voiceReturnEnabled = voiceUtilityEnabled
-                || (isSendingState && self.canConsumeActiveRefineForUserSubmit)
-            self.returnButton.isEnabled = voiceReturnEnabled
-            self.returnButton.alpha = voiceReturnEnabled ? 1 : 0.45
+            self.returnButton.isEnabled = voiceUtilityEnabled
+            self.returnButton.alpha = voiceUtilityEnabled ? 1 : 0.45
             let locksTextRows = self.keyboardFocus == .text && (isRecordingState || isSendingState)
-            let textReturnCanSkipRefine = isSendingState && self.canConsumeActiveRefineForUserSubmit
+            let textSpaceCanStopRefine = isSendingState && self.keyboardFocus == .text && canStopRefine
             // Keep rows touchable only for explicit in-flight affordances:
-            // space stops text-keyboard recording, return skips an active
-            // refine. Disabled buttons are filtered by the touch router.
-            self.keyRowsStack.isUserInteractionEnabled = !locksTextRows || isRecordingState || textReturnCanSkipRefine
+            // space stops text-keyboard recording, then stops active refine
+            // once the host enters the refine stage. Disabled buttons are
+            // filtered by the touch router.
+            self.keyRowsStack.isUserInteractionEnabled = !locksTextRows || isRecordingState || textSpaceCanStopRefine
             // Dim per-key (not the whole stack) so the space key, which stays
             // the live stop-and-send affordance during recording, can render
             // at full opacity. UIView.alpha cascades multiplicatively, so we
@@ -5053,14 +5073,17 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 if isRecordingState && self.keyboardFocus == .text {
                     staysEnabled = button === self.textSpaceKeyButton
                 } else if isSendingState && self.keyboardFocus == .text {
-                    staysEnabled = button === self.textReturnKeyButton && textReturnCanSkipRefine
+                    staysEnabled = button === self.textSpaceKeyButton && textSpaceCanStopRefine
                 } else {
                     staysEnabled = true
                 }
                 button.isEnabled = staysEnabled
                 button.alpha = textBusyDim && !staysEnabled ? 0.48 : 1
             }
-            self.updateSpaceKeyTitleForRecording(isRecordingState && self.keyboardFocus == .text)
+            self.updateSpaceKeyTitleForRecording(
+                isRecordingState && self.keyboardFocus == .text,
+                stopsRefine: textSpaceCanStopRefine
+            )
             self.candidateScrollView.alpha = locksTextRows ? 0.62 : 1
             self.refreshTextRecordingButtons(isRecording: isRecordingState, isSending: isSendingState)
             // Voice-orb mode: dim the correction mode chip during recording /
@@ -5125,7 +5148,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 textToolbarStatusLabel.text = currentBridgeStatus?.message
                 textToolbarStatusLabel.textColor = .systemRed
             } else {
-                textToolbarStatusLabel.text = currentBridgeStatus?.message
+                textToolbarStatusLabel.text = bridgeStatusDisplayMessage
                 textToolbarStatusLabel.textColor = .secondaryLabel
             }
         }
@@ -5533,6 +5556,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     @objc private func voicePressDown() {
         kbLog.debug("voicePressDown fired (bounds=\(NSCoder.string(for: self.voiceButton.bounds), privacy: .public))")
+        if stopActiveRefineFromUserAction() {
+            lightHaptic()
+            return
+        }
         guard !isVoicePressActive else { return }
         isVoicePressActive = true
         voicePressBeganAt = Date().timeIntervalSince1970
@@ -6663,7 +6690,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             text: target.text
         )
         styleRewriteCommandID = command.id
-        bridgeStatus = KeyboardBridgeStatus(commandID: command.id, state: .sending, message: "Refining")
+        bridgeStatus = KeyboardBridgeStatus(
+            commandID: command.id,
+            state: .sending,
+            message: "Refining",
+            processingStage: .refining
+        )
         lastBridgeContactAt = Date().timeIntervalSince1970
         updateUI()
         showTextKeyboardStatus(NSLocalizedString("Refining", comment: "Inline status while refining recent text"))
@@ -7941,7 +7973,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             stopDictationAfterMinimumHoldIfNeeded()
             return
         }
-        if currentBridgeStatus?.state == .sending { return }
+        if currentBridgeStatus?.state == .sending {
+            if stopActiveRefineFromUserAction() {
+                clearRefineUndoStateForManualEdit()
+            }
+            return
+        }
 
         clearTransientKeyboardErrorIfShowing()
 
@@ -7983,27 +8020,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private func handleTextReturn() {
         guard keyboardFocus == .text else {
             if currentBridgeStatus?.state == .recording { return }
-            if currentBridgeStatus?.state == .sending {
-                if consumeActiveRefineForUserSubmit() {
-                    clearRefineUndoStateForManualEdit()
-                }
-                return
-            }
-            if consumeActiveRefineForUserSubmit() {
-                clearRefineUndoStateForManualEdit()
-                return
-            }
+            if currentBridgeStatus?.state == .sending { return }
             clearRefineUndoStateForManualEdit()
             textDocumentProxy.insertText("\n")
             return
         }
         if currentBridgeStatus?.state == .recording { return }
-        if currentBridgeStatus?.state == .sending {
-            if consumeActiveRefineForUserSubmit() {
-                clearRefineUndoStateForManualEdit()
-            }
-            return
-        }
+        if currentBridgeStatus?.state == .sending { return }
 
         clearTransientKeyboardErrorIfShowing()
 
@@ -8013,13 +8036,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         if textInputLanguage == .english {
             if currentState.isComposing {
                 applyRimeState(rimeInput.clearComposition())
-            }
-            if consumeActiveRefineForUserSubmit() {
-                clearRefineUndoStateForManualEdit()
-                if !resetShiftIfSticky() {
-                    refreshEnglishLetterCasingIfNeeded()
-                }
-                return
             }
             clearRefineUndoStateForManualEdit()
             textDocumentProxy.insertText("\n")
@@ -8031,13 +8047,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
         let state = commitDisplayedRimeCompositionIfNeeded(from: currentState)
         if state.commitText.isEmpty {
-            if consumeActiveRefineForUserSubmit() {
-                clearRefineUndoStateForManualEdit()
-                if !resetShiftIfSticky() {
-                    refreshEnglishLetterCasingIfNeeded()
-                }
-                return
-            }
             clearRefineUndoStateForManualEdit()
             textDocumentProxy.insertText("\n")
         }
@@ -9303,7 +9312,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         textDocumentProxy.setMarkedText(preview, selectedRange: NSRange(location: cursor, length: 0))
         textDocumentProxy.unmarkText()
         kbLog.notice(
-            "live partial preview committed by user submit command_id=\(commandID ?? "none", privacy: .public) preview_chars=\(preview.count, privacy: .public)"
+            "live partial preview committed by stop refine command_id=\(commandID ?? "none", privacy: .public) preview_chars=\(preview.count, privacy: .public)"
         )
     }
 
@@ -9389,7 +9398,15 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
     }
 
-    private var canConsumeActiveRefineForUserSubmit: Bool {
+    private var canStopActiveRefine: Bool {
+        guard currentBridgeStatus?.state == .sending else { return false }
+        guard currentBridgeStatus?.processingStage == .refining || styleRewriteCommandID != nil else {
+            return false
+        }
+        return hasActiveRefineStopTarget
+    }
+
+    private var hasActiveRefineStopTarget: Bool {
         if styleRewriteCommandID != nil { return true }
         if activeMarkedTextOwner == .livePartial,
            !activeMarkedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -9404,15 +9421,16 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     @discardableResult
-    private func consumeActiveRefineForUserSubmit(commandID explicitCommandID: String? = nil) -> Bool {
-        if consumeLivePartialPreviewForUserSubmit(commandID: explicitCommandID) {
+    private func stopActiveRefineFromUserAction(commandID explicitCommandID: String? = nil) -> Bool {
+        guard canStopActiveRefine else { return false }
+        if stopLivePartialRefineFromUserAction(commandID: explicitCommandID) {
             return true
         }
-        return consumeActiveStyleRewriteForUserSubmit()
+        return stopActiveStyleRewriteFromUserAction()
     }
 
     @discardableResult
-    private func consumeLivePartialPreviewForUserSubmit(commandID explicitCommandID: String? = nil) -> Bool {
+    private func stopLivePartialRefineFromUserAction(commandID explicitCommandID: String? = nil) -> Bool {
         let commandID = effectiveLivePartialCommandID(explicitCommandID)
         let didCommit = commitLivePartialBeforeHostReturnIfNeeded(commandID: commandID)
         let didMark = markLivePartialPreviewConsumed(commandID: commandID)
@@ -9420,15 +9438,15 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
         let consumedCommandID = commandID ?? currentBridgeStatus?.commandID ?? pendingStopCommandID
         if let consumedCommandID {
-            defaults.set(consumedCommandID, forKey: lastInsertedCommandIDKey)
+            suppressRefineResult(commandID: consumedCommandID, reason: "live_partial_stop")
         }
         if currentBridgeStatus?.state == .sending {
-            finishConsumedLivePartialPreviewSubmit(commandID: consumedCommandID)
+            finishStoppedLivePartialRefine(commandID: consumedCommandID)
         }
         return true
     }
 
-    private func finishConsumedLivePartialPreviewSubmit(commandID: String?) {
+    private func finishStoppedLivePartialRefine(commandID: String?) {
         cancelRefineTimeoutWatchdog()
         stopBridgeStatusStream()
         clearLivePartialPreview(commandID: commandID)
@@ -9454,8 +9472,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     @discardableResult
-    private func consumeActiveStyleRewriteForUserSubmit() -> Bool {
+    private func stopActiveStyleRewriteFromUserAction() -> Bool {
         guard let commandID = styleRewriteCommandID else { return false }
+        suppressRefineResult(commandID: commandID, reason: "style_rewrite_stop")
         styleRewriteCommandID = nil
         styleRewriteTask?.cancel()
         styleRewriteTask = nil
@@ -9469,6 +9488,31 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         lastBridgeContactAt = Date().timeIntervalSince1970
         showTextKeyboardStatus(NSLocalizedString("No refine", comment: "Inline status after skipping an active refine"), color: .systemOrange)
         updateUI()
+        return true
+    }
+
+    private func suppressRefineResult(commandID: String?, reason: String) {
+        guard let commandID else { return }
+        let now = Date().timeIntervalSince1970
+        pruneSuppressedRefineResultCommandIDs(now: now)
+        suppressedRefineResultCommandIDs[commandID] = now
+        defaults.set(commandID, forKey: lastInsertedCommandIDKey)
+        kbLog.notice("suppressing refine result command_id=\(commandID, privacy: .public) reason=\(reason, privacy: .public)")
+    }
+
+    private func pruneSuppressedRefineResultCommandIDs(now: TimeInterval = Date().timeIntervalSince1970) {
+        let cutoff = now - Self.suppressedRefineResultTTL
+        suppressedRefineResultCommandIDs = suppressedRefineResultCommandIDs.filter { $0.value >= cutoff }
+    }
+
+    private func shouldIgnoreSuppressedRefineResult(_ status: KeyboardBridgeStatus) -> Bool {
+        guard status.state == .result,
+              let commandID = status.commandID
+        else { return false }
+        let now = Date().timeIntervalSince1970
+        pruneSuppressedRefineResultCommandIDs(now: now)
+        guard suppressedRefineResultCommandIDs[commandID] != nil else { return false }
+        kbLog.notice("ignoring suppressed refine result command_id=\(commandID, privacy: .public)")
         return true
     }
 
@@ -9712,35 +9756,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
         return livePartialContextBeforeMatches(before, anchorBefore: preview.contextBefore)
             && livePartialContextAfterMatches(after, anchorAfter: preview.contextAfter)
-    }
-
-    private func shouldSkipResultCommitForConsumedLivePartial() -> Bool {
-        guard activeMarkedTextOwner == .livePartial,
-              !activeMarkedText.isEmpty
-        else { return false }
-        // The host app or iOS system UI can commit/clear the marked preview
-        // while the server is still finishing. If our marked-text bookkeeping
-        // is stale, falling back to setMarkedText(...).unmarkText() can append
-        // the final result after the old preview instead of replacing it.
-        guard let before = textDocumentProxy.documentContextBeforeInput else {
-            return false
-        }
-        let markedText = activeMarkedText
-        if before.hasSuffix(markedText) {
-            return false
-        }
-        if !before.isEmpty {
-            let markedSuffix = String(markedText.suffix(before.count))
-            if before == markedSuffix {
-                return false
-            }
-        }
-        if let after = textDocumentProxy.documentContextAfterInput,
-           !after.isEmpty,
-           (after.hasPrefix(markedText) || (before + after).contains(markedText)) {
-            return false
-        }
-        return true
     }
 
     private func isAlphabeticTextKey(_ character: String) -> Bool {
@@ -10497,7 +10512,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         guard hasFullAccess else { return "gearshape.fill" }
         switch currentBridgeStatus?.state {
         case .recording: return "stop.fill"
-        case .sending: return "hourglass"
+        case .sending: return canStopActiveRefine ? "arrow.up" : "hourglass"
         default: return "mic.fill"
         }
     }
@@ -10639,12 +10654,20 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private var sendingStatusTitle: String {
-        // The host publishes the curated stage label (Transcribing / Refining /
-        // Inserted / error text) directly in `status.message`, so show it
-        // verbatim — no inference, no rewriting.
-        let message = currentBridgeStatus?.message.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let message = bridgeStatusDisplayMessage
         if !message.isEmpty { return message }
         return NSLocalizedString("Transcribing", comment: "Bridge job stage")
+    }
+
+    private var bridgeStatusDisplayMessage: String {
+        // The host publishes the curated stage label (Transcribing / Refining /
+        // Inserted / error text) directly in `status.message`. Only append the
+        // local stop-refine affordance when the keyboard can actually accept it.
+        let message = currentBridgeStatus?.message.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard canStopActiveRefine else { return message }
+        let suffix = "click to send"
+        guard !message.lowercased().contains(suffix) else { return message }
+        return message.isEmpty ? suffix : "\(message) · \(suffix)"
     }
 
     private var processingVoiceTitle: String {
@@ -11561,6 +11584,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         if shouldIgnoreStaleIdleStatus(status) {
             return
         }
+        if shouldIgnoreSuppressedRefineResult(status) {
+            return
+        }
         if shouldIgnoreStaleResultStatus(status) {
             return
         }
@@ -11678,12 +11704,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             } else if let preview = livePartialPreviewState,
                       preview.commandID == commandID {
                 didApply = applyFinalResultForLivePartialPreview(preview, finalText: text)
-                appliedRewriteTarget = nil
-            } else if shouldSkipResultCommitForConsumedLivePartial() {
-                kbLog.notice("skipped result commit because live partial preview is no longer in host input")
-                activeMarkedText = ""
-                activeMarkedTextOwner = nil
-                didApply = true
                 appliedRewriteTarget = nil
             } else {
                 commitTextReplacingMarkedText(text, reason: .bridgeResult)
