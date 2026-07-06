@@ -40,7 +40,7 @@ struct BridgeRouteResolutionPolicy: Sendable, Equatable {
         localTimeout: 1.5,
         localPriorityTimeoutWhenCloudAvailable: 1.5,
         cloudTimeout: 3.0,
-        probeLocalAndCloudConcurrentlyWhenBothConfigured: false
+        probeLocalAndCloudConcurrentlyWhenBothConfigured: true
     )
 }
 

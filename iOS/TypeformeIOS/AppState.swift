@@ -485,6 +485,8 @@ final class AppState {
     private var networkPathSignature: String?
     private var lastNetworkPathRefreshAt: Date?
     private var lastForegroundRouteRefreshAt: Date?
+    private var routeRefreshGeneration: UInt64 = 0
+    private var routeStatusProbeInFlightCount = 0
     private var macSettingsFetchedAt: Date?
     private var macSettingsRevision: String?
     private var cachedServerRimeUserPhrases: [String]
@@ -514,6 +516,7 @@ final class AppState {
     @ObservationIgnored private var lifecycleObservers: [NSObjectProtocol] = []
     @ObservationIgnored private var keyboardDarwinObservers: [KeyboardDarwinNotificationObserver] = []
     private var routeRefreshInFlightCount = 0
+    private(set) var isCheckingRouteStatus = false
     private var idleTimerHolders = 0
     private var lastGeneratedResultText: String?
     private var activeKeyboardTextEditContext: KeyboardTextEditContext?
@@ -741,7 +744,7 @@ final class AppState {
 
     func bootstrap() async {
         await prepareHostForegroundCapture()
-        await refreshRoute(force: true, showIndicator: false)
+        await refreshRoute(force: true, showIndicator: false, reason: "bootstrap")
         _ = try? await refreshMacSettingsIfChanged()
         scheduleHostRecorderPreWarm()
     }
@@ -858,7 +861,7 @@ final class AppState {
         publishKeyboardDefaults()
         routeFetchedAt = nil
         Task {
-            await refreshRoute(force: true)
+            await refreshRoute(force: true, syncPairingEndpoints: true, reason: "save_config")
             _ = try? await refreshMacSettings()
         }
     }
@@ -873,7 +876,7 @@ final class AppState {
         publishKeyboardDefaults()
         routeFetchedAt = nil
         Task {
-            await refreshRoute(force: true)
+            await refreshRoute(force: true, syncPairingEndpoints: true, reason: "save_bridge_endpoints")
         }
     }
 
@@ -1139,7 +1142,9 @@ final class AppState {
     func refreshRoute(
         force: Bool = false,
         probeAllEndpoints: Bool = true,
-        showIndicator: Bool = true
+        showIndicator: Bool = true,
+        syncPairingEndpoints: Bool? = nil,
+        reason: String = "unspecified"
     ) async {
         let cacheTTL = routeStatus.activeKind == .local ? Self.localRouteCacheTTL : Self.routeCacheTTL
         if !force, let routeFetchedAt,
@@ -1148,28 +1153,67 @@ final class AppState {
            routeStatusSatisfiesProbeMode(probeAllEndpoints) {
             return
         }
-        if showIndicator {
-            beginRouteRefreshIndicator()
-        }
+        let configSnapshot = config
+        let generation = nextRouteRefreshGeneration()
+        let startedAt = Date()
+        let shouldSyncPairingEndpoints = syncPairingEndpoints ?? showIndicator
+        beginRouteRefresh(showIndicator: showIndicator)
+        recordRouteRefreshBegin(
+            generation: generation,
+            reason: reason,
+            force: force,
+            probeAllEndpoints: probeAllEndpoints,
+            config: configSnapshot
+        )
         defer {
-            if showIndicator {
-                endRouteRefreshIndicator()
-            }
+            endRouteRefresh(showIndicator: showIndicator)
         }
-        routeStatus = await routeResolver.resolve(config: config, probeAllEndpoints: probeAllEndpoints)
-        persistActiveLocalRouteIfNeeded(routeStatus)
-        routeFetchedAt = Date()
-        if shouldRefreshPairingEndpointsAfterRouteRefresh(force: force, status: routeStatus),
-           await refreshPairingEndpointsFromActiveRoute(status: routeStatus) {
-            routeStatus = await routeResolver.resolve(config: config, probeAllEndpoints: probeAllEndpoints)
-            persistActiveLocalRouteIfNeeded(routeStatus)
-            routeFetchedAt = Date()
+
+        let resolved = await routeResolver.resolve(config: configSnapshot, probeAllEndpoints: probeAllEndpoints)
+        guard commitRouteRefreshResult(
+            resolved,
+            generation: generation,
+            reason: reason,
+            config: configSnapshot,
+            startedAt: startedAt
+        ) else {
+            return
         }
+
+        guard shouldSyncPairingEndpoints,
+              shouldRefreshPairingEndpointsAfterRouteRefresh(force: force, status: routeStatus),
+              routeRefreshGeneration == generation,
+              await refreshPairingEndpointsFromActiveRoute(status: routeStatus)
+        else { return }
+
+        guard routeRefreshGeneration == generation else {
+            recordRouteRefreshDiscarded(
+                generation: generation,
+                reason: "\(reason):endpoint_sync",
+                candidate: routeStatus,
+                discardReason: "stale_generation_after_endpoint_sync"
+            )
+            return
+        }
+        let refreshedConfig = config
+        let rerouted = await routeResolver.resolve(config: refreshedConfig, probeAllEndpoints: probeAllEndpoints)
+        _ = commitRouteRefreshResult(
+            rerouted,
+            generation: generation,
+            reason: "\(reason):endpoint_sync",
+            config: refreshedConfig,
+            startedAt: startedAt
+        )
     }
 
     private func preflightActiveBridgeRoute() async {
         guard let baseURL = routeStatus.activeURL else {
-            await refreshRoute(force: true, probeAllEndpoints: false, showIndicator: false)
+            await refreshRoute(
+                force: true,
+                probeAllEndpoints: false,
+                showIndicator: false,
+                reason: "preflight_missing_route"
+            )
             return
         }
 
@@ -1177,10 +1221,36 @@ final class AppState {
         let isHealthy = await BridgeClient(baseURL: baseURL, token: config.token).health(timeout: timeout)
         guard isHealthy else {
             routeFetchedAt = nil
-            await refreshRoute(force: true, probeAllEndpoints: false, showIndicator: false)
+            await refreshRoute(
+                force: true,
+                probeAllEndpoints: false,
+                showIndicator: false,
+                reason: "preflight_failed"
+            )
             return
         }
         routeFetchedAt = Date()
+    }
+
+    private func nextRouteRefreshGeneration() -> UInt64 {
+        routeRefreshGeneration += 1
+        return routeRefreshGeneration
+    }
+
+    private func beginRouteRefresh(showIndicator: Bool) {
+        routeStatusProbeInFlightCount += 1
+        isCheckingRouteStatus = true
+        if showIndicator {
+            beginRouteRefreshIndicator()
+        }
+    }
+
+    private func endRouteRefresh(showIndicator: Bool) {
+        routeStatusProbeInFlightCount = max(0, routeStatusProbeInFlightCount - 1)
+        isCheckingRouteStatus = routeStatusProbeInFlightCount > 0
+        if showIndicator {
+            endRouteRefreshIndicator()
+        }
     }
 
     private func beginRouteRefreshIndicator() {
@@ -1201,6 +1271,145 @@ final class AppState {
             (!cloudConfigured || routeStatus.cloudChecked)
     }
 
+    @discardableResult
+    private func commitRouteRefreshResult(
+        _ status: BridgeRouteResolutionStatus,
+        generation: UInt64,
+        reason: String,
+        config: PairingConfig,
+        startedAt: Date
+    ) -> Bool {
+        guard generation == routeRefreshGeneration else {
+            recordRouteRefreshDiscarded(
+                generation: generation,
+                reason: reason,
+                candidate: status,
+                discardReason: "stale_generation"
+            )
+            return false
+        }
+        guard routeStatusCanCommitOffline(status, config: config) else {
+            recordRouteRefreshDiscarded(
+                generation: generation,
+                reason: reason,
+                candidate: status,
+                discardReason: "incomplete_offline"
+            )
+            return false
+        }
+
+        routeStatus = status
+        persistActiveLocalRouteIfNeeded(status)
+        routeFetchedAt = Date()
+        recordRouteRefreshCommit(
+            generation: generation,
+            reason: reason,
+            status: status,
+            config: config,
+            elapsedMs: Int(Date().timeIntervalSince(startedAt) * 1_000)
+        )
+        return true
+    }
+
+    private func routeStatusCanCommitOffline(
+        _ status: BridgeRouteResolutionStatus,
+        config: PairingConfig
+    ) -> Bool {
+        guard status.activeKind == .unavailable else { return true }
+        let localConfigured = !config.localBridgeURLCandidates.isEmpty
+        let cloudConfigured = !config.publicBridgeURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        return (!localConfigured || status.localChecked) &&
+            (!cloudConfigured || status.cloudChecked)
+    }
+
+    private func recordRouteRefreshBegin(
+        generation: UInt64,
+        reason: String,
+        force: Bool,
+        probeAllEndpoints: Bool,
+        config: PairingConfig
+    ) {
+        KeyboardDiagnosticEventLog.record(
+            source: "host-app",
+            event: "route_refresh_begin",
+            fields: [
+                "generation": "\(generation)",
+                "reason": reason,
+                "force": "\(force)",
+                "probe_all": "\(probeAllEndpoints)",
+                "local_configured_count": "\(config.localBridgeURLCandidates.count)",
+                "cloud_configured": "\(!config.publicBridgeURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)",
+                "current_kind": routeStatus.activeKind.rawValue,
+            ]
+        )
+    }
+
+    private func recordRouteRefreshCommit(
+        generation: UInt64,
+        reason: String,
+        status: BridgeRouteResolutionStatus,
+        config: PairingConfig,
+        elapsedMs: Int
+    ) {
+        var fields = routeRefreshDiagnosticFields(
+            generation: generation,
+            reason: reason,
+            status: status,
+            config: config
+        )
+        fields["elapsed_ms"] = "\(elapsedMs)"
+        KeyboardDiagnosticEventLog.record(
+            source: "host-app",
+            event: "route_refresh_commit",
+            fields: fields
+        )
+    }
+
+    private func recordRouteRefreshDiscarded(
+        generation: UInt64,
+        reason: String,
+        candidate: BridgeRouteResolutionStatus,
+        discardReason: String
+    ) {
+        KeyboardDiagnosticEventLog.record(
+            source: "host-app",
+            event: "route_refresh_discarded",
+            fields: [
+                "generation": "\(generation)",
+                "current_generation": "\(routeRefreshGeneration)",
+                "reason": reason,
+                "discard_reason": discardReason,
+                "candidate_kind": candidate.activeKind.rawValue,
+                "local_checked": "\(candidate.localChecked)",
+                "local_ok": "\(candidate.localOK)",
+                "cloud_checked": "\(candidate.cloudChecked)",
+                "cloud_ok": "\(candidate.cloudOK)",
+            ]
+        )
+    }
+
+    private func routeRefreshDiagnosticFields(
+        generation: UInt64,
+        reason: String,
+        status: BridgeRouteResolutionStatus,
+        config: PairingConfig
+    ) -> [String: String] {
+        [
+            "generation": "\(generation)",
+            "reason": reason,
+            "active_kind": status.activeKind.rawValue,
+            "has_active_url": "\(status.activeURL != nil)",
+            "local_configured_count": "\(config.localBridgeURLCandidates.count)",
+            "cloud_configured": "\(!config.publicBridgeURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)",
+            "local_checked": "\(status.localChecked)",
+            "local_ok": "\(status.localOK)",
+            "local_latency_ms": status.localLatencyMs.map(String.init) ?? "nil",
+            "cloud_checked": "\(status.cloudChecked)",
+            "cloud_ok": "\(status.cloudOK)",
+            "cloud_latency_ms": status.cloudLatencyMs.map(String.init) ?? "nil",
+        ]
+    }
+
     private func shouldRefreshPairingEndpointsAfterRouteRefresh(
         force: Bool,
         status: BridgeRouteResolutionStatus
@@ -1219,6 +1428,13 @@ final class AppState {
         do {
             let refreshed = try await BridgeClient(baseURL: activeURL, token: config.token).pairing(timeout: timeout)
             config.bridgeEndpoints = refreshed.bridgeEndpoints
+            recordRouteEndpointSyncResult(
+                changed: config.bridgeEndpoints != previous,
+                previous: previous,
+                refreshed: config.bridgeEndpoints,
+                activeKind: status.activeKind.rawValue,
+                error: nil
+            )
             if config.bridgeEndpoints != previous {
                 store.save(config)
                 publishKeyboardDefaults()
@@ -1227,8 +1443,39 @@ final class AppState {
             }
         } catch {
             appLog.notice("pairing endpoint refresh deferred: \(error.localizedDescription, privacy: .public)")
+            recordRouteEndpointSyncResult(
+                changed: false,
+                previous: previous,
+                refreshed: config.bridgeEndpoints,
+                activeKind: status.activeKind.rawValue,
+                error: error.localizedDescription
+            )
         }
         return false
+    }
+
+    private func recordRouteEndpointSyncResult(
+        changed: Bool,
+        previous: BridgeEndpoints,
+        refreshed: BridgeEndpoints,
+        activeKind: String,
+        error: String?
+    ) {
+        KeyboardDiagnosticEventLog.record(
+            source: "host-app",
+            event: "route_endpoint_sync_result",
+            fields: [
+                "changed": "\(changed)",
+                "active_kind": activeKind,
+                "previous_local_count": "\(previous.localBridgeURLCandidates.count)",
+                "previous_cloud_configured": "\(!previous.publicBridgeURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)",
+                "refreshed_local_count": "\(refreshed.localBridgeURLCandidates.count)",
+                "refreshed_cloud_configured": "\(!refreshed.publicBridgeURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)",
+                "previous_token_present": "\(!previous.token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)",
+                "refreshed_token_present": "\(!refreshed.token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)",
+                "error": error ?? "none",
+            ]
+        )
     }
 
     func refreshMacSettings(timeout: TimeInterval = 10) async throws -> BridgeMacSettingsPayload {
@@ -1359,6 +1606,7 @@ final class AppState {
     }
 
     private func activeBridgeClient() async throws -> BridgeClient {
+        await waitForRouteRefreshToSettleIfNeeded(reason: "active_bridge_client")
         if shouldPreflightBridgeRouteBeforeRequest(routeIsFresh: currentBridgeRouteIsFresh()) {
             await preflightActiveBridgeRoute()
         }
@@ -1366,6 +1614,28 @@ final class AppState {
             throw BridgeClientError.unauthorizedOrUnavailable
         }
         return BridgeClient(baseURL: baseURL, token: config.token)
+    }
+
+    private func waitForRouteRefreshToSettleIfNeeded(
+        reason: String,
+        timeout: TimeInterval = 1.2
+    ) async {
+        guard isCheckingRouteStatus else { return }
+        let startedAt = Date()
+        let deadline = startedAt.addingTimeInterval(timeout)
+        while isCheckingRouteStatus, Date() < deadline {
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+        KeyboardDiagnosticEventLog.record(
+            source: "host-app",
+            event: "route_refresh_wait",
+            fields: [
+                "reason": reason,
+                "elapsed_ms": "\(Int(Date().timeIntervalSince(startedAt) * 1_000))",
+                "settled": "\(!isCheckingRouteStatus)",
+                "current_kind": routeStatus.activeKind.rawValue,
+            ]
+        )
     }
 
     private func shouldRetryBridgeRequest(after error: Error) -> Bool {
@@ -1451,7 +1721,12 @@ final class AppState {
                     audioByteCount: recordingInfo.byteCount
                 )
             }
-            await refreshRoute(force: true, probeAllEndpoints: false, showIndicator: false)
+            await refreshRoute(
+                force: true,
+                probeAllEndpoints: false,
+                showIndicator: false,
+                reason: "dictate_retry"
+            )
             guard let retryBaseURL = routeStatus.activeURL else { throw error }
             return try await dictate(to: retryBaseURL)
         }
@@ -1994,7 +2269,12 @@ final class AppState {
         correctionMode = newMode
         constrainKeyboardLivePreviewSourceToMacSettings()
         do {
-            await refreshRoute(force: false, probeAllEndpoints: false, showIndicator: false)
+            await refreshRoute(
+                force: false,
+                probeAllEndpoints: false,
+                showIndicator: false,
+                reason: "refine_route"
+            )
             let client = try await activeBridgeClient()
             setPhase(.refining)
             let refineJobID = "ios_\(UUID().uuidString.replacingOccurrences(of: "-", with: "_"))"
@@ -3874,7 +4154,12 @@ final class AppState {
             message: NSLocalizedString("Refining", comment: "Bridge job stage")
         )
         do {
-            await refreshRoute(force: false, probeAllEndpoints: false, showIndicator: false)
+            await refreshRoute(
+                force: false,
+                probeAllEndpoints: false,
+                showIndicator: false,
+                reason: "keyboard_refine_route"
+            )
             let client = try await activeBridgeClient()
             setPhase(.refining)
             publishKeyboardStatus(
@@ -4969,12 +5254,27 @@ final class AppState {
                 guard signatureChanged || shouldRefreshSameSignature else { return }
                 if signatureChanged {
                     self.networkPathSignature = signature
-                    self.routeStatus = BridgeRouteResolutionStatus()
                 }
                 self.lastNetworkPathRefreshAt = now
                 self.routeFetchedAt = nil
+                guard path.status == .satisfied else {
+                    KeyboardDiagnosticEventLog.record(
+                        source: "host-app",
+                        event: "route_refresh_deferred",
+                        fields: [
+                            "reason": "network_path_unsatisfied",
+                            "signature": signature,
+                            "current_kind": self.routeStatus.activeKind.rawValue,
+                        ]
+                    )
+                    return
+                }
                 if self.isConfigured {
-                    await self.refreshRoute(force: true, showIndicator: false)
+                    await self.refreshRoute(
+                        force: true,
+                        showIndicator: false,
+                        reason: "network_path"
+                    )
                 }
             }
         }
@@ -5062,7 +5362,7 @@ final class AppState {
         Task {
             await handleForegroundKeyboardHandoffIfNeeded()
             if shouldRefreshRoute {
-                await refreshRoute(force: true, showIndicator: false)
+                await refreshRoute(force: true, showIndicator: false, reason: "foreground")
             }
             _ = try? await refreshMacSettingsIfChanged()
             scheduleHostRecorderPreWarm()

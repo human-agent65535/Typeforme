@@ -646,9 +646,7 @@ private struct DictationCaptureModeToggle: View {
                 .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
 
-            if state.keyboardDictationCaptureMode == .pictureInPicture {
-                PiPDictationStatusRow(coordinator: state.pipDictationCoordinator)
-            } else {
+            if state.keyboardDictationCaptureMode != .pictureInPicture {
                 Picker("Host audio session", selection: hostAudioSessionLengthBinding) {
                     ForEach(HostAudioSessionLength.allCases) { length in
                         Text(length.title).tag(length)
@@ -674,48 +672,6 @@ private struct DictationCaptureModeToggle: View {
         } set: { length in
             state.setHostAudioSessionLength(length)
         }
-    }
-}
-
-private struct PiPDictationStatusRow: View {
-    @ObservedObject var coordinator: PiPDictationCoordinator
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Label(statusText, systemImage: statusIcon)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(statusTint)
-
-        }
-        .padding(.top, 2)
-    }
-
-    private var statusText: LocalizedStringKey {
-        guard coordinator.isActive else {
-            if coordinator.isSupported {
-                return "Picture in Picture is ready."
-            }
-            if coordinator.statusMessage.isEmpty {
-                return "Picture in Picture is not supported on this device."
-            }
-            return LocalizedStringKey(coordinator.statusMessage)
-        }
-        if coordinator.statusMessage.isEmpty {
-            return "Picture in Picture is active."
-        }
-        return LocalizedStringKey(coordinator.statusMessage)
-    }
-
-    private var statusIcon: String {
-        if coordinator.isActive { return "pip.fill" }
-        if coordinator.isSupported { return "pip" }
-        return "exclamationmark.triangle.fill"
-    }
-
-    private var statusTint: Color {
-        if coordinator.isActive { return .green }
-        if coordinator.isSupported { return .secondary }
-        return .orange
     }
 }
 
@@ -877,7 +833,7 @@ private struct RouteStatusBar: View {
                         Circle()
                             .fill(dotColor)
                             .frame(width: 9, height: 9)
-                        Text(state.routeStatus.activeKind.rawValue)
+                        Text(routeStatusTitle)
                             .font(.subheadline.weight(.semibold))
                             .foregroundStyle(.primary)
                         if let detail = latencyDetail {
@@ -907,7 +863,7 @@ private struct RouteStatusBar: View {
             }
             .buttonStyle(.plain)
             .disabled(!canRefresh)
-            .accessibilityLabel("Bridge route: \(state.routeStatus.activeKind.rawValue)")
+            .accessibilityLabel("Bridge route: \(routeStatusTitle)")
             .accessibilityHint("Double tap to re-check the connection")
 
             Button {
@@ -936,10 +892,23 @@ private struct RouteStatusBar: View {
     }
 
     private func refreshRoute() {
-        Task { await state.refreshRoute(force: true) }
+        Task {
+            await state.refreshRoute(
+                force: true,
+                syncPairingEndpoints: true,
+                reason: "user_refresh"
+            )
+        }
+    }
+
+    private var routeStatusTitle: String {
+        state.isCheckingRouteStatus ? "Checking" : state.routeStatus.activeKind.rawValue
     }
 
     private var dotColor: Color {
+        if state.isCheckingRouteStatus {
+            return .secondary
+        }
         switch state.routeStatus.activeKind {
         case .local: return .green
         case .cloud: return .blue
@@ -948,6 +917,9 @@ private struct RouteStatusBar: View {
     }
 
     private var latencyDetail: String? {
+        if state.isCheckingRouteStatus {
+            return nil
+        }
         switch state.routeStatus.activeKind {
         case .local:
             return state.routeStatus.localLatencyMs.map { "RTT \($0)ms" }
@@ -1015,7 +987,13 @@ private struct HeroRecordCard: View {
 
             if showsOfflineRefresh {
                 Button {
-                    Task { await state.refreshRoute(force: true) }
+                    Task {
+                        await state.refreshRoute(
+                            force: true,
+                            syncPairingEndpoints: true,
+                            reason: "offline_refresh"
+                        )
+                    }
                 } label: {
                     Label("Refresh Bridge", systemImage: "arrow.clockwise")
                 }

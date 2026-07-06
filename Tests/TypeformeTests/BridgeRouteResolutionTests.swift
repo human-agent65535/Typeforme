@@ -65,7 +65,7 @@ struct BridgeRouteResolutionTests {
         #expect(records.contains(ProbeRecord(url: "https://bridge.example.com", token: "token", timeout: 3.0)))
     }
 
-    @Test func iOSPolicyKeepsSequentialLocalThenCloudChecks() async {
+    @Test func iOSPolicyStartsCloudProbeWhileLocalHasPriority() async {
         let log = ProbeLog()
         let resolver = BridgeRouteResolutionCore(policy: .iOSClient) { url, token, timeout in
             await log.record(url: url.absoluteString, token: token, timeout: timeout)
@@ -80,10 +80,8 @@ struct BridgeRouteResolutionTests {
         let records = await log.records
 
         #expect(status.activeKind == .cloud)
-        #expect(records == [
-            ProbeRecord(url: "http://192.168.1.8:18081", token: "token", timeout: 1.5),
-            ProbeRecord(url: "https://bridge.example.com", token: "token", timeout: 3.0),
-        ])
+        #expect(records.contains(ProbeRecord(url: "http://192.168.1.8:18081", token: "token", timeout: 1.5)))
+        #expect(records.contains(ProbeRecord(url: "https://bridge.example.com", token: "token", timeout: 3.0)))
     }
 
     @Test func returnsUnavailableWithoutConfiguredURLs() async {
