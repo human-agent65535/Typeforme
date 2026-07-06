@@ -704,6 +704,7 @@ enum KeyboardCommandReceiptPhase: String, Codable, Sendable {
     case accepted
     case bridgeReady = "bridge_ready"
     case bridgeUnavailable = "bridge_unavailable"
+    case recordingStarted = "recording_started"
     case captureNotReady = "capture_not_ready"
     case failed
 }

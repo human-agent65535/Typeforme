@@ -82,6 +82,18 @@ final class KeyboardLocalServer: @unchecked Sendable {
         parameters.defaultProtocolStack.applicationProtocols.insert(webSocketOptions, at: 0)
         let listener = try NWListener(using: parameters, on: NWEndpoint.Port(rawValue: Self.port)!)
         stateLock.lock()
+        if self.listener != nil {
+            let skippedFields = listenerDiagnosticFieldsLocked()
+            stateLock.unlock()
+            listener.cancel()
+            keyboardLocalServerLog.debug("server start skipped after listener creation: already running state=\(skippedFields["listener_state"] ?? "unknown", privacy: .public) generation=\(skippedFields["generation"] ?? "0", privacy: .public)")
+            KeyboardDiagnosticEventLog.record(
+                source: "host-local-server",
+                event: "server_start_skipped_already_running",
+                fields: skippedFields
+            )
+            return
+        }
         generation += 1
         let currentGeneration = generation
         self.listener = listener
@@ -98,7 +110,7 @@ final class KeyboardLocalServer: @unchecked Sendable {
             keyboardLocalServerLog.notice("listener state=\(String(describing: state), privacy: .public)")
             self?.recordListenerState(state, generation: currentGeneration)
             if case .failed = state {
-                self?.stop(reason: "listener_failed")
+                self?.stop(reason: "listener_failed", onlyGeneration: currentGeneration)
             }
         }
         listener.start(queue: queue)
@@ -111,7 +123,27 @@ final class KeyboardLocalServer: @unchecked Sendable {
     }
 
     func stop(reason: String = "explicit") {
+        stop(reason: reason, onlyGeneration: nil)
+    }
+
+    private func stop(reason: String, onlyGeneration expectedGeneration: UInt?) {
         stateLock.lock()
+        if let expectedGeneration,
+           generation != expectedGeneration || listener == nil {
+            let fields = listenerDiagnosticFieldsLocked().merging([
+                "reason": reason,
+                "expected_generation": "\(expectedGeneration)",
+                "skipped": "true",
+            ]) { current, _ in current }
+            stateLock.unlock()
+            keyboardLocalServerLog.debug("server stop skipped reason=\(reason, privacy: .public) expected_generation=\(expectedGeneration, privacy: .public)")
+            KeyboardDiagnosticEventLog.record(
+                source: "host-local-server",
+                event: "server_stop_skipped_stale_generation",
+                fields: fields
+            )
+            return
+        }
         let currentListener = listener
         listener = nil
         generation += 1

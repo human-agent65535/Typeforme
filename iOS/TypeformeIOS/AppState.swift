@@ -919,21 +919,11 @@ final class AppState {
     }
 
     func setKeyboardDictationCaptureMode(_ mode: KeyboardDictationCaptureMode) {
-        let previousMode = keyboardDictationCaptureMode
         guard updateStoredRawPreference(
             \.keyboardDictationCaptureMode,
             to: mode,
             key: Self.keyboardDictationCaptureModeKey
         ) else { return }
-        if mode != .pictureInPicture {
-            suppressAutomaticPiPStart = true
-            cancelAutomaticPiPStart()
-            pipDictationCoordinator.stop()
-        }
-        if mode != .backgroundMic || previousMode != .backgroundMic {
-            stopBackgroundAudioCaptureForVisibleMode()
-        }
-        publishKeyboardCaptureNotReady()
         syncPiPDictationPresentation()
     }
 
@@ -946,31 +936,6 @@ final class AppState {
            automaticPiPStartAttemptsRemaining > 0 {
             scheduleAutomaticPiPVisibilityStart(showErrors: automaticPiPStartShowsErrors)
         }
-    }
-
-    @discardableResult
-    func startPiPDictationFromUserAction() async -> Bool {
-        suppressAutomaticPiPStart = false
-        cancelAutomaticPiPStart()
-        await waitForInitialRenderOpportunity()
-        let didStart = await prepareSelectedHostCaptureMode(
-            showErrors: true,
-            honorManualSuppression: false
-        )
-        if didStart {
-            showTransient(NSLocalizedString("Picture in Picture is ready.", comment: "PiP ready toast"))
-        }
-        return didStart
-    }
-
-    func stopPiPDictationFromUserAction() {
-        suppressAutomaticPiPStart = true
-        cancelAutomaticPiPStart()
-        pipDictationCoordinator.stop()
-        stopBackgroundAudioCaptureForVisibleMode()
-        publishKeyboardCaptureNotReady()
-        showTransient(NSLocalizedString("Picture in Picture stopped.", comment: "PiP stopped toast"))
-        syncPiPDictationPresentation()
     }
 
     func setKeyboardAutoCapitalizationEnabled(_ enabled: Bool) {
@@ -2122,6 +2087,11 @@ final class AppState {
             return
         }
         lastHandledOpenURL = (url.absoluteString, now)
+#if DEBUG && targetEnvironment(simulator)
+        if await handleSimulatorDebugOpenURL(url) {
+            return
+        }
+#endif
         await waitForInitialRenderOpportunity()
         let action = url.host ?? url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         var source: String?
@@ -2175,6 +2145,244 @@ final class AppState {
             return
         }
     }
+
+#if DEBUG && targetEnvironment(simulator)
+    private func handleSimulatorDebugOpenURL(_ url: URL) async -> Bool {
+        guard url.host == "debug" else { return false }
+        let action = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        switch action {
+        case "keyboard-darwin-start":
+            postSimulatorKeyboardDarwinCommand(.start, url: url)
+            return true
+        case "keyboard-darwin-stop":
+            postSimulatorKeyboardDarwinCommand(.stop, url: url)
+            return true
+        case "keyboard-darwin-cancel":
+            postSimulatorKeyboardDarwinCommand(.cancel, url: url)
+            return true
+        case "keyboard-mic-session":
+            await runSimulatorKeyboardMicSessionSmoke(url: url)
+            return true
+        case "keyboard-mic-session-stop":
+            await stopSimulatorKeyboardMicSessionSmoke(url: url)
+            return true
+        case "keyboard-capture-state":
+            recordSimulatorKeyboardCaptureState(url: url, event: "simulator_keyboard_capture_state")
+            return true
+        case "keyboard-capture-mode":
+            setSimulatorKeyboardCaptureMode(url: url)
+            return true
+        case "keyboard-background-capture-stop":
+            stopSimulatorBackgroundKeyboardCapture(url: url)
+            return true
+        case "keyboard-local-server-stop":
+            stopSimulatorKeyboardLocalServer(url: url)
+            return true
+        case "keyboard-pip-stop":
+            stopSimulatorPiPDictation(url: url)
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func simulatorDebugQueryItems(from url: URL) -> [URLQueryItem] {
+        URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+    }
+
+    private func simulatorDebugValue(_ name: String, in items: [URLQueryItem]) -> String? {
+        items.first { $0.name == name }?
+            .value?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func simulatorDebugBool(_ name: String, in items: [URLQueryItem], default defaultValue: Bool) -> Bool {
+        guard let value = simulatorDebugValue(name, in: items)?.lowercased(),
+              !value.isEmpty
+        else { return defaultValue }
+        return value == "1" || value == "true" || value == "yes"
+    }
+
+    private func runSimulatorKeyboardMicSessionSmoke(url: URL) async {
+        let items = simulatorDebugQueryItems(from: url)
+        let runID = simulatorDebugValue("run_id", in: items) ?? "sim-\(UUID().uuidString)"
+        let requestMic = simulatorDebugBool("request_mic", in: items, default: true)
+        let warmInputEngine = simulatorDebugBool("warm_input_engine", in: items, default: true)
+        KeyboardDiagnosticEventLog.record(
+            source: "host-app",
+            event: "simulator_keyboard_mic_session_begin",
+            fields: [
+                "run_id": runID,
+                "request_mic": "\(requestMic)",
+                "warm_input_engine": "\(warmInputEngine)",
+                "mode": keyboardDictationCaptureMode.rawValue,
+            ]
+        )
+        let ready = await setKeyboardStandby(
+            true,
+            requestMicrophoneIfNeeded: requestMic,
+            surfaceAudioSessionErrors: false,
+            warmInputEngine: warmInputEngine
+        )
+        KeyboardDiagnosticEventLog.record(
+            source: "host-app",
+            event: "simulator_keyboard_mic_session_result",
+            fields: simulatorKeyboardCaptureStateFields(runID: runID, label: "mic_session_result")
+                .merging(["ready": "\(ready)"]) { current, _ in current }
+        )
+    }
+
+    private func stopSimulatorKeyboardMicSessionSmoke(url: URL) async {
+        let items = simulatorDebugQueryItems(from: url)
+        let runID = simulatorDebugValue("run_id", in: items) ?? "sim-\(UUID().uuidString)"
+        _ = await setKeyboardStandby(false)
+        KeyboardDiagnosticEventLog.record(
+            source: "host-app",
+            event: "simulator_keyboard_mic_session_stopped",
+            fields: simulatorKeyboardCaptureStateFields(runID: runID, label: "mic_session_stopped")
+        )
+    }
+
+    private func setSimulatorKeyboardCaptureMode(url: URL) {
+        let items = simulatorDebugQueryItems(from: url)
+        let runID = simulatorDebugValue("run_id", in: items) ?? "sim-\(UUID().uuidString)"
+        guard let rawMode = simulatorDebugValue("mode", in: items),
+              let mode = KeyboardDictationCaptureMode(rawValue: rawMode)
+        else {
+            KeyboardDiagnosticEventLog.record(
+                source: "host-app",
+                event: "simulator_keyboard_capture_mode_failed",
+                fields: simulatorKeyboardCaptureStateFields(runID: runID, label: "capture_mode_failed")
+                    .merging(["requested_mode": simulatorDebugValue("mode", in: items) ?? "none"]) { current, _ in current }
+            )
+            return
+        }
+        setKeyboardDictationCaptureMode(mode)
+        KeyboardDiagnosticEventLog.record(
+            source: "host-app",
+            event: "simulator_keyboard_capture_mode_set",
+            fields: simulatorKeyboardCaptureStateFields(runID: runID, label: "capture_mode_set")
+        )
+    }
+
+    private func stopSimulatorBackgroundKeyboardCapture(url: URL) {
+        let items = simulatorDebugQueryItems(from: url)
+        let runID = simulatorDebugValue("run_id", in: items) ?? "sim-\(UUID().uuidString)"
+        stopBackgroundAudioCaptureForVisibleMode()
+        publishKeyboardCaptureNotReady()
+        KeyboardDiagnosticEventLog.record(
+            source: "host-app",
+            event: "simulator_keyboard_background_capture_stopped",
+            fields: simulatorKeyboardCaptureStateFields(runID: runID, label: "background_capture_stopped")
+        )
+    }
+
+    private func stopSimulatorKeyboardLocalServer(url: URL) {
+        let items = simulatorDebugQueryItems(from: url)
+        let runID = simulatorDebugValue("run_id", in: items) ?? "sim-\(UUID().uuidString)"
+        keyboardServer.stop(reason: "simulator_debug")
+        KeyboardDiagnosticEventLog.record(
+            source: "host-app",
+            event: "simulator_keyboard_local_server_stopped",
+            fields: simulatorKeyboardCaptureStateFields(runID: runID, label: "local_server_stopped")
+        )
+    }
+
+    private func stopSimulatorPiPDictation(url: URL) {
+        let items = simulatorDebugQueryItems(from: url)
+        let runID = simulatorDebugValue("run_id", in: items) ?? "sim-\(UUID().uuidString)"
+        suppressAutomaticPiPStart = true
+        cancelAutomaticPiPStart()
+        pipDictationCoordinator.stop()
+        stopBackgroundAudioCaptureForVisibleMode()
+        publishKeyboardCaptureNotReady()
+        syncPiPDictationPresentation()
+        KeyboardDiagnosticEventLog.record(
+            source: "host-app",
+            event: "simulator_keyboard_pip_stopped",
+            fields: simulatorKeyboardCaptureStateFields(runID: runID, label: "pip_stopped")
+        )
+    }
+
+    private func recordSimulatorKeyboardCaptureState(url: URL, event: String) {
+        let items = simulatorDebugQueryItems(from: url)
+        let runID = simulatorDebugValue("run_id", in: items) ?? "sim-\(UUID().uuidString)"
+        let label = simulatorDebugValue("label", in: items) ?? "state"
+        KeyboardDiagnosticEventLog.record(
+            source: "host-app",
+            event: event,
+            fields: simulatorKeyboardCaptureStateFields(runID: runID, label: label)
+        )
+    }
+
+    private func simulatorKeyboardCaptureStateFields(runID: String, label: String) -> [String: String] {
+        [
+            "run_id": runID,
+            "label": label,
+            "mode": keyboardDictationCaptureMode.rawValue,
+            "keyboard_active": "\(keyboardAudioSession.isActive)",
+            "keyboard_recording": "\(keyboardAudioSession.isRecording)",
+            "standby_keeper_active": "\(standbyKeeper.isActive)",
+            "host_session_active": "\(isKeyboardHostSessionActive)",
+            "server_running": "\(keyboardServer.isRunning)",
+            "pip_supported": "\(pipDictationCoordinator.isSupported)",
+            "pip_possible": "\(pipDictationCoordinator.isPossible)",
+            "pip_active": "\(pipDictationCoordinator.isActive)",
+            "status_state": keyboardBridgeStatus.state.rawValue,
+        ]
+    }
+
+    private func postSimulatorKeyboardDarwinCommand(_ action: KeyboardBridgeCommandAction, url: URL) {
+        let items = simulatorDebugQueryItems(from: url)
+        let commandID = simulatorDebugValue("command_id", in: items)
+        let correctionModeRaw = simulatorDebugValue("correction_mode", in: items)
+        let id = commandID?.isEmpty == false ? commandID! : "sim-\(UUID().uuidString)"
+        let command = KeyboardBridgeCommand(
+            id: id,
+            action: action,
+            correctionMode: correctionModeRaw?.isEmpty == false ? correctionModeRaw! : config.correctionMode.rawValue,
+            dictationContext: action == .start ? KeyboardDictationContext(contextBefore: "", contextAfter: "") : nil
+        )
+        if action == .start {
+            KeyboardSharedDefaults.clearCommandReceipt()
+        }
+        let saved = KeyboardSharedDefaults.saveDarwinCommand(command)
+        let notificationName: String
+        switch action {
+        case .start:
+            notificationName = KeyboardDarwinNotificationName.requestStartDictation
+        case .stop:
+            notificationName = KeyboardDarwinNotificationName.requestStopDictation
+        case .cancel:
+            notificationName = KeyboardDarwinNotificationName.requestCancelDictation
+        case .configure, .refineText:
+            return
+        }
+        guard let requestName = KeyboardDarwinNotificationName.authenticatedRequest(
+            notificationName,
+            token: keyboardBridgeToken
+        ) else {
+            KeyboardDiagnosticEventLog.record(
+                source: "host-app",
+                event: "simulator_keyboard_darwin_command_missing_token",
+                fields: ["action": action.rawValue, "command_id": id]
+            )
+            return
+        }
+        appLog.notice("simulator keyboard darwin command action=\(action.rawValue, privacy: .public) command_id=\(id, privacy: .public) saved=\(saved, privacy: .public)")
+        KeyboardDiagnosticEventLog.record(
+            source: "host-app",
+            event: "simulator_keyboard_darwin_command_posted",
+            fields: [
+                "action": action.rawValue,
+                "command_id": id,
+                "saved": "\(saved)",
+            ]
+        )
+        guard saved else { return }
+        KeyboardDarwinBridge.post(requestName)
+    }
+#endif
 
     private func consumeKeyboardHostHandoff(id: String, action: String) async -> KeyboardHostHandoff? {
         for attempt in 0..<4 {
@@ -2253,6 +2461,11 @@ final class AppState {
         )
         switch keyboardDictationCaptureMode {
         case .backgroundMic:
+            suppressAutomaticPiPStart = true
+            cancelAutomaticPiPStart()
+            if pipDictationCoordinator.isActive {
+                pipDictationCoordinator.stop()
+            }
             let didPrepareKeyboardSession = await setKeyboardStandby(
                 true,
                 requestMicrophoneIfNeeded: requestMicrophoneIfNeeded,
@@ -3241,6 +3454,16 @@ final class AppState {
         )
     }
 
+    private func postKeyboardRecordingStartedReceipt(commandID: String?, reason: String) {
+        guard let commandID else { return }
+        postKeyboardCommandReceipt(
+            commandID: commandID,
+            action: .start,
+            phase: .recordingStarted,
+            reason: reason
+        )
+    }
+
     /// Called when ANY keyboard → host signal arrives (local bridge connect,
     /// status stream subscription, command). Setting this flag is the only way the host
     /// learns the keyboard is enabled + has Full Access, since iOS does not
@@ -3811,6 +4034,7 @@ final class AppState {
             keyboardCaptureStartedFromKeyboard = true
             publishKeyboardStatus(.recording, commandID: commandID, message: "Recording")
             KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.dictationStarted)
+            postKeyboardRecordingStartedReceipt(commandID: commandID, reason: "active_recording_reused")
             appLog.notice("start keyboard recording reused active recording command_id=\(commandID ?? "none", privacy: .public)")
             KeyboardDiagnosticEventLog.record(
                 source: "host-app",
@@ -3903,6 +4127,7 @@ final class AppState {
             setPhase(.recording)
             publishKeyboardStatus(.recording, commandID: commandID, message: "Recording")
             KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.dictationStarted)
+            postKeyboardRecordingStartedReceipt(commandID: commandID, reason: "begin_recording_succeeded")
             appLog.notice("start keyboard recording succeeded command_id=\(commandID ?? "none", privacy: .public)")
             KeyboardDiagnosticEventLog.record(
                 source: "host-app",

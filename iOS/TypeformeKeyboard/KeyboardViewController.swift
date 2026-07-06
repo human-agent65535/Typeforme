@@ -6222,6 +6222,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             refreshBridgeStatus(captureSelection: false, force: true)
         case .bridgeUnavailable:
             logKeyboardStartDiagnostics(commandID: receipt.commandID, event: "darwin_start_bridge_unavailable")
+        case .recordingStarted:
+            handleRecordingStartedReceipt(receipt, now: now)
         case .captureNotReady:
             cancelDarwinStartAckTimeout()
             logKeyboardStartDiagnostics(commandID: receipt.commandID, event: "darwin_start_capture_not_ready_open_host")
@@ -6237,6 +6239,43 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 commandID: receipt.commandID
             )
         }
+    }
+
+    private func handleRecordingStartedReceipt(_ receipt: KeyboardCommandReceipt, now: TimeInterval) {
+        guard pendingStopCommandID != receipt.commandID,
+              pendingCancelCommandID != receipt.commandID
+        else {
+            logKeyboardStartDiagnostics(commandID: receipt.commandID, event: "recording_started_receipt_ignored_after_stop")
+            return
+        }
+        if let current = currentBridgeStatus,
+           current.commandID == receipt.commandID,
+           current.state == .sending || current.state == .result || current.state == .error || current.state == .idle,
+           !isStartRequestInFlight {
+            logKeyboardStartDiagnostics(commandID: receipt.commandID, event: "recording_started_receipt_ignored_stale")
+            return
+        }
+        cancelDarwinStartAckTimeout()
+        lastDarwinAwakeAt = now
+        openingHostUntil = 0
+        if pendingStartCommandID == nil {
+            pendingStartCommandID = receipt.commandID
+        }
+        if activeRecordingCommandID == nil {
+            activeRecordingCommandID = receipt.commandID
+        }
+        let status = KeyboardBridgeStatus(
+            commandID: receipt.commandID,
+            state: .recording,
+            message: "Recording",
+            defaultCorrectionMode: currentDefaultCorrectionMode().rawValue,
+            backendReachable: currentBridgeStatus?.backendReachable,
+            correctionTimeoutMs: currentBridgeStatus?.correctionTimeoutMs
+        )
+        logKeyboardStartDiagnostics(commandID: receipt.commandID, event: "recording_started_receipt_confirmed")
+        applyBridgeStatus(status, recordsLiveContact: false)
+        finishStartRequestIfNeeded(status: status)
+        refreshBridgeStatusAfterDarwinStartIfNeeded(needsStatusStreamRefreshAfterDarwinStart(now: now))
     }
 
     private func pruneProcessedCommandReceipts(now: TimeInterval = Date().timeIntervalSince1970) {

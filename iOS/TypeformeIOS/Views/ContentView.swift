@@ -413,8 +413,12 @@ private struct SetupReadinessView: View {
 
     @ViewBuilder
     private var captureMethodSection: some View {
-        Section("Capture Method") {
+        Section {
             DictationCaptureModeToggle()
+        } header: {
+            Text("Capture Method")
+        } footer: {
+            Text("Background Mic uses the host audio session duration below. PiP uses a visible session.")
         }
     }
 
@@ -644,6 +648,13 @@ private struct DictationCaptureModeToggle: View {
 
             if state.keyboardDictationCaptureMode == .pictureInPicture {
                 PiPDictationStatusRow(coordinator: state.pipDictationCoordinator)
+            } else {
+                Picker("Host audio session", selection: hostAudioSessionLengthBinding) {
+                    ForEach(HostAudioSessionLength.allCases) { length in
+                        Text(length.title).tag(length)
+                    }
+                }
+                .disabled(state.isBusy)
             }
         }
         .padding(.vertical, 3)
@@ -656,12 +667,18 @@ private struct DictationCaptureModeToggle: View {
             state.setKeyboardDictationCaptureMode(mode)
         }
     }
+
+    private var hostAudioSessionLengthBinding: Binding<HostAudioSessionLength> {
+        Binding {
+            state.hostAudioSessionLength
+        } set: { length in
+            state.setHostAudioSessionLength(length)
+        }
+    }
 }
 
 private struct PiPDictationStatusRow: View {
     @ObservedObject var coordinator: PiPDictationCoordinator
-    @Environment(AppState.self) private var state
-    @State private var isWorking = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -669,44 +686,22 @@ private struct PiPDictationStatusRow: View {
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(statusTint)
 
-            HStack(spacing: 10) {
-                if coordinator.isActive {
-                    Button {
-                        state.stopPiPDictationFromUserAction()
-                    } label: {
-                        Label("Stop PiP", systemImage: "xmark.circle")
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                } else {
-                    Button {
-                        isWorking = true
-                        Task {
-                            await state.startPiPDictationFromUserAction()
-                            isWorking = false
-                        }
-                    } label: {
-                        if isWorking {
-                            HStack(spacing: 8) {
-                                ProgressView()
-                                Text("Start PiP")
-                            }
-                        } else {
-                            Label("Start PiP", systemImage: "pip")
-                        }
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .disabled(isWorking || !coordinator.isSupported)
-                }
-            }
         }
         .padding(.top, 2)
     }
 
     private var statusText: LocalizedStringKey {
+        guard coordinator.isActive else {
+            if coordinator.isSupported {
+                return "Picture in Picture is ready."
+            }
+            if coordinator.statusMessage.isEmpty {
+                return "Picture in Picture is not supported on this device."
+            }
+            return LocalizedStringKey(coordinator.statusMessage)
+        }
         if coordinator.statusMessage.isEmpty {
-            return "Picture in Picture is preparing."
+            return "Picture in Picture is active."
         }
         return LocalizedStringKey(coordinator.statusMessage)
     }
@@ -1533,20 +1528,6 @@ private struct KeyboardSettingsView: View {
             } footer: {
                 Text("Chinese self-learning controls Rime's user dictionary. Touch learning adapts per-key tap offsets when on; when off, text keys use fixed midpoint hit routing.")
             }
-            Section {
-                DictationCaptureModeToggle()
-
-                Picker("Host audio session", selection: hostAudioSessionLengthBinding) {
-                    ForEach(HostAudioSessionLength.allCases) { length in
-                        Text(length.title).tag(length)
-                    }
-                }
-                .disabled(state.isBusy)
-            } header: {
-                Text("Audio")
-            } footer: {
-                Text("Controls how long Typeforme keeps keyboard dictation ready after the host app is opened.")
-            }
         }
         .navigationTitle("Keyboard Settings")
         .navigationBarTitleDisplayMode(.inline)
@@ -1645,13 +1626,6 @@ private struct KeyboardSettingsView: View {
         }
     }
 
-    private var hostAudioSessionLengthBinding: Binding<HostAudioSessionLength> {
-        Binding {
-            state.hostAudioSessionLength
-        } set: { length in
-            state.setHostAudioSessionLength(length)
-        }
-    }
 }
 
 private struct LivePreviewSettingsSection: View {
