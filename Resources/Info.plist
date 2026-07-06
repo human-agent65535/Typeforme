@@ -21,9 +21,9 @@
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.1.234</string>
+    <string>0.1.235</string>
     <key>CFBundleVersion</key>
-    <string>241</string>
+    <string>242</string>
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>
     <key>LSMultipleInstancesProhibited</key>
