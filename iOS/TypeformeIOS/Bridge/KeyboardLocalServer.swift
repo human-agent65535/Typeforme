@@ -7,10 +7,35 @@ private let keyboardLocalServerLog = Logger(
     category: "keyboard-local-server"
 )
 
+struct KeyboardLocalBridgeReadiness: Sendable {
+    let ready: Bool
+    let listenerState: String
+    let generation: UInt
+    let restarted: Bool
+    let selfProbeSucceeded: Bool
+    let failureReason: String?
+    let elapsedMilliseconds: Int
+
+    var diagnosticFields: [String: String] {
+        [
+            "ready": "\(ready)",
+            "listener_state": listenerState,
+            "generation": "\(generation)",
+            "restarted": "\(restarted)",
+            "self_probe_succeeded": "\(selfProbeSucceeded)",
+            "failure_reason": failureReason ?? "none",
+            "elapsed_ms": "\(elapsedMilliseconds)",
+        ]
+    }
+}
+
 final class KeyboardLocalServer: @unchecked Sendable {
     static let port: UInt16 = 18082
     private static let maxMessageBytes = 1 * 1024 * 1024
     private static let statusStreamHeartbeatIntervalNanoseconds: UInt64 = 2_000_000_000
+    private static let readinessPollIntervalNanoseconds: UInt64 = 25_000_000
+    private static let defaultReadinessTimeout: TimeInterval = 0.45
+    private static let selfProbeTimeout: TimeInterval = 0.35
 
     var onCommand: ((KeyboardBridgeCommand) async -> KeyboardBridgeStatus)?
     var statusProvider: (() async -> KeyboardBridgeStatus)?
@@ -24,22 +49,29 @@ final class KeyboardLocalServer: @unchecked Sendable {
     private var activeTasks: [UUID: Task<Void, Never>] = [:]
     private var statusStreamHeartbeatTask: Task<Void, Never>?
     private var generation: UInt = 0
+    private var listenerStateDescription = "stopped"
+    private var lastReadyAt: TimeInterval = 0
+    private var lastAcceptedAt: TimeInterval = 0
+    private var lastSelfProbeAt: TimeInterval = 0
+    private var lastSelfProbeSucceeded = false
 
     var isRunning: Bool {
         stateLock.lock()
         defer { stateLock.unlock() }
-        return listener != nil
+        return listener != nil && listenerStateDescription == "ready"
     }
 
     func start() throws {
         stateLock.lock()
         let alreadyRunning = listener != nil
+        let skippedFields = listenerDiagnosticFieldsLocked()
         stateLock.unlock()
         guard !alreadyRunning else {
-            keyboardLocalServerLog.debug("server start skipped: already running")
+            keyboardLocalServerLog.debug("server start skipped: already running state=\(skippedFields["listener_state"] ?? "unknown", privacy: .public) generation=\(skippedFields["generation"] ?? "0", privacy: .public)")
             KeyboardDiagnosticEventLog.record(
                 source: "host-local-server",
-                event: "server_start_skipped_already_running"
+                event: "server_start_skipped_already_running",
+                fields: skippedFields
             )
             return
         }
@@ -53,19 +85,20 @@ final class KeyboardLocalServer: @unchecked Sendable {
         generation += 1
         let currentGeneration = generation
         self.listener = listener
+        listenerStateDescription = "setup"
+        lastReadyAt = 0
+        lastAcceptedAt = 0
+        lastSelfProbeAt = 0
+        lastSelfProbeSucceeded = false
         stateLock.unlock()
         listener.newConnectionHandler = { [weak self] connection in
             self?.handle(connection, generation: currentGeneration)
         }
         listener.stateUpdateHandler = { [weak self] state in
             keyboardLocalServerLog.notice("listener state=\(String(describing: state), privacy: .public)")
-            KeyboardDiagnosticEventLog.record(
-                source: "host-local-server",
-                event: "listener_state",
-                fields: ["state": String(describing: state)]
-            )
+            self?.recordListenerState(state, generation: currentGeneration)
             if case .failed = state {
-                self?.stop()
+                self?.stop(reason: "listener_failed")
             }
         }
         listener.start(queue: queue)
@@ -77,11 +110,12 @@ final class KeyboardLocalServer: @unchecked Sendable {
         )
     }
 
-    func stop() {
+    func stop(reason: String = "explicit") {
         stateLock.lock()
         let currentListener = listener
         listener = nil
         generation += 1
+        listenerStateDescription = "stopped"
         let connections = Array(activeConnections.values)
         activeConnections.removeAll()
         activeStatusStreams.removeAll()
@@ -95,14 +129,154 @@ final class KeyboardLocalServer: @unchecked Sendable {
         connections.forEach { $0.cancel() }
         tasks.forEach { $0.cancel() }
         heartbeatTask?.cancel()
-        keyboardLocalServerLog.notice("server stopped connections=\(connections.count, privacy: .public) tasks=\(tasks.count, privacy: .public)")
+        keyboardLocalServerLog.notice("server stopped reason=\(reason, privacy: .public) connections=\(connections.count, privacy: .public) tasks=\(tasks.count, privacy: .public)")
         KeyboardDiagnosticEventLog.record(
             source: "host-local-server",
             event: "server_stopped",
             fields: [
+                "reason": reason,
                 "connections": "\(connections.count)",
                 "tasks": "\(tasks.count)",
             ]
+        )
+    }
+
+    func ensureReady(
+        reason: String,
+        timeout: TimeInterval = KeyboardLocalServer.defaultReadinessTimeout,
+        forceProbe: Bool = false
+    ) async -> KeyboardLocalBridgeReadiness {
+        let startedAt = Date().timeIntervalSince1970
+        var restarted = false
+        var failureReason: String?
+        var selfProbeSucceeded = false
+        KeyboardDiagnosticEventLog.record(
+            source: "host-local-server",
+            event: "bridge_ensure_begin",
+            fields: listenerDiagnosticFields(reason: reason)
+        )
+
+        do {
+            if !hasListener {
+                try start()
+            }
+
+            let listenerBecameReady = await waitUntilListenerReady(timeout: timeout)
+            if !listenerBecameReady {
+                restarted = true
+                failureReason = "listener_not_ready"
+                try forceRestart(reason: "\(reason):listener_not_ready")
+                _ = await waitUntilListenerReady(timeout: timeout)
+            }
+
+            if isListenerReady {
+                if forceProbe || shouldSelfProbeForReadiness() {
+                    selfProbeSucceeded = await selfProbe(reason: reason)
+                    if !selfProbeSucceeded {
+                        restarted = true
+                        failureReason = "self_probe_failed"
+                        try forceRestart(reason: "\(reason):self_probe_failed")
+                        if await waitUntilListenerReady(timeout: timeout) {
+                            selfProbeSucceeded = await selfProbe(reason: "\(reason):after_restart")
+                        }
+                    }
+                } else {
+                    selfProbeSucceeded = listenerDiagnosticSnapshot().lastSelfProbeSucceeded
+                }
+            }
+        } catch {
+            failureReason = error.localizedDescription
+        }
+
+        let snapshot = listenerDiagnosticSnapshot()
+        let ready = snapshot.isReady && (!forceProbe || selfProbeSucceeded)
+        let result = KeyboardLocalBridgeReadiness(
+            ready: ready,
+            listenerState: snapshot.listenerState,
+            generation: snapshot.generation,
+            restarted: restarted,
+            selfProbeSucceeded: selfProbeSucceeded,
+            failureReason: ready ? nil : failureReason,
+            elapsedMilliseconds: Int((Date().timeIntervalSince1970 - startedAt) * 1_000)
+        )
+        KeyboardDiagnosticEventLog.record(
+            source: "host-local-server",
+            event: "bridge_ensure_result",
+            fields: result.diagnosticFields.merging(["reason": reason]) { current, _ in current }
+        )
+        keyboardLocalServerLog.notice("bridge ensure result reason=\(reason, privacy: .public) ready=\(result.ready, privacy: .public) state=\(result.listenerState, privacy: .public) generation=\(result.generation, privacy: .public) restarted=\(result.restarted, privacy: .public) probe=\(result.selfProbeSucceeded, privacy: .public) elapsed_ms=\(result.elapsedMilliseconds, privacy: .public)")
+        return result
+    }
+
+    private func forceRestart(reason: String) throws {
+        KeyboardDiagnosticEventLog.record(
+            source: "host-local-server",
+            event: "listener_force_restart_begin",
+            fields: listenerDiagnosticFields(reason: reason)
+        )
+        keyboardLocalServerLog.notice("listener force restart begin reason=\(reason, privacy: .public)")
+        stop(reason: "force_restart:\(reason)")
+        try start()
+        KeyboardDiagnosticEventLog.record(
+            source: "host-local-server",
+            event: "listener_force_restart_end",
+            fields: listenerDiagnosticFields(reason: reason)
+        )
+    }
+
+    private var hasListener: Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return listener != nil
+    }
+
+    private var isListenerReady: Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return listener != nil && listenerStateDescription == "ready"
+    }
+
+    private func waitUntilListenerReady(timeout: TimeInterval) async -> Bool {
+        let deadline = Date().timeIntervalSince1970 + max(timeout, 0)
+        while Date().timeIntervalSince1970 < deadline {
+            if isListenerReady { return true }
+            try? await Task.sleep(nanoseconds: Self.readinessPollIntervalNanoseconds)
+        }
+        return isListenerReady
+    }
+
+    private func shouldSelfProbeForReadiness(now: TimeInterval = Date().timeIntervalSince1970) -> Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        guard listener != nil, listenerStateDescription == "ready" else { return false }
+        guard lastSelfProbeSucceeded else { return true }
+        return now - lastSelfProbeAt > 30
+    }
+
+    private func recordListenerState(_ state: NWListener.State, generation currentGeneration: UInt) {
+        let now = Date().timeIntervalSince1970
+        let description = Self.listenerStateDescription(for: state)
+        var fields: [String: String] = [:]
+        stateLock.lock()
+        if currentGeneration == generation, listener != nil {
+            listenerStateDescription = description
+            if case .ready = state {
+                lastReadyAt = now
+            }
+            fields = listenerDiagnosticFieldsLocked(now: now)
+        } else {
+            fields = [
+                "generation": "\(currentGeneration)",
+                "current_generation": "\(generation)",
+                "listener_state": description,
+                "stale": "true",
+            ]
+        }
+        stateLock.unlock()
+        KeyboardDiagnosticEventLog.record(
+            source: "host-local-server",
+            event: "listener_state_changed",
+            fields: fields
         )
     }
 
@@ -117,15 +291,8 @@ final class KeyboardLocalServer: @unchecked Sendable {
             connection.cancel()
             return
         }
+        let acceptedAt = Date().timeIntervalSince1970
         keyboardLocalServerLog.notice("connection accepted endpoint=\(String(describing: connection.endpoint), privacy: .public) generation=\(generation, privacy: .public)")
-        KeyboardDiagnosticEventLog.record(
-            source: "host-local-server",
-            event: "connection_accepted",
-            fields: [
-                "endpoint": String(describing: connection.endpoint),
-                "generation": "\(generation)",
-            ]
-        )
         let id = ObjectIdentifier(connection)
         stateLock.lock()
         guard generation == self.generation, listener != nil else {
@@ -139,7 +306,17 @@ final class KeyboardLocalServer: @unchecked Sendable {
             return
         }
         activeConnections[id] = connection
+        lastAcceptedAt = acceptedAt
+        let diagnosticFields = listenerDiagnosticFieldsLocked(now: acceptedAt)
         stateLock.unlock()
+        KeyboardDiagnosticEventLog.record(
+            source: "host-local-server",
+            event: "connection_accepted",
+            fields: diagnosticFields.merging([
+                "endpoint": String(describing: connection.endpoint),
+                "generation": "\(generation)",
+            ]) { current, _ in current }
+        )
         connection.stateUpdateHandler = { [weak self] state in
             guard case .cancelled = state else { return }
             self?.removeConnection(id)
@@ -491,6 +668,198 @@ final class KeyboardLocalServer: @unchecked Sendable {
         stateLock.lock()
         defer { stateLock.unlock() }
         return generation == self.generation && listener != nil
+    }
+
+    private struct ListenerDiagnosticSnapshot {
+        let hasListener: Bool
+        let isReady: Bool
+        let listenerState: String
+        let generation: UInt
+        let lastReadyAgeMS: Int
+        let lastAcceptedAgeMS: Int
+        let lastSelfProbeAgeMS: Int
+        let lastSelfProbeSucceeded: Bool
+    }
+
+    private func listenerDiagnosticSnapshot(now: TimeInterval = Date().timeIntervalSince1970) -> ListenerDiagnosticSnapshot {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return listenerDiagnosticSnapshotLocked(now: now)
+    }
+
+    private func listenerDiagnosticSnapshotLocked(now: TimeInterval = Date().timeIntervalSince1970) -> ListenerDiagnosticSnapshot {
+        ListenerDiagnosticSnapshot(
+            hasListener: listener != nil,
+            isReady: listener != nil && listenerStateDescription == "ready",
+            listenerState: listenerStateDescription,
+            generation: generation,
+            lastReadyAgeMS: Self.ageMilliseconds(since: lastReadyAt, now: now),
+            lastAcceptedAgeMS: Self.ageMilliseconds(since: lastAcceptedAt, now: now),
+            lastSelfProbeAgeMS: Self.ageMilliseconds(since: lastSelfProbeAt, now: now),
+            lastSelfProbeSucceeded: lastSelfProbeSucceeded
+        )
+    }
+
+    private func listenerDiagnosticFields(
+        reason: String? = nil,
+        now: TimeInterval = Date().timeIntervalSince1970
+    ) -> [String: String] {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return listenerDiagnosticFieldsLocked(reason: reason, now: now)
+    }
+
+    private func listenerDiagnosticFieldsLocked(
+        reason: String? = nil,
+        now: TimeInterval = Date().timeIntervalSince1970
+    ) -> [String: String] {
+        let snapshot = listenerDiagnosticSnapshotLocked(now: now)
+        var fields: [String: String] = [
+            "has_listener": "\(snapshot.hasListener)",
+            "is_ready": "\(snapshot.isReady)",
+            "listener_state": snapshot.listenerState,
+            "generation": "\(snapshot.generation)",
+            "last_ready_age_ms": "\(snapshot.lastReadyAgeMS)",
+            "last_accept_age_ms": "\(snapshot.lastAcceptedAgeMS)",
+            "last_self_probe_age_ms": "\(snapshot.lastSelfProbeAgeMS)",
+            "last_self_probe_succeeded": "\(snapshot.lastSelfProbeSucceeded)",
+        ]
+        if let reason {
+            fields["reason"] = reason
+        }
+        return fields
+    }
+
+    private func selfProbe(reason: String) async -> Bool {
+        let startedAt = Date().timeIntervalSince1970
+        KeyboardDiagnosticEventLog.record(
+            source: "host-local-server",
+            event: "self_probe_begin",
+            fields: listenerDiagnosticFields(reason: reason, now: startedAt)
+        )
+        guard let expectedToken = await expectedTokenProvider?(),
+              !expectedToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else {
+            updateSelfProbeResult(false)
+            KeyboardDiagnosticEventLog.record(
+                source: "host-local-server",
+                event: "self_probe_failure",
+                fields: [
+                    "reason": reason,
+                    "error": "missing_token",
+                    "elapsed_ms": "\(Int((Date().timeIntervalSince1970 - startedAt) * 1_000))",
+                ]
+            )
+            return false
+        }
+
+        let session = URLSession(configuration: .ephemeral)
+        var urlRequest = URLRequest(url: URL(string: "ws://127.0.0.1:\(Self.port)/keyboard")!)
+        urlRequest.timeoutInterval = Self.selfProbeTimeout
+        let task = session.webSocketTask(with: urlRequest)
+        task.maximumMessageSize = Self.maxMessageBytes
+        task.resume()
+        defer {
+            task.cancel(with: .normalClosure, reason: nil)
+            session.invalidateAndCancel()
+        }
+
+        do {
+            let helloData = try Self.messageData(try await Self.receiveMessage(on: task, timeout: Self.selfProbeTimeout))
+            let hello = try JSONDecoder().decode(KeyboardLocalBridgeHello.self, from: helloData)
+            guard KeyboardLocalBridgeAuth.verifyServerHello(hello, bridgeToken: expectedToken) else {
+                throw URLError(.userAuthenticationRequired)
+            }
+            let request = KeyboardLocalBridgeRequest.statusSnapshot(bridgeToken: expectedToken)
+            try await task.send(.data(try JSONEncoder().encode(request)))
+            _ = try JSONDecoder().decode(
+                KeyboardBridgeStatus.self,
+                from: try Self.messageData(try await Self.receiveMessage(on: task, timeout: Self.selfProbeTimeout))
+            )
+            updateSelfProbeResult(true)
+            KeyboardDiagnosticEventLog.record(
+                source: "host-local-server",
+                event: "self_probe_success",
+                fields: [
+                    "reason": reason,
+                    "elapsed_ms": "\(Int((Date().timeIntervalSince1970 - startedAt) * 1_000))",
+                ]
+            )
+            return true
+        } catch {
+            updateSelfProbeResult(false)
+            KeyboardDiagnosticEventLog.record(
+                source: "host-local-server",
+                event: "self_probe_failure",
+                fields: [
+                    "reason": reason,
+                    "error": error.localizedDescription,
+                    "elapsed_ms": "\(Int((Date().timeIntervalSince1970 - startedAt) * 1_000))",
+                ]
+            )
+            return false
+        }
+    }
+
+    private func updateSelfProbeResult(_ succeeded: Bool) {
+        stateLock.lock()
+        lastSelfProbeAt = Date().timeIntervalSince1970
+        lastSelfProbeSucceeded = succeeded
+        stateLock.unlock()
+    }
+
+    private static func listenerStateDescription(for state: NWListener.State) -> String {
+        switch state {
+        case .setup:
+            return "setup"
+        case .waiting(_):
+            return "waiting"
+        case .ready:
+            return "ready"
+        case .failed(_):
+            return "failed"
+        case .cancelled:
+            return "cancelled"
+        @unknown default:
+            return "unknown"
+        }
+    }
+
+    private static func ageMilliseconds(since timestamp: TimeInterval, now: TimeInterval) -> Int {
+        guard timestamp > 0, now >= timestamp else { return -1 }
+        return Int((now - timestamp) * 1_000)
+    }
+
+    private static func receiveMessage(
+        on task: URLSessionWebSocketTask,
+        timeout: TimeInterval
+    ) async throws -> URLSessionWebSocketTask.Message {
+        try await withThrowingTaskGroup(of: URLSessionWebSocketTask.Message.self) { group in
+            group.addTask {
+                try await task.receive()
+            }
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(max(timeout, 0.05) * 1_000_000_000))
+                task.cancel(with: .normalClosure, reason: nil)
+                throw URLError(.timedOut)
+            }
+            guard let message = try await group.next() else {
+                throw URLError(.unknown)
+            }
+            group.cancelAll()
+            return message
+        }
+    }
+
+    private static func messageData(_ message: URLSessionWebSocketTask.Message) throws -> Data {
+        switch message {
+        case .data(let responseData):
+            return responseData
+        case .string(let responseString):
+            return Data(responseString.utf8)
+        @unknown default:
+            throw URLError(.cannotDecodeContentData)
+        }
     }
 
     private static func isLoopback(_ endpoint: NWEndpoint) -> Bool {

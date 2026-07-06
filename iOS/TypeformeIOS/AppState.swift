@@ -2294,7 +2294,7 @@ final class AppState {
                 publishKeyboardCaptureNotReady()
                 return false
             }
-            let bridgeReady = prepareKeyboardBridgeForOnDemandCapture(showErrors: showErrors)
+            let bridgeReady = await prepareKeyboardBridgeForOnDemandCapture(showErrors: showErrors)
             appLog.notice("prepare selected capture result mode=picture_in_picture ready=\(bridgeReady, privacy: .public) pip_active=\(self.pipDictationCoordinator.isActive, privacy: .public) server_running=\(self.keyboardServer.isRunning, privacy: .public)")
             KeyboardDiagnosticEventLog.record(
                 source: "host-app",
@@ -2311,21 +2311,22 @@ final class AppState {
     }
 
     @discardableResult
-    private func prepareKeyboardBridgeForOnDemandCapture(showErrors: Bool) -> Bool {
+    private func prepareKeyboardBridgeForOnDemandCapture(showErrors: Bool) async -> Bool {
         keyboardStandbyEnabled = true
         configureKeyboardServer()
-        do {
-            try keyboardServer.start()
-        } catch {
+        guard await ensureKeyboardLocalBridgeReady(
+            reason: "prepare_on_demand_capture",
+            showErrors: showErrors,
+            forceProbe: true
+        ) else {
             let message = NSLocalizedString("Keyboard bridge is unavailable.", comment: "Keyboard local bridge unavailable")
-            appLog.notice("prepare keyboard bridge failed error=\(error.localizedDescription, privacy: .public)")
             KeyboardDiagnosticEventLog.record(
                 source: "host-app",
                 event: "prepare_keyboard_bridge_failed",
-                fields: ["error": error.localizedDescription]
+                fields: ["reason": "bridge_not_ready"]
             )
             if showErrors {
-                errorMessage = "\(message) \(error.localizedDescription)"
+                errorMessage = message
             }
             publishKeyboardStatus(.error, message: errorMessage ?? message)
             return false
@@ -2547,7 +2548,13 @@ final class AppState {
 
         if enabled {
             do {
-                try keyboardServer.start()
+                guard await ensureKeyboardLocalBridgeReady(
+                    reason: "set_keyboard_standby",
+                    showErrors: surfaceAudioSessionErrors,
+                    forceProbe: true
+                ) else {
+                    return false
+                }
                 let isInputReady = try await prepareKeyboardInputStandby(
                     requestMicrophoneIfNeeded: requestMicrophoneIfNeeded,
                     warmInputEngine: warmInputEngine
@@ -3164,6 +3171,76 @@ final class AppState {
         }
     }
 
+    @discardableResult
+    private func ensureKeyboardLocalBridgeReady(
+        reason: String,
+        showErrors: Bool,
+        forceProbe: Bool
+    ) async -> Bool {
+        configureKeyboardServer()
+        let result = await keyboardServer.ensureReady(reason: reason, forceProbe: forceProbe)
+        appLog.notice("keyboard bridge ensure result reason=\(reason, privacy: .public) ready=\(result.ready, privacy: .public) state=\(result.listenerState, privacy: .public) generation=\(result.generation, privacy: .public) restarted=\(result.restarted, privacy: .public) probe=\(result.selfProbeSucceeded, privacy: .public) elapsed_ms=\(result.elapsedMilliseconds, privacy: .public)")
+        KeyboardDiagnosticEventLog.record(
+            source: "host-app",
+            event: "bridge_ensure_result",
+            fields: result.diagnosticFields.merging(["reason": reason]) { current, _ in current }
+        )
+        if !result.ready, showErrors {
+            let message = NSLocalizedString("Keyboard bridge is unavailable.", comment: "Keyboard local bridge unavailable")
+            errorMessage = result.failureReason.map { "\(message) \($0)" } ?? message
+            publishKeyboardStatus(.error, message: errorMessage)
+        }
+        return result.ready
+    }
+
+    private func postKeyboardCommandReceipt(
+        commandID: String,
+        action: KeyboardBridgeCommandAction,
+        phase: KeyboardCommandReceiptPhase,
+        reason: String? = nil
+    ) {
+        let receipt = KeyboardCommandReceipt(
+            commandID: commandID,
+            action: action,
+            phase: phase,
+            reason: reason
+        )
+        let saved = KeyboardSharedDefaults.saveCommandReceipt(receipt)
+        appLog.notice("keyboard command receipt phase=\(phase.rawValue, privacy: .public) saved=\(saved, privacy: .public) command_id=\(commandID, privacy: .public) reason=\(reason ?? "none", privacy: .public)")
+        KeyboardDiagnosticEventLog.record(
+            source: "host-app",
+            event: phase == .accepted ? "darwin_start_receipt_posted" : "command_receipt_posted",
+            fields: [
+                "command_id": commandID,
+                "action": action.rawValue,
+                "phase": phase.rawValue,
+                "reason": reason ?? "none",
+                "saved": "\(saved)",
+            ]
+        )
+        guard saved else { return }
+        KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.commandReceiptUpdated)
+    }
+
+    private func postKeyboardCaptureNotReadyReceipt(commandID: String?, reason: String) {
+        appLog.notice("keyboard capture not ready command_id=\(commandID ?? "none", privacy: .public) reason=\(reason, privacy: .public)")
+        KeyboardDiagnosticEventLog.record(
+            source: "host-app",
+            event: "capture_not_ready",
+            fields: [
+                "command_id": commandID ?? "none",
+                "reason": reason,
+            ]
+        )
+        guard let commandID else { return }
+        postKeyboardCommandReceipt(
+            commandID: commandID,
+            action: .start,
+            phase: .captureNotReady,
+            reason: reason
+        )
+    }
+
     /// Called when ANY keyboard → host signal arrives (local bridge connect,
     /// status stream subscription, command). Setting this flag is the only way the host
     /// learns the keyboard is enabled + has Full Access, since iOS does not
@@ -3296,6 +3373,12 @@ final class AppState {
                         event: "darwin_request_start_command_consumed",
                         fields: ["command_id": command.id]
                     )
+                    self.postKeyboardCommandReceipt(
+                        commandID: command.id,
+                        action: .start,
+                        phase: .accepted,
+                        reason: "darwin_start_received"
+                    )
                     if let requestedMode = CorrectionMode(rawValue: command.correctionMode) {
                         self.applyKeyboardDefaultCorrectionMode(requestedMode)
                     }
@@ -3314,6 +3397,17 @@ final class AppState {
                     self.activeKeyboardTextEditContext = command.textEditContext
                     self.activeKeyboardDictationContext = command.dictationContext
                     self.keyboardCaptureStartedFromKeyboard = true
+                    let bridgeReady = await self.ensureKeyboardLocalBridgeReady(
+                        reason: "darwin_start_takeover",
+                        showErrors: false,
+                        forceProbe: true
+                    )
+                    self.postKeyboardCommandReceipt(
+                        commandID: command.id,
+                        action: .start,
+                        phase: bridgeReady ? .bridgeReady : .bridgeUnavailable,
+                        reason: bridgeReady ? "bridge_ready" : "bridge_unavailable"
+                    )
                     await self.startKeyboardRecording(commandID: command.id, allowSessionStart: true)
                 }
             },
@@ -3664,6 +3758,7 @@ final class AppState {
                     "elapsed_ms": "\(Int((Date().timeIntervalSince1970 - startAttemptedAt) * 1_000))",
                 ]
             )
+            postKeyboardCaptureNotReadyReceipt(commandID: commandID, reason: "pip_inactive")
             clearKeyboardCaptureContext()
             resetCorrectionModeToDefault()
             publishKeyboardStatus(.idle, commandID: commandID, message: keyboardMicrophonePreparationMessage)
@@ -3692,6 +3787,7 @@ final class AppState {
                     "elapsed_ms": "\(Int((Date().timeIntervalSince1970 - startAttemptedAt) * 1_000))",
                 ]
             )
+            postKeyboardCaptureNotReadyReceipt(commandID: commandID, reason: "visible_capture_unavailable")
             clearKeyboardCaptureContext()
             resetCorrectionModeToDefault()
             publishKeyboardStatus(.idle, commandID: commandID, message: keyboardMicrophonePreparationMessage)
@@ -3734,6 +3830,7 @@ final class AppState {
                         "elapsed_ms": "\(Int((Date().timeIntervalSince1970 - startAttemptedAt) * 1_000))",
                     ]
                 )
+                postKeyboardCaptureNotReadyReceipt(commandID: commandID, reason: "audio_inactive_session_start_not_allowed")
                 clearKeyboardCaptureContext()
                 resetCorrectionModeToDefault()
                 publishKeyboardStatus(.idle, commandID: commandID, message: "Keyboard audio session is not active")
@@ -3755,6 +3852,7 @@ final class AppState {
                             "elapsed_ms": "\(Int((Date().timeIntervalSince1970 - startAttemptedAt) * 1_000))",
                         ]
                     )
+                    postKeyboardCaptureNotReadyReceipt(commandID: commandID, reason: "input_standby_not_ready")
                     clearKeyboardCaptureContext()
                     resetCorrectionModeToDefault()
                     startSilentStandbyKeeperIfNeeded()
@@ -3777,6 +3875,7 @@ final class AppState {
                         "elapsed_ms": "\(Int((Date().timeIntervalSince1970 - startAttemptedAt) * 1_000))",
                     ]
                 )
+                postKeyboardCaptureNotReadyReceipt(commandID: commandID, reason: "standby_error")
                 if IOSRecordingAudioSession.isPriorityConflict(error) {
                     startSilentStandbyKeeperIfNeeded()
                     publishKeyboardStatus(.idle, commandID: commandID, message: message)
@@ -3826,6 +3925,7 @@ final class AppState {
                     "elapsed_ms": "\(Int((Date().timeIntervalSince1970 - startAttemptedAt) * 1_000))",
                 ]
             )
+            postKeyboardCaptureNotReadyReceipt(commandID: commandID, reason: "begin_recording_error")
             if IOSRecordingAudioSession.isPriorityConflict(error) {
                 startSilentStandbyKeeperIfNeeded()
                 publishKeyboardStatus(.idle, commandID: commandID, message: message)
@@ -3871,7 +3971,16 @@ final class AppState {
 
         let preserveCommandStatus = shouldPreserveKeyboardCommandStatusDuringStandbyResume
         do {
-            try keyboardServer.start()
+            guard await ensureKeyboardLocalBridgeReady(
+                reason: "resume_keyboard_standby",
+                showErrors: false,
+                forceProbe: true
+            ) else {
+                if !preserveCommandStatus {
+                    publishKeyboardStatus(.idle, message: keyboardMicrophonePreparationMessage)
+                }
+                return
+            }
             let isInputReady = try await prepareKeyboardInputStandby(requestMicrophoneIfNeeded: false)
             if isInputReady {
                 if !preserveCommandStatus {

@@ -144,6 +144,7 @@ enum KeyboardSharedDefaults {
     private static let keyboardStatusKey = "keyboard.status.v1"
     private static let hostHandoffKey = "keyboard.host-handoff.v1"
     private static let hostForegroundKey = "keyboard.host-foreground.v1"
+    private static let commandReceiptKey = "keyboard.command-receipt.v1"
     private static let keyboardHostIssueKey = "keyboard.host-issue.v1"
     private static let touchLearningStatsKey = "keyboard.touchLearningStats.v1"
     private static let chineseLearningKey = "keyboard.chineseLearning.v1"
@@ -264,6 +265,26 @@ enum KeyboardSharedDefaults {
         else { return nil }
         defaults.removeObject(forKey: hostHandoffKey)
         return handoff
+    }
+
+    @discardableResult
+    static func saveCommandReceipt(_ receipt: KeyboardCommandReceipt) -> Bool {
+        saveCodable(receipt, key: commandReceiptKey, flush: true)
+    }
+
+    static func loadCommandReceipt(now: TimeInterval = Date().timeIntervalSince1970) -> KeyboardCommandReceipt? {
+        guard let defaults = suite(),
+              let receipt = loadCodable(KeyboardCommandReceipt.self, key: commandReceiptKey)
+        else { return nil }
+        guard receipt.isFresh(now: now) else {
+            defaults.removeObject(forKey: commandReceiptKey)
+            return nil
+        }
+        return receipt
+    }
+
+    static func clearCommandReceipt() {
+        suite()?.removeObject(forKey: commandReceiptKey)
     }
 
     @discardableResult
@@ -679,6 +700,57 @@ struct KeyboardHostIssueReport: Codable, Equatable, Sendable {
     }
 }
 
+enum KeyboardCommandReceiptPhase: String, Codable, Sendable {
+    case accepted
+    case bridgeReady = "bridge_ready"
+    case bridgeUnavailable = "bridge_unavailable"
+    case captureNotReady = "capture_not_ready"
+    case failed
+}
+
+struct KeyboardCommandReceipt: Codable, Equatable, Sendable {
+    static let maxAge: TimeInterval = 10
+
+    let id: String
+    let commandID: String
+    let action: KeyboardBridgeCommandAction
+    let phase: KeyboardCommandReceiptPhase
+    let reason: String?
+    let createdAt: TimeInterval
+
+    init(
+        id: String = UUID().uuidString,
+        commandID: String,
+        action: KeyboardBridgeCommandAction,
+        phase: KeyboardCommandReceiptPhase,
+        reason: String? = nil,
+        createdAt: TimeInterval = Date().timeIntervalSince1970
+    ) {
+        self.id = id
+        self.commandID = commandID
+        self.action = action
+        self.phase = phase
+        self.reason = reason.map {
+            String($0.trimmingCharacters(in: .whitespacesAndNewlines).prefix(120))
+        }
+        self.createdAt = createdAt
+    }
+
+    func isFresh(now: TimeInterval = Date().timeIntervalSince1970) -> Bool {
+        let age = now - createdAt
+        return age >= 0 && age <= Self.maxAge
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case commandID = "command_id"
+        case action
+        case phase
+        case reason
+        case createdAt = "created_at"
+    }
+}
+
 enum KeyboardDarwinNotificationName {
     private static let namespace = TypeformeBundleConfiguration.keyboardNotificationNamespace
     static let transcriptionReady = "\(namespace).transcriptionReady"
@@ -693,6 +765,7 @@ enum KeyboardDarwinNotificationName {
     static let keyboardDefaultsChanged = "\(namespace).defaultsChanged"
     static let fullAccessRequired = "\(namespace).fullAccessRequired"
     static let keyboardIssueReported = "\(namespace).issueReported"
+    static let commandReceiptUpdated = "\(namespace).commandReceiptUpdated"
 
     static func authenticatedRequest(_ name: String, token: String?) -> String? {
         guard let token,
