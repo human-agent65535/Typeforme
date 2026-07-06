@@ -75,10 +75,31 @@ enum BuiltInPrompts {
         ].filter { sourceIDs.contains($0.source) }
 
         guard !notes.isEmpty else { return nil }
-        return """
+        var parts = [
+            """
         ASR source notes for local conflicts:
         \(notes.map { "- \($0.text)" }.joined(separator: "\n"))
         Reliability rules above override these notes. Cross-source agreement is evidence, not majority vote. If competing local words are both plausible and context does not disambiguate them, avoid treating the source notes alone as proof.
         """
+        ]
+        if shouldIncludeQwenOnlyEmptySourceRisk(for: hypotheses) {
+            parts.append("""
+            ASR risk: qwen-only + other completed sources empty. Return {"text":""} for fluent facts/narrative; keep short commands, questions, acknowledgements, or context-anchored spans. raw_transcript is not corroboration.
+            """)
+        }
+        return parts.joined(separator: "\n")
+    }
+
+    private static func shouldIncludeQwenOnlyEmptySourceRisk(for hypotheses: [ASRSourceHypothesis]) -> Bool {
+        let attributed = hypotheses.filter { $0.source != ASRSourceHypothesis.unattributedSource }
+        let nonEmptySources = Set(
+            attributed
+                .filter { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+                .map(\.source)
+        )
+        guard nonEmptySources == ["qwen"] else { return false }
+        return attributed.contains {
+            $0.source != "qwen" && $0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
     }
 }

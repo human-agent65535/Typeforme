@@ -202,12 +202,29 @@ final class AudioTapFileWriter: @unchecked Sendable {
         currentSampleRate = 0
         writeError = nil
         lock.unlock()
+        var fields = [
+            "write_duration_ms": "\(Int((duration * 1_000).rounded()))",
+            "write_frames": "\(frames)",
+            "write_sample_rate": "\(Int(sampleRate.rounded()))",
+        ]
         guard let url else {
             recordingLog.notice("keyboard audio finish: no active file")
+            KeyboardDiagnosticEventLog.record(
+                source: "host-audio",
+                event: "keyboard_audio_file_finish",
+                fields: fields.merging(["result": "no_active_file"]) { current, _ in current }
+            )
             return nil
         }
         if let error {
             recordingLog.error("keyboard audio finish failed: \(error.localizedDescription, privacy: .public)")
+            fields["result"] = "write_error"
+            fields["error"] = error.localizedDescription
+            KeyboardDiagnosticEventLog.record(
+                source: "host-audio",
+                event: "keyboard_audio_file_finish",
+                fields: fields
+            )
             try? FileManager.default.removeItem(at: url)
             return nil
         }
@@ -215,17 +232,36 @@ final class AudioTapFileWriter: @unchecked Sendable {
             recordingLog.notice(
                 "keyboard audio finish: too short duration=\(duration, privacy: .public) frames=\(frames, privacy: .public) sampleRate=\(sampleRate, privacy: .public)"
             )
+            fields["result"] = "too_short"
+            KeyboardDiagnosticEventLog.record(
+                source: "host-audio",
+                event: "keyboard_audio_file_finish",
+                fields: fields
+            )
             try? FileManager.default.removeItem(at: url)
             return nil
         }
         let fileBytes = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.intValue ?? 0
+        fields["file_bytes"] = "\(fileBytes)"
         guard fileBytes > 0 else {
             recordingLog.error("keyboard audio finish: empty flac duration=\(duration, privacy: .public) frames=\(frames, privacy: .public) sampleRate=\(sampleRate, privacy: .public)")
+            fields["result"] = "empty_file"
+            KeyboardDiagnosticEventLog.record(
+                source: "host-audio",
+                event: "keyboard_audio_file_finish",
+                fields: fields
+            )
             try? FileManager.default.removeItem(at: url)
             return nil
         }
         recordingLog.debug(
             "keyboard audio finish: flac written duration=\(duration, privacy: .public) frames=\(frames, privacy: .public) fileBytes=\(fileBytes, privacy: .public) sampleRate=\(sampleRate, privacy: .public)"
+        )
+        fields["result"] = "ok"
+        KeyboardDiagnosticEventLog.record(
+            source: "host-audio",
+            event: "keyboard_audio_file_finish",
+            fields: fields
         )
         return url
     }
@@ -250,6 +286,11 @@ final class AudioTapFileWriter: @unchecked Sendable {
         currentSampleRate = 0
         writeError = nil
         lock.unlock()
+        KeyboardDiagnosticEventLog.record(
+            source: "host-audio",
+            event: "keyboard_audio_file_discard",
+            fields: [:]
+        )
         if let url {
             try? FileManager.default.removeItem(at: url)
         }
@@ -790,6 +831,13 @@ final class StandbyAudioSession: ObservableObject {
         guard let rawReason,
               let reason = AVAudioSession.RouteChangeReason(rawValue: rawReason)
         else {
+            recordAudioDiagnostic(
+                event: "keyboard_audio_route_change",
+                fields: [
+                    "reason": rawReason.map { "\($0)" } ?? "none",
+                    "action": "mark_restart",
+                ]
+            )
             markEngineRestartNeeded()
             return
         }
@@ -802,14 +850,42 @@ final class StandbyAudioSession: ObservableObject {
             // session churn; forcing a voice-processing engine restart here
             // adds multi-second "Preparing" latency on device.
             guard engine.isRunning, hasInstalledTap else {
+                recordAudioDiagnostic(
+                    event: "keyboard_audio_route_change",
+                    fields: [
+                        "reason": Self.routeChangeReasonName(reason),
+                        "action": "mark_restart_not_running",
+                    ]
+                )
                 markEngineRestartNeeded()
                 return
             }
             currentFormat = engine.inputNode.outputFormat(forBus: 0)
             needsEngineRestart = false
+            recordAudioDiagnostic(
+                event: "keyboard_audio_route_change",
+                fields: [
+                    "reason": Self.routeChangeReasonName(reason),
+                    "action": "keep_running",
+                ]
+            )
         case .newDeviceAvailable, .oldDeviceUnavailable, .noSuitableRouteForCategory, .unknown:
+            recordAudioDiagnostic(
+                event: "keyboard_audio_route_change",
+                fields: [
+                    "reason": Self.routeChangeReasonName(reason),
+                    "action": "mark_restart",
+                ]
+            )
             markEngineRestartNeeded()
         @unknown default:
+            recordAudioDiagnostic(
+                event: "keyboard_audio_route_change",
+                fields: [
+                    "reason": "unknown_\(reason.rawValue)",
+                    "action": "mark_restart",
+                ]
+            )
             markEngineRestartNeeded()
         }
     }
@@ -835,6 +911,13 @@ final class StandbyAudioSession: ObservableObject {
         }
         isActive = true
         needsEngineRestart = false
+        recordAudioDiagnostic(
+            event: "keyboard_audio_engine_started",
+            fields: [
+                "purpose": Self.purposeName(purpose),
+                "reuse_active_session": "\(reuseActiveSession)",
+            ]
+        )
     }
 
     private func startEngineWithRetry(
@@ -851,6 +934,14 @@ final class StandbyAudioSession: ObservableObject {
                 return
             } catch {
                 lastError = error
+                recordAudioDiagnostic(
+                    event: "keyboard_audio_engine_start_failed",
+                    fields: [
+                        "purpose": Self.purposeName(purpose),
+                        "reuse_active_session": "\(reuseActiveSession)",
+                        "error": error.localizedDescription,
+                    ]
+                )
                 removeInputTap()
                 engine.stop()
                 isActive = false
@@ -965,6 +1056,13 @@ final class StandbyAudioSession: ObservableObject {
     private func beginRecordingNow() async throws -> URL {
         let needsRestart = needsEngineRestart || !engine.isRunning || !hasInstalledTap
         let shouldInterruptOtherAudio = IOSRecordingAudioSession.shouldInterruptOtherAudioForKeyboardRecording()
+        recordAudioDiagnostic(
+            event: "keyboard_audio_recording_begin_attempt",
+            fields: [
+                "needs_restart": "\(needsRestart)",
+                "should_interrupt_other_audio": "\(shouldInterruptOtherAudio)",
+            ]
+        )
         if needsRestart {
             recordingDidActivateCaptureCategory = true
             recordingShouldYieldOtherAudio = shouldInterruptOtherAudio
@@ -981,12 +1079,26 @@ final class StandbyAudioSession: ObservableObject {
         }
         level = 0
         let format = currentFormat ?? engine.inputNode.outputFormat(forBus: 0)
-        return try fileWriter.begin(format: format)
+        let url = try fileWriter.begin(format: format)
+        recordAudioDiagnostic(
+            event: "keyboard_audio_recording_begin",
+            fields: Self.formatFields(format, prefix: "tap_format")
+                .merging([
+                    "needs_restart": "\(needsRestart)",
+                    "should_interrupt_other_audio": "\(shouldInterruptOtherAudio)",
+                    "recording_yields_other_audio": "\(recordingShouldYieldOtherAudio)",
+                ]) { current, _ in current }
+        )
+        return url
     }
 
     func finishRecording() -> URL? {
         level = 0
         let url = fileWriter.finish()
+        recordAudioDiagnostic(
+            event: "keyboard_audio_recording_finish",
+            fields: ["had_file": "\(url != nil)"]
+        )
         restoreStandbyAfterRecording()
         return url
     }
@@ -996,6 +1108,7 @@ final class StandbyAudioSession: ObservableObject {
         level = 0
         _ = fileWriter.cancel()
         if wasRecording {
+            recordAudioDiagnostic(event: "keyboard_audio_recording_cancel")
             restoreStandbyAfterRecording()
         }
     }
@@ -1056,6 +1169,116 @@ final class StandbyAudioSession: ObservableObject {
                 continuation.resume(returning: granted)
             }
         }
+    }
+
+    private func recordAudioDiagnostic(event: String, fields extraFields: [String: String] = [:]) {
+        var fields = audioSessionDiagnosticFields()
+        for (key, value) in extraFields {
+            fields[key] = value
+        }
+        KeyboardDiagnosticEventLog.record(source: "host-audio", event: event, fields: fields)
+    }
+
+    private func audioSessionDiagnosticFields() -> [String: String] {
+        let session = AVAudioSession.sharedInstance()
+        var fields: [String: String] = [
+            "is_active": "\(isActive)",
+            "is_recording": "\(fileWriter.isRecording)",
+            "engine_running": "\(engine.isRunning)",
+            "has_tap": "\(hasInstalledTap)",
+            "needs_restart": "\(needsEngineRestart)",
+            "category": session.category.rawValue,
+            "mode": session.mode.rawValue,
+            "options": "\(session.categoryOptions.rawValue)",
+            "other_audio_playing": "\(session.isOtherAudioPlaying)",
+            "secondary_audio_silenced": "\(session.secondaryAudioShouldBeSilencedHint)",
+            "session_sample_rate": Self.decimal(session.sampleRate, places: 0),
+            "io_buffer_ms": Self.decimal(session.ioBufferDuration * 1_000, places: 1),
+            "record_permission": Self.recordPermissionName(),
+            "route_inputs": Self.portTypes(session.currentRoute.inputs),
+            "route_outputs": Self.portTypes(session.currentRoute.outputs),
+            "available_inputs": Self.portTypes(session.availableInputs ?? []),
+            "preferred_input": session.preferredInput?.portType.rawValue ?? "none",
+        ]
+        for (key, value) in Self.formatFields(currentFormat, prefix: "current_format") {
+            fields[key] = value
+        }
+        for (key, value) in Self.formatFields(engine.inputNode.outputFormat(forBus: 0), prefix: "input_node_format") {
+            fields[key] = value
+        }
+        return fields
+    }
+
+    private static func formatFields(_ format: AVAudioFormat?, prefix: String) -> [String: String] {
+        guard let format else {
+            return [
+                "\(prefix)_sample_rate": "none",
+                "\(prefix)_channels": "none",
+                "\(prefix)_common_format": "none",
+                "\(prefix)_interleaved": "none",
+            ]
+        }
+        return [
+            "\(prefix)_sample_rate": decimal(format.sampleRate, places: 0),
+            "\(prefix)_channels": "\(format.channelCount)",
+            "\(prefix)_common_format": commonFormatName(format.commonFormat),
+            "\(prefix)_interleaved": "\(format.isInterleaved)",
+        ]
+    }
+
+    private static func commonFormatName(_ format: AVAudioCommonFormat) -> String {
+        switch format {
+        case .pcmFormatFloat32: return "float32"
+        case .pcmFormatFloat64: return "float64"
+        case .pcmFormatInt16: return "int16"
+        case .pcmFormatInt32: return "int32"
+        case .otherFormat: return "other"
+        @unknown default: return "unknown"
+        }
+    }
+
+    private static func routeChangeReasonName(_ reason: AVAudioSession.RouteChangeReason) -> String {
+        switch reason {
+        case .unknown: return "unknown"
+        case .newDeviceAvailable: return "new_device"
+        case .oldDeviceUnavailable: return "old_device"
+        case .categoryChange: return "category_change"
+        case .override: return "override"
+        case .wakeFromSleep: return "wake_from_sleep"
+        case .noSuitableRouteForCategory: return "no_suitable_route"
+        case .routeConfigurationChange: return "route_configuration_change"
+        @unknown default: return "unknown_\(reason.rawValue)"
+        }
+    }
+
+    private static func purposeName(_ purpose: IOSRecordingAudioSession.Purpose) -> String {
+        switch purpose {
+        case .standby: return "standby"
+        case .keyboardRecording: return "keyboard_recording"
+        case .recording: return "recording"
+        }
+    }
+
+    private static func portTypes(_ ports: [AVAudioSessionPortDescription]) -> String {
+        let values = ports.map { port in
+            let channels = port.channels?.count ?? 0
+            return "\(port.portType.rawValue):\(channels)"
+        }
+        return values.isEmpty ? "none" : values.joined(separator: ",")
+    }
+
+    private static func recordPermissionName() -> String {
+        switch AVAudioApplication.shared.recordPermission {
+        case .granted: return "granted"
+        case .denied: return "denied"
+        case .undetermined: return "undetermined"
+        @unknown default: return "unknown"
+        }
+    }
+
+    private static func decimal(_ value: Double, places: Int) -> String {
+        guard value.isFinite else { return "0" }
+        return String(format: "%.\(places)f", value)
     }
 
 }
