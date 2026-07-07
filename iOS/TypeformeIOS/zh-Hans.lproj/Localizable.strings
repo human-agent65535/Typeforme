@@ -44,8 +44,8 @@
 "Background Mic" = "后台麦克风";
 "PiP" = "画中画";
 "When Typeforme is opened, the host app keeps a background microphone session ready for keyboard dictation." = "打开 Typeforme 时,宿主 app 会保持后台麦克风会话,让键盘听写就绪。";
-"When Typeforme is opened, the host app starts a small visible PiP session for keyboard dictation. The microphone opens only while recording." = "打开 Typeforme 时,宿主 app 会启动一个小型可见画中画会话用于键盘听写。麦克风只会在录音时打开。";
-"Background Mic uses the host audio session duration below. PiP uses a visible session." = "后台麦克风使用下方宿主音频会话时长。画中画使用可见会话。";
+"When Typeforme is opened, the host app keeps a visible PiP session and local bridge ready for keyboard dictation. The microphone and host audio session open only while recording." = "打开 Typeforme 时,宿主 app 会保持可见画中画会话和本地桥接就绪,用于键盘听写。麦克风和宿主音频会话只会在录音时打开。";
+"Background Mic uses the host audio session duration below. PiP uses a visible session and opens the microphone only while recording." = "后台麦克风使用下方宿主音频会话时长。画中画使用可见会话,只在录音时打开麦克风。";
 "Picture in Picture is active." = "画中画已开启。";
 "Picture in Picture is ready." = "画中画已就绪。";
 "Picture in Picture is preparing." = "画中画准备中。";

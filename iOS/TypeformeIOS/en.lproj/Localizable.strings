@@ -44,8 +44,8 @@
 "Background Mic" = "Background Mic";
 "PiP" = "PiP";
 "When Typeforme is opened, the host app keeps a background microphone session ready for keyboard dictation." = "When Typeforme is opened, the host app keeps a background microphone session ready for keyboard dictation.";
-"When Typeforme is opened, the host app starts a small visible PiP session for keyboard dictation. The microphone opens only while recording." = "When Typeforme is opened, the host app starts a small visible PiP session for keyboard dictation. The microphone opens only while recording.";
-"Background Mic uses the host audio session duration below. PiP uses a visible session." = "Background Mic uses the host audio session duration below. PiP uses a visible session.";
+"When Typeforme is opened, the host app keeps a visible PiP session and local bridge ready for keyboard dictation. The microphone and host audio session open only while recording." = "When Typeforme is opened, the host app keeps a visible PiP session and local bridge ready for keyboard dictation. The microphone and host audio session open only while recording.";
+"Background Mic uses the host audio session duration below. PiP uses a visible session and opens the microphone only while recording." = "Background Mic uses the host audio session duration below. PiP uses a visible session and opens the microphone only while recording.";
 "Picture in Picture is active." = "Picture in Picture is active.";
 "Picture in Picture is ready." = "Picture in Picture is ready.";
 "Picture in Picture is preparing." = "Picture in Picture is preparing.";

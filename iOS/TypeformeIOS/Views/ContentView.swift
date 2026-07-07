@@ -418,7 +418,7 @@ private struct SetupReadinessView: View {
         } header: {
             Text("Capture Method")
         } footer: {
-            Text("Background Mic uses the host audio session duration below. PiP uses a visible session.")
+            Text("Background Mic uses the host audio session duration below. PiP uses a visible session and opens the microphone only while recording.")
         }
     }
 
@@ -617,7 +617,10 @@ private struct PiPSourceViewMount: View {
     var body: some View {
         if state.keyboardDictationCaptureMode == .pictureInPicture {
             PiPSourceViewHost()
-                .frame(width: 70, height: 70)
+                .frame(
+                    width: PiPSourceViewHost.preferredContentSize.width,
+                    height: PiPSourceViewHost.preferredContentSize.height
+                )
                 .padding(.top, 16)
                 .padding(.trailing, 16)
                 .opacity(0.01)

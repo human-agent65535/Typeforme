@@ -269,6 +269,9 @@ post_start_and_expect() {
 
 echo "==> Granting simulator microphone permission"
 simctl privacy "$SIMULATOR_ID" grant microphone "$BUNDLE_ID"
+simctl terminate "$SIMULATOR_ID" "$BUNDLE_ID" >/dev/null 2>&1 || true
+simctl launch "$SIMULATOR_ID" "$BUNDLE_ID" >/dev/null
+sleep 0.5
 
 echo "==> Setting Background Mic mode"
 debug_url "keyboard-capture-mode" "run_id=$RUN_ID&mode=background_mic"
@@ -314,7 +317,10 @@ pip_stop_result="$(wait_event "simulator_keyboard_pip_stopped" "pip_stopped")"
 echo "==> PiP stop result: $pip_stop_result"
 assert_fields "$pip_stop_result" \
     "mode=picture_in_picture" \
-    "pip_active=false"
+    "pip_active=false" \
+    "audio_host_session_active=false" \
+    "keyboard_active=false" \
+    "standby_keeper_active=false"
 
 post_start_and_expect "${RUN_ID}-pip-inactive" "capture_not_ready"
 

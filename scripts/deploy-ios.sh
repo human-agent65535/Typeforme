@@ -91,9 +91,12 @@ with open(path, "r", encoding="utf-8") as handle:
 def is_paired_iphone(device):
     hardware = device.get("hardwareProperties", {})
     connection = device.get("connectionProperties", {})
+    properties = device.get("deviceProperties", {})
     return (
         hardware.get("platform") == "iOS"
         and hardware.get("deviceType") == "iPhone"
+        and hardware.get("reality") != "simulated"
+        and properties.get("provider") != "com.apple.CoreSimulator.SimulatorCoreDevicePlugin"
         and connection.get("pairingState") == "paired"
     )
 

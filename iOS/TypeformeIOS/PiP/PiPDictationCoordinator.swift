@@ -6,7 +6,23 @@ import UIKit
 private let pipLog = Logger(subsystem: TypeformeBundleConfiguration.hostBundleIdentifier, category: "pip")
 
 private enum PiPDictationLayout {
-    static let preferredContentSize = CGSize(width: 70, height: 70)
+    static let preferredContentSize = CGSize(width: 128, height: 72)
+
+    @MainActor
+    static func applyPreferredSize(to view: UIView) {
+        let size = preferredContentSize
+        if view.bounds.size != size {
+            view.bounds = CGRect(origin: .zero, size: size)
+        }
+        if view.frame.size != size {
+            view.frame = CGRect(origin: view.frame.origin, size: size)
+        }
+        view.setContentHuggingPriority(.required, for: .horizontal)
+        view.setContentHuggingPriority(.required, for: .vertical)
+        view.setContentCompressionResistancePriority(.required, for: .horizontal)
+        view.setContentCompressionResistancePriority(.required, for: .vertical)
+        view.invalidateIntrinsicContentSize()
+    }
 }
 
 struct PiPDictationPresentation: Equatable {
@@ -57,6 +73,7 @@ final class PiPDictationCoordinator: NSObject, ObservableObject {
             return
         }
 
+        PiPDictationLayout.applyPreferredSize(to: view)
         sourceView = view
         resetInactiveController()
         updateContentView()
@@ -201,6 +218,7 @@ final class PiPDictationCoordinator: NSObject, ObservableObject {
         }
 
         let contentViewController = ensureContentViewController()
+        PiPDictationLayout.applyPreferredSize(to: sourceView)
         let source = AVPictureInPictureController.ContentSource(
             activeVideoCallSourceView: sourceView,
             contentViewController: contentViewController
@@ -218,8 +236,7 @@ final class PiPDictationCoordinator: NSObject, ObservableObject {
         }
 
         let viewController = AVPictureInPictureVideoCallViewController()
-        viewController.preferredContentSize = PiPDictationLayout.preferredContentSize
-        viewController.view.bounds = CGRect(origin: .zero, size: PiPDictationLayout.preferredContentSize)
+        configurePreferredContentSize(for: viewController)
         viewController.view.backgroundColor = .black
         viewController.view.clipsToBounds = true
 
@@ -237,6 +254,13 @@ final class PiPDictationCoordinator: NSObject, ObservableObject {
         self.contentView = contentView
         updateContentView()
         return viewController
+    }
+
+    private func configurePreferredContentSize(for viewController: AVPictureInPictureVideoCallViewController) {
+        let size = PiPDictationLayout.preferredContentSize
+        viewController.preferredContentSize = size
+        viewController.view.bounds = CGRect(origin: .zero, size: size)
+        viewController.view.frame = CGRect(origin: .zero, size: size)
     }
 
     private func resetInactiveController() {
@@ -338,6 +362,72 @@ private final class PiPVideoCallContentView: UIView {
     }
 
     override func draw(_ rect: CGRect) {
+        if rect.width >= rect.height * 1.25 {
+            drawLandscape(in: rect)
+            return
+        }
+        drawSquare(in: rect)
+    }
+
+    private func drawLandscape(in rect: CGRect) {
+        let width = max(1, rect.width)
+        let height = max(1, rect.height)
+        let scale = max(0.5, min(width / 128, height / 72))
+
+        UIColor(red: 0.05, green: 0.06, blue: 0.07, alpha: 1).setFill()
+        UIBezierPath(rect: rect).fill()
+
+        let panelRect = rect.insetBy(dx: 6 * scale, dy: 5 * scale)
+        UIColor(red: 0.12, green: 0.13, blue: 0.15, alpha: 1).setFill()
+        UIBezierPath(roundedRect: panelRect, cornerRadius: 14 * scale).fill()
+
+        drawVoiceMark(
+            in: CGRect(
+                x: panelRect.minX + 8 * scale,
+                y: panelRect.midY - 19 * scale,
+                width: 32 * scale,
+                height: 38 * scale
+            ),
+            level: audioLevel
+        )
+
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.alignment = .left
+        paragraph.lineBreakMode = .byTruncatingTail
+
+        let titleAttributes: [NSAttributedString.Key: Any] = [
+            .font: UIFont.systemFont(ofSize: 14 * scale, weight: .bold),
+            .foregroundColor: UIColor.white,
+            .paragraphStyle: paragraph,
+        ]
+        let stateAttributes: [NSAttributedString.Key: Any] = [
+            .font: UIFont.monospacedDigitSystemFont(ofSize: 11 * scale, weight: .semibold),
+            .foregroundColor: UIColor(red: 0.18, green: 0.72, blue: 1, alpha: 1),
+            .paragraphStyle: paragraph,
+        ]
+        let tapAttributes: [NSAttributedString.Key: Any] = [
+            .font: UIFont.systemFont(ofSize: max(6.5, 7.5 * scale), weight: .medium),
+            .foregroundColor: UIColor(white: 0.58, alpha: 1),
+            .paragraphStyle: paragraph,
+        ]
+
+        let textX = panelRect.minX + 48 * scale
+        let textWidth = max(1, panelRect.maxX - textX - 7 * scale)
+        (presentation.title as NSString).draw(
+            in: CGRect(x: textX, y: panelRect.minY + 9 * scale, width: textWidth, height: 17 * scale),
+            withAttributes: titleAttributes
+        )
+        (currentStateText() as NSString).draw(
+            in: CGRect(x: textX, y: panelRect.minY + 29 * scale, width: textWidth, height: 14 * scale),
+            withAttributes: stateAttributes
+        )
+        (NSLocalizedString("Tap to close", comment: "PiP tap-to-close hint") as NSString).draw(
+            in: CGRect(x: textX, y: panelRect.maxY - 16 * scale, width: textWidth, height: 10 * scale),
+            withAttributes: tapAttributes
+        )
+    }
+
+    private func drawSquare(in rect: CGRect) {
         let side = max(1, min(rect.width, rect.height))
         let contentRect = CGRect(
             x: rect.midX - side / 2,
@@ -432,10 +522,18 @@ private final class PiPVideoCallContentView: UIView {
 }
 
 final class PiPSourceUIView: UIView {
+    static var preferredContentSize: CGSize {
+        PiPDictationLayout.preferredContentSize
+    }
+
     override init(frame: CGRect) {
-        super.init(frame: frame)
+        let initialFrame = frame.isEmpty
+            ? CGRect(origin: .zero, size: PiPDictationLayout.preferredContentSize)
+            : frame
+        super.init(frame: initialFrame)
         isUserInteractionEnabled = false
         backgroundColor = .clear
+        PiPDictationLayout.applyPreferredSize(to: self)
     }
 
     override var intrinsicContentSize: CGSize {
@@ -449,15 +547,28 @@ final class PiPSourceUIView: UIView {
 }
 
 struct PiPSourceViewHost: UIViewRepresentable {
+    static var preferredContentSize: CGSize {
+        PiPSourceUIView.preferredContentSize
+    }
+
     @Environment(AppState.self) private var state
 
     func makeUIView(context _: Context) -> PiPSourceUIView {
-        let view = PiPSourceUIView()
+        let view = PiPSourceUIView(frame: CGRect(origin: .zero, size: Self.preferredContentSize))
         state.attachPiPSourceView(view)
         return view
     }
 
     func updateUIView(_ uiView: PiPSourceUIView, context _: Context) {
+        PiPDictationLayout.applyPreferredSize(to: uiView)
         state.attachPiPSourceView(uiView)
+    }
+
+    func sizeThatFits(
+        _ proposal: ProposedViewSize,
+        uiView _: PiPSourceUIView,
+        context _: Context
+    ) -> CGSize? {
+        Self.preferredContentSize
     }
 }
