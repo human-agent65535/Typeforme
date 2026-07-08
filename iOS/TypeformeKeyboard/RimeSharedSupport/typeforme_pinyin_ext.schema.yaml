@@ -4,7 +4,7 @@
 schema:
   schema_id: typeforme_pinyin_ext
   name: Typeforme 拼音扩展
-  version: '0.4'
+  version: '0.5'
   author:
     - Typeforme
   description: |
@@ -55,6 +55,9 @@ speller:
     - erase/^m$/
     - erase/^n$/
     - erase/^ng$/
+    # The bundled dictionaries encode nüe/lüe as nve/lve; accept the common
+    # keyboard spelling nue/lue without letting bare nu/lu imply nü/lü.
+    - derive/^([nl])ve$/$1ue/
     - abbrev/^([a-z]).+$/$1/
     - abbrev/^([zcs]h).+$/$1/
 
