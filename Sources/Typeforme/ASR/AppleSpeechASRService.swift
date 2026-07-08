@@ -36,7 +36,16 @@ struct AppleSpeechASRService: ASRService {
             request.addsPunctuation = AppSettings.punctuationPreference != .spaces
         }
 
-        let text = try await Self.runRecognition(recognizer: recognizer, request: request)
+        let text: String
+        do {
+            text = try await Self.runRecognition(recognizer: recognizer, request: request)
+            AppleSpeechAvailability.recordRecognitionSuccess()
+        } catch {
+            if let classified = AppleSpeechAvailability.recordRecognitionError(error) {
+                throw classified
+            }
+            throw error
+        }
         let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleaned.isEmpty else { throw ASRAudioSupportError.emptyTranscript }
         return cleaned

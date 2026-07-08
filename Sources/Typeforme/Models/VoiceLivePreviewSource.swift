@@ -69,7 +69,9 @@ enum VoiceLivePreviewSource: String, CaseIterable, Identifiable {
         if sources.contains(.nvidiaNemotron) {
             options.append(.nvidiaNemotron)
         }
-        options.append(.appleSpeech)
+        if sources.contains(.appleSpeech) {
+            options.append(.appleSpeech)
+        }
         return options
     }
 

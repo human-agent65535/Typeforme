@@ -274,12 +274,14 @@ extension VoiceLivePreviewSource {
 struct BridgeMacSettingsPayload: Codable, Equatable {
     var enabledRecognitionSources: [String]
     var recognitionSourceOptions: [BridgeSettingOption]
+    var sourceAvailabilityByRecognitionSource: [String: BridgeSourceAvailability]
     var asrModelIDsByRecognitionSource: [String: String]
     var asrModelOptionsByRecognitionSource: [String: [BridgeSettingOption]]
     var languageIDs: [String]
     var supportedLanguages: [BridgeLanguageOption]
     var supportedLanguagesByRecognitionSource: [String: [BridgeLanguageOption]]
     var asrTimeoutSec: Double
+    var fastASRSource: String
     var correctionBackend: String
     var correctionBackendOptions: [BridgeSettingOption]
     var correctionTimeoutMs: Int
@@ -305,6 +307,28 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
 
     func isRecognitionSourceEnabled(_ source: RecognitionSource) -> Bool {
         enabledSources.contains(source)
+    }
+
+    var fastRecognitionSource: RecognitionSource {
+        RecognitionSource(rawValue: fastASRSource.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) ?? .qwen
+    }
+
+    var fastASRReadiness: BridgeSourceAvailability {
+        let source = fastRecognitionSource
+        guard isRecognitionSourceEnabled(source) else {
+            return BridgeSourceAvailability(
+                canEnable: false,
+                ready: false,
+                status: "source_disabled",
+                reason: "\(source.displayName) is not enabled."
+            )
+        }
+        return sourceAvailability(for: source) ?? BridgeSourceAvailability(
+            canEnable: false,
+            ready: false,
+            status: "unknown",
+            reason: "\(source.displayName) readiness is unknown."
+        )
     }
 
     var supportsServerASRPreview: Bool {
@@ -342,6 +366,7 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
             asrModelIDsByRecognitionSource: asrModelIDsByRecognitionSource,
             languageIDs: languageIDs,
             asrTimeoutSec: asrTimeoutSec,
+            fastASRSource: fastASRSource,
             correctionBackend: correctionBackend,
             correctionTimeoutMs: correctionTimeoutMs,
             correctionColdTimeoutMs: correctionColdTimeoutMs,
@@ -359,12 +384,14 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
     enum CodingKeys: String, CodingKey {
         case enabledRecognitionSources = "enabled_recognition_sources"
         case recognitionSourceOptions = "recognition_source_options"
+        case sourceAvailabilityByRecognitionSource = "source_availability_by_recognition_source"
         case asrModelIDsByRecognitionSource = "asr_model_ids_by_recognition_source"
         case asrModelOptionsByRecognitionSource = "asr_model_options_by_recognition_source"
         case languageIDs = "language_ids"
         case supportedLanguages = "supported_languages"
         case supportedLanguagesByRecognitionSource = "supported_languages_by_recognition_source"
         case asrTimeoutSec = "asr_timeout_sec"
+        case fastASRSource = "fast_asr_source"
         case correctionBackend = "correction_backend"
         case correctionBackendOptions = "correction_backend_options"
         case correctionTimeoutMs = "correction_timeout_ms"
@@ -416,12 +443,14 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
     init(
         enabledRecognitionSources: [String],
         recognitionSourceOptions: [BridgeSettingOption],
+        sourceAvailabilityByRecognitionSource: [String: BridgeSourceAvailability],
         asrModelIDsByRecognitionSource: [String: String] = [:],
         asrModelOptionsByRecognitionSource: [String: [BridgeSettingOption]] = [:],
         languageIDs: [String],
         supportedLanguages: [BridgeLanguageOption],
         supportedLanguagesByRecognitionSource: [String: [BridgeLanguageOption]],
         asrTimeoutSec: Double = 40,
+        fastASRSource: String,
         correctionBackend: String,
         correctionBackendOptions: [BridgeSettingOption],
         correctionTimeoutMs: Int = 1500,
@@ -439,12 +468,14 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
     ) {
         self.enabledRecognitionSources = enabledRecognitionSources
         self.recognitionSourceOptions = recognitionSourceOptions
+        self.sourceAvailabilityByRecognitionSource = sourceAvailabilityByRecognitionSource
         self.asrModelIDsByRecognitionSource = asrModelIDsByRecognitionSource
         self.asrModelOptionsByRecognitionSource = asrModelOptionsByRecognitionSource
         self.languageIDs = languageIDs
         self.supportedLanguages = supportedLanguages
         self.supportedLanguagesByRecognitionSource = supportedLanguagesByRecognitionSource
         self.asrTimeoutSec = asrTimeoutSec
+        self.fastASRSource = fastASRSource
         self.correctionBackend = correctionBackend
         self.correctionBackendOptions = correctionBackendOptions
         self.correctionTimeoutMs = Self.clampedCorrectionTimeoutMs(correctionTimeoutMs)
@@ -466,6 +497,10 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.enabledRecognitionSources = try container.decode([String].self, forKey: .enabledRecognitionSources)
         self.recognitionSourceOptions = try container.decode([BridgeSettingOption].self, forKey: .recognitionSourceOptions)
+        self.sourceAvailabilityByRecognitionSource = try container.decode(
+            [String: BridgeSourceAvailability].self,
+            forKey: .sourceAvailabilityByRecognitionSource
+        )
         self.asrModelIDsByRecognitionSource = try container.decode(
             [String: String].self,
             forKey: .asrModelIDsByRecognitionSource
@@ -478,6 +513,7 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
         self.supportedLanguagesByRecognitionSource = try container.decode([String: [BridgeLanguageOption]].self, forKey: .supportedLanguagesByRecognitionSource)
         self.languageIDs = try container.decode([String].self, forKey: .languageIDs)
         self.asrTimeoutSec = try container.decode(Double.self, forKey: .asrTimeoutSec)
+        self.fastASRSource = try container.decode(String.self, forKey: .fastASRSource)
         self.correctionBackend = try container.decode(String.self, forKey: .correctionBackend)
         self.correctionBackendOptions = try container.decode([BridgeSettingOption].self, forKey: .correctionBackendOptions)
         self.correctionTimeoutMs = try container.decode(Int.self, forKey: .correctionTimeoutMs)
@@ -498,9 +534,7 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
     }
 
     mutating func normalize() {
-        enabledRecognitionSources = normalizedServerRecognitionSources(
-            RecognitionSource.recognizedSources(enabledRecognitionSources)
-        ).map(\.rawValue)
+        enabledRecognitionSources = RecognitionSource.recognizedSources(enabledRecognitionSources).map(\.rawValue)
         asrModelIDsByRecognitionSource = BridgeSettingsNormalization.normalizedASRModelIDs(
             currentModelIDs: asrModelIDsByRecognitionSource,
             incomingModelIDs: asrModelIDsByRecognitionSource,
@@ -508,6 +542,7 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
             defaultID: { sourceID in asrModelOptionsByRecognitionSource[sourceID]?.first?.id ?? "" }
         )
         asrTimeoutSec = Self.clampedASRTimeoutSec(asrTimeoutSec)
+        fastASRSource = normalizedFastASRSource(rawValue: fastASRSource).rawValue
         languageIDs = ASRLanguageSelection.validatedIDs(languageIDs, supportedOptions: supportedLanguageOptionsForEnabledSources())
         correctionTimeoutMs = Self.clampedCorrectionTimeoutMs(correctionTimeoutMs)
         correctionColdTimeoutMs = Self.clampedCorrectionColdTimeoutMs(correctionColdTimeoutMs)
@@ -540,7 +575,7 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
             supportedLanguagesByRecognitionSource[source.rawValue] ?? []
         }
         let options = Self.orderedUniqueLanguageOptions(sourceOptions)
-        return BridgeLanguageOption.asASROptions(options.isEmpty ? supportedLanguages : options)
+        return BridgeLanguageOption.asASROptions(options)
     }
 
     private static func orderedUniqueLanguageOptions(_ options: [BridgeLanguageOption]) -> [BridgeLanguageOption] {
@@ -556,7 +591,6 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
     }
 
     mutating func setRecognitionSource(_ source: RecognitionSource, enabled: Bool) {
-        guard source != .appleSpeech else { return }
         var sources = enabledSources
         if enabled {
             if !sources.contains(source) {
@@ -566,13 +600,16 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
             sources.removeAll { $0 == source }
         }
         let resolvedSources = RecognitionSource.recognizedSources(sources.map(\.rawValue))
-        guard !resolvedSources.isEmpty else { return }
         enabledRecognitionSources = resolvedSources.map(\.rawValue)
         normalize()
     }
 
-    private func normalizedServerRecognitionSources(_ sources: [RecognitionSource]) -> [RecognitionSource] {
-        RecognitionSource.recognizedSources((sources + [.appleSpeech]).map(\.rawValue))
+    func sourceAvailability(for source: RecognitionSource) -> BridgeSourceAvailability? {
+        sourceAvailabilityByRecognitionSource[source.rawValue]
+    }
+
+    private func normalizedFastASRSource(rawValue: String) -> RecognitionSource {
+        RecognitionSource(rawValue: rawValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) ?? .qwen
     }
 
     private static func rimeUserPhrases(from entries: [DictionaryEntry]) -> [String] {

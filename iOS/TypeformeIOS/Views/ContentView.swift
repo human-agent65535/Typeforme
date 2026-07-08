@@ -1670,7 +1670,17 @@ private struct LivePreviewSettingsSection: View {
 
     private var effectivePreviewSource: KeyboardLivePreviewSource? {
         if state.config.correctionMode == .fast {
-            return state.macSettings?.isRecognitionSourceEnabled(.qwen) == true ? .qwen : .appleSpeech
+            guard let macSettings = state.macSettings,
+                  macSettings.fastASRReadiness.ready
+            else { return nil }
+            switch macSettings.fastRecognitionSource {
+            case .appleSpeech:
+                return .appleSpeech
+            case .qwen:
+                return .qwen
+            case .nvidiaNemotron:
+                return .nvidiaNemotron
+            }
         }
         if sourceOptions.contains(state.keyboardLivePreviewSource) {
             return state.keyboardLivePreviewSource
@@ -2266,7 +2276,26 @@ private struct MacSettingsView: View {
                 } header: {
                     Text("Default Mode")
                 } footer: {
-                    Text("Applies to this iPhone and the Typeforme keyboard. Fast skips refine and uses Qwen3-ASR when it is enabled and ready, otherwise Apple Speech.")
+                    Text("Applies to this iPhone and the Typeforme keyboard. Fast skips refine and uses the selected Fast ASR source only.")
+                }
+
+                Section {
+                    Picker("Fast ASR Source", selection: fastASRSourceBinding) {
+                        ForEach(visibleRecognitionSourceOptions) { option in
+                            if let source = RecognitionSource(rawValue: option.id) {
+                                Text(option.displayName).tag(source.rawValue)
+                                    .disabled(!isFastASRSourceSelectable(source))
+                            }
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    if let issue = fastASRSourceIssue {
+                        Text(issue)
+                            .font(.footnote)
+                            .foregroundStyle(.orange)
+                    }
+                } header: {
+                    Text("Fast ASR")
                 }
 
                 LivePreviewSettingsSection()
@@ -2281,8 +2310,13 @@ private struct MacSettingsView: View {
                                 )
                             }
                             .disabled(
-                                source == .appleSpeech
+                                isRecognitionSourceToggleDisabled(source)
                             )
+                            if let reason = recognitionSourceDisabledReason(source) {
+                                Text(reason)
+                                    .font(.footnote)
+                                    .foregroundStyle(.secondary)
+                            }
                         }
                     }
 
@@ -2320,7 +2354,7 @@ private struct MacSettingsView: View {
                 } header: {
                     Text("Mac ASR")
                 } footer: {
-                    Text("Affects the paired Mac Bridge. Apple Speech is always available on the Mac.")
+                    Text("Affects the paired Mac Bridge. Each ASR source is optional; dictation is unavailable when none are enabled.")
                 }
 
                 Section {
@@ -2530,14 +2564,52 @@ private struct MacSettingsView: View {
 
     private func recognitionSourceBinding(_ source: RecognitionSource) -> Binding<Bool> {
         Binding {
-            if source == .appleSpeech { return true }
             return draft?.isRecognitionSourceEnabled(source) ?? false
         } set: { value in
-            guard source != .appleSpeech else { return }
+            if value, isRecognitionSourceToggleDisabled(source) { return }
             updateDraft(normalize: true) { draft in
                 draft.setRecognitionSource(source, enabled: value)
             }
         }
+    }
+
+    private var fastASRSourceBinding: Binding<String> {
+        Binding {
+            draft?.fastASRSource ?? RecognitionSource.qwen.rawValue
+        } set: { value in
+            updateDraft(normalize: true) { draft in
+                draft.fastASRSource = value
+            }
+        }
+    }
+
+    private var fastASRSourceIssue: String? {
+        guard let draft else { return nil }
+        let readiness = draft.fastASRReadiness
+        return readiness.ready ? nil : readiness.reason
+    }
+
+    private func isFastASRSourceSelectable(_ source: RecognitionSource) -> Bool {
+        guard let draft else { return false }
+        guard draft.isRecognitionSourceEnabled(source) else { return false }
+        return draft.sourceAvailability(for: source)?.ready == true
+    }
+
+    private func isRecognitionSourceToggleDisabled(_ source: RecognitionSource) -> Bool {
+        guard source == .appleSpeech,
+              let draft,
+              !draft.isRecognitionSourceEnabled(.appleSpeech)
+        else { return false }
+        return draft.sourceAvailability(for: .appleSpeech)?.canEnable != true
+    }
+
+    private func recognitionSourceDisabledReason(_ source: RecognitionSource) -> String? {
+        guard source == .appleSpeech,
+              let draft,
+              !draft.isRecognitionSourceEnabled(.appleSpeech),
+              draft.sourceAvailability(for: .appleSpeech)?.canEnable != true
+        else { return nil }
+        return draft.sourceAvailability(for: .appleSpeech)?.reason
     }
 
     private var defaultCorrectionModeBinding: Binding<CorrectionMode> {

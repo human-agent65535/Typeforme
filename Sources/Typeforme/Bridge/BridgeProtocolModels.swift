@@ -155,7 +155,28 @@ struct BridgeLanguageOption: Codable, Sendable, Identifiable, Hashable, BridgeLa
             guard !id.isEmpty, !name.isEmpty else { return nil }
             return ASRLanguageOption(id: id, displayName: name, languageCode: id)
         }
-        return resolved.isEmpty ? ASRLanguageSelection.all : resolved
+        return resolved
+    }
+}
+
+struct BridgeSourceAvailability: Codable, Sendable, Hashable {
+    let canEnable: Bool
+    let ready: Bool
+    let status: String
+    let reason: String
+
+    enum CodingKeys: String, CodingKey {
+        case canEnable = "can_enable"
+        case ready
+        case status
+        case reason
+    }
+
+    init(canEnable: Bool, ready: Bool, status: String, reason: String) {
+        self.canEnable = canEnable
+        self.ready = ready
+        self.status = status
+        self.reason = reason
     }
 }
 

@@ -32,7 +32,7 @@ struct BridgeWireModelsTests {
         #expect(RecognitionSource.qwen.displayName == "Qwen3-ASR")
         #expect(RecognitionSource.nvidiaNemotron.displayName == "NVIDIA Nemotron 3.5 ASR")
         #expect(RecognitionSource.appleSpeech.displayName == "Apple Speech")
-        #expect(RecognitionSource.defaultEnabled == [.appleSpeech])
+        #expect(RecognitionSource.defaultEnabled == [])
         #expect(
             RecognitionSource.normalizedSources([
                 " NVIDIA-NEMOTRON-ASR ",
@@ -43,7 +43,7 @@ struct BridgeWireModelsTests {
         )
         #expect(RecognitionSource.recognizedSources([]) == [])
         #expect(RecognitionSource.recognizedSources(["unknown"]) == [])
-        #expect(RecognitionSource.normalizedSources([]) == [.appleSpeech])
+        #expect(RecognitionSource.normalizedSources([]) == [])
         #expect(RecognitionSource.rawValue(for: [.qwen, .appleSpeech]) == "qwen3-asr-llama,apple-speech")
         #expect(RecognitionSource.qwen.hasModelConfiguration)
         #expect(!RecognitionSource.appleSpeech.hasModelConfiguration)
@@ -239,6 +239,7 @@ struct BridgeWireModelsTests {
             asrModelIDsByRecognitionSource: [RecognitionSource.qwen.rawValue: QwenASRModelCatalog.defaultID],
             languageIDs: ["en-US"],
             asrTimeoutSec: 40,
+            fastASRSource: RecognitionSource.qwen.rawValue,
             correctionBackend: CorrectionBackendKind.qwen35_2B.rawValue,
             correctionTimeoutMs: 1500,
             correctionColdTimeoutMs: 8000,
@@ -260,6 +261,7 @@ struct BridgeWireModelsTests {
         #expect((object["asr_model_ids_by_recognition_source"] as? [String: String])?[RecognitionSource.qwen.rawValue] == QwenASRModelCatalog.defaultID)
         #expect(object["language_ids"] as? [String] == ["en-US"])
         #expect(object["asr_timeout_sec"] as? Double == 40)
+        #expect(object["fast_asr_source"] as? String == RecognitionSource.qwen.rawValue)
         #expect(object["correction_backend"] as? String == CorrectionBackendKind.qwen35_2B.rawValue)
         #expect(object["correction_timeout_ms"] as? Int == 1500)
         #expect(object["correction_cold_timeout_ms"] as? Int == 8000)
@@ -286,21 +288,24 @@ struct BridgeWireModelsTests {
         #expect(request.userDictionary == nil)
     }
 
-    @Test func bridgeSettingsPayloadNormalizesEmptySourcesToAppleSpeech() {
+    @Test func bridgeSettingsPayloadKeepsEmptySourcesDisabled() {
         var payload = BridgeSettingsPayload.current()
         payload.enabledRecognitionSources = []
         payload.normalize()
 
-        #expect(payload.enabledSources == [.appleSpeech])
+        #expect(payload.enabledSources == [])
+        #expect(payload.languageIDs == [])
     }
 
-    @Test func bridgeSettingsPayloadKeepsFastWithAppleSpeechOnly() {
+    @Test func bridgeSettingsPayloadKeepsFastWithExplicitAppleSpeechSource() {
         var payload = BridgeSettingsPayload.current()
         payload.enabledRecognitionSources = [RecognitionSource.appleSpeech.rawValue]
+        payload.fastASRSource = RecognitionSource.appleSpeech.rawValue
         payload.correctionMode = CorrectionMode.fast.rawValue
         payload.normalize()
 
         #expect(payload.enabledSources == [.appleSpeech])
+        #expect(payload.fastASRSource == RecognitionSource.appleSpeech.rawValue)
         #expect(payload.correctionMode == CorrectionMode.fast.rawValue)
     }
 
@@ -335,6 +340,7 @@ struct BridgeWireModelsTests {
             asrModelIDsByRecognitionSource: [:],
             languageIDs: ["en-US"],
             asrTimeoutSec: 40,
+            fastASRSource: RecognitionSource.qwen.rawValue,
             correctionBackend: CorrectionBackendKind.qwen35_2B.rawValue,
             correctionTimeoutMs: 1500,
             correctionColdTimeoutMs: 8000,

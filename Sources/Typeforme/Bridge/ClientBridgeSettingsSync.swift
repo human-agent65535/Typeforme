@@ -31,6 +31,7 @@ final class ClientBridgeSettingsSync {
         let sources = settings.enabledSources
         AppSettings.setClientBridgeEnabledRecognitionSources(sources)
         AppSettings.setClientSettingsRevision(settings.settingsRevision)
+        UserDefaults.standard.set(settings.fastASRSource, forKey: AppSettings.Keys.fastASRSource)
 
         let supported = settings.supportedLanguageOptionsForEnabledSources()
         let validated = ASRLanguageSelection.validatedIDs(AppSettings.clientLanguageIDs, supportedOptions: supported)

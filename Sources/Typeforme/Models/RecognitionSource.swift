@@ -44,7 +44,7 @@ enum AppleSpeechLanguageSupport {
             return ASRLanguageSelection.all.filter { supported.contains($0.id) }
         }
         refreshInBackgroundIfNeeded()
-        return ASRLanguageSelection.all
+        return []
     }
 
     static func effectiveLanguageIDs(_ languageIDs: [String]) -> [String] {
@@ -55,6 +55,10 @@ enum AppleSpeechLanguageSupport {
         return await Task.detached(priority: .utility) {
             resolveBestSupportedLocaleIdentifier(for: languageIDs)
         }.value
+    }
+
+    static func bestSupportedLocaleIdentifierSync(for languageIDs: [String]) -> (languageID: String, localeID: String)? {
+        resolveBestSupportedLocaleIdentifier(for: languageIDs)
     }
 
     private static func resolveBestSupportedLocaleIdentifier(for languageIDs: [String]) -> (languageID: String, localeID: String)? {
@@ -141,11 +145,28 @@ enum AppleSpeechLanguageSupport {
     private static func resolveBestLocaleIdentifier(for option: ASRLanguageOption) -> String? {
         for localeID in candidateLocaleIdentifiers(for: option) {
             guard let recognizer = SFSpeechRecognizer(locale: Locale(identifier: localeID)),
+                  recognizerMatchesRequestedLanguage(recognizer, option: option, localeID: localeID),
                   recognizer.supportsOnDeviceRecognition
             else { continue }
             return localeID
         }
         return nil
+    }
+
+    private static func recognizerMatchesRequestedLanguage(
+        _ recognizer: SFSpeechRecognizer,
+        option: ASRLanguageOption,
+        localeID: String
+    ) -> Bool {
+        let actual = normalizedLocaleIdentifier(recognizer.locale.identifier)
+        let requested = normalizedLocaleIdentifier(localeID)
+        if actual == requested { return true }
+        let exactIDs = [option.id] + (preferredLocaleIdentifiersByLanguageID[option.id] ?? [])
+        if exactIDs.contains(where: { normalizedLocaleIdentifier($0) == actual }) {
+            return true
+        }
+        guard !option.id.contains("-") else { return false }
+        return localeLanguageCode(recognizer.locale) == option.languageCode
     }
 
     private static func candidateLocaleIdentifiers(for option: ASRLanguageOption) -> [String] {

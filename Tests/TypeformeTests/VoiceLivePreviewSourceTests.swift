@@ -80,26 +80,26 @@ struct VoiceLivePreviewSourceTests {
         ))
     }
 
-    @Test func clientPreviewRunsAppleSpeechLocallyAndStreamsRemoteServerSources() {
+    @Test func clientPreviewUsesRemoteServerSourcesOnly() {
         #expect(
             VoiceLivePreviewSource.clientOptions(
                 forRemoteRecognitionSources: [],
                 correctionMode: .polishPlus
-            ) == [.off, .appleSpeech]
+            ) == [.off]
         )
         #expect(
             VoiceLivePreviewSource.clientOptions(
                 forRemoteRecognitionSources: [.qwen, .nvidiaNemotron],
                 correctionMode: .polishPlus
-            ) == [.off, .qwen, .nvidiaNemotron, .appleSpeech]
+            ) == [.off, .qwen, .nvidiaNemotron]
         )
         #expect(
             VoiceLivePreviewSource.clientOptions(
                 forRemoteRecognitionSources: [.nvidiaNemotron],
                 correctionMode: .fast
-            ) == [.off, .nvidiaNemotron, .appleSpeech]
+            ) == [.off, .nvidiaNemotron]
         )
-        #expect(VoiceLivePreviewSource.appleSpeech.isClientEnabled(
+        #expect(!VoiceLivePreviewSource.appleSpeech.isClientEnabled(
             forRemoteRecognitionSources: [],
             correctionMode: .polishPlus
         ))

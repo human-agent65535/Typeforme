@@ -54,7 +54,7 @@ enum RecognitionSource: String, CaseIterable, Codable, Identifiable, Sendable {
         }
     }
 
-    static let defaultEnabled: [RecognitionSource] = [.appleSpeech]
+    static let defaultEnabled: [RecognitionSource] = []
 
     static func recognizedSources(_ raw: [String]) -> [RecognitionSource] {
         var seen = Set<RecognitionSource>()
@@ -65,8 +65,7 @@ enum RecognitionSource: String, CaseIterable, Codable, Identifiable, Sendable {
     }
 
     static func normalizedSources(_ raw: [String]) -> [RecognitionSource] {
-        let result = recognizedSources(raw)
-        return result.isEmpty ? defaultEnabled : result
+        recognizedSources(raw)
     }
 
     static func rawValue(for sources: [RecognitionSource]) -> String {
@@ -142,6 +141,7 @@ struct BridgeSettingsEditableSnapshot: Codable, Equatable, Sendable {
     var asrModelIDsByRecognitionSource: [String: String]
     var languageIDs: [String]
     var asrTimeoutSec: Double
+    var fastASRSource: String
     var correctionBackend: String
     var correctionTimeoutMs: Int
     var correctionColdTimeoutMs: Int
@@ -159,6 +159,7 @@ struct BridgeSettingsEditableSnapshot: Codable, Equatable, Sendable {
         case asrModelIDsByRecognitionSource = "asr_model_ids_by_recognition_source"
         case languageIDs = "language_ids"
         case asrTimeoutSec = "asr_timeout_sec"
+        case fastASRSource = "fast_asr_source"
         case correctionBackend = "correction_backend"
         case correctionTimeoutMs = "correction_timeout_ms"
         case correctionColdTimeoutMs = "correction_cold_timeout_ms"
@@ -177,6 +178,7 @@ struct BridgeSettingsEditableSnapshot: Codable, Equatable, Sendable {
         asrModelIDsByRecognitionSource: [String: String],
         languageIDs: [String],
         asrTimeoutSec: Double,
+        fastASRSource: String,
         correctionBackend: String,
         correctionTimeoutMs: Int,
         correctionColdTimeoutMs: Int,
@@ -193,6 +195,7 @@ struct BridgeSettingsEditableSnapshot: Codable, Equatable, Sendable {
         self.asrModelIDsByRecognitionSource = asrModelIDsByRecognitionSource
         self.languageIDs = languageIDs
         self.asrTimeoutSec = asrTimeoutSec
+        self.fastASRSource = fastASRSource
         self.correctionBackend = correctionBackend
         self.correctionTimeoutMs = correctionTimeoutMs
         self.correctionColdTimeoutMs = correctionColdTimeoutMs
@@ -212,6 +215,7 @@ struct BridgeSettingsUpdateRequest: Codable, Sendable {
     var asrModelIDsByRecognitionSource: [String: String]?
     var languageIDs: [String]?
     var asrTimeoutSec: Double?
+    var fastASRSource: String?
     var correctionBackend: String?
     var correctionTimeoutMs: Int?
     var correctionColdTimeoutMs: Int?
@@ -229,6 +233,7 @@ struct BridgeSettingsUpdateRequest: Codable, Sendable {
         case asrModelIDsByRecognitionSource = "asr_model_ids_by_recognition_source"
         case languageIDs = "language_ids"
         case asrTimeoutSec = "asr_timeout_sec"
+        case fastASRSource = "fast_asr_source"
         case correctionBackend = "correction_backend"
         case correctionTimeoutMs = "correction_timeout_ms"
         case correctionColdTimeoutMs = "correction_cold_timeout_ms"
@@ -247,6 +252,7 @@ struct BridgeSettingsUpdateRequest: Codable, Sendable {
         asrModelIDsByRecognitionSource: [String: String]? = nil,
         languageIDs: [String]? = nil,
         asrTimeoutSec: Double? = nil,
+        fastASRSource: String? = nil,
         correctionBackend: String? = nil,
         correctionTimeoutMs: Int? = nil,
         correctionColdTimeoutMs: Int? = nil,
@@ -263,6 +269,7 @@ struct BridgeSettingsUpdateRequest: Codable, Sendable {
         self.asrModelIDsByRecognitionSource = asrModelIDsByRecognitionSource
         self.languageIDs = languageIDs
         self.asrTimeoutSec = asrTimeoutSec
+        self.fastASRSource = fastASRSource
         self.correctionBackend = correctionBackend
         self.correctionTimeoutMs = correctionTimeoutMs
         self.correctionColdTimeoutMs = correctionColdTimeoutMs
@@ -282,6 +289,7 @@ struct BridgeSettingsUpdateRequest: Codable, Sendable {
             asrModelIDsByRecognitionSource: editableSnapshot.asrModelIDsByRecognitionSource,
             languageIDs: editableSnapshot.languageIDs,
             asrTimeoutSec: editableSnapshot.asrTimeoutSec,
+            fastASRSource: editableSnapshot.fastASRSource,
             correctionBackend: editableSnapshot.correctionBackend,
             correctionTimeoutMs: editableSnapshot.correctionTimeoutMs,
             correctionColdTimeoutMs: editableSnapshot.correctionColdTimeoutMs,

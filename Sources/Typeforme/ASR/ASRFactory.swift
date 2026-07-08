@@ -402,7 +402,10 @@ private struct MultiSourceASRService: ASRService {
         languageIDs: [String],
         progress: ASRTranscriptionProgressHandler?
     ) async throws -> ASRTranscription {
-        let enabledSources = sources.isEmpty ? RecognitionSource.defaultEnabled : sources
+        let enabledSources = sources
+        guard !enabledSources.isEmpty else {
+            throw ASRAudioSupportError.httpStatus(503, "No ASR source enabled")
+        }
         var reusableSeedsBySource: [RecognitionSource: ASRTranscriptionSeed] = [:]
         for seed in reusableSeeds where seed.isUsable {
             reusableSeedsBySource[seed.source] = seed

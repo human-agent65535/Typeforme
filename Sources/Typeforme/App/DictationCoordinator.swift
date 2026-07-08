@@ -117,12 +117,15 @@ final class DictationCoordinator: ObservableObject {
         captureFrontmost()
         activeTextEditIntent = intent
         activeFastASRRoute = nil
-        if AppSettings.processingMode == .server, AppSettings.correctionMode == .fast {
-            activeFastASRRoute = FastASRRoute.resolve(languageIDs: AppSettings.asrLanguageIDs)
-        }
 
-        let livePreviewPCMHandler = await makeLivePartialPreviewPCMHandlerIfAvailable()
         do {
+            if AppSettings.processingMode == .server, AppSettings.correctionMode == .fast {
+                activeFastASRRoute = try FastASRRoute.resolve(languageIDs: AppSettings.asrLanguageIDs)
+            }
+            if AppSettings.processingMode == .server {
+                try validateCorrectionModeAvailable(AppSettings.correctionMode)
+            }
+            let livePreviewPCMHandler = await makeLivePartialPreviewPCMHandlerIfAvailable()
             let startedURL = try await recorder.start(pcmHandler: livePreviewPCMHandler)
             startInProgress = false
             guard await isActive(sessionID: sessionID, token: cancelToken) else {
@@ -876,7 +879,7 @@ final class DictationCoordinator: ObservableObject {
     private func asrService(for correctionMode: CorrectionMode) throws -> ASRService {
         let reusableSeeds = livePreviewFinalSeed.map { [$0] } ?? []
         if correctionMode == .fast {
-            let source = fastRouteForCurrentSession().source
+            let source = try fastRouteForCurrentSession().source
             return ASRFactory.shared.getInstalled(
                 source: source,
                 reusableSeed: reusableSeeds.first { $0.source == source }
@@ -889,7 +892,13 @@ final class DictationCoordinator: ObservableObject {
     }
 
     private func validateCorrectionModeAvailable(_ correctionMode: CorrectionMode) throws {
-        _ = correctionMode
+        if correctionMode == .fast {
+            _ = try fastRouteForCurrentSession()
+            return
+        }
+        guard !AppSettings.enabledRecognitionSources.isEmpty else {
+            throw ASRAudioSupportError.httpStatus(503, "No ASR source enabled")
+        }
     }
 
     private func recognitionSources(for correctionMode: CorrectionMode) throws -> [RecognitionSource] {
@@ -897,13 +906,13 @@ final class DictationCoordinator: ObservableObject {
         guard AppSettings.processingMode != .client else {
             return AppSettings.enabledRecognitionSources
         }
-        return correctionMode == .fast ? [fastRouteForCurrentSession().source] : AppSettings.enabledRecognitionSources
+        return correctionMode == .fast ? [try fastRouteForCurrentSession().source] : AppSettings.enabledRecognitionSources
     }
 
     private func transcriptionLanguageIDs(for correctionMode: CorrectionMode) throws -> [String] {
         guard AppSettings.processingMode != .client else { return AppSettings.clientLanguageIDs }
         if correctionMode == .fast {
-            return fastRouteForCurrentSession().languageIDs
+            return try fastRouteForCurrentSession().languageIDs
         }
         return ASRLanguageSelection.validatedIDs(
             AppSettings.asrLanguageIDs,
@@ -911,11 +920,11 @@ final class DictationCoordinator: ObservableObject {
         )
     }
 
-    private func fastRouteForCurrentSession() -> FastASRRoute {
+    private func fastRouteForCurrentSession() throws -> FastASRRoute {
         if let activeFastASRRoute {
             return activeFastASRRoute
         }
-        let route = FastASRRoute.resolve(languageIDs: AppSettings.asrLanguageIDs)
+        let route = try FastASRRoute.resolve(languageIDs: AppSettings.asrLanguageIDs)
         activeFastASRRoute = route
         return route
     }
@@ -936,20 +945,34 @@ final class DictationCoordinator: ObservableObject {
         if AppSettings.correctionMode == .fast, AppSettings.voiceLivePreview {
             let source: RecognitionSource = {
                 if AppSettings.processingMode == .client {
-                    return AppSettings.clientBridgeEnabledRecognitionSources.contains(.qwen) ? .qwen : .appleSpeech
+                    return AppSettings.fastASRSource
                 }
-                return fastRouteForCurrentSession().source
+                return (try? fastRouteForCurrentSession().source) ?? AppSettings.fastASRSource
             }()
             switch source {
             case .qwen:
+                guard AppSettings.processingMode == .server || AppSettings.clientBridgeEnabledRecognitionSources.contains(.qwen) else {
+                    return nil
+                }
                 if AppSettings.processingMode == .client {
                     return await makeRemoteBridgeLivePartialPreviewPCMHandlerIfAvailable(source: .qwen)
                 }
                 return makeASRLivePartialPreviewPCMHandlerIfAvailable(source: .qwen)
             case .appleSpeech:
-                return makeAppleSpeechLivePartialPreviewPCMHandlerIfAvailable(requiresEnabledRecognitionSource: false)
+                guard AppSettings.processingMode == .server || AppSettings.clientBridgeEnabledRecognitionSources.contains(.appleSpeech) else {
+                    return nil
+                }
+                return makeAppleSpeechLivePartialPreviewPCMHandlerIfAvailable(
+                    requiresEnabledRecognitionSource: AppSettings.processingMode == .server
+                )
             case .nvidiaNemotron:
-                return nil
+                guard AppSettings.processingMode == .server || AppSettings.clientBridgeEnabledRecognitionSources.contains(.nvidiaNemotron) else {
+                    return nil
+                }
+                if AppSettings.processingMode == .client {
+                    return await makeRemoteBridgeLivePartialPreviewPCMHandlerIfAvailable(source: .nvidiaNemotron)
+                }
+                return makeASRLivePartialPreviewPCMHandlerIfAvailable(source: .nvidiaNemotron)
             }
         }
         if AppSettings.processingMode == .client {
@@ -1107,7 +1130,8 @@ final class DictationCoordinator: ObservableObject {
                         source: VoiceLivePreviewSource.appleSpeech.rawValue
                     )
                 }
-                if error != nil {
+                if let error {
+                    _ = AppleSpeechAvailability.recordRecognitionError(error)
                     self.teardownLivePartialPreview(clearText: false)
                 }
             }

@@ -69,4 +69,10 @@ struct ASRLanguageSelectionTests {
             ) == ["zh-CN", "zh-TW"]
         )
     }
+
+    @Test func emptySourceSelectionDoesNotFallbackToDefaultLanguages() {
+        #expect(ASRLanguageSelection.supportedOptions(for: []).isEmpty)
+        #expect(ASRLanguageSelection.validatedIDs(["zh-CN", "en-US"], sources: []).isEmpty)
+        #expect(ASRLanguageSelection.parse("auto", sources: []).isEmpty)
+    }
 }

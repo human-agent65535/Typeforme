@@ -264,8 +264,12 @@
 
 // Dictation settings
 "Default Mode" = "Default Mode";
-"Applies to this iPhone and the Typeforme keyboard. Fast skips refine and uses Qwen3-ASR when it is enabled and ready, otherwise Apple Speech." = "Applies to this iPhone and the Typeforme keyboard. Fast skips refine and uses Qwen3-ASR when it is enabled and ready, otherwise Apple Speech.";
-"Affects the paired Mac Bridge. Apple Speech is always available on the Mac." = "Affects the paired Mac Bridge. Apple Speech is always available on the Mac.";
+"Applies to this iPhone and the Typeforme keyboard. Fast skips refine and uses the selected Fast ASR source only." = "Applies to this iPhone and the Typeforme keyboard. Fast skips refine and uses the selected Fast ASR source only.";
+"Fast ASR Source" = "Fast ASR Source";
+"Fast ASR" = "Fast ASR";
+"Affects the paired Mac Bridge. Each ASR source is optional; dictation is unavailable when none are enabled." = "Affects the paired Mac Bridge. Each ASR source is optional; dictation is unavailable when none are enabled.";
+"Each ASR source is optional; dictation is unavailable when none are enabled." = "Each ASR source is optional; dictation is unavailable when none are enabled.";
+"Fast ASR source is not ready." = "Fast ASR source is not ready.";
 "Mac ASR" = "Mac ASR";
 "Mac Refine Engine" = "Mac Refine Engine";
 "Loading dictation settings" = "Loading dictation settings";

@@ -642,8 +642,9 @@ final class AppState {
         KeyboardLivePreviewSource.allCases.filter(isKeyboardLivePreviewSourceEnabled)
     }
 
-    func isCorrectionModeAvailable(_: CorrectionMode) -> Bool {
-        true
+    func isCorrectionModeAvailable(_ mode: CorrectionMode) -> Bool {
+        guard mode == .fast else { return true }
+        return macSettings?.fastASRReadiness.ready == true
     }
 
     func isKeyboardLivePreviewSourceEnabled(_ source: KeyboardLivePreviewSource) -> Bool {
@@ -1559,6 +1560,10 @@ final class AppState {
     }
 
     func setDefaultCorrectionMode(_ mode: CorrectionMode) {
+        guard isCorrectionModeAvailable(mode) else {
+            showTransient(NSLocalizedString("Fast ASR source is not ready.", comment: "Fast mode unavailable toast"))
+            return
+        }
         applyKeyboardDefaultCorrectionMode(mode)
     }
 
@@ -3404,10 +3409,18 @@ final class AppState {
             return false
         }
         if correctionMode == .fast {
-            if macSettings?.isRecognitionSourceEnabled(.qwen) == true {
-                return startServerASRLivePreviewIfAvailable(source: .qwen, generation: generation)
+            guard let macSettings, macSettings.fastASRReadiness.ready else {
+                appLog.debug("live preview skipped: Fast ASR source unavailable")
+                return false
             }
-            return startAppleSpeechLivePreviewIfAvailable(generation: generation)
+            switch macSettings.fastRecognitionSource {
+            case .appleSpeech:
+                return startAppleSpeechLivePreviewIfAvailable(generation: generation)
+            case .qwen:
+                return startServerASRLivePreviewIfAvailable(source: .qwen, generation: generation)
+            case .nvidiaNemotron:
+                return startServerASRLivePreviewIfAvailable(source: .nvidiaNemotron, generation: generation)
+            }
         }
         guard isKeyboardLivePreviewSourceEnabled(keyboardLivePreviewSource) else {
             appLog.debug("live preview skipped: source disabled")

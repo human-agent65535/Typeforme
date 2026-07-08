@@ -264,8 +264,12 @@
 
 // 听写设置
 "Default Mode" = "默认模式";
-"Applies to this iPhone and the Typeforme keyboard. Fast skips refine and uses Qwen3-ASR when it is enabled and ready, otherwise Apple Speech." = "应用到这台 iPhone 和 Typeforme 键盘。Fast 会跳过优化；Qwen3-ASR 已启用且就绪时使用 Qwen,否则使用 Apple Speech。";
-"Affects the paired Mac Bridge. Apple Speech is always available on the Mac." = "影响配对的 Mac Bridge。Apple Speech 在 Mac 上始终可用。";
+"Applies to this iPhone and the Typeforme keyboard. Fast skips refine and uses the selected Fast ASR source only." = "应用到这台 iPhone 和 Typeforme 键盘。Fast 会跳过优化,且只使用选中的 Fast ASR 来源。";
+"Fast ASR Source" = "Fast ASR 来源";
+"Fast ASR" = "Fast ASR";
+"Affects the paired Mac Bridge. Each ASR source is optional; dictation is unavailable when none are enabled." = "影响配对的 Mac Bridge。每个 ASR 来源都是可选的；未启用任何来源时无法听写。";
+"Each ASR source is optional; dictation is unavailable when none are enabled." = "每个 ASR 来源都是可选的；未启用任何来源时无法听写。";
+"Fast ASR source is not ready." = "Fast ASR 来源未就绪。";
 "Mac ASR" = "Mac ASR";
 "Mac Refine Engine" = "Mac 优化引擎";
 "Loading dictation settings" = "正在加载听写设置";

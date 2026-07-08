@@ -167,10 +167,10 @@ enum ASRLanguageSelection {
     }
 
     static func supportedOptions(for sources: [RecognitionSource]) -> [ASRLanguageOption] {
-        let enabled = sources.isEmpty ? RecognitionSource.defaultEnabled : sources
-        let supportedIDs = Set(enabled.flatMap { $0.supportedLanguages().map(\.id) })
+        guard !sources.isEmpty else { return [] }
+        let supportedIDs = Set(sources.flatMap { $0.supportedLanguages().map(\.id) })
         let result = all.filter { supportedIDs.contains($0.id) }
-        return result.isEmpty ? qwenASRSupportedLanguages : result
+        return result
     }
 
     static func supportedOptions(for source: RecognitionSource) -> [ASRLanguageOption] {
@@ -216,7 +216,8 @@ enum ASRLanguageSelection {
     }
 
     static func validatedIDs(_ ids: [String], supportedOptions: [ASRLanguageOption]) -> [String] {
-        let options = supportedOptions.isEmpty ? all : supportedOptions
+        guard !supportedOptions.isEmpty else { return [] }
+        let options = supportedOptions
         let canonical = Set(ids.compactMap(canonicalID(for:)))
         guard !canonical.isEmpty else { return defaultIDs(for: options) }
         let selected = options.map(\.id).filter { canonical.contains($0) }
@@ -282,6 +283,7 @@ enum ASRLanguageSelection {
         Dictionary(uniqueKeysWithValues: all.map { ($0.id, $0) })
 
     private static func defaultIDs(for supportedOptions: [ASRLanguageOption]) -> [String] {
+        guard !supportedOptions.isEmpty else { return [] }
         let supported = Set(supportedOptions.map(\.id))
         let defaults = defaultIDs.filter { supported.contains($0) }
         if !defaults.isEmpty { return defaults }

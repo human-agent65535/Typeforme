@@ -23,14 +23,13 @@ struct LanguageSelectionView: View {
         livePreviewEnabled: Bool = true,
         livePreviewRecognitionMode: KeyboardLivePreviewRecognitionMode? = nil
     ) {
-        let resolvedOptions = options.isEmpty ? ASRLanguageSelection.all : options
         self._selection = selection
-        self.options = resolvedOptions
+        self.options = options
         self.livePreviewEnabled = livePreviewEnabled
         self.livePreviewRecognitionMode = livePreviewRecognitionMode
         if livePreviewRecognitionMode != nil {
             self.previewCapabilityByLanguageID = Dictionary(
-                uniqueKeysWithValues: resolvedOptions.map { option in
+                uniqueKeysWithValues: options.map { option in
                     (option.id, AppleSpeechPreviewSupport.capability(languageID: option.id))
                 }
             )

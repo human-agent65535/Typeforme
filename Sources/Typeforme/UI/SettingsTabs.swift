@@ -505,7 +505,12 @@ struct ClientServerSettingsView: View {
                                 )
                             }
                             .toggleStyle(.switch)
-                            .disabled(source == .appleSpeech)
+                            .disabled(serverRecognitionSourceToggleDisabled(source, current: current))
+                            if let reason = serverRecognitionSourceDisabledReason(source, current: current) {
+                                Text(reason)
+                                    .font(.footnote)
+                                    .foregroundStyle(.secondary)
+                            }
                         }
                     }
 
@@ -560,6 +565,21 @@ struct ClientServerSettingsView: View {
                         }
                     }
                     .pickerStyle(.menu)
+
+                    Picker("Fast source", selection: serverFastASRSourceBinding) {
+                        ForEach(visibleRecognitionSourceOptions(for: current)) { option in
+                            if let source = RecognitionSource(rawValue: option.id) {
+                                Text(option.displayName).tag(source.rawValue)
+                                    .disabled(!isServerFastSourceReady(source))
+                            }
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    if let issue = serverFastSourceIssue {
+                        Text(issue)
+                            .font(.footnote)
+                            .foregroundStyle(.orange)
+                    }
 
                     Picker("Numbers", selection: numberOutputPreferenceBinding) {
                         ForEach(NumberOutputPreference.allCases) { preference in
@@ -656,8 +676,31 @@ struct ClientServerSettingsView: View {
     }
 
     private func isServerCorrectionModeEnabled(_ mode: CorrectionMode) -> Bool {
-        _ = draft
-        return mode.isAvailable(enabledRecognitionSources: [])
+        guard mode == .fast else { return true }
+        return draft?.fastASRReadiness.ready == true
+    }
+
+    private var serverFastASRSourceBinding: Binding<String> {
+        Binding {
+            draft?.fastASRSource ?? RecognitionSource.qwen.rawValue
+        } set: { value in
+            guard let source = RecognitionSource(rawValue: value),
+                  isServerFastSourceReady(source)
+            else { return }
+            draft?.fastASRSource = source.rawValue
+            normalizeDraft()
+        }
+    }
+
+    private func isServerFastSourceReady(_ source: RecognitionSource) -> Bool {
+        guard let draft, draft.isRecognitionSourceEnabled(source) else { return false }
+        return draft.sourceAvailability(for: source)?.ready == true
+    }
+
+    private var serverFastSourceIssue: String? {
+        guard let draft else { return nil }
+        let readiness = draft.fastASRReadiness
+        return readiness.ready ? nil : readiness.reason
     }
 
     private func visibleRecognitionSourceOptions(for settings: BridgeSettingsPayload) -> [BridgeSettingOption] {
@@ -691,11 +734,11 @@ struct ClientServerSettingsView: View {
     }
 
     private var selectedServerLanguageIDs: [String] {
-        draft?.languageIDs ?? ASRLanguageSelection.defaultIDs
+        draft?.languageIDs ?? []
     }
 
     private var serverSupportedLanguageOptions: [ASRLanguageOption] {
-        guard let draft else { return ASRLanguageSelection.all }
+        guard let draft else { return [] }
         return draft.supportedLanguageOptionsForEnabledSources()
     }
 
@@ -735,7 +778,10 @@ struct ClientServerSettingsView: View {
     }
 
     private var selectedLanguageSummary: String {
-        "Server default: " + ASRLanguageSelection
+        guard !serverSupportedLanguageOptions.isEmpty else {
+            return "No ASR source enabled."
+        }
+        return "Server default: " + ASRLanguageSelection
             .displayNames(for: selectedServerLanguageIDs, supportedOptions: serverSupportedLanguageOptions)
             .joined(separator: ", ")
     }
@@ -884,13 +930,34 @@ struct ClientServerSettingsView: View {
 
     private func serverRecognitionSourceBinding(_ source: RecognitionSource) -> Binding<Bool> {
         Binding {
-            if source == .appleSpeech { return true }
             return draft?.isRecognitionSourceEnabled(source) ?? false
         } set: { enabled in
-            guard source != .appleSpeech else { return }
+            if let current = draft,
+               enabled,
+               serverRecognitionSourceToggleDisabled(source, current: current) {
+                return
+            }
             draft?.setRecognitionSource(source, enabled: enabled)
             normalizeDraft()
         }
+    }
+
+    private func serverRecognitionSourceToggleDisabled(
+        _ source: RecognitionSource,
+        current: BridgeSettingsPayload
+    ) -> Bool {
+        guard source == .appleSpeech,
+              !current.isRecognitionSourceEnabled(.appleSpeech)
+        else { return false }
+        return current.sourceAvailability(for: .appleSpeech)?.canEnable != true
+    }
+
+    private func serverRecognitionSourceDisabledReason(
+        _ source: RecognitionSource,
+        current: BridgeSettingsPayload
+    ) -> String? {
+        guard serverRecognitionSourceToggleDisabled(source, current: current) else { return nil }
+        return current.sourceAvailability(for: .appleSpeech)?.reason
     }
 
     private func serverASRModelBinding(_ source: RecognitionSource) -> Binding<String> {
@@ -1110,12 +1177,12 @@ struct DictationInputSettingsView: View {
     @AppStorage(AppSettings.Keys.maxRecordingDuration) private var maxDuration: Double = 30
     @AppStorage(AppSettings.Keys.holdModifier)         private var holdModifierRaw: String = HoldModifier.rightOption.rawValue
     @AppStorage(AppSettings.Keys.voiceLivePreview)     private var voiceLivePreview: Bool = true
-    @AppStorage(AppSettings.Keys.voiceLivePreviewSource) private var voiceLivePreviewSourceRaw: String = VoiceLivePreviewSource.appleSpeech.rawValue
+    @AppStorage(AppSettings.Keys.voiceLivePreviewSource) private var voiceLivePreviewSourceRaw: String = VoiceLivePreviewSource.off.rawValue
     @AppStorage(AppSettings.Keys.processingMode)       private var processingModeRaw: String = ProcessingMode.client.rawValue
     @AppStorage(AppSettings.Keys.clientBridgeEnabledRecognitionSources) private var clientBridgeEnabledRecognitionSourcesRaw: String = ""
     @AppStorage(AppSettings.Keys.asrQwenEnabled)       private var qwenEnabled: Bool = false
     @AppStorage(AppSettings.Keys.asrNvidiaNemotronEnabled) private var nvidiaEnabled: Bool = false
-    @AppStorage(AppSettings.Keys.asrAppleSpeechEnabled) private var appleSpeechEnabled: Bool = true
+    @AppStorage(AppSettings.Keys.asrAppleSpeechEnabled) private var appleSpeechEnabled: Bool = false
     @AppStorage(AppSettings.Keys.correctionMode)       private var correctionModeRaw: String = CorrectionMode.polishPlus.rawValue
     @AppStorage(AppSettings.Keys.soundFeedback)        private var soundFeedback: Bool = true
 
@@ -1233,7 +1300,7 @@ struct DictationInputSettingsView: View {
 
     private var selectedPreviewSource: VoiceLivePreviewSource {
         guard voiceLivePreview else { return .off }
-        let source = VoiceLivePreviewSource(rawValue: voiceLivePreviewSourceRaw) ?? .appleSpeech
+        let source = VoiceLivePreviewSource(rawValue: voiceLivePreviewSourceRaw) ?? .off
         return previewSourceOptions.contains(source) ? source : .off
     }
 
@@ -1255,7 +1322,7 @@ struct DictationInputSettingsView: View {
     }
 
     private func constrainPreviewSourceToCurrentSources() {
-        let source = VoiceLivePreviewSource(rawValue: voiceLivePreviewSourceRaw) ?? .appleSpeech
+        let source = VoiceLivePreviewSource(rawValue: voiceLivePreviewSourceRaw) ?? .off
         guard voiceLivePreview, !previewSourceOptions.contains(source) else { return }
         if let preferred = previewSourceOptions.first(where: { $0 != .off }) {
             voiceLivePreviewSourceRaw = preferred.rawValue
@@ -1285,7 +1352,7 @@ struct DictationInputSettingsView: View {
     private var previewHelpText: String {
         switch processingMode {
         case .client:
-            return "Apple Speech preview runs on this Mac. Qwen and Nemotron preview follow the paired Mac."
+            return "Preview follows the enabled Server ASR sources."
         case .server:
             return "Preview follows enabled ASR sources."
         }
@@ -1307,7 +1374,7 @@ struct DictationInputSettingsView: View {
         var sources: [RecognitionSource] = []
         if qwenEnabled { sources.append(.qwen) }
         if nvidiaEnabled { sources.append(.nvidiaNemotron) }
-        sources.append(.appleSpeech)
+        if appleSpeechEnabled { sources.append(.appleSpeech) }
         return RecognitionSource.recognizedSources(sources.map(\.rawValue))
     }
 
@@ -1412,8 +1479,9 @@ struct ASRSettingsView: View {
     @EnvironmentObject private var modelStatusCache: SettingsModelStatusCache
     @AppStorage(AppSettings.Keys.asrQwenEnabled)     private var savedQwenEnabled: Bool = false
     @AppStorage(AppSettings.Keys.asrNvidiaNemotronEnabled) private var savedNvidiaEnabled: Bool = false
-    @AppStorage(AppSettings.Keys.asrAppleSpeechEnabled) private var appleSpeechEnabled: Bool = true
+    @AppStorage(AppSettings.Keys.asrAppleSpeechEnabled) private var savedAppleSpeechEnabled: Bool = false
     @AppStorage(AppSettings.Keys.asrLanguageIDs)     private var languageIDsRaw: String = ASRLanguageSelection.defaultRawValue
+    @AppStorage(AppSettings.Keys.fastASRSource) private var fastASRSourceRaw: String = RecognitionSource.qwen.rawValue
     @AppStorage(AppSettings.Keys.asrNvidiaNemotronTimeoutSec) private var nvidiaTimeoutSec: Double = 40
     @AppStorage(AppSettings.Keys.asrNvidiaNemotronModelID) private var savedNvidiaModelID: String = NvidiaNemotronASRModelCatalog.defaultID
     @AppStorage(AppSettings.Keys.asrQwenLlamaTimeoutSec) private var qwenTimeoutSec: Double = 40
@@ -1422,8 +1490,10 @@ struct ASRSettingsView: View {
     @AppStorage(AppSettings.Keys.correctionMode) private var correctionModeRaw: String = CorrectionMode.polishPlus.rawValue
     @State private var draftQwenEnabled = false
     @State private var draftNvidiaEnabled = false
+    @State private var draftAppleSpeechEnabled = false
     @State private var draftQwenModelID = QwenASRModelCatalog.defaultID
     @State private var draftNvidiaModelID = NvidiaNemotronASRModelCatalog.defaultID
+    @State private var draftFastASRSourceRaw = RecognitionSource.qwen.rawValue
     @State private var asrSaveStatus: String?
     @State private var asrSaveIsError = false
     @State private var showAllLanguages = false
@@ -1442,7 +1512,19 @@ struct ASRSettingsView: View {
                         )
                     }
                     .toggleStyle(.switch)
-                    .disabled(source == .appleSpeech)
+                    .disabled(sourceToggleDisabled(source))
+                    if let reason = sourceDisabledReason(source) {
+                        Text(reason)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                    if source == .appleSpeech, draftAppleSpeechEnabled, appleSpeechNeedsPermission {
+                        Button {
+                            requestAppleSpeechPermission()
+                        } label: {
+                            Label("Request Speech Recognition", systemImage: "waveform")
+                        }
+                    }
                 }
 
                 Text("Enabled sources run independently. Each source contributes a transcript when it supports at least one selected language.")
@@ -1478,6 +1560,25 @@ struct ASRSettingsView: View {
                             .lineLimit(2)
                     }
                     Spacer()
+                }
+            }
+
+            Section("Fast ASR") {
+                Picker("Fast source", selection: fastASRSourceBinding) {
+                    ForEach(visibleRecognitionSources) { source in
+                        Text(source.displayName).tag(source.rawValue)
+                            .disabled(!fastSourceIsReady(source))
+                    }
+                }
+                .pickerStyle(.menu)
+                if let issue = fastSourceIssue {
+                    Text(issue)
+                        .font(.footnote)
+                        .foregroundStyle(.orange)
+                } else {
+                    Text("Fast uses only the selected source and skips refine.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                 }
             }
 
@@ -1624,7 +1725,7 @@ struct ASRSettingsView: View {
             clearASRSaveStatus()
             clampLanguageSelection()
         }
-        .onChange(of: appleSpeechEnabled) { _, _ in
+        .onChange(of: draftAppleSpeechEnabled) { _, _ in
             normalizeSources()
             refreshAppleSpeechLanguageSupportIfNeeded()
             clampLanguageSelection()
@@ -1662,7 +1763,7 @@ struct ASRSettingsView: View {
         var sources: [RecognitionSource] = []
         if draftQwenEnabled { sources.append(.qwen) }
         if draftNvidiaEnabled { sources.append(.nvidiaNemotron) }
-        sources.append(.appleSpeech)
+        if draftAppleSpeechEnabled { sources.append(.appleSpeech) }
         return RecognitionSource.recognizedSources(sources.map(\.rawValue))
     }
 
@@ -1707,11 +1808,23 @@ struct ASRSettingsView: View {
     private var asrDraftIsDirty: Bool {
         draftQwenEnabled != savedQwenEnabled
             || draftNvidiaEnabled != savedNvidiaEnabled
+            || draftAppleSpeechEnabled != savedAppleSpeechEnabled
             || draftQwenModelID != QwenASRModelCatalog.spec(for: savedQwenModelID).id
             || draftNvidiaModelID != NvidiaNemotronASRModelCatalog.spec(for: savedNvidiaModelID).id
+            || draftFastASRSourceRaw != normalizedFastSourceRaw(fastASRSourceRaw)
     }
 
     private var asrDraftReadinessIssue: String? {
+        if RecognitionSource(rawValue: draftFastASRSourceRaw) == nil {
+            return "Fast ASR source is invalid."
+        }
+        if selectedCorrectionMode == .fast, let issue = fastSourceIssue {
+            return issue
+        }
+        if draftAppleSpeechEnabled {
+            let report = AppleSpeechAvailability.report(languageIDs: ASRLanguageSelection.parse(languageIDsRaw))
+            if !report.ready { return report.reason }
+        }
         if draftQwenEnabled, !qwenModelStatusLoaded {
             return "Checking \(selectedQwenModel.label) install status."
         }
@@ -1778,7 +1891,10 @@ struct ASRSettingsView: View {
     }
 
     private var selectedLanguageSummary: String {
-        "Enabled: " + ASRLanguageSelection
+        if selectedSources.isEmpty {
+            return "No ASR source enabled."
+        }
+        return "Enabled: " + ASRLanguageSelection
             .displayNames(for: selectedLanguageIDs, supportedOptions: supportedLanguageOptions)
             .joined(separator: ", ")
     }
@@ -1847,9 +1963,6 @@ struct ASRSettingsView: View {
     }
 
     private func normalizeSources() {
-        if !appleSpeechEnabled {
-            appleSpeechEnabled = true
-        }
         let normalizedSavedQwenModelID = QwenASRModelCatalog.spec(for: savedQwenModelID).id
         if savedQwenModelID != normalizedSavedQwenModelID {
             savedQwenModelID = normalizedSavedQwenModelID
@@ -1881,17 +1994,18 @@ struct ASRSettingsView: View {
                 case .nvidiaNemotron:
                     return draftNvidiaEnabled
                 case .appleSpeech:
-                    return true
+                    return draftAppleSpeechEnabled
                 }
             },
             set: { enabled in
+                if enabled, sourceToggleDisabled(source) { return }
                 switch source {
                 case .qwen:
                     draftQwenEnabled = enabled
                 case .nvidiaNemotron:
                     draftNvidiaEnabled = enabled
                 case .appleSpeech:
-                    appleSpeechEnabled = true
+                    draftAppleSpeechEnabled = enabled
                     AppleSpeechLanguageSupport.refreshInBackgroundIfNeeded()
                 }
                 normalizeSources()
@@ -1902,8 +2016,10 @@ struct ASRSettingsView: View {
     private func syncASRDraftFromSettings() {
         draftQwenEnabled = savedQwenEnabled
         draftNvidiaEnabled = savedNvidiaEnabled
+        draftAppleSpeechEnabled = savedAppleSpeechEnabled
         draftQwenModelID = QwenASRModelCatalog.spec(for: savedQwenModelID).id
         draftNvidiaModelID = NvidiaNemotronASRModelCatalog.spec(for: savedNvidiaModelID).id
+        draftFastASRSourceRaw = normalizedFastSourceRaw(fastASRSourceRaw)
         asrSaveStatus = nil
         asrSaveIsError = false
     }
@@ -1918,7 +2034,8 @@ struct ASRSettingsView: View {
         savedNvidiaModelID = NvidiaNemotronASRModelCatalog.spec(for: draftNvidiaModelID).id
         savedQwenEnabled = draftQwenEnabled
         savedNvidiaEnabled = draftNvidiaEnabled
-        appleSpeechEnabled = true
+        savedAppleSpeechEnabled = draftAppleSpeechEnabled
+        fastASRSourceRaw = normalizedFastSourceRaw(draftFastASRSourceRaw)
         clampLanguageSelection()
         asrSaveStatus = "ASR settings saved."
         asrSaveIsError = false
@@ -1938,11 +2055,74 @@ struct ASRSettingsView: View {
     }
 
     private func refreshAppleSpeechLanguageSupportIfNeeded() {
-        guard appleSpeechEnabled else {
-            appleSpeechEnabled = true
-            return
-        }
+        guard draftAppleSpeechEnabled || savedAppleSpeechEnabled else { return }
         AppleSpeechLanguageSupport.refreshInBackgroundIfNeeded()
+    }
+
+    private var fastASRSourceBinding: Binding<String> {
+        Binding {
+            draftFastASRSourceRaw
+        } set: { value in
+            guard let source = RecognitionSource(rawValue: value),
+                  fastSourceIsReady(source)
+            else { return }
+            draftFastASRSourceRaw = source.rawValue
+            clearASRSaveStatus()
+        }
+    }
+
+    private var fastSourceIssue: String? {
+        guard let source = RecognitionSource(rawValue: draftFastASRSourceRaw) else {
+            return "Fast ASR source is invalid."
+        }
+        guard selectedSources.contains(source) else {
+            return "\(source.displayName) is not enabled."
+        }
+        let readiness = FastASRRoute.readinessReport(
+            for: source,
+            languageIDs: selectedLanguageIDs,
+            enabledSources: selectedSources
+        )
+        return readiness.ready ? nil : readiness.reason
+    }
+
+    private func fastSourceIsReady(_ source: RecognitionSource) -> Bool {
+        guard selectedSources.contains(source) else { return false }
+        return FastASRRoute.readinessReport(
+            for: source,
+            languageIDs: selectedLanguageIDs,
+            enabledSources: selectedSources
+        ).ready
+    }
+
+    private func sourceToggleDisabled(_ source: RecognitionSource) -> Bool {
+        guard source == .appleSpeech, !draftAppleSpeechEnabled else { return false }
+        return !AppleSpeechAvailability.report(
+            languageIDs: ASRLanguageSelection.parse(languageIDsRaw)
+        ).canEnable
+    }
+
+    private func sourceDisabledReason(_ source: RecognitionSource) -> String? {
+        guard source == .appleSpeech, !draftAppleSpeechEnabled else { return nil }
+        let report = AppleSpeechAvailability.report(languageIDs: ASRLanguageSelection.parse(languageIDsRaw))
+        return report.canEnable ? nil : report.reason
+    }
+
+    private var appleSpeechNeedsPermission: Bool {
+        AppleSpeechAvailability.report(languageIDs: ASRLanguageSelection.parse(languageIDsRaw)).status == "needs_permission"
+    }
+
+    private func requestAppleSpeechPermission() {
+        Task { @MainActor in
+            _ = await AppPermissions.requestSpeechRecognition()
+            appleSpeechLanguageSupportRevision &+= 1
+            clearASRSaveStatus()
+        }
+    }
+
+    private func normalizedFastSourceRaw(_ raw: String) -> String {
+        RecognitionSource(rawValue: raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())?.rawValue
+            ?? RecognitionSource.qwen.rawValue
     }
 }
 
@@ -2931,8 +3111,7 @@ struct CorrectionSettingsView: View {
     }
 
     private func isCorrectionModeEnabled(_ mode: CorrectionMode) -> Bool {
-        _ = mode
-        return true
+        AppSettings.isCorrectionModeAvailable(mode)
     }
 
     private func correctionModeTitle(_ mode: CorrectionMode) -> String {

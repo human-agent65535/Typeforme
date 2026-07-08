@@ -39,7 +39,7 @@ private enum SetupGuidePage: String, CaseIterable, Identifiable {
         case .bridge:
             return "Paste the pairing JSON from the server Mac, then verify that a route is reachable."
         case .asr:
-            return "Apple Speech stays on. Optional local ASR models can run alongside it; each enabled source contributes when it supports the selected language."
+            return "Choose the ASR sources this Mac may use. Apple Speech and local ASR models are optional."
         case .refine:
             return "Use an installed local model or a verified external compatible API. Done starts a background warm-up."
         }
@@ -70,6 +70,7 @@ struct SetupGuideWizardView: View {
     @AppStorage(AppSettings.Keys.processingMode) private var processingModeRaw = ProcessingMode.client.rawValue
     @AppStorage(AppSettings.Keys.asrQwenEnabled) private var qwenEnabled = false
     @AppStorage(AppSettings.Keys.asrNvidiaNemotronEnabled) private var nvidiaEnabled = false
+    @AppStorage(AppSettings.Keys.asrAppleSpeechEnabled) private var appleSpeechEnabled = false
     @AppStorage(AppSettings.Keys.asrQwenLlamaModelID) private var qwenModelID = QwenASRModelCatalog.defaultID
     @AppStorage(AppSettings.Keys.asrNvidiaNemotronModelID) private var nvidiaModelID = NvidiaNemotronASRModelCatalog.defaultID
     @AppStorage(AppSettings.Keys.correctionBackend) private var backendRaw = CorrectionBackendKind.qwen35_4B.rawValue
@@ -254,7 +255,7 @@ struct SetupGuideWizardView: View {
                 secondaryActionTitle: "Reimport",
                 secondaryAction: reimportAccessibility
             )
-            if processingMode == .server {
+            if processingMode == .server, appleSpeechEnabled {
                 WizardPermissionRow(
                     title: "Speech Recognition",
                     detail: "Required for the built-in Apple Speech source.",
@@ -339,14 +340,29 @@ struct SetupGuideWizardView: View {
     private var asrPage: some View {
         HStack(alignment: .top, spacing: 24) {
             VStack(alignment: .leading, spacing: 14) {
-                Toggle(isOn: .constant(true)) {
+                Toggle(isOn: $appleSpeechEnabled) {
                     WizardToggleLabel(
                         title: "Apple Speech",
                         detail: "Built in. No model download."
                     )
                 }
                 .toggleStyle(.switch)
-                .disabled(true)
+                .disabled(!appleSpeechEnabled && !appleSpeechCanEnable)
+                if let reason = appleSpeechIssue {
+                    WizardStatusLine(
+                        title: "Apple Speech unavailable",
+                        detail: reason,
+                        systemImage: "exclamationmark.triangle.fill",
+                        tint: .orange
+                    )
+                }
+                if appleSpeechEnabled, appleSpeechAvailability.status == "needs_permission" {
+                    Button {
+                        requestSpeechRecognition()
+                    } label: {
+                        Label("Request Speech Recognition", systemImage: "waveform")
+                    }
+                }
 
                 Divider()
 
@@ -397,12 +413,12 @@ struct SetupGuideWizardView: View {
             .frame(width: 300, alignment: .topLeading)
 
             VStack(alignment: .leading, spacing: 14) {
-                if !qwenEnabled && !nvidiaEnabled {
+                if !appleSpeechEnabled && !qwenEnabled && !nvidiaEnabled {
                     WizardStatusLine(
-                        title: "Apple Speech only",
-                        detail: "No ASR model download is needed. You can continue once permissions are granted.",
-                        systemImage: "checkmark.circle.fill",
-                        tint: .green
+                        title: "No ASR source enabled",
+                        detail: "Dictation will be unavailable until at least one source is enabled.",
+                        systemImage: "exclamationmark.triangle.fill",
+                        tint: .orange
                     )
                 }
                 if qwenEnabled {
@@ -636,7 +652,9 @@ struct SetupGuideWizardView: View {
     }
 
     private var permissionsReady: Bool {
-        axTrusted && microphoneStatus == .granted && (processingMode == .client || speechStatus == .granted)
+        axTrusted
+            && microphoneStatus == .granted
+            && (processingMode != .server || !appleSpeechEnabled || speechStatus == .granted)
     }
 
     private var clientConfig: ClientBridgeConfiguration {
@@ -665,7 +683,25 @@ struct SetupGuideWizardView: View {
     }
 
     private var asrReady: Bool {
-        (!qwenEnabled || qwenModelInstalled) && (!nvidiaEnabled || nvidiaModelInstalled)
+        (!appleSpeechEnabled || appleSpeechAvailability.ready)
+            && (!qwenEnabled || qwenModelInstalled)
+            && (!nvidiaEnabled || nvidiaModelInstalled)
+    }
+
+    private var appleSpeechAvailability: AppleSpeechAvailabilityReport {
+        AppleSpeechAvailability.report(languageIDs: AppSettings.asrLanguageIDs)
+    }
+
+    private var appleSpeechCanEnable: Bool {
+        appleSpeechAvailability.canEnable
+    }
+
+    private var appleSpeechIssue: String? {
+        let report = appleSpeechAvailability
+        if appleSpeechEnabled || !report.canEnable {
+            return report.ready ? nil : report.reason
+        }
+        return nil
     }
 
     private var refineReady: Bool {

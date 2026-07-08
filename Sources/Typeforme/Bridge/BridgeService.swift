@@ -138,8 +138,9 @@ final class BridgeService {
         let oldSources = AppSettings.configuredRecognitionSources
         let oldQwenASRModelID = AppSettings.asrQwenLlamaModelID
         let sources = try resolveRecognitionSources(request.enabledRecognitionSources) ?? oldSources
+        let settingsFastASRSource = try resolveFastASRSource(request.fastASRSource) ?? AppSettings.fastASRSource
         let settingsCorrectionMode = try resolveSettingsCorrectionMode(request.correctionMode) ?? AppSettings.correctionMode
-        try validateCorrectionModeAvailable(settingsCorrectionMode, sources: sources)
+        try validateEnabledRecognitionSources(sources, languageIDs: request.languageIDs ?? AppSettings.asrLanguageIDs)
         let requestedLivePreviewSource: VoiceLivePreviewSource?
         if let rawLivePreviewSource = request.livePreviewSource {
             requestedLivePreviewSource = try resolveLivePreviewSource(
@@ -152,7 +153,9 @@ final class BridgeService {
         }
         let supportedLanguages = ASRLanguageSelection.supportedOptions(for: sources)
         let languageIDs: [String]
-        if let requestedLanguageIDs = request.languageIDs {
+        if supportedLanguages.isEmpty {
+            languageIDs = []
+        } else if let requestedLanguageIDs = request.languageIDs {
             languageIDs = try Self.resolveSettingsLanguageIDs(
                 requestedLanguageIDs,
                 supportedOptions: supportedLanguages
@@ -163,6 +166,12 @@ final class BridgeService {
                 supportedOptions: supportedLanguages
             )
         }
+        try validateCorrectionModeAvailable(
+            settingsCorrectionMode,
+            sources: sources,
+            fastASRSource: settingsFastASRSource,
+            languageIDs: languageIDs
+        )
 
         let proposedCorrectionBackend = try request.correctionBackend.map(resolveCorrectionBackend) ?? AppSettings.correctionBackend
         let proposedExternalLLMBaseURL = try request.externalLLMBaseURL.map(normalizedExternalLLMBaseURL)
@@ -232,6 +241,9 @@ final class BridgeService {
         }
         if request.correctionMode != nil {
             UserDefaults.standard.set(settingsCorrectionMode.rawValue, forKey: AppSettings.Keys.correctionMode)
+        }
+        if request.fastASRSource != nil {
+            UserDefaults.standard.set(settingsFastASRSource.rawValue, forKey: AppSettings.Keys.fastASRSource)
         }
         if let requestedLivePreviewSource {
             applyLivePreviewSource(requestedLivePreviewSource)
@@ -404,8 +416,16 @@ final class BridgeService {
             mode: request.languageMode,
             sources: AppSettings.enabledRecognitionSources
         )
-        let fastRoute = correctionMode == .fast ? FastASRRoute.resolve(languageIDs: requestedLanguageIDs) : nil
-        let transcriptionSources = fastRoute.map { [$0.source] } ?? recognitionSources(for: correctionMode)
+        let fastRoute: FastASRRoute?
+        if correctionMode == .fast {
+            fastRoute = try FastASRRoute.resolve(languageIDs: requestedLanguageIDs)
+        } else {
+            fastRoute = nil
+        }
+        let transcriptionSources = try fastRoute.map { [$0.source] } ?? recognitionSources(for: correctionMode)
+        guard !transcriptionSources.isEmpty else {
+            throw BridgeServiceError.invalidRequest("No ASR source enabled")
+        }
         let languageIDs = fastRoute?.languageIDs ?? requestedLanguageIDs
         let audioURL = try await writeAudio(request)
         audioURLToCleanup = audioURL
@@ -1203,14 +1223,26 @@ final class BridgeService {
 
     private func validateCorrectionModeAvailable(
         _ mode: CorrectionMode,
-        sources: [RecognitionSource] = AppSettings.configuredRecognitionSources
+        sources: [RecognitionSource] = AppSettings.configuredRecognitionSources,
+        fastASRSource: RecognitionSource = AppSettings.fastASRSource,
+        languageIDs: [String] = AppSettings.asrLanguageIDs
     ) throws {
-        _ = mode
-        _ = sources
+        guard mode == .fast else { return }
+        let readiness = FastASRRoute.readinessReport(
+            for: fastASRSource,
+            languageIDs: languageIDs,
+            enabledSources: sources
+        )
+        guard readiness.ready else {
+            throw BridgeServiceError.invalidRequest("Fast mode is unavailable: \(readiness.reason)")
+        }
     }
 
-    private func recognitionSources(for correctionMode: CorrectionMode) -> [RecognitionSource] {
-        correctionMode == .fast ? [FastASRRoute.resolve(languageIDs: AppSettings.asrLanguageIDs).source] : AppSettings.enabledRecognitionSources
+    private func recognitionSources(for correctionMode: CorrectionMode) throws -> [RecognitionSource] {
+        if correctionMode == .fast {
+            return [try FastASRRoute.resolve(languageIDs: AppSettings.asrLanguageIDs).source]
+        }
+        return AppSettings.enabledRecognitionSources
     }
 
     private func resolveTextEditIntent(_ rawIntent: String?) throws -> TextEditIntent {
@@ -1299,6 +1331,29 @@ final class BridgeService {
             }
         }
         return AppSettings.normalizedServerRecognitionSources(sources)
+    }
+
+    private func resolveFastASRSource(_ raw: String?) throws -> RecognitionSource? {
+        guard let raw else { return nil }
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !value.isEmpty else {
+            throw BridgeServiceError.invalidRequest("Fast ASR source cannot be empty")
+        }
+        guard let source = RecognitionSource(rawValue: value) else {
+            throw BridgeServiceError.invalidRequest("Unknown Fast ASR source: \(raw)")
+        }
+        return source
+    }
+
+    private func validateEnabledRecognitionSources(
+        _ sources: [RecognitionSource],
+        languageIDs: [String]
+    ) throws {
+        guard sources.contains(.appleSpeech) else { return }
+        let report = AppleSpeechAvailability.report(languageIDs: languageIDs)
+        guard report.ready else {
+            throw BridgeServiceError.invalidRequest(report.reason)
+        }
     }
 
     private func resolveASRModelID(_ raw: String, source: RecognitionSource) throws -> String {

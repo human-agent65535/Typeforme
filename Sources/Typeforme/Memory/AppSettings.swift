@@ -24,6 +24,7 @@ enum AppSettings {
         static let asrNvidiaNemotronEnabled = "asr.nvidia.nemotron.enabled"
         static let asrAppleSpeechEnabled = "asr.appleSpeech.enabled"
         static let asrLanguageIDs       = "asr.languages"           // comma-separated ASRLanguageOption ids
+        static let fastASRSource        = "asr.fast.source"
         static let asrNvidiaNemotronTimeoutSec = "asr.nvidia.nemotron.timeoutSec"
         static let asrNvidiaNemotronModelID = "asr.nvidia.nemotron.modelID"
         static let asrNvidiaNemotronEncoderPath = "asr.nvidia.nemotron.encoderPath"
@@ -118,15 +119,16 @@ enum AppSettings {
             Keys.maxRecordingDuration: 30.0,
             Keys.holdModifier:         HoldModifier.rightOption.rawValue,
             Keys.voiceLivePreview:     true,
-            Keys.voiceLivePreviewSource: VoiceLivePreviewSource.appleSpeech.rawValue,
+            Keys.voiceLivePreviewSource: VoiceLivePreviewSource.off.rawValue,
             Keys.soundFeedback:        true,
             Keys.launchAtLogin:        true,
             Keys.showDockIcon:         false,
 
             Keys.asrQwenEnabled:    false,
             Keys.asrNvidiaNemotronEnabled: false,
-            Keys.asrAppleSpeechEnabled: true,
+            Keys.asrAppleSpeechEnabled: false,
             Keys.asrLanguageIDs:    ASRLanguageSelection.defaultRawValue,
+            Keys.fastASRSource:     RecognitionSource.qwen.rawValue,
             Keys.asrNvidiaNemotronTimeoutSec: 40,
             Keys.asrNvidiaNemotronModelID: NvidiaNemotronASRModelCatalog.defaultID,
             Keys.asrQwenLlamaTimeoutSec: 40,
@@ -238,6 +240,7 @@ enum AppSettings {
         Keys.asrNvidiaNemotronEnabled,
         Keys.asrAppleSpeechEnabled,
         Keys.asrLanguageIDs,
+        Keys.fastASRSource,
         Keys.asrNvidiaNemotronTimeoutSec,
         Keys.asrNvidiaNemotronModelID,
         Keys.asrQwenLlamaTimeoutSec,
@@ -301,7 +304,7 @@ enum AppSettings {
     }
     static var voiceLivePreviewSource: VoiceLivePreviewSource {
         guard voiceLivePreview else { return .off }
-        let source: VoiceLivePreviewSource = rawSetting(forKey: Keys.voiceLivePreviewSource, default: .appleSpeech)
+        let source: VoiceLivePreviewSource = rawSetting(forKey: Keys.voiceLivePreviewSource, default: .off)
         if processingMode == .client {
             return source.isClientEnabled(
                 forRemoteRecognitionSources: clientBridgeEnabledRecognitionSources,
@@ -322,6 +325,9 @@ enum AppSettings {
         if ud.bool(forKey: Keys.asrNvidiaNemotronEnabled) {
             sources.append(.nvidiaNemotron)
         }
+        if ud.bool(forKey: Keys.asrAppleSpeechEnabled) {
+            sources.append(.appleSpeech)
+        }
         return normalizedServerRecognitionSources(sources)
     }
 
@@ -329,19 +335,25 @@ enum AppSettings {
         configuredRecognitionSources
     }
 
+    @MainActor
     static func isCorrectionModeAvailable(_ mode: CorrectionMode) -> Bool {
-        true
+        guard mode == .fast else { return true }
+        return FastASRRoute.readinessReport().ready
     }
 
     static func setEnabledRecognitionSources(_ sources: [RecognitionSource]) {
         let normalized = normalizedServerRecognitionSources(sources)
         ud.set(normalized.contains(.qwen), forKey: Keys.asrQwenEnabled)
         ud.set(normalized.contains(.nvidiaNemotron), forKey: Keys.asrNvidiaNemotronEnabled)
-        ud.set(true, forKey: Keys.asrAppleSpeechEnabled)
+        ud.set(normalized.contains(.appleSpeech), forKey: Keys.asrAppleSpeechEnabled)
     }
 
     static func normalizedServerRecognitionSources(_ sources: [RecognitionSource]) -> [RecognitionSource] {
-        RecognitionSource.recognizedSources((sources + [.appleSpeech]).map(\.rawValue))
+        RecognitionSource.recognizedSources(sources.map(\.rawValue))
+    }
+
+    static var fastASRSource: RecognitionSource {
+        rawSetting(forKey: Keys.fastASRSource, default: .qwen)
     }
 
     static var clientBridgeEnabledRecognitionSources: [RecognitionSource] {

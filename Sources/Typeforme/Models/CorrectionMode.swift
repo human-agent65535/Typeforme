@@ -30,7 +30,7 @@ enum CorrectionMode: String, Codable, CaseIterable, Identifiable, Sendable {
     var helpText: String {
         switch self {
         case .fast:
-            return "Insert the ASR transcript directly and skip refine. Uses Qwen3-ASR when it is enabled and installed; otherwise uses Apple Speech."
+            return "Insert the ASR transcript directly and skip refine. Uses the selected Fast ASR source only."
         case .clean:
             return "Fix punctuation, ASR mistakes, repeated words, and meaningless speech noise without rewriting."
         case .polishPlus:
