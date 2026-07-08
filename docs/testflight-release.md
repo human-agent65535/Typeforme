@@ -5,8 +5,10 @@ This runbook publishes the current iOS host app and keyboard extension to TestFl
 ## Rules
 
 - Keep the iOS host and keyboard build numbers in lockstep in `iOS/TypeformeIOS.xcodeproj/project.pbxproj`.
+- The current TestFlight marketing version is `0.1.523`. Do not bump `MARKETING_VERSION` for TestFlight-only builds; increment `CURRENT_PROJECT_VERSION` only.
 - Do not reuse a build number that App Store Connect has already accepted.
 - Do not create new TestFlight groups. Use the existing `External` group.
+- Do not create a new App Store Connect version group unless the user explicitly asks for a marketing-version change.
 - Use an App Store Connect supported Xcode. If using a beta Xcode, verify Apple's release notes first.
 - Use the App Store Connect API key from 1Password only when needed. Do not store key material in the repo.
 
@@ -30,6 +32,10 @@ cp dist/testflight/20260707-165201/ExportOptions.plist "$OUT/ExportOptions.plist
 
 VERSION="$(rg -m1 'MARKETING_VERSION = ' iOS/TypeformeIOS.xcodeproj/project.pbxproj | sed -E 's/.*= ([^;]+);/\1/')"
 BUILD="$(rg -m1 'CURRENT_PROJECT_VERSION = ' iOS/TypeformeIOS.xcodeproj/project.pbxproj | sed -E 's/.*= ([^;]+);/\1/')"
+test "$VERSION" = "0.1.523" || {
+  echo "error: TestFlight marketing version must remain 0.1.523; got $VERSION" >&2
+  exit 1
+}
 ARCHIVE="$OUT/TypeformeIOS-$VERSION-$BUILD.xcarchive"
 
 DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer \
