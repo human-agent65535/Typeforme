@@ -8294,8 +8294,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             resetQuoteParity()
             clearRefineUndoStateForManualEdit()
             commitTextReplacingMarkedText(state.commitText, reason: .rimeCommit)
-            activeMarkedText = ""
-            activeMarkedTextOwner = nil
+            clearLocalMarkedTextState()
             if rimeProfile.learningEnabled {
                 chineseLearningRecorder.recordCommit(state.commitText)
             }
@@ -8318,8 +8317,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         resetQuoteParity()
         clearRefineUndoStateForManualEdit()
         commitTextReplacingMarkedText(text, reason: .rimeRaw)
-        activeMarkedText = ""
-        activeMarkedTextOwner = nil
+        clearLocalMarkedTextState()
         applyRimeState(rimeInput.clearComposition())
     }
 
@@ -9472,9 +9470,33 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             textDocumentProxy.setMarkedText(text, selectedRange: NSRange(location: cursor, length: 0))
         } else if !activeMarkedText.isEmpty {
             textDocumentProxy.setMarkedText("", selectedRange: NSRange(location: 0, length: 0))
+            textDocumentProxy.unmarkText()
         }
         activeMarkedText = text
         activeMarkedTextOwner = nextOwner
+    }
+
+    private func clearLocalMarkedTextState() {
+        activeMarkedText = ""
+        activeMarkedTextOwner = nil
+    }
+
+    private func discardOwnedLivePartialMarkedText(reason: String) {
+        guard activeMarkedTextOwner == .livePartial else { return }
+        let markedCount = activeMarkedText.count
+        if !activeMarkedText.isEmpty {
+            textDocumentProxy.setMarkedText("", selectedRange: NSRange(location: 0, length: 0))
+            textDocumentProxy.unmarkText()
+        }
+        clearLocalMarkedTextState()
+        KeyboardDiagnosticEventLog.record(
+            source: "keyboard-ui",
+            event: "live_preview_marked_text_discarded",
+            fields: [
+                "reason": reason,
+                "marked_chars": "\(markedCount)",
+            ]
+        )
     }
 
     private func clearMarkedText(ifOwnedBy owner: MarkedTextOwner) {
@@ -9513,8 +9535,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             commitOwnedMarkedText(text, owner: owner, reason: reason, plan: plan)
         case .staleMarkedState:
             let staleMarkedCount = activeMarkedText.count
-            activeMarkedText = ""
-            activeMarkedTextOwner = nil
+            clearLocalMarkedTextState()
             textDocumentProxy.insertText(text)
             kbLog.notice(
                 "marked text commit applied plan=\(plan.logName, privacy: .public) reason=\(reason.rawValue, privacy: .public) stale_marked_chars=\(staleMarkedCount, privacy: .public) commit_chars=\(text.count, privacy: .public)"
@@ -9532,8 +9553,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let cursor = (text as NSString).length
         textDocumentProxy.setMarkedText(text, selectedRange: NSRange(location: cursor, length: 0))
         textDocumentProxy.unmarkText()
-        activeMarkedText = ""
-        activeMarkedTextOwner = nil
+        clearLocalMarkedTextState()
         kbLog.notice(
             "marked text commit applied plan=\(plan.logName, privacy: .public) reason=\(reason.rawValue, privacy: .public) owner=\(owner.logName, privacy: .public) marked_chars=\(markedCount, privacy: .public) commit_chars=\(text.count, privacy: .public)"
         )
@@ -9769,8 +9789,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
         let anchor = currentLivePartialPreviewAnchor()
         commitLivePartialMarkedTextAsPreview(preview, commandID: effectiveLivePartialCommandID(explicitCommandID))
-        activeMarkedText = ""
-        activeMarkedTextOwner = nil
+        clearLocalMarkedTextState()
         if let commandID = effectiveLivePartialCommandID(explicitCommandID) {
             recordLivePartialPreview(commandID: commandID, text: preview, anchor: anchor)
         }
@@ -9906,8 +9925,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 event: "live_preview_final_commit_skipped",
                 fields: livePreviewFinalCommitFields(plan: plan, preview: preview, finalText: finalText)
             )
-            activeMarkedText = ""
-            activeMarkedTextOwner = nil
+            if activeMarkedTextOwner == .livePartial {
+                _ = commitLivePartialBeforeHostReturnIfNeeded(commandID: preview.commandID)
+            }
             return true
 
         case .ownedMarked:
@@ -9915,8 +9935,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
         case .visibleCommitted:
             if activeMarkedTextOwner == .livePartial {
-                activeMarkedText = ""
-                activeMarkedTextOwner = nil
+                discardOwnedLivePartialMarkedText(reason: "visible_committed")
             }
             guard deleteVisibleCommittedLivePartial(preview.text) else {
                 logLivePartialFinalCommitMiss(plan: plan, preview: preview, finalText: finalText)
@@ -9935,8 +9954,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
         case .anchoredCommitted(let range):
             if activeMarkedTextOwner == .livePartial {
-                activeMarkedText = ""
-                activeMarkedTextOwner = nil
+                discardOwnedLivePartialMarkedText(reason: "anchored_committed")
             }
             guard replaceAnchoredLivePartialPreview(preview, with: finalText, range: range) else {
                 logLivePartialFinalCommitMiss(plan: plan, preview: preview, finalText: finalText)
@@ -9956,7 +9974,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
         case .missingAnchor:
             logLivePartialFinalCommitMiss(plan: plan, preview: preview, finalText: finalText)
-            return false
+            return commitLivePartialBeforeHostReturnIfNeeded(commandID: preview.commandID)
         }
     }
 
@@ -9969,8 +9987,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let cursor = (finalText as NSString).length
         textDocumentProxy.setMarkedText(finalText, selectedRange: NSRange(location: cursor, length: 0))
         textDocumentProxy.unmarkText()
-        activeMarkedText = ""
-        activeMarkedTextOwner = nil
+        clearLocalMarkedTextState()
         kbLog.notice(
             "live preview final commit applied plan=\(plan.logName, privacy: .public) command_id=\(preview.commandID, privacy: .public) marked_chars=\(markedText.count, privacy: .public) preview_chars=\(preview.text.count, privacy: .public) final_chars=\(finalText.count, privacy: .public)"
         )
@@ -10004,8 +10021,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             event: "live_preview_final_commit_failed",
             fields: fields
         )
-        activeMarkedText = ""
-        activeMarkedTextOwner = nil
     }
 
     private func livePreviewFinalCommitFields(
@@ -10031,6 +10046,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         guard activeMarkedTextOwner == .livePartial,
               !activeMarkedText.isEmpty
         else { return false }
+        let activeText = activeMarkedText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let previewText = preview.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !activeText.isEmpty, activeText == previewText {
+            return true
+        }
         if before.hasSuffix(activeMarkedText) {
             return true
         }
@@ -11993,8 +12013,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 appliedRewriteTarget = nil
             } else {
                 commitTextReplacingMarkedText(text, reason: .bridgeResult)
-                activeMarkedText = ""
-                activeMarkedTextOwner = nil
+                clearLocalMarkedTextState()
                 didApply = true
                 appliedRewriteTarget = nil
             }

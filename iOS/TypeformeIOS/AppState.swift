@@ -1857,9 +1857,10 @@ final class AppState {
         // unreadable FLAC under that session.
         if keyboardDictationCaptureMode == .pictureInPicture {
             path = keyboardAudioSession.isActive ? "keyboard-session" : "keyboard-session-cold"
-            if !keyboardAudioSession.isActive {
-                try await keyboardAudioSession.start(reuseActiveSession: hadSilentStandby)
-            }
+            try await keyboardAudioSession.startWithFreshInputEngine(
+                reuseActiveSession: hadSilentStandby,
+                deactivateExistingSession: hadKeyboardSession
+            )
             _ = try await keyboardAudioSession.beginRecording()
             hostRecordingUsesKeyboardAudioSession = true
             activeBridgeDictateJobID = Self.newBridgeJobID()
@@ -1970,7 +1971,7 @@ final class AppState {
             switch keyboardDictationCaptureMode {
             case .pictureInPicture:
                 if keyboardAudioSession.isActive {
-                    keyboardAudioSession.stop()
+                    keyboardAudioSession.stop(discardInputEngine: true)
                 }
             case .backgroundMic:
                 if !keyboardAudioSession.isActive {
@@ -2892,7 +2893,9 @@ final class AppState {
         keyboardStandbyRefreshTask = nil
         stopKeyboardStatusAudioLevelPush()
         if keyboardAudioSession.isActive {
-            keyboardAudioSession.stop()
+            keyboardAudioSession.stop(
+                discardInputEngine: keyboardDictationCaptureMode == .pictureInPicture
+            )
         }
         standbyKeeper.stop()
     }
@@ -3142,7 +3145,7 @@ final class AppState {
             keyboardServer.stop()
             pipDictationCoordinator.stop()
             standbyKeeper.stop()
-            keyboardAudioSession.stop()
+            keyboardAudioSession.stop(discardInputEngine: true)
             publishKeyboardStatus(.idle)
             return false
         }
@@ -4507,24 +4510,28 @@ final class AppState {
         startAttemptedAt: TimeInterval
     ) async {
         do {
-            if !keyboardAudioSession.isActive {
-                guard try await startPictureInPictureRecordingAudioSessionIfNeeded() else {
-                    appLog.notice("start keyboard recording failed: pip recording audio unavailable command_id=\(commandID ?? "none", privacy: .public)")
-                    KeyboardDiagnosticEventLog.record(
-                        source: "host-app",
-                        event: "start_keyboard_recording_failed_pip_audio_unavailable",
-                        fields: [
-                            "command_id": commandID ?? "none",
-                            "elapsed_ms": "\(Int((Date().timeIntervalSince1970 - startAttemptedAt) * 1_000))",
-                        ]
-                    )
-                    postKeyboardCaptureNotReadyReceipt(commandID: commandID, reason: "pip_audio_unavailable")
-                    clearKeyboardCaptureContext()
-                    resetCorrectionModeToDefault()
-                    publishKeyboardStatus(.idle, commandID: commandID, message: keyboardMicrophonePreparationMessage)
-                    KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.dictationStopped)
-                    return
-                }
+            if keyboardAudioSession.isActive, !keyboardAudioSession.isRecording {
+                keyboardAudioSession.discardInactiveInputEngine(
+                    deactivateSession: true,
+                    reason: "pip_fresh_start"
+                )
+            }
+            guard try await startPictureInPictureRecordingAudioSessionIfNeeded() else {
+                appLog.notice("start keyboard recording failed: pip recording audio unavailable command_id=\(commandID ?? "none", privacy: .public)")
+                KeyboardDiagnosticEventLog.record(
+                    source: "host-app",
+                    event: "start_keyboard_recording_failed_pip_audio_unavailable",
+                    fields: [
+                        "command_id": commandID ?? "none",
+                        "elapsed_ms": "\(Int((Date().timeIntervalSince1970 - startAttemptedAt) * 1_000))",
+                    ]
+                )
+                postKeyboardCaptureNotReadyReceipt(commandID: commandID, reason: "pip_audio_unavailable")
+                clearKeyboardCaptureContext()
+                resetCorrectionModeToDefault()
+                publishKeyboardStatus(.idle, commandID: commandID, message: keyboardMicrophonePreparationMessage)
+                KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.dictationStopped)
+                return
             }
             try await beginPreparedKeyboardAudioRecording(
                 commandID: commandID,
@@ -4533,8 +4540,11 @@ final class AppState {
         } catch {
             clearKeyboardCaptureContext()
             resetCorrectionModeToDefault()
-            if keyboardAudioSession.isActive, !keyboardAudioSession.isRecording {
-                keyboardAudioSession.stop()
+            if !keyboardAudioSession.isRecording {
+                keyboardAudioSession.discardInactiveInputEngine(
+                    deactivateSession: true,
+                    reason: "pip_start_error"
+                )
             }
             let message = keyboardAudioStatusMessage(for: error)
             appLog.notice("start keyboard recording failed: pip recording audio error command_id=\(commandID ?? "none", privacy: .public) error=\(message, privacy: .public)")
@@ -4565,7 +4575,7 @@ final class AppState {
         }
         switch AVAudioApplication.shared.recordPermission {
         case .granted:
-            try await keyboardAudioSession.start(reuseActiveSession: false)
+            try await keyboardAudioSession.startWithFreshInputEngine(reuseActiveSession: false)
             keyboardAudioUnavailableMessage = nil
             return true
         case .undetermined:
@@ -4854,6 +4864,9 @@ final class AppState {
         }
         if keyboardAudioSession.isRecording {
             keyboardAudioSession.cancelRecording()
+            if keyboardDictationCaptureMode == .pictureInPicture {
+                keyboardAudioSession.stop(discardInputEngine: true)
+            }
         }
         teardownLivePartialPreview(clearText: true)
         hostRecordingUsesKeyboardAudioSession = false

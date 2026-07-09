@@ -744,7 +744,7 @@ final class StandbyAudioSession: ObservableObject {
     @Published private(set) var isActive = false
     @Published private(set) var level: Float = 0
 
-    private let engine = AVAudioEngine()
+    private var engine = AVAudioEngine()
     private let fileWriter = AudioTapFileWriter()
     private let pcmBufferSink = AudioTapBufferSink()
     private let levelThrottler = LevelUpdateThrottler(interval: 1.0 / 20.0)
@@ -793,6 +793,25 @@ final class StandbyAudioSession: ObservableObject {
 
         try await startEngineWithRetry(purpose: .standby, reuseActiveSession: reuseActiveSession)
         KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.sessionStarted)
+    }
+
+    func startWithFreshInputEngine(
+        reuseActiveSession: Bool = false,
+        deactivateExistingSession: Bool = false
+    ) async throws {
+        guard !fileWriter.isRecording else {
+            KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.sessionStarted)
+            return
+        }
+        // PiP keeps the visual bridge alive but intentionally does not keep
+        // microphone input warm. Its input graph is recording-scoped, so a
+        // stale route/voice-processing failure must not survive into the next
+        // press.
+        discardInactiveInputEngine(
+            deactivateSession: deactivateExistingSession,
+            reason: "fresh_start"
+        )
+        try await start(reuseActiveSession: reuseActiveSession)
     }
 
     private func observeAudioSessionInvalidations() {
@@ -942,13 +961,16 @@ final class StandbyAudioSession: ObservableObject {
                         "error": error.localizedDescription,
                     ]
                 )
-                removeInputTap()
-                engine.stop()
-                isActive = false
-                currentFormat = nil
-                needsEngineRestart = true
+                discardInactiveInputEngine(
+                    deactivateSession: false,
+                    reason: "start_failed_retry"
+                )
             }
         }
+        discardInactiveInputEngine(
+            deactivateSession: true,
+            reason: "start_failed_exhausted"
+        )
         throw lastError ?? NSError(
             domain: "Typeforme",
             code: 6,
@@ -998,7 +1020,7 @@ final class StandbyAudioSession: ObservableObject {
         }
     }
 
-    func stop(deactivateSession: Bool = true) {
+    func stop(deactivateSession: Bool = true, discardInputEngine: Bool = false) {
         recordingDidActivateCaptureCategory = false
         recordingShouldYieldOtherAudio = false
         onPCMBuffer = nil
@@ -1011,7 +1033,30 @@ final class StandbyAudioSession: ObservableObject {
         if deactivateSession {
             IOSRecordingAudioSession.deactivateAndNotifyOthers()
         }
+        if discardInputEngine {
+            replaceInputEngine(reason: "stop_discard")
+        }
         KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.sessionEnded)
+    }
+
+    func discardInactiveInputEngine(
+        deactivateSession: Bool = true,
+        reason: String
+    ) {
+        guard !fileWriter.isRecording else { return }
+        recordingDidActivateCaptureCategory = false
+        recordingShouldYieldOtherAudio = false
+        removeInputTap()
+        _ = fileWriter.cancel()
+        engine.stop()
+        isActive = false
+        level = 0
+        currentFormat = nil
+        needsEngineRestart = false
+        if deactivateSession {
+            IOSRecordingAudioSession.deactivateAndNotifyOthers()
+        }
+        replaceInputEngine(reason: reason)
     }
 
     func stopForAudioInterruption() {
@@ -1027,6 +1072,17 @@ final class StandbyAudioSession: ObservableObject {
         level = 0
         currentFormat = nil
         needsEngineRestart = true
+    }
+
+    private func replaceInputEngine(reason: String) {
+        recordAudioDiagnostic(
+            event: "keyboard_audio_engine_discarded",
+            fields: ["reason": reason]
+        )
+        engine = AVAudioEngine()
+        hasInstalledTap = false
+        currentFormat = nil
+        needsEngineRestart = false
     }
 
     func beginRecording() async throws -> URL {
