@@ -25,6 +25,24 @@ struct VerbatimSpanMaskTests {
         #expect(try #require(mask.restoring(mask.maskedText)) == input)
     }
 
+    @Test func uriExcludesTrailingASCIISentencePunctuationAndClosers() throws {
+        let input = "See (https://example.com/path?q=a,b). Next"
+        let mask = VerbatimSpanMask(input)
+        let uri = try #require(mask.entries.first { $0.text.hasPrefix("https://") })
+
+        #expect(uri.text == "https://example.com/path?q=a,b")
+        #expect(try #require(mask.restoring(mask.maskedText)) == input)
+    }
+
+    @Test func unclosedInlineCodeIsProtectedThroughEndOfLine() throws {
+        let input = "before `x!=y && foo(a,b)\nafter"
+        let mask = VerbatimSpanMask(input)
+        let code = try #require(mask.entries.first { $0.text.hasPrefix("`x!=y") })
+
+        #expect(code.text == "`x!=y && foo(a,b)")
+        #expect(try #require(mask.restoring(mask.maskedText)) == input)
+    }
+
     @Test func unclosedFenceIsProtectedThroughEndOfInput() throws {
         let input = "before\n```json\n  {\"q\":\"a,b?\"}\n"
         let mask = VerbatimSpanMask(input)

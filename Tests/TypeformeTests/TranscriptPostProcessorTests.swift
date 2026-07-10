@@ -130,6 +130,29 @@ struct TranscriptPostProcessorTests {
         #expect(output.contains(fenced))
     }
 
+    @Test func fencedCodePreservesLinePlacementInEveryModeAndIsIdempotent() {
+        let input = """
+        before
+        ```json
+          {"q":"a,b?", "path":"/users"}
+        ```
+        after
+        """
+        let once = TranscriptPostProcessor.clean(
+            input,
+            languageIDs: ["en-US"],
+            preserveLineBreaks: false
+        )
+        let twice = TranscriptPostProcessor.clean(
+            once,
+            languageIDs: ["en-US"],
+            preserveLineBreaks: false
+        )
+
+        #expect(once == input)
+        #expect(twice == once)
+    }
+
     @Test func preservesBareAndSyntaxBearingCommands() {
         #expect(
             TranscriptPostProcessor.clean("npm install 然后 git status", languageIDs: ["zh-CN", "en-US"])

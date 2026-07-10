@@ -10,6 +10,7 @@ enum TranscriptPostProcessor {
         punctuationPreference: PunctuationOutputPreference = .normal
     ) -> String {
         let mask = VerbatimSpanMask(text)
+        let preserveLineBreaks = preserveLineBreaks || mask.requiresLineBreakPreservation
         var out = mask.maskedText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !out.isEmpty else { return out }
 

@@ -14,6 +14,10 @@ struct VerbatimSpanMask {
     let entries: [Entry]
     let markerPrefix: String
 
+    var requiresLineBreakPreservation: Bool {
+        entries.contains { $0.text.contains("\n") || $0.text.contains("\r") }
+    }
+
     init(_ text: String) {
         originalText = text
 
@@ -80,18 +84,18 @@ struct VerbatimSpanMask {
         guard !text.isEmpty else { return [] }
         let fullRange = NSRange(location: 0, length: (text as NSString).length)
         var ranges = fencedCodeRanges(in: text)
+        ranges.append(contentsOf: uriRanges(in: text, fullRange: fullRange))
 
         let patterns = [
             // Inline code with matching backtick delimiter length.
             #"(?<!`)(`+)[^\n]*?\1(?!`)"#,
-            // URLs and custom URL schemes. CJK sentence punctuation terminates
-            // a URI; RFC-style ASCII query/fragment punctuation remains inside.
-            #"(?i)(?<![A-Za-z0-9_])[A-Za-z][A-Za-z0-9+.\-]*://[^\s`\"'“”‘’<>\u3000，。；！？、：]+"#,
+            // An unmatched inline delimiter protects through the end of line.
+            #"(?m)(?<!`)(`+)[^`\n]*$"#,
             // Quoted and unquoted POSIX paths, including escaped spaces.
             #"(?:\"(?:~/|\./|\.\./|/)[^\"\n]+\"|'(?:~/|\./|\.\./|/)[^'\n]+')"#,
-            #"(?<![A-Za-z0-9_])(?:~/|\./|\.\./|/)(?:\\.|[^\s`\"'“”‘’<>\u3000，。；！？、：])+"#,
+            #"(?<![A-Za-z0-9_])(?:~/|\./|\.\./|/)(?:\\.|[A-Za-z0-9._~%+\-@/])+"#,
             // Windows drive and UNC paths.
-            #"(?i)(?<![A-Za-z0-9_])(?:[A-Z]:\\|\\\\)(?:\\.|[^\s`\"'“”‘’<>\u3000，。；！？、：])+"#,
+            #"(?i)(?<![A-Za-z0-9_])(?:[A-Z]:\\|\\\\)(?:\\.|[A-Za-z0-9._~%+\-@\\])+"#,
             // Standalone query strings and assignments.
             #"(?<![A-Za-z0-9_])(?:\?[A-Za-z0-9._~%+\-]+=[A-Za-z0-9._~%+\-/?#&=,:;!]+|[A-Za-z_][A-Za-z0-9_.\-]*=[A-Za-z0-9._~%+\-/?#&=,:;!]+)"#,
             // Common syntax-bearing literals.
@@ -102,7 +106,7 @@ struct VerbatimSpanMask {
             #"\b(?:[A-Za-z_][A-Za-z0-9_\-]*\.)+[A-Za-z0-9_\-]+\b"#,
             #"(?<![A-Za-z0-9_])\d+(?:\.\d+)+(?![A-Za-z0-9_])"#,
             #"(?<![A-Za-z0-9_])--?[A-Za-z0-9][A-Za-z0-9_\-]*(?:=[^\s，。；！？、：]+)?"#,
-            #"\S*(?:&&|\|\||!=|==)\S*"#,
+            #"(?<![A-Za-z0-9_])(?:[A-Za-z_][A-Za-z0-9_.]*|\d+(?:\.\d+)?)(?:!=|==)(?:[A-Za-z_][A-Za-z0-9_.]*|\d+(?:\.\d+)?)(?![A-Za-z0-9_])"#,
             // Preserve a quoted argument following a CLI flag as one span.
             #"--?[A-Za-z0-9][A-Za-z0-9_\-]*\s+(?:\"[^\"\n]*\"|'[^'\n]*')"#,
         ]
@@ -112,6 +116,51 @@ struct VerbatimSpanMask {
             ranges.append(contentsOf: regex.matches(in: text, range: fullRange).map(\.range))
         }
         return mergedOverlappingRanges(ranges)
+    }
+
+    private static func uriRanges(in text: String, fullRange: NSRange) -> [NSRange] {
+        let pattern = #"(?i)(?<![A-Za-z0-9_])[A-Za-z][A-Za-z0-9+.\-]*://[^\s`\"'“”‘’<>\u3000，。；！？、：]+"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
+        let nsText = text as NSString
+        return regex.matches(in: text, range: fullRange).compactMap { match in
+            trimmedURIRange(match.range, in: nsText)
+        }
+    }
+
+    private static func trimmedURIRange(_ range: NSRange, in text: NSString) -> NSRange? {
+        let candidate = text.substring(with: range)
+        var characters = Array(candidate)
+        let openParentheses = characters.count { $0 == "(" }
+        var closeParentheses = characters.count { $0 == ")" }
+        let openBrackets = characters.count { $0 == "[" }
+        var closeBrackets = characters.count { $0 == "]" }
+        let openBraces = characters.count { $0 == "{" }
+        var closeBraces = characters.count { $0 == "}" }
+
+        while let last = characters.last {
+            if last == "." || last == "!" || last == ";" {
+                characters.removeLast()
+                continue
+            }
+            if last == ")" && closeParentheses > openParentheses {
+                characters.removeLast()
+                closeParentheses -= 1
+                continue
+            }
+            if last == "]" && closeBrackets > openBrackets {
+                characters.removeLast()
+                closeBrackets -= 1
+                continue
+            }
+            if last == "}" && closeBraces > openBraces {
+                characters.removeLast()
+                closeBraces -= 1
+                continue
+            }
+            break
+        }
+        let length = String(characters).utf16.count
+        return length > 0 ? NSRange(location: range.location, length: length) : nil
     }
 
     private static func fencedCodeRanges(in text: String) -> [NSRange] {
