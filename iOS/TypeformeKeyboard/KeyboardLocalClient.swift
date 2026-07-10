@@ -116,7 +116,7 @@ actor KeyboardLocalClient {
             keyboardLocalClientLog.notice("status snapshot skipped: missing bridge token")
             throw URLError(.userAuthenticationRequired)
         }
-        let request = KeyboardLocalBridgeRequest.statusSnapshot(bridgeToken: bridgeToken)
+        let request = KeyboardLocalBridgeRequest.statusSnapshot()
         let generation = shutdownGeneration
         var urlRequest = URLRequest(url: url)
         urlRequest.timeoutInterval = timeout
@@ -197,7 +197,12 @@ actor KeyboardLocalClient {
             )
 
             do {
-                let request = KeyboardLocalBridgeRequest.statusSnapshot(bridgeToken: bridgeToken)
+                guard let request = KeyboardLocalBridgeRequest.statusSnapshot().authenticated(
+                    bridgeToken: bridgeToken,
+                    serverNonce: hello.nonce
+                ) else {
+                    throw URLError(.userAuthenticationRequired)
+                }
                 let payload = try JSONEncoder().encode(request)
                 try await task.send(.data(payload))
                 let message = try await receiveMessage(on: task, timeout: statusTimeout)
@@ -244,7 +249,7 @@ actor KeyboardLocalClient {
             keyboardLocalClientLog.notice("command send skipped: missing bridge token action=\(command.action.rawValue, privacy: .public) command_id=\(command.id, privacy: .public)")
             throw URLError(.userAuthenticationRequired)
         }
-        let request = KeyboardLocalBridgeRequest.command(command, bridgeToken: bridgeToken)
+        let request = KeyboardLocalBridgeRequest.command(command)
         let generation = shutdownGeneration
         var urlRequest = URLRequest(url: url)
         urlRequest.timeoutInterval = timeout
@@ -321,7 +326,13 @@ private func keyboardBridgeStatusStream(
     guard KeyboardLocalBridgeAuth.verifyServerHello(hello, bridgeToken: bridgeToken) else {
         throw URLError(.userAuthenticationRequired)
     }
-    let payload = try JSONEncoder().encode(KeyboardLocalBridgeRequest.statusStream(bridgeToken: bridgeToken))
+    guard let request = KeyboardLocalBridgeRequest.statusStream().authenticated(
+        bridgeToken: bridgeToken,
+        serverNonce: hello.nonce
+    ) else {
+        throw URLError(.userAuthenticationRequired)
+    }
+    let payload = try JSONEncoder().encode(request)
     try await task.send(.data(payload))
     let firstMessage = try await receiveMessage(on: task, timeout: timeout)
     let firstStatus = try JSONDecoder().decode(KeyboardBridgeStatus.self, from: try messageData(firstMessage))
@@ -367,7 +378,13 @@ private func keyboardBridgeCommandRoundTrip(
             guard KeyboardLocalBridgeAuth.verifyServerHello(hello, bridgeToken: helloBridgeToken) else {
                 throw URLError(.userAuthenticationRequired)
             }
-            let payload = try JSONEncoder().encode(request)
+            guard let authenticatedRequest = request.authenticated(
+                bridgeToken: helloBridgeToken,
+                serverNonce: hello.nonce
+            ) else {
+                throw URLError(.userAuthenticationRequired)
+            }
+            let payload = try JSONEncoder().encode(authenticatedRequest)
             try await task.send(.data(payload))
             let message = try await task.receive()
             return try JSONDecoder().decode(KeyboardBridgeStatus.self, from: try messageData(message))

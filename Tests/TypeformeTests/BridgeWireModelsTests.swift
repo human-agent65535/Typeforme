@@ -23,6 +23,13 @@ struct BridgeWireModelsTests {
         #expect(BridgeClientIdentityHeaders.bundleID == "X-Typeforme-Client-Bundle-ID")
     }
 
+    @Test func bridgeHTTPResponsesHaveEndpointSpecificHardLimits() {
+        #expect(BridgeHTTPClientCore.responseByteLimit(for: BridgeAPIEndpoint.health.path) == 256 * 1024)
+        #expect(BridgeHTTPClientCore.responseByteLimit(for: BridgeAPIEndpoint.settingsRead.path) == 8 * 1024 * 1024)
+        #expect(BridgeHTTPClientCore.responseByteLimit(for: BridgeAPIEndpoint.dictate.path) == 4 * 1024 * 1024)
+        #expect(BridgeHTTPClientCore.responseByteLimit(for: BridgeAPIEndpoint.refine.path) == 4 * 1024 * 1024)
+    }
+
     @Test func recognitionSourceContractNormalizesSharedMetadata() {
         #expect(RecognitionSource.allCases.map(\.rawValue) == [
             "qwen3-asr-llama",
@@ -254,9 +261,13 @@ struct BridgeWireModelsTests {
                 DictionaryEntry(id: entryID, type: "person", surface: " Alice "),
             ]
         )
-        let request = BridgeSettingsUpdateRequest(editableSnapshot: snapshot)
+        let request = BridgeSettingsUpdateRequest(
+            editableSnapshot: snapshot,
+            expectedSettingsRevision: "revision-1"
+        )
 
         let object = try encodedJSONObject(request)
+        #expect(object["expected_settings_revision"] as? String == "revision-1")
         #expect(object["enabled_recognition_sources"] as? [String] == [RecognitionSource.qwen.rawValue])
         #expect((object["asr_model_ids_by_recognition_source"] as? [String: String])?[RecognitionSource.qwen.rawValue] == QwenASRModelCatalog.defaultID)
         #expect(object["language_ids"] as? [String] == ["en-US"])
@@ -278,10 +289,11 @@ struct BridgeWireModelsTests {
     }
 
     @Test func settingsUpdateRequestDecodesPartialWrites() throws {
-        let data = Data(#"{"correction_timeout_ms":2000,"auto_commit":false,"debug_mode":true}"#.utf8)
+        let data = Data(#"{"expected_settings_revision":"revision-1","correction_timeout_ms":2000,"auto_commit":false,"debug_mode":true}"#.utf8)
 
         let request = try JSONDecoder().decode(BridgeSettingsUpdateRequest.self, from: data)
 
+        #expect(request.expectedSettingsRevision == "revision-1")
         #expect(request.enabledRecognitionSources == nil)
         #expect(request.correctionTimeoutMs == 2000)
         #expect(request.autoCommit == false)

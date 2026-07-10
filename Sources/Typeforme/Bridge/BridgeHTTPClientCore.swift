@@ -8,6 +8,7 @@ enum BridgeHTTPClientCoreError: Error {
     case notFound
     case server(String)
     case decodingFailed(String)
+    case responseTooLarge(limit: Int)
 }
 
 struct BridgeHTTPClientCore {
@@ -44,7 +45,10 @@ struct BridgeHTTPClientCore {
             request.setValue(contentType ?? "application/octet-stream", forHTTPHeaderField: "Content-Type")
         }
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await boundedResponse(
+            for: request,
+            maxBytes: Self.responseByteLimit(for: path)
+        )
         return try decodeResponse(data: data, response: response)
     }
 
@@ -67,8 +71,53 @@ struct BridgeHTTPClientCore {
         request.setValue(String(contentLength), forHTTPHeaderField: "Content-Length")
         request.httpBodyStream = InputStream(url: bodyFileURL)
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await boundedResponse(
+            for: request,
+            maxBytes: Self.responseByteLimit(for: path)
+        )
         return try decodeResponse(data: data, response: response)
+    }
+
+    static func responseByteLimit(for path: String) -> Int {
+        switch path {
+        case BridgeAPIEndpoint.health.path:
+            return 256 * 1024
+        case BridgeAPIEndpoint.settingsRead.path, BridgeAPIEndpoint.settingsWrite.path:
+            return 8 * 1024 * 1024
+        case BridgeAPIEndpoint.dictate.path,
+             BridgeAPIEndpoint.refine.path,
+             BridgeAPIEndpoint.editText.path:
+            return 4 * 1024 * 1024
+        default:
+            return 2 * 1024 * 1024
+        }
+    }
+
+    private func boundedResponse(
+        for request: URLRequest,
+        maxBytes: Int
+    ) async throws -> (Data, URLResponse) {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+
+        let (bytes, response) = try await session.bytes(for: request)
+        if response.expectedContentLength > Int64(maxBytes) {
+            throw BridgeHTTPClientCoreError.responseTooLarge(limit: maxBytes)
+        }
+
+        var data = Data()
+        if response.expectedContentLength > 0 {
+            data.reserveCapacity(min(Int(response.expectedContentLength), maxBytes))
+        }
+        for try await byte in bytes {
+            guard data.count < maxBytes else {
+                throw BridgeHTTPClientCoreError.responseTooLarge(limit: maxBytes)
+            }
+            data.append(byte)
+        }
+        return (data, response)
     }
 
     func makeRequest(

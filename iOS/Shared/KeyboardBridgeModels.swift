@@ -935,7 +935,7 @@ struct KeyboardBridgeCommand: Codable, Equatable, Sendable {
     }
 
     func isFresh(now: TimeInterval = Date().timeIntervalSince1970) -> Bool {
-        now - createdAt < Self.maxAge
+        createdAt <= now && now - createdAt < Self.maxAge
     }
 }
 
@@ -978,14 +978,24 @@ struct KeyboardLocalBridgeHello: Codable, Equatable, Sendable {
 }
 
 struct KeyboardLocalBridgeProof: Codable, Equatable, Sendable {
-    let nonce: String
+    let serverNonce: String
+    let clientNonce: String
+    let createdAtMilliseconds: Int64
     let proof: String
+
+    enum CodingKeys: String, CodingKey {
+        case serverNonce = "server_nonce"
+        case clientNonce = "client_nonce"
+        case createdAtMilliseconds = "created_at_ms"
+        case proof
+    }
 }
 
 enum KeyboardLocalBridgeAuth {
-    private static let version = 1
+    private static let version = 2
     private static let serverPurpose = "server"
     private static let clientPurpose = "client"
+    private static let clientProofMaxAgeMilliseconds: Int64 = 60_000
 
     static func makeServerHello(bridgeToken: String) -> KeyboardLocalBridgeHello? {
         let nonce = makeNonce()
@@ -998,20 +1008,55 @@ enum KeyboardLocalBridgeAuth {
         return verify(proof: hello.proof, bridgeToken: bridgeToken, purpose: serverPurpose, nonce: hello.nonce)
     }
 
-    static func makeClientProof(bridgeToken: String) -> KeyboardLocalBridgeProof? {
-        let nonce = makeNonce()
-        guard let proof = proof(bridgeToken: bridgeToken, purpose: clientPurpose, nonce: nonce) else { return nil }
-        return KeyboardLocalBridgeProof(nonce: nonce, proof: proof)
+    static func makeClientProof(
+        bridgeToken: String,
+        serverNonce: String,
+        requestAction: String,
+        bodyDigest: String,
+        now: TimeInterval = Date().timeIntervalSince1970
+    ) -> KeyboardLocalBridgeProof? {
+        let clientNonce = makeNonce()
+        let createdAtMilliseconds = Int64((now * 1_000).rounded(.down))
+        guard let proof = clientProof(
+            bridgeToken: bridgeToken,
+            serverNonce: serverNonce,
+            clientNonce: clientNonce,
+            createdAtMilliseconds: createdAtMilliseconds,
+            requestAction: requestAction,
+            bodyDigest: bodyDigest
+        ) else { return nil }
+        return KeyboardLocalBridgeProof(
+            serverNonce: serverNonce,
+            clientNonce: clientNonce,
+            createdAtMilliseconds: createdAtMilliseconds,
+            proof: proof
+        )
     }
 
-    static func verifyClientProof(_ authentication: KeyboardLocalBridgeProof?, bridgeToken: String) -> Bool {
-        guard let authentication else { return false }
-        return verify(
-            proof: authentication.proof,
+    static func verifyClientProof(
+        _ authentication: KeyboardLocalBridgeProof?,
+        bridgeToken: String,
+        serverNonce: String,
+        requestAction: String,
+        bodyDigest: String,
+        now: TimeInterval = Date().timeIntervalSince1970
+    ) -> Bool {
+        guard let authentication,
+              authentication.serverNonce == serverNonce
+        else { return false }
+        let nowMilliseconds = Int64((now * 1_000).rounded(.down))
+        guard authentication.createdAtMilliseconds <= nowMilliseconds,
+              nowMilliseconds - authentication.createdAtMilliseconds <= clientProofMaxAgeMilliseconds
+        else { return false }
+        guard let expectedProof = clientProof(
             bridgeToken: bridgeToken,
-            purpose: clientPurpose,
-            nonce: authentication.nonce
-        )
+            serverNonce: serverNonce,
+            clientNonce: authentication.clientNonce,
+            createdAtMilliseconds: authentication.createdAtMilliseconds,
+            requestAction: requestAction,
+            bodyDigest: bodyDigest
+        ) else { return false }
+        return constantTimeEquals(authentication.proof, expectedProof)
     }
 
     private static func makeNonce() -> String {
@@ -1024,6 +1069,36 @@ enum KeyboardLocalBridgeAuth {
               !nonce.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else { return nil }
         let message = "typeforme.keyboard.local.\(purpose).v\(version).\(nonce)"
+        let key = SymmetricKey(data: Data(token.utf8))
+        let mac = HMAC<SHA256>.authenticationCode(for: Data(message.utf8), using: key)
+        return mac.map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func clientProof(
+        bridgeToken: String,
+        serverNonce: String,
+        clientNonce: String,
+        createdAtMilliseconds: Int64,
+        requestAction: String,
+        bodyDigest: String
+    ) -> String? {
+        let token = bridgeToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !token.isEmpty,
+              !serverNonce.isEmpty,
+              !clientNonce.isEmpty,
+              !requestAction.isEmpty,
+              !bodyDigest.isEmpty
+        else { return nil }
+        let message = [
+            "typeforme.keyboard.local",
+            clientPurpose,
+            "v\(version)",
+            serverNonce,
+            clientNonce,
+            String(createdAtMilliseconds),
+            requestAction,
+            bodyDigest,
+        ].joined(separator: ".")
         let key = SymmetricKey(data: Data(token.utf8))
         let mac = HMAC<SHA256>.authenticationCode(for: Data(message.utf8), using: key)
         return mac.map { String(format: "%02x", $0) }.joined()
@@ -1059,28 +1134,78 @@ struct KeyboardLocalBridgeRequest: Codable, Equatable, Sendable {
     let authentication: KeyboardLocalBridgeProof?
     let command: KeyboardBridgeCommand?
 
-    static func statusStream(bridgeToken: String?) -> KeyboardLocalBridgeRequest {
+    static func statusStream() -> KeyboardLocalBridgeRequest {
         KeyboardLocalBridgeRequest(
             action: .statusStream,
-            authentication: bridgeToken.flatMap { KeyboardLocalBridgeAuth.makeClientProof(bridgeToken: $0) },
+            authentication: nil,
             command: nil
         )
     }
 
-    static func statusSnapshot(bridgeToken: String?) -> KeyboardLocalBridgeRequest {
+    static func statusSnapshot() -> KeyboardLocalBridgeRequest {
         KeyboardLocalBridgeRequest(
             action: .statusSnapshot,
-            authentication: bridgeToken.flatMap { KeyboardLocalBridgeAuth.makeClientProof(bridgeToken: $0) },
+            authentication: nil,
             command: nil
         )
     }
 
-    static func command(_ command: KeyboardBridgeCommand, bridgeToken: String?) -> KeyboardLocalBridgeRequest {
+    static func command(_ command: KeyboardBridgeCommand) -> KeyboardLocalBridgeRequest {
         KeyboardLocalBridgeRequest(
             action: .command,
-            authentication: bridgeToken.flatMap { KeyboardLocalBridgeAuth.makeClientProof(bridgeToken: $0) },
+            authentication: nil,
             command: command
         )
+    }
+
+    func authenticated(
+        bridgeToken: String,
+        serverNonce: String,
+        now: TimeInterval = Date().timeIntervalSince1970
+    ) -> KeyboardLocalBridgeRequest? {
+        guard let bodyDigest = authenticationBodyDigest(),
+              let authentication = KeyboardLocalBridgeAuth.makeClientProof(
+                bridgeToken: bridgeToken,
+                serverNonce: serverNonce,
+                requestAction: action.rawValue,
+                bodyDigest: bodyDigest,
+                now: now
+              )
+        else { return nil }
+        return KeyboardLocalBridgeRequest(
+            action: action,
+            authentication: authentication,
+            command: command
+        )
+    }
+
+    func hasValidAuthentication(
+        bridgeToken: String,
+        serverNonce: String,
+        now: TimeInterval = Date().timeIntervalSince1970
+    ) -> Bool {
+        guard let bodyDigest = authenticationBodyDigest() else { return false }
+        return KeyboardLocalBridgeAuth.verifyClientProof(
+            authentication,
+            bridgeToken: bridgeToken,
+            serverNonce: serverNonce,
+            requestAction: action.rawValue,
+            bodyDigest: bodyDigest,
+            now: now
+        )
+    }
+
+    private func authenticationBodyDigest() -> String? {
+        struct SignedBody: Encodable {
+            let action: Action
+            let command: KeyboardBridgeCommand?
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        guard let data = try? encoder.encode(SignedBody(action: action, command: command)) else {
+            return nil
+        }
+        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
     enum CodingKeys: String, CodingKey {

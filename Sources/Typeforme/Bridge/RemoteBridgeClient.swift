@@ -102,7 +102,16 @@ struct RemoteBridgeClient {
         _ settings: BridgeSettingsPayload,
         timeout: TimeInterval = 15
     ) async throws -> BridgeSettingsPayload {
-        let payload = BridgeSettingsUpdateRequest(editableSnapshot: settings.editableSnapshot)
+        guard let expectedRevision = settings.settingsRevision?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !expectedRevision.isEmpty
+        else {
+            throw RemoteBridgeClientError.invalidResponse
+        }
+        let payload = BridgeSettingsUpdateRequest(
+            editableSnapshot: settings.editableSnapshot,
+            expectedSettingsRevision: expectedRevision
+        )
         let endpoint = BridgeAPIEndpoint.settingsWrite
         var response: BridgeSettingsPayload = try await request(
             path: endpoint.path,
@@ -558,7 +567,7 @@ struct RemoteBridgeClient {
         switch error {
         case .invalidURL:
             return RemoteBridgeClientError.invalidURL
-        case .invalidResponse, .decodingFailed(_):
+        case .invalidResponse, .decodingFailed(_), .responseTooLarge:
             return RemoteBridgeClientError.invalidResponse
         case .unauthorized:
             return RemoteBridgeClientError.unauthorized

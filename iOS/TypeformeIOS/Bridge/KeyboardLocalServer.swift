@@ -406,7 +406,12 @@ final class KeyboardLocalServer: @unchecked Sendable {
                     source: "host-local-server",
                     event: "hello_sent"
                 )
-                self.receiveMessage(from: connection, generation: generation, expectedToken: expectedToken)
+                self.receiveMessage(
+                    from: connection,
+                    generation: generation,
+                    expectedToken: expectedToken,
+                    serverNonce: hello.nonce
+                )
                 self.removeTask(taskID)
             }
         }
@@ -423,7 +428,12 @@ final class KeyboardLocalServer: @unchecked Sendable {
         }
     }
 
-    private func receiveMessage(from connection: NWConnection, generation: UInt, expectedToken: String) {
+    private func receiveMessage(
+        from connection: NWConnection,
+        generation: UInt,
+        expectedToken: String,
+        serverNonce: String
+    ) {
         connection.receiveMessage { [weak self] data, _, _, error in
             guard let self else {
                 connection.cancel()
@@ -481,7 +491,11 @@ final class KeyboardLocalServer: @unchecked Sendable {
                     self.removeTask(taskID)
                     return
                 }
-                let authorized = self.isAuthorized(request, expectedToken: expectedToken)
+                let authorized = self.isAuthorized(
+                    request,
+                    expectedToken: expectedToken,
+                    serverNonce: serverNonce
+                )
                 let actionName = request.command?.action.rawValue ?? request.action.rawValue
                 keyboardLocalServerLog.notice("request received action=\(actionName, privacy: .public) authorized=\(authorized, privacy: .public) command_id=\(request.command?.id ?? "none", privacy: .public)")
                 KeyboardDiagnosticEventLog.record(
@@ -551,8 +565,15 @@ final class KeyboardLocalServer: @unchecked Sendable {
         }
     }
 
-    private func isAuthorized(_ request: KeyboardLocalBridgeRequest, expectedToken: String) -> Bool {
-        KeyboardLocalBridgeAuth.verifyClientProof(request.authentication, bridgeToken: expectedToken)
+    private func isAuthorized(
+        _ request: KeyboardLocalBridgeRequest,
+        expectedToken: String,
+        serverNonce: String
+    ) -> Bool {
+        request.hasValidAuthentication(
+            bridgeToken: expectedToken,
+            serverNonce: serverNonce
+        )
     }
 
     private func sendHello(
@@ -802,7 +823,12 @@ final class KeyboardLocalServer: @unchecked Sendable {
             guard KeyboardLocalBridgeAuth.verifyServerHello(hello, bridgeToken: expectedToken) else {
                 throw URLError(.userAuthenticationRequired)
             }
-            let request = KeyboardLocalBridgeRequest.statusSnapshot(bridgeToken: expectedToken)
+            guard let request = KeyboardLocalBridgeRequest.statusSnapshot().authenticated(
+                bridgeToken: expectedToken,
+                serverNonce: hello.nonce
+            ) else {
+                throw URLError(.userAuthenticationRequired)
+            }
             try await task.send(.data(try JSONEncoder().encode(request)))
             _ = try JSONDecoder().decode(
                 KeyboardBridgeStatus.self,

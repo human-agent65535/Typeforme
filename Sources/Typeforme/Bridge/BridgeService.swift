@@ -6,6 +6,7 @@ enum BridgeServiceError: LocalizedError {
     case emptyTranscript
     case missingSession
     case invalidRequest(String)
+    case settingsConflict(String)
 
     var errorDescription: String? {
         switch self {
@@ -17,6 +18,8 @@ enum BridgeServiceError: LocalizedError {
             return "Refine session not found or expired"
         case .invalidRequest(let why):
             return "Invalid request: \(why)"
+        case .settingsConflict(let currentRevision):
+            return "Settings changed on the Mac; reload before saving (current revision: \(currentRevision))"
         }
     }
 }
@@ -135,6 +138,15 @@ final class BridgeService {
     }
 
     func updateSettings(_ request: BridgeSettingsUpdateRequest) async throws -> BridgeSettingsPayload {
+        let currentRevision = BridgeSettingsPayload.currentSettingsRevision(
+            userDictionary: dictionary.sortedSnapshot()
+        )
+        let expectedRevision = request.expectedSettingsRevision
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard expectedRevision == currentRevision else {
+            throw BridgeServiceError.settingsConflict(currentRevision)
+        }
+
         let oldSources = AppSettings.configuredRecognitionSources
         let oldQwenASRModelID = AppSettings.asrQwenLlamaModelID
         let sources = try resolveRecognitionSources(request.enabledRecognitionSources) ?? oldSources
@@ -185,24 +197,67 @@ final class BridgeService {
             externalLLMModel: proposedExternalLLMModel
         )
 
+        // Resolve every value that can fail before changing any persisted
+        // setting. updateSettings is MainActor-isolated, so the synchronous
+        // commit below is observed as one revision by other Bridge requests.
+        var resolvedModelIDs: [RecognitionSource: String] = [:]
+        if let modelIDs = request.asrModelIDsByRecognitionSource {
+            for (sourceID, rawModelID) in modelIDs {
+                guard let source = RecognitionSource(
+                    rawValue: sourceID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                ) else {
+                    throw BridgeServiceError.invalidRequest("Unknown recognition source: \(sourceID)")
+                }
+                resolvedModelIDs[source] = try resolveASRModelID(rawModelID, source: source)
+            }
+        }
+
+        let proposedNumberOutputPreference: NumberOutputPreference?
+        if let rawPreference = request.numberOutputPreference {
+            guard let preference = NumberOutputPreference(rawValue: rawPreference) else {
+                throw BridgeServiceError.invalidRequest("Unknown number output preference: \(rawPreference)")
+            }
+            proposedNumberOutputPreference = preference
+        } else {
+            proposedNumberOutputPreference = nil
+        }
+
+        let proposedPunctuationPreference: PunctuationOutputPreference?
+        if let rawPreference = request.punctuationPreference {
+            guard let preference = PunctuationOutputPreference(rawValue: rawPreference) else {
+                throw BridgeServiceError.invalidRequest("Unknown punctuation preference: \(rawPreference)")
+            }
+            proposedPunctuationPreference = preference
+        } else {
+            proposedPunctuationPreference = nil
+        }
+
+        let livePreviewSourceToApply: VoiceLivePreviewSource?
+        if let requestedLivePreviewSource {
+            livePreviewSourceToApply = requestedLivePreviewSource
+        } else if request.enabledRecognitionSources != nil || request.correctionMode != nil {
+            livePreviewSourceToApply = BridgeSettingsPayload.normalizedLivePreviewSource(
+                AppSettings.voiceLivePreviewSource,
+                sources: sources,
+                correctionMode: settingsCorrectionMode
+            )
+        } else {
+            livePreviewSourceToApply = nil
+        }
+        let normalizedDictionary = request.userDictionary.map(DictionaryEntry.normalizedEntries)
+
         if request.enabledRecognitionSources != nil {
             AppSettings.setEnabledRecognitionSources(sources)
         }
 
-        if let modelIDs = request.asrModelIDsByRecognitionSource {
-            for (sourceID, rawModelID) in modelIDs {
-                guard let source = RecognitionSource(rawValue: sourceID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) else {
-                    throw BridgeServiceError.invalidRequest("Unknown recognition source: \(sourceID)")
-                }
-                let modelID = try resolveASRModelID(rawModelID, source: source)
-                switch source {
-                case .qwen:
-                    UserDefaults.standard.set(modelID, forKey: AppSettings.Keys.asrQwenLlamaModelID)
-                case .nvidiaNemotron:
-                    UserDefaults.standard.set(modelID, forKey: AppSettings.Keys.asrNvidiaNemotronModelID)
-                case .appleSpeech:
-                    break
-                }
+        for (source, modelID) in resolvedModelIDs {
+            switch source {
+            case .qwen:
+                UserDefaults.standard.set(modelID, forKey: AppSettings.Keys.asrQwenLlamaModelID)
+            case .nvidiaNemotron:
+                UserDefaults.standard.set(modelID, forKey: AppSettings.Keys.asrNvidiaNemotronModelID)
+            case .appleSpeech:
+                break
             }
         }
         if request.languageIDs != nil || request.enabledRecognitionSources != nil {
@@ -245,34 +300,21 @@ final class BridgeService {
         if request.fastASRSource != nil {
             UserDefaults.standard.set(settingsFastASRSource.rawValue, forKey: AppSettings.Keys.fastASRSource)
         }
-        if let requestedLivePreviewSource {
-            applyLivePreviewSource(requestedLivePreviewSource)
-        } else if request.enabledRecognitionSources != nil || request.correctionMode != nil {
-            let livePreviewSource = BridgeSettingsPayload.normalizedLivePreviewSource(
-                AppSettings.voiceLivePreviewSource,
-                sources: sources,
-                correctionMode: settingsCorrectionMode
-            )
-            applyLivePreviewSource(livePreviewSource)
+        if let livePreviewSourceToApply {
+            applyLivePreviewSource(livePreviewSourceToApply)
         }
-        if let rawPreference = request.numberOutputPreference {
-            guard let preference = NumberOutputPreference(rawValue: rawPreference) else {
-                throw BridgeServiceError.invalidRequest("Unknown number output preference: \(rawPreference)")
-            }
+        if let preference = proposedNumberOutputPreference {
             UserDefaults.standard.set(preference.rawValue, forKey: AppSettings.Keys.numberOutputPreference)
         }
-        if let rawPreference = request.punctuationPreference {
-            guard let preference = PunctuationOutputPreference(rawValue: rawPreference) else {
-                throw BridgeServiceError.invalidRequest("Unknown punctuation preference: \(rawPreference)")
-            }
+        if let preference = proposedPunctuationPreference {
             UserDefaults.standard.set(preference.rawValue, forKey: AppSettings.Keys.punctuationPreference)
         }
 
         if let autoCommit = request.autoCommit {
             UserDefaults.standard.set(autoCommit, forKey: AppSettings.Keys.correctionAutoCommit)
         }
-        if let userDictionary = request.userDictionary {
-            dictionary.replaceEntries(userDictionary)
+        if let normalizedDictionary {
+            dictionary.replaceEntries(normalizedDictionary)
         }
 
         UserDefaults.standard.synchronize()
@@ -1157,6 +1199,11 @@ final class BridgeService {
             guard BridgeAudioFormat.isFLACFile(audioFileURL) else {
                 throw BridgeServiceError.invalidAudio
             }
+            guard BridgeAudioFormat.isWithinUploadDurationLimit(audioFileURL) else {
+                throw BridgeServiceError.invalidRequest(
+                    "Audio duration must be known and no longer than \(Int(BridgeAudioRecordingContract.maximumDurationSeconds)) seconds"
+                )
+            }
             return audioFileURL
         }
         guard let data = request.audioData, !data.isEmpty else {
@@ -1175,6 +1222,12 @@ final class BridgeService {
         guard BridgeAudioFormat.isFLACFile(url) else {
             try? FileManager.default.removeItem(at: url)
             throw BridgeServiceError.invalidAudio
+        }
+        guard BridgeAudioFormat.isWithinUploadDurationLimit(url) else {
+            try? FileManager.default.removeItem(at: url)
+            throw BridgeServiceError.invalidRequest(
+                "Audio duration must be known and no longer than \(Int(BridgeAudioRecordingContract.maximumDurationSeconds)) seconds"
+            )
         }
         return url
     }

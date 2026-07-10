@@ -1,9 +1,25 @@
+import AVFoundation
 import Foundation
 import Testing
 @testable import Typeforme
 
 @Suite("ASRAudioSupport")
 struct ASRAudioSupportTests {
+    @Test func canonicalConversionProducesBounded16kMonoWAV() async throws {
+        let input = try TestAudioFixtures.makeFLACFile()
+        defer { try? FileManager.default.removeItem(at: input) }
+        let output = try await ASRAudioSupport.wavUploadableAudioURL(for: input)
+        defer { try? FileManager.default.removeItem(at: output) }
+
+        let file = try AVAudioFile(forReading: output)
+        let byteCount = (try FileManager.default.attributesOfItem(atPath: output.path)[.size] as? NSNumber)?.intValue ?? 0
+        #expect(output.pathExtension == "wav")
+        #expect(file.fileFormat.channelCount == 1)
+        #expect(abs(file.fileFormat.sampleRate - 16_000) < 1)
+        #expect(byteCount > 44)
+        #expect(byteCount <= ASRAudioSupport.maximumCanonicalWAVBytes)
+    }
+
     @Test func stripsQwenASRTranscriptMarkers() {
         let text = "language English<asr_text>Hello, world.</asr_text>"
         #expect(ASRAudioSupport.cleanTranscriptText(text) == "Hello, world.")

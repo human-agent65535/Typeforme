@@ -29,6 +29,8 @@ struct BridgeAudioFormatTests {
         #expect(BridgeAudioRecordingContract.channelCount == 1)
         #expect(BridgeAudioRecordingContract.flacBitDepth == 16)
         #expect(BridgeAudioRecordingContract.minimumDurationSeconds == 0.35)
+        #expect(BridgeAudioRecordingContract.maximumDurationSeconds == 600)
+        #expect(BridgeAudioRecordingContract.maximumFrameCount == 9_600_000)
         #expect(BridgeAudioRecordingContract.stopTailBufferNanoseconds == 200_000_000)
     }
 
@@ -43,6 +45,24 @@ struct BridgeAudioFormatTests {
 
         #expect(BridgeAudioFormat.fileHasFLACMagic(url))
         #expect(BridgeAudioFormat.isFLACFile(url))
+        #expect(BridgeAudioFormat.isWithinUploadDurationLimit(url))
+        let streamInfo = try #require(BridgeAudioFormat.flacStreamInfo(url))
+        #expect(streamInfo.sampleRate == 16_000)
+        #expect(streamInfo.channelCount == 1)
+        #expect(streamInfo.bitDepth == 16)
+        #expect(streamInfo.totalSamples > 0)
+    }
+
+    @Test func bridgeFormatRejectsUnknownAndOversizedFrameCounts() {
+        var header = makeFLACStreamInfoHeader(totalSamples: 0)
+        #expect(BridgeAudioFormat.flacStreamInfo(header)?.totalSamples == 0)
+
+        header = makeFLACStreamInfoHeader(
+            totalSamples: BridgeAudioRecordingContract.maximumFrameCount + 1
+        )
+        let info = BridgeAudioFormat.flacStreamInfo(header)
+        #expect(info?.totalSamples == BridgeAudioRecordingContract.maximumFrameCount + 1)
+        #expect((info?.durationSeconds ?? 0) > BridgeAudioRecordingContract.maximumDurationSeconds)
     }
 
     @Test func bridgeFormatRejectsFloat32SourceFLACFile() throws {
@@ -94,5 +114,19 @@ struct BridgeAudioFormatTests {
         }
         try file.write(from: buffer)
         return url
+    }
+
+    private func makeFLACStreamInfoHeader(totalSamples: UInt64) -> Data {
+        var data = Data("fLaC".utf8)
+        data.append(contentsOf: [0x80, 0x00, 0x00, 0x22])
+        data.append(contentsOf: Array(repeating: 0, count: 10))
+        let packed = UInt64(16_000) << 44
+            | UInt64(15) << 36
+            | (totalSamples & 0x0000_000f_ffff_ffff)
+        for shift in stride(from: 56, through: 0, by: -8) {
+            data.append(UInt8((packed >> UInt64(shift)) & 0xff))
+        }
+        data.append(contentsOf: Array(repeating: 0, count: 16))
+        return data
     }
 }

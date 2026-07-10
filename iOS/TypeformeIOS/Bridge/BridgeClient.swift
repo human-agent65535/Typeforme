@@ -87,7 +87,16 @@ struct BridgeClient: Sendable {
         _ settings: BridgeMacSettingsPayload,
         timeout: TimeInterval = 15
     ) async throws -> BridgeMacSettingsPayload {
-        let payload = BridgeSettingsUpdateRequest(editableSnapshot: settings.editableSnapshot)
+        guard let expectedRevision = settings.settingsRevision?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !expectedRevision.isEmpty
+        else {
+            throw BridgeClientError.invalidResponse
+        }
+        let payload = BridgeSettingsUpdateRequest(
+            editableSnapshot: settings.editableSnapshot,
+            expectedSettingsRevision: expectedRevision
+        )
         let endpoint = BridgeAPIEndpoint.settingsWrite
         return try await request(path: endpoint.path, method: endpoint.method, json: payload, timeout: timeout)
     }
@@ -420,7 +429,7 @@ struct BridgeClient: Sendable {
         switch error {
         case .invalidURL:
             return BridgeClientError.invalidURL
-        case .invalidResponse:
+        case .invalidResponse, .responseTooLarge:
             return BridgeClientError.invalidResponse
         case .decodingFailed:
             return BridgeClientError.invalidResponse

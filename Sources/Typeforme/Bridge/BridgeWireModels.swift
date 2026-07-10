@@ -211,6 +211,7 @@ struct BridgeSettingsEditableSnapshot: Codable, Equatable, Sendable {
 }
 
 struct BridgeSettingsUpdateRequest: Codable, Sendable {
+    var expectedSettingsRevision: String
     var enabledRecognitionSources: [String]?
     var asrModelIDsByRecognitionSource: [String: String]?
     var languageIDs: [String]?
@@ -229,6 +230,7 @@ struct BridgeSettingsUpdateRequest: Codable, Sendable {
     var userDictionary: [DictionaryEntry]?
 
     enum CodingKeys: String, CodingKey {
+        case expectedSettingsRevision = "expected_settings_revision"
         case enabledRecognitionSources = "enabled_recognition_sources"
         case asrModelIDsByRecognitionSource = "asr_model_ids_by_recognition_source"
         case languageIDs = "language_ids"
@@ -248,6 +250,7 @@ struct BridgeSettingsUpdateRequest: Codable, Sendable {
     }
 
     init(
+        expectedSettingsRevision: String,
         enabledRecognitionSources: [String]? = nil,
         asrModelIDsByRecognitionSource: [String: String]? = nil,
         languageIDs: [String]? = nil,
@@ -265,6 +268,7 @@ struct BridgeSettingsUpdateRequest: Codable, Sendable {
         autoCommit: Bool? = nil,
         userDictionary: [DictionaryEntry]? = nil
     ) {
+        self.expectedSettingsRevision = expectedSettingsRevision
         self.enabledRecognitionSources = enabledRecognitionSources
         self.asrModelIDsByRecognitionSource = asrModelIDsByRecognitionSource
         self.languageIDs = languageIDs
@@ -283,8 +287,12 @@ struct BridgeSettingsUpdateRequest: Codable, Sendable {
         self.userDictionary = userDictionary
     }
 
-    init(editableSnapshot: BridgeSettingsEditableSnapshot) {
+    init(
+        editableSnapshot: BridgeSettingsEditableSnapshot,
+        expectedSettingsRevision: String
+    ) {
         self.init(
+            expectedSettingsRevision: expectedSettingsRevision,
             enabledRecognitionSources: editableSnapshot.enabledRecognitionSources,
             asrModelIDsByRecognitionSource: editableSnapshot.asrModelIDsByRecognitionSource,
             languageIDs: editableSnapshot.languageIDs,

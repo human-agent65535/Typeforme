@@ -792,6 +792,10 @@ final class BridgeHTTPServer: @unchecked Sendable {
     }
 
     private static func errorResponse(_ error: Error) -> Response {
+        if let bridgeError = error as? BridgeServiceError,
+           case .settingsConflict = bridgeError {
+            return errorResponse(409, "Conflict", error.localizedDescription)
+        }
         if let bridgeError = error as? BridgeServiceError {
             return errorResponse(400, "Bad Request", bridgeError.localizedDescription)
         }
@@ -805,6 +809,10 @@ final class BridgeHTTPServer: @unchecked Sendable {
     }
 
     private static func statusCode(for error: Error) -> Int {
+        if let bridgeError = error as? BridgeServiceError,
+           case .settingsConflict = bridgeError {
+            return 409
+        }
         if error is BridgeServiceError || error is BridgeMultipartError || error is DecodingError {
             return 400
         }

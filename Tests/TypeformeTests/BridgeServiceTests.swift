@@ -1,8 +1,55 @@
+import Foundation
 import Testing
 @testable import Typeforme
 
 @Suite("BridgeService")
 struct BridgeServiceTests {
+    @Test @MainActor func staleSettingsRevisionRejectsBeforeMutation() async {
+        let dictionaryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("typeforme-settings-test-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: dictionaryURL) }
+        let service = BridgeService(dictionary: UserDictionaryStore(url: dictionaryURL))
+        let originalAutoCommit = AppSettings.autoCommit
+        let request = BridgeSettingsUpdateRequest(
+            expectedSettingsRevision: String(repeating: "0", count: 64),
+            autoCommit: !originalAutoCommit
+        )
+
+        do {
+            _ = try await service.updateSettings(request)
+            Issue.record("Expected stale revision to be rejected")
+        } catch let error as BridgeServiceError {
+            guard case .settingsConflict = error else {
+                Issue.record("Expected settingsConflict, got \(error)")
+                return
+            }
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+        #expect(AppSettings.autoCommit == originalAutoCommit)
+    }
+
+    @Test @MainActor func invalidLateSettingsFieldRejectsBeforeMutation() async {
+        let dictionaryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("typeforme-settings-test-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: dictionaryURL) }
+        let dictionary = UserDictionaryStore(url: dictionaryURL)
+        let service = BridgeService(dictionary: dictionary)
+        let originalAutoCommit = AppSettings.autoCommit
+        let request = BridgeSettingsUpdateRequest(
+            expectedSettingsRevision: BridgeSettingsPayload.currentSettingsRevision(
+                userDictionary: dictionary.sortedSnapshot()
+            ),
+            punctuationPreference: "not-a-preference",
+            autoCommit: !originalAutoCommit
+        )
+
+        await #expect(throws: BridgeServiceError.self) {
+            _ = try await service.updateSettings(request)
+        }
+        #expect(AppSettings.autoCommit == originalAutoCommit)
+    }
+
     @Test @MainActor func resultReadyMessageSurfacesDegradedCorrection() {
         #expect(BridgeService.resultReadyMessage(correctionStatus: "ok", okMessage: "Refine complete") == "Refine complete")
         #expect(BridgeService.resultReadyMessage(correctionStatus: "refine_timeout", okMessage: "Refine complete") == "Without refine: refine timeout")
