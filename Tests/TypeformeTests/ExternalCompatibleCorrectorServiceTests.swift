@@ -157,6 +157,64 @@ struct ExternalCompatibleCorrectorServiceTests {
         #expect(report.status == "Ready")
     }
 
+    @Test func openAIClientPropagatesParentTaskCancellation() async throws {
+        let endpoint = try #require(URL(string: "https://typeforme.invalid/parent-cancellation"))
+        let eventID = endpoint.absoluteString
+        HangingOpenAIURLProtocol.events.reset(eventID)
+        let session = hangingOpenAISession()
+        defer { session.invalidateAndCancel() }
+
+        let requestTask = Task {
+            try await OpenAICompatibleClient.responseData(
+                for: URLRequest(url: endpoint),
+                timeoutMs: 2_000,
+                onTimeout: nil,
+                session: session
+            )
+        }
+        try await waitForProtocolEvent("request to start") {
+            HangingOpenAIURLProtocol.events.didStart(eventID)
+        }
+
+        requestTask.cancel()
+
+        await #expect(throws: CancellationError.self) {
+            _ = try await requestTask.value
+        }
+        try await waitForProtocolEvent("cancelled request to stop") {
+            HangingOpenAIURLProtocol.events.didStop(eventID)
+        }
+        #expect(HangingOpenAIURLProtocol.events.didStop(eventID))
+    }
+
+    @Test func openAIClientMapsDeadlineCancellationToTimeout() async throws {
+        let endpoint = try #require(URL(string: "https://typeforme.invalid/request-timeout"))
+        let eventID = endpoint.absoluteString
+        HangingOpenAIURLProtocol.events.reset(eventID)
+        let session = hangingOpenAISession()
+        defer { session.invalidateAndCancel() }
+
+        do {
+            _ = try await OpenAICompatibleClient.responseData(
+                for: URLRequest(url: endpoint),
+                timeoutMs: 250,
+                onTimeout: nil,
+                session: session
+            )
+            Issue.record("Expected the hanging request to time out")
+        } catch let error as OpenAICompatibleClientError {
+            #expect(error == .timeout)
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+
+        #expect(HangingOpenAIURLProtocol.events.didStart(eventID))
+        try await waitForProtocolEvent("timed-out request to stop") {
+            HangingOpenAIURLProtocol.events.didStop(eventID)
+        }
+        #expect(HangingOpenAIURLProtocol.events.didStop(eventID))
+    }
+
     @Test func verifiesProvidedAPIKeyByRejectingInvalidProbe() async {
         let recorder = APIKeyRecorder()
         let report = await ExternalCompatibleCorrectorService.checkConfiguration(
@@ -242,6 +300,23 @@ struct ExternalCompatibleCorrectorServiceTests {
             Issue.record("Unexpected error: \(error)")
         }
     }
+
+    private func hangingOpenAISession() -> URLSession {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [HangingOpenAIURLProtocol.self]
+        return URLSession(configuration: configuration)
+    }
+
+    private func waitForProtocolEvent(
+        _ description: String,
+        condition: @escaping @Sendable () -> Bool
+    ) async throws {
+        for _ in 0..<200 {
+            if condition() { return }
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        Issue.record("Timed out waiting for \(description)")
+    }
 }
 
 private actor APIKeyRecorder {
@@ -253,5 +328,64 @@ private actor APIKeyRecorder {
 
     func snapshot() -> [(apiKind: ExternalLLMAPIKind, apiKey: String?)] {
         calls
+    }
+}
+
+private final class HangingOpenAIURLProtocol: URLProtocol, @unchecked Sendable {
+    static let events = HangingOpenAIURLProtocolEvents()
+
+    override class func canInit(with request: URLRequest) -> Bool {
+        true
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+        request
+    }
+
+    override func startLoading() {
+        guard let eventID = request.url?.absoluteString else { return }
+        Self.events.recordStart(eventID)
+    }
+
+    override func stopLoading() {
+        guard let eventID = request.url?.absoluteString else { return }
+        Self.events.recordStop(eventID)
+    }
+}
+
+private final class HangingOpenAIURLProtocolEvents: @unchecked Sendable {
+    private let lock = NSLock()
+    private var started: Set<String> = []
+    private var stopped: Set<String> = []
+
+    func reset(_ eventID: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        started.remove(eventID)
+        stopped.remove(eventID)
+    }
+
+    func recordStart(_ eventID: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        started.insert(eventID)
+    }
+
+    func recordStop(_ eventID: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        stopped.insert(eventID)
+    }
+
+    func didStart(_ eventID: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return started.contains(eventID)
+    }
+
+    func didStop(_ eventID: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return stopped.contains(eventID)
     }
 }

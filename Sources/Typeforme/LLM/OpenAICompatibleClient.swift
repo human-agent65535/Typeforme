@@ -171,32 +171,50 @@ enum OpenAICompatibleClient {
     static func responseData(
         for request: URLRequest,
         timeoutMs: Int,
-        onTimeout: (@Sendable () async -> Void)?
+        onTimeout: (@Sendable () async -> Void)?,
+        session overrideSession: URLSession? = nil
     ) async throws -> Data {
-        let completion = RequestCompletionFlag()
+        try Task.checkCancellation()
+
+        let completion = RequestCompletionState()
+        let activeSession = overrideSession ?? session
         let networkTask = Task<(Data, URLResponse), Error> {
-            try await session.data(for: request)
+            defer { _ = completion.tryComplete(.network) }
+            return try await activeSession.data(for: request)
         }
-        let timeoutTask = Task<Void, Error> {
-            try await Task.sleep(nanoseconds: UInt64(timeoutMs) * 1_000_000)
-            guard completion.tryComplete() else { return }
+        let timeoutTask = Task<Void, Never> {
+            do {
+                try await Task.sleep(nanoseconds: UInt64(timeoutMs) * 1_000_000)
+            } catch {
+                return
+            }
+            guard completion.tryComplete(.timeout) else { return }
             networkTask.cancel()
             await onTimeout?()
         }
         defer {
-            _ = completion.tryComplete()
             timeoutTask.cancel()
         }
 
         let data: Data
         let response: URLResponse
         do {
-            (data, response) = try await networkTask.value
-        } catch is CancellationError {
-            throw OpenAICompatibleClientError.timeout
-        } catch let error as URLError where error.code == .cancelled {
-            throw OpenAICompatibleClientError.timeout
+            (data, response) = try await withTaskCancellationHandler(operation: {
+                let value = try await networkTask.value
+                try Task.checkCancellation()
+                return value
+            }, onCancel: {
+                _ = completion.tryComplete(.callerCancellation)
+                networkTask.cancel()
+                timeoutTask.cancel()
+            })
         } catch {
+            if Task.isCancelled || completion.reason() == .callerCancellation {
+                throw CancellationError()
+            }
+            if completion.reason() == .timeout {
+                throw OpenAICompatibleClientError.timeout
+            }
             throw OpenAICompatibleClientError.unavailable(error.localizedDescription)
         }
         try validateHTTP(response, data: data)
@@ -281,15 +299,27 @@ private struct ErrorResponse: Decodable {
     let error: Payload
 }
 
-private final class RequestCompletionFlag: @unchecked Sendable {
-    private let lock = NSLock()
-    private var completed = false
+private enum RequestCompletionReason: Sendable {
+    case network
+    case timeout
+    case callerCancellation
+}
 
-    func tryComplete() -> Bool {
+private final class RequestCompletionState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedReason: RequestCompletionReason?
+
+    func tryComplete(_ reason: RequestCompletionReason) -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        guard !completed else { return false }
-        completed = true
+        guard storedReason == nil else { return false }
+        storedReason = reason
         return true
+    }
+
+    func reason() -> RequestCompletionReason? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedReason
     }
 }
