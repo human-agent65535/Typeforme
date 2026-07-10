@@ -429,7 +429,7 @@ extension KeyboardBridgeCommandAction {
             // host publishes transcription progress/result asynchronously.
             return 1.5
         case .refineText:
-            return 30
+            return 220
         }
     }
 }

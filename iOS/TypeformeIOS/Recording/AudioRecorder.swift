@@ -44,21 +44,29 @@ enum IOSRecordingAudioSession {
     }
 
     static func activateKeyboardRecording(reuseActiveSession: Bool = false) async throws {
+        try Task.checkCancellation()
         do {
             try activate(reuseActiveSession: reuseActiveSession, purpose: .keyboardRecording)
         } catch {
-            try? await Task.sleep(nanoseconds: 150_000_000)
+            try Task.checkCancellation()
+            try await Task.sleep(nanoseconds: 150_000_000)
+            try Task.checkCancellation()
             try activate(reuseActiveSession: reuseActiveSession, purpose: .keyboardRecording)
         }
+        try Task.checkCancellation()
     }
 
     static func activateRecording(reuseActiveSession: Bool = false) async throws {
+        try Task.checkCancellation()
         do {
             try activate(reuseActiveSession: reuseActiveSession, purpose: .recording)
         } catch {
-            try? await Task.sleep(nanoseconds: 150_000_000)
+            try Task.checkCancellation()
+            try await Task.sleep(nanoseconds: 150_000_000)
+            try Task.checkCancellation()
             try activate(reuseActiveSession: reuseActiveSession, purpose: .recording)
         }
+        try Task.checkCancellation()
     }
 
     static func deactivateAndNotifyOthers() {
@@ -98,6 +106,35 @@ enum VoiceProcessingError: LocalizedError {
     }
 }
 
+private enum AudioInputError: LocalizedError {
+    case unavailable
+    case invalidHardwareFormat
+    case invalidCaptureFormat
+
+    var errorDescription: String? {
+        switch self {
+        case .unavailable:
+            return "Microphone input is unavailable"
+        case .invalidHardwareFormat:
+            return "Microphone hardware format is unavailable"
+        case .invalidCaptureFormat:
+            return "Microphone capture format is unavailable"
+        }
+    }
+}
+
+private struct AudioCaptureProgress: Sendable {
+    static let empty = AudioCaptureProgress(
+        firstAudioFrameAt: nil,
+        lastAudioFrameAt: nil,
+        capturedFrameCount: 0
+    )
+
+    let firstAudioFrameAt: Date?
+    let lastAudioFrameAt: Date?
+    let capturedFrameCount: Int64
+}
+
 final class AudioTapFileWriter: @unchecked Sendable {
     private let lock = NSLock()
     private var currentURL: URL?
@@ -108,6 +145,9 @@ final class AudioTapFileWriter: @unchecked Sendable {
     private var recordedFrameCount: AVAudioFramePosition = 0
     private var currentSampleRate: Double = 0
     private var writeError: Error?
+    private var firstAudioFrameAt: Date?
+    private var lastAudioFrameAt: Date?
+    private var lastCaptureProgress = AudioCaptureProgress.empty
 
     var isRecording: Bool {
         lock.lock()
@@ -152,20 +192,24 @@ final class AudioTapFileWriter: @unchecked Sendable {
         recordedFrameCount = 0
         currentSampleRate = BridgeAudioRecordingContract.sampleRate
         writeError = nil
+        firstAudioFrameAt = nil
+        lastAudioFrameAt = nil
+        lastCaptureProgress = .empty
         lock.unlock()
         return url
     }
 
-    func write(_ buffer: AVAudioPCMBuffer) {
+    @discardableResult
+    func write(_ buffer: AVAudioPCMBuffer) -> AVAudioFrameCount {
         let frameLength = Int(buffer.frameLength)
-        guard frameLength > 0 else { return }
+        guard frameLength > 0 else { return 0 }
 
-        guard let inputBuffer = Self.makeMonoFloatBuffer(from: buffer) else { return }
+        guard let inputBuffer = Self.makeMonoFloatBuffer(from: buffer) else { return 0 }
 
         lock.lock()
         defer { lock.unlock() }
         do {
-            guard let file, let format = writeFormat, writeError == nil else { return }
+            guard let file, let format = writeFormat, writeError == nil else { return 0 }
             if converter == nil || converterInputFormat?.isEqual(inputBuffer.format) != true {
                 converter = AVAudioConverter(from: inputBuffer.format, to: format)
                 converterInputFormat = inputBuffer.format
@@ -180,10 +224,23 @@ final class AudioTapFileWriter: @unchecked Sendable {
                 throw NSError(domain: "Typeforme", code: 10, userInfo: [NSLocalizedDescriptionKey: "Could not convert keyboard recording buffer"])
             }
             try file.write(from: writeBuffer)
-            recordedFrameCount += AVAudioFramePosition(writeBuffer.frameLength)
+            let writtenFrameCount = writeBuffer.frameLength
+            recordedFrameCount += AVAudioFramePosition(writtenFrameCount)
+            let now = Date()
+            firstAudioFrameAt = firstAudioFrameAt ?? now
+            lastAudioFrameAt = now
+            return writtenFrameCount
         } catch {
             writeError = error
+            return 0
         }
+    }
+
+    fileprivate func captureProgressSnapshot() -> AudioCaptureProgress {
+        lock.lock()
+        defer { lock.unlock() }
+        guard currentURL != nil else { return lastCaptureProgress }
+        return currentCaptureProgress()
     }
 
     func finish() -> URL? {
@@ -193,6 +250,9 @@ final class AudioTapFileWriter: @unchecked Sendable {
         let sampleRate = currentSampleRate
         let frames = Int(recordedFrameCount)
         let error = writeError
+        if url != nil {
+            lastCaptureProgress = currentCaptureProgress()
+        }
         currentURL = nil
         file = nil
         writeFormat = nil
@@ -201,6 +261,8 @@ final class AudioTapFileWriter: @unchecked Sendable {
         recordedFrameCount = 0
         currentSampleRate = 0
         writeError = nil
+        firstAudioFrameAt = nil
+        lastAudioFrameAt = nil
         lock.unlock()
         var fields = [
             "write_duration_ms": "\(Int((duration * 1_000).rounded()))",
@@ -277,6 +339,9 @@ final class AudioTapFileWriter: @unchecked Sendable {
     func discard() {
         lock.lock()
         let url = currentURL
+        if url != nil {
+            lastCaptureProgress = currentCaptureProgress()
+        }
         currentURL = nil
         file = nil
         writeFormat = nil
@@ -285,6 +350,8 @@ final class AudioTapFileWriter: @unchecked Sendable {
         recordedFrameCount = 0
         currentSampleRate = 0
         writeError = nil
+        firstAudioFrameAt = nil
+        lastAudioFrameAt = nil
         lock.unlock()
         KeyboardDiagnosticEventLog.record(
             source: "host-audio",
@@ -294,6 +361,14 @@ final class AudioTapFileWriter: @unchecked Sendable {
         if let url {
             try? FileManager.default.removeItem(at: url)
         }
+    }
+
+    private func currentCaptureProgress() -> AudioCaptureProgress {
+        AudioCaptureProgress(
+            firstAudioFrameAt: firstAudioFrameAt,
+            lastAudioFrameAt: lastAudioFrameAt,
+            capturedFrameCount: Int64(recordedFrameCount)
+        )
     }
 
     /// Downmixes arbitrary input buffers before the stateful converter resamples
@@ -404,10 +479,16 @@ final class AudioRecorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
     /// Drives the keyboard extension's voiceprint visualization via the local
     /// status bridge. Stays at 0 when not recording.
     @Published private(set) var level: Float = 0
+    private(set) var captureStartedAt: Date?
+    private(set) var firstAudioFrameAt: Date?
+    private(set) var lastAudioFrameAt: Date?
+    private(set) var capturedFrameCount: Int64 = 0
 
     private var recorder: AVAudioRecorder?
     private var currentURL: URL?
     private var meteringTimer: Timer?
+    private var captureHealthGeneration: UInt64 = 0
+    private var lastObservedRecorderTime: TimeInterval = 0
     /// Pre-allocated recorder ready to record on first `start()`. The expensive
     /// work — permission, session config, encoder warm-up — happens once at
     /// app launch or right after the previous recording finishes, so the
@@ -430,7 +511,7 @@ final class AudioRecorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
     /// call multiple times; only does the work once until the prepared
     /// recorder is consumed.
     func preWarm(requestPermissionIfNeeded: Bool = false) async {
-        guard preparedRecorder == nil else { return }
+        guard preparedRecorder == nil, !Task.isCancelled else { return }
         switch AVAudioApplication.shared.recordPermission {
         case .granted:
             break
@@ -443,12 +524,14 @@ final class AudioRecorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
         @unknown default:
             return
         }
+        guard !Task.isCancelled else { return }
 
         do {
             try IOSRecordingAudioSession.activate(purpose: .standby)
         } catch {
             return
         }
+        guard !Task.isCancelled else { return }
 
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("typeforme-\(UUID().uuidString).flac")
@@ -473,10 +556,15 @@ final class AudioRecorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
     }
 
     func start(reuseActiveSession: Bool = false) async throws {
+        try Task.checkCancellation()
         // Fast path: use the pre-warmed recorder. record() is ~10ms.
         if let recorder = preparedRecorder, let url = preparedURL {
             preparedRecorder = nil
             preparedURL = nil
+            guard !Task.isCancelled else {
+                try? FileManager.default.removeItem(at: url)
+                throw CancellationError()
+            }
             guard recorder.record() else {
                 try? FileManager.default.removeItem(at: url)
                 // Fall through to cold path — pre-warm may have gone stale.
@@ -486,7 +574,8 @@ final class AudioRecorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
             self.recorder = recorder
             self.currentURL = url
             self.isRecording = true
-            startMetering()
+            let generation = beginCaptureHealth(for: recorder)
+            startMetering(captureHealthGeneration: generation)
             return
         }
 
@@ -494,12 +583,15 @@ final class AudioRecorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
     }
 
     private func coldStart(reuseActiveSession: Bool) async throws {
+        try Task.checkCancellation()
         let granted = await requestPermission()
+        try Task.checkCancellation()
         guard granted else {
             throw NSError(domain: "Typeforme", code: 1, userInfo: [NSLocalizedDescriptionKey: "Microphone permission is required"])
         }
 
         try await IOSRecordingAudioSession.activateRecording(reuseActiveSession: reuseActiveSession)
+        try Task.checkCancellation()
 
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("typeforme-\(UUID().uuidString).flac")
@@ -508,6 +600,10 @@ final class AudioRecorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
         recorder.delegate = self
         recorder.isMeteringEnabled = true
         recorder.prepareToRecord()
+        guard !Task.isCancelled else {
+            try? FileManager.default.removeItem(at: url)
+            throw CancellationError()
+        }
         guard recorder.record() else {
             try? FileManager.default.removeItem(at: url)
             throw NSError(domain: "Typeforme", code: 2, userInfo: [NSLocalizedDescriptionKey: "Could not start microphone recording"])
@@ -515,15 +611,18 @@ final class AudioRecorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
         self.recorder = recorder
         self.currentURL = url
         self.isRecording = true
-        startMetering()
+        let generation = beginCaptureHealth(for: recorder)
+        startMetering(captureHealthGeneration: generation)
     }
 
     func stop(deactivateSession: Bool = true) -> URL? {
         guard isRecording else { return nil }
+        sampleLevel(captureHealthGeneration: captureHealthGeneration)
+        isRecording = false
+        invalidateCaptureHealthGeneration()
         stopMetering()
         recorder?.stop()
         recorder = nil
-        isRecording = false
         let url = currentURL
         currentURL = nil
         if deactivateSession {
@@ -547,14 +646,14 @@ final class AudioRecorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
         return url
     }
 
-    private func startMetering() {
+    private func startMetering(captureHealthGeneration generation: UInt64) {
         stopMetering()
         level = 0
         // 20Hz sampling gives the keyboard status stream a recent reading
         // without spending CPU on a CADisplayLink-rate update.
         let timer = Timer(timeInterval: 1.0 / 20.0, repeats: true) { [weak self] _ in
             Task { @MainActor in
-                self?.sampleLevel()
+                self?.sampleLevel(captureHealthGeneration: generation)
             }
         }
         RunLoop.main.add(timer, forMode: .common)
@@ -577,11 +676,44 @@ final class AudioRecorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
         ]
     }
 
-    private func sampleLevel() {
-        guard let recorder, recorder.isRecording else { return }
+    private func sampleLevel(captureHealthGeneration generation: UInt64) {
+        guard generation == captureHealthGeneration,
+              isRecording,
+              let recorder,
+              recorder.isRecording
+        else { return }
+        let currentTime = recorder.currentTime
+        guard currentTime.isFinite,
+              currentTime > lastObservedRecorderTime
+        else { return }
+        let totalFrameCount = Int64(
+            (currentTime * BridgeAudioRecordingContract.sampleRate).rounded(.down)
+        )
+        guard totalFrameCount > capturedFrameCount else { return }
+        lastObservedRecorderTime = currentTime
+        capturedFrameCount = totalFrameCount
+        let now = Date()
+        firstAudioFrameAt = firstAudioFrameAt ?? now
+        lastAudioFrameAt = now
         recorder.updateMeters()
         let db = recorder.averagePower(forChannel: 0)
         level = Self.normalizedLevel(fromDecibels: db)
+    }
+
+    private func beginCaptureHealth(for recorder: AVAudioRecorder) -> UInt64 {
+        captureHealthGeneration &+= 1
+        captureStartedAt = Date()
+        firstAudioFrameAt = nil
+        lastAudioFrameAt = nil
+        capturedFrameCount = 0
+        let currentTime = recorder.currentTime
+        lastObservedRecorderTime = currentTime.isFinite ? max(0, currentTime) : 0
+        return captureHealthGeneration
+    }
+
+    private func invalidateCaptureHealthGeneration() {
+        captureHealthGeneration &+= 1
+        lastObservedRecorderTime = 0
     }
 
     /// Convert AVAudioRecorder dB into 0...1. iPhone mic typical ranges:
@@ -636,6 +768,56 @@ private final class AudioTapBufferSink: @unchecked Sendable {
     func emit(_ buffer: AVAudioPCMBuffer) {
         let handler = currentHandler
         handler?(buffer)
+    }
+}
+
+private struct TapCaptureUpdate: Sendable {
+    let level: Float
+    let progress: AudioCaptureProgress
+}
+
+private final class TapCaptureUpdateCoalescer: @unchecked Sendable {
+    private let lock = NSLock()
+    private var activeGeneration: UInt64?
+    private var scheduledGeneration: UInt64?
+    private var pendingUpdate: TapCaptureUpdate?
+
+    func activate(generation: UInt64) {
+        lock.lock()
+        activeGeneration = generation
+        scheduledGeneration = nil
+        pendingUpdate = nil
+        lock.unlock()
+    }
+
+    func invalidate() {
+        lock.lock()
+        activeGeneration = nil
+        scheduledGeneration = nil
+        pendingUpdate = nil
+        lock.unlock()
+    }
+
+    func submit(_ update: TapCaptureUpdate) -> UInt64? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let generation = activeGeneration else { return nil }
+        pendingUpdate = update
+        guard scheduledGeneration != generation else { return nil }
+        scheduledGeneration = generation
+        return generation
+    }
+
+    func take(generation: UInt64) -> TapCaptureUpdate? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard activeGeneration == generation,
+              scheduledGeneration == generation
+        else { return nil }
+        let update = pendingUpdate
+        pendingUpdate = nil
+        scheduledGeneration = nil
+        return update
     }
 }
 
@@ -711,19 +893,27 @@ private func installStandbyInputTap(
     owner: StandbyAudioSession,
     fileWriter: AudioTapFileWriter,
     levelThrottler: LevelUpdateThrottler,
+    captureUpdateCoalescer: TapCaptureUpdateCoalescer,
     pcmBufferSink: AudioTapBufferSink
 ) {
-    input.installTap(onBus: 0, bufferSize: 4096, format: nil) { [weak owner, fileWriter, levelThrottler, pcmBufferSink] buffer, _ in
+    input.installTap(onBus: 0, bufferSize: 4096, format: nil) { [weak owner, fileWriter, levelThrottler, captureUpdateCoalescer, pcmBufferSink] buffer, _ in
         guard fileWriter.isRecording else { return }
-        let level = AudioTapLevelMeter.normalizedLevel(from: buffer)
-        fileWriter.write(buffer)
+        let writtenFrameCount = fileWriter.write(buffer)
         // Fan the same buffer out to any live-preview consumer. Read the sink
         // each call so late-attached
         // handlers also receive frames.
         pcmBufferSink.emit(buffer)
-        guard levelThrottler.shouldPublish() else { return }
-        Task { @MainActor [weak owner] in
-            owner?.publishTapLevel(level)
+        guard writtenFrameCount > 0,
+              levelThrottler.shouldPublish()
+        else { return }
+        let update = TapCaptureUpdate(
+            level: AudioTapLevelMeter.normalizedLevel(from: buffer),
+            progress: fileWriter.captureProgressSnapshot()
+        )
+        guard let generation = captureUpdateCoalescer.submit(update) else { return }
+        Task { @MainActor [weak owner, captureUpdateCoalescer] in
+            guard let update = captureUpdateCoalescer.take(generation: generation) else { return }
+            owner?.publishTapUpdate(update, captureHealthGeneration: generation)
         }
     }
 }
@@ -741,27 +931,44 @@ final class StandbyAudioSession: ObservableObject {
         set { pcmBufferSink.setHandler(newValue) }
     }
 
+    /// Called on the main actor after an in-progress capture is irrecoverably
+    /// discarded because the underlying media services or input engine reset.
+    var onCaptureInvalidated: (@MainActor (_ reason: String) -> Void)?
+
     @Published private(set) var isActive = false
     @Published private(set) var level: Float = 0
+    private(set) var captureStartedAt: Date?
+    private(set) var firstAudioFrameAt: Date?
+    private(set) var lastAudioFrameAt: Date?
+    private(set) var capturedFrameCount: Int64 = 0
 
     private var engine = AVAudioEngine()
     private let fileWriter = AudioTapFileWriter()
     private let pcmBufferSink = AudioTapBufferSink()
     private let levelThrottler = LevelUpdateThrottler(interval: 1.0 / 20.0)
+    private let captureUpdateCoalescer = TapCaptureUpdateCoalescer()
     private var hasInstalledTap = false
     private var currentFormat: AVAudioFormat?
+    private var currentHardwareInputFormat: AVAudioFormat?
     private var needsEngineRestart = false
     private var recordingDidActivateCaptureCategory = false
     private var recordingShouldYieldOtherAudio = false
+    private var captureHealthGeneration: UInt64 = 0
+    private var captureInvalidationReported = false
     private var notificationObservers: [NSObjectProtocol] = []
+    private var engineConfigurationObserver: NSObjectProtocol?
 
     init() {
         observeAudioSessionInvalidations()
+        observeCurrentEngineConfigurationChanges()
     }
 
     isolated deinit {
         for observer in notificationObservers {
             NotificationCenter.default.removeObserver(observer)
+        }
+        if let engineConfigurationObserver {
+            NotificationCenter.default.removeObserver(engineConfigurationObserver)
         }
     }
 
@@ -770,6 +977,7 @@ final class StandbyAudioSession: ObservableObject {
     }
 
     func start(reuseActiveSession: Bool = false) async throws {
+        try Task.checkCancellation()
         if fileWriter.isRecording {
             KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.sessionStarted)
             return
@@ -779,6 +987,7 @@ final class StandbyAudioSession: ObservableObject {
                 removeInputTap()
                 engine.stop()
                 currentFormat = nil
+                currentHardwareInputFormat = nil
                 isActive = false
                 try await startEngineWithRetry(purpose: .standby, reuseActiveSession: reuseActiveSession)
             }
@@ -787,6 +996,7 @@ final class StandbyAudioSession: ObservableObject {
         }
 
         let granted = await requestPermission()
+        try Task.checkCancellation()
         guard granted else {
             throw NSError(domain: "Typeforme", code: 1, userInfo: [NSLocalizedDescriptionKey: "Microphone permission is required"])
         }
@@ -799,6 +1009,7 @@ final class StandbyAudioSession: ObservableObject {
         reuseActiveSession: Bool = false,
         deactivateExistingSession: Bool = false
     ) async throws {
+        try Task.checkCancellation()
         guard !fileWriter.isRecording else {
             KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.sessionStarted)
             return
@@ -816,33 +1027,84 @@ final class StandbyAudioSession: ObservableObject {
 
     private func observeAudioSessionInvalidations() {
         let center = NotificationCenter.default
-        let names: [Notification.Name] = [
-            AVAudioSession.routeChangeNotification,
-        ]
-        notificationObservers = names.map { name in
-            center.addObserver(
-                forName: name,
-                object: AVAudioSession.sharedInstance(),
-                queue: nil
-            ) { [weak self] notification in
-                let notificationName = notification.name.rawValue
-                let routeChangeReason = notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt
-                Task { @MainActor [weak self] in
-                    self?.handleAudioSessionNotification(
-                        name: notificationName,
-                        routeChangeReason: routeChangeReason
-                    )
-                }
+        let session = AVAudioSession.sharedInstance()
+        let routeChangeObserver = center.addObserver(
+            forName: AVAudioSession.routeChangeNotification,
+            object: session,
+            queue: nil
+        ) { [weak self] notification in
+            let routeChangeReason = notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt
+            Task { @MainActor [weak self] in
+                self?.handleRouteChange(reason: routeChangeReason)
+            }
+        }
+        let mediaServicesResetObserver = center.addObserver(
+            forName: AVAudioSession.mediaServicesWereResetNotification,
+            object: nil,
+            queue: nil
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.handleInputEngineInvalidation(reason: "media_services_reset")
+            }
+        }
+        notificationObservers = [routeChangeObserver, mediaServicesResetObserver]
+    }
+
+    private func observeCurrentEngineConfigurationChanges() {
+        let center = NotificationCenter.default
+        if let engineConfigurationObserver {
+            center.removeObserver(engineConfigurationObserver)
+        }
+        let observedEngineIdentifier = ObjectIdentifier(engine)
+        engineConfigurationObserver = center.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: engine,
+            queue: nil
+        ) { [weak self] _ in
+            // AVFAudio delivers this callback on an internal queue and forbids
+            // deallocating the notifying engine from inside that callback.
+            Task { @MainActor [weak self] in
+                guard let self,
+                      ObjectIdentifier(self.engine) == observedEngineIdentifier
+                else { return }
+                self.handleInputEngineInvalidation(reason: "engine_configuration_change")
             }
         }
     }
 
-    private func handleAudioSessionNotification(name: String, routeChangeReason: UInt?) {
-        switch Notification.Name(name) {
-        case AVAudioSession.routeChangeNotification:
-            handleRouteChange(reason: routeChangeReason)
-        default:
-            markEngineRestartNeeded()
+    private func handleInputEngineInvalidation(reason: String) {
+        let wasCapturing = fileWriter.isRecording
+        let shouldNotifyCaptureOwner = wasCapturing && !captureInvalidationReported
+        if shouldNotifyCaptureOwner {
+            captureInvalidationReported = true
+        }
+        if wasCapturing {
+            fileWriter.discard()
+        }
+        endCaptureHealth()
+        onPCMBuffer = nil
+        engine.stop()
+        recordingDidActivateCaptureCategory = false
+        recordingShouldYieldOtherAudio = false
+        isActive = false
+        level = 0
+        currentFormat = nil
+        currentHardwareInputFormat = nil
+        replaceInputEngine(
+            reason: "invalidation_\(reason)",
+            replacementNeedsRestart: true
+        )
+        recordAudioDiagnostic(
+            event: "keyboard_audio_engine_invalidated",
+            fields: [
+                "reason": reason,
+                "capture_was_active": "\(wasCapturing)",
+                "capture_callback_emitted": "\(shouldNotifyCaptureOwner)",
+                "action": wasCapturing ? "discard_capture" : "rebuild_standby",
+            ]
+        )
+        if shouldNotifyCaptureOwner {
+            onCaptureInvalidated?(reason)
         }
     }
 
@@ -879,7 +1141,21 @@ final class StandbyAudioSession: ObservableObject {
                 markEngineRestartNeeded()
                 return
             }
-            currentFormat = engine.inputNode.outputFormat(forBus: 0)
+            do {
+                let input = try validatedInputNode()
+                currentFormat = try validatedCaptureFormat(for: input)
+            } catch {
+                recordAudioDiagnostic(
+                    event: "keyboard_audio_route_change",
+                    fields: [
+                        "reason": Self.routeChangeReasonName(reason),
+                        "action": "mark_restart_invalid_input",
+                        "error": error.localizedDescription,
+                    ]
+                )
+                markEngineRestartNeeded()
+                return
+            }
             needsEngineRestart = false
             recordAudioDiagnostic(
                 event: "keyboard_audio_route_change",
@@ -918,18 +1194,25 @@ final class StandbyAudioSession: ObservableObject {
         purpose: IOSRecordingAudioSession.Purpose,
         reuseActiveSession: Bool
     ) throws {
-        try IOSRecordingAudioSession.activate(reuseActiveSession: reuseActiveSession, purpose: purpose)
-        try enableVoiceProcessing()
-        // Multi-channel input (CarPlay / USB mic arrays) is fine here: the
-        // tap writer downmixes to mono before encoding.
-        currentFormat = engine.inputNode.outputFormat(forBus: 0)
-        installInputTapIfNeeded()
-        engine.prepare()
-        if !engine.isRunning {
-            try engine.start()
+        isActive = false
+        do {
+            try IOSRecordingAudioSession.activate(reuseActiveSession: reuseActiveSession, purpose: purpose)
+            let input = try validatedInputNode()
+            try enableVoiceProcessing(on: input)
+            // Multi-channel input (CarPlay / USB mic arrays) is fine here: the
+            // tap writer downmixes to mono before encoding.
+            currentFormat = try validatedCaptureFormat(for: input)
+            installInputTapIfNeeded(on: input)
+            engine.prepare()
+            if !engine.isRunning {
+                try engine.start()
+            }
+            isActive = true
+            needsEngineRestart = false
+        } catch {
+            resetFailedEngineStart()
+            throw error
         }
-        isActive = true
-        needsEngineRestart = false
         recordAudioDiagnostic(
             event: "keyboard_audio_engine_started",
             fields: [
@@ -945,12 +1228,21 @@ final class StandbyAudioSession: ObservableObject {
     ) async throws {
         var lastError: Error?
         for delay in [UInt64(0), 180_000_000, 360_000_000] {
+            try Task.checkCancellation()
             if delay > 0 {
-                try? await Task.sleep(nanoseconds: delay)
+                try await Task.sleep(nanoseconds: delay)
             }
+            try Task.checkCancellation()
             do {
                 try startEngine(purpose: purpose, reuseActiveSession: reuseActiveSession)
+                try Task.checkCancellation()
                 return
+            } catch is CancellationError {
+                discardInactiveInputEngine(
+                    deactivateSession: false,
+                    reason: "start_cancelled"
+                )
+                throw CancellationError()
             } catch {
                 lastError = error
                 recordAudioDiagnostic(
@@ -967,6 +1259,7 @@ final class StandbyAudioSession: ObservableObject {
                 )
             }
         }
+        try Task.checkCancellation()
         discardInactiveInputEngine(
             deactivateSession: true,
             reason: "start_failed_exhausted"
@@ -984,24 +1277,87 @@ final class StandbyAudioSession: ObservableObject {
     ) throws {
         removeInputTap()
         engine.stop()
+        isActive = false
+        level = 0
         currentFormat = nil
+        currentHardwareInputFormat = nil
+        needsEngineRestart = true
         try startEngine(purpose: purpose, reuseActiveSession: reuseActiveSession)
     }
 
-    private func installInputTapIfNeeded() {
+    private func validatedInputNode() throws -> AVAudioInputNode {
+        let session = AVAudioSession.sharedInstance()
+        guard session.isInputAvailable else {
+            currentHardwareInputFormat = nil
+            throw AudioInputError.unavailable
+        }
+        let input = engine.inputNode
+        let format = input.inputFormat(forBus: 0)
+        currentHardwareInputFormat = format
+        guard Self.isUsableAudioFormat(format) else {
+            throw AudioInputError.invalidHardwareFormat
+        }
+        return input
+    }
+
+    private func validatedCaptureFormat(for input: AVAudioInputNode) throws -> AVAudioFormat {
+        let format = input.outputFormat(forBus: 0)
+        guard Self.isUsableAudioFormat(format) else {
+            throw AudioInputError.invalidCaptureFormat
+        }
+        return format
+    }
+
+    private func installInputTapIfNeeded(on input: AVAudioInputNode) {
         guard !hasInstalledTap else { return }
         installStandbyInputTap(
-            on: engine.inputNode,
+            on: input,
             owner: self,
             fileWriter: fileWriter,
             levelThrottler: levelThrottler,
+            captureUpdateCoalescer: captureUpdateCoalescer,
             pcmBufferSink: pcmBufferSink
         )
         hasInstalledTap = true
     }
 
-    fileprivate func publishTapLevel(_ nextLevel: Float) {
-        level = nextLevel
+    fileprivate func publishTapUpdate(
+        _ update: TapCaptureUpdate,
+        captureHealthGeneration generation: UInt64
+    ) {
+        guard generation == captureHealthGeneration,
+              fileWriter.isRecording
+        else { return }
+        applyCaptureProgress(update.progress)
+        level = update.level
+    }
+
+    private func beginCaptureHealth(startedAt: Date) {
+        captureHealthGeneration &+= 1
+        captureStartedAt = startedAt
+        firstAudioFrameAt = nil
+        lastAudioFrameAt = nil
+        capturedFrameCount = 0
+        level = 0
+        levelThrottler.reset()
+        captureUpdateCoalescer.activate(generation: captureHealthGeneration)
+        captureInvalidationReported = false
+    }
+
+    private func endCaptureHealth() {
+        applyCaptureProgress(fileWriter.captureProgressSnapshot())
+        captureHealthGeneration &+= 1
+        captureUpdateCoalescer.invalidate()
+        level = 0
+    }
+
+    private func applyCaptureProgress(_ progress: AudioCaptureProgress) {
+        guard progress.capturedFrameCount > 0,
+              progress.capturedFrameCount >= capturedFrameCount
+        else { return }
+        firstAudioFrameAt = firstAudioFrameAt ?? progress.firstAudioFrameAt
+        lastAudioFrameAt = progress.lastAudioFrameAt ?? lastAudioFrameAt
+        capturedFrameCount = progress.capturedFrameCount
     }
 
     private func removeInputTap() {
@@ -1010,14 +1366,24 @@ final class StandbyAudioSession: ObservableObject {
         hasInstalledTap = false
     }
 
-    private func enableVoiceProcessing() throws {
-        try engine.inputNode.setVoiceProcessingEnabled(true)
+    private func enableVoiceProcessing(on input: AVAudioInputNode) throws {
+        try input.setVoiceProcessingEnabled(true)
         try engine.outputNode.setVoiceProcessingEnabled(true)
-        engine.inputNode.isVoiceProcessingBypassed = false
-        engine.inputNode.isVoiceProcessingAGCEnabled = true
-        guard engine.inputNode.isVoiceProcessingEnabled else {
+        input.isVoiceProcessingBypassed = false
+        input.isVoiceProcessingAGCEnabled = true
+        guard input.isVoiceProcessingEnabled else {
             throw VoiceProcessingError.notEnabled
         }
+    }
+
+    private func resetFailedEngineStart() {
+        removeInputTap()
+        engine.stop()
+        isActive = false
+        level = 0
+        currentFormat = nil
+        currentHardwareInputFormat = nil
+        needsEngineRestart = true
     }
 
     func stop(deactivateSession: Bool = true, discardInputEngine: Bool = false) {
@@ -1026,10 +1392,12 @@ final class StandbyAudioSession: ObservableObject {
         onPCMBuffer = nil
         removeInputTap()
         _ = fileWriter.cancel()
+        endCaptureHealth()
         engine.stop()
         isActive = false
         level = 0
         currentFormat = nil
+        currentHardwareInputFormat = nil
         if deactivateSession {
             IOSRecordingAudioSession.deactivateAndNotifyOthers()
         }
@@ -1048,10 +1416,12 @@ final class StandbyAudioSession: ObservableObject {
         recordingShouldYieldOtherAudio = false
         removeInputTap()
         _ = fileWriter.cancel()
+        endCaptureHealth()
         engine.stop()
         isActive = false
         level = 0
         currentFormat = nil
+        currentHardwareInputFormat = nil
         needsEngineRestart = false
         if deactivateSession {
             IOSRecordingAudioSession.deactivateAndNotifyOthers()
@@ -1065,27 +1435,35 @@ final class StandbyAudioSession: ObservableObject {
         onPCMBuffer = nil
         removeInputTap()
         fileWriter.discard()
+        endCaptureHealth()
         if engine.isRunning {
             engine.stop()
         }
         isActive = false
         level = 0
         currentFormat = nil
+        currentHardwareInputFormat = nil
         needsEngineRestart = true
     }
 
-    private func replaceInputEngine(reason: String) {
+    private func replaceInputEngine(
+        reason: String,
+        replacementNeedsRestart: Bool = false
+    ) {
+        engine = AVAudioEngine()
+        hasInstalledTap = false
+        currentFormat = nil
+        currentHardwareInputFormat = nil
+        needsEngineRestart = replacementNeedsRestart
+        observeCurrentEngineConfigurationChanges()
         recordAudioDiagnostic(
             event: "keyboard_audio_engine_discarded",
             fields: ["reason": reason]
         )
-        engine = AVAudioEngine()
-        hasInstalledTap = false
-        currentFormat = nil
-        needsEngineRestart = false
     }
 
     func beginRecording() async throws -> URL {
+        try Task.checkCancellation()
         guard isActive else {
             throw NSError(domain: "Typeforme", code: 3, userInfo: [NSLocalizedDescriptionKey: "Keyboard standby is not active"])
         }
@@ -1096,13 +1474,22 @@ final class StandbyAudioSession: ObservableObject {
         recordingShouldYieldOtherAudio = false
         do {
             return try await beginRecordingNow()
+        } catch is CancellationError {
+            clearPendingCaptureTransition()
+            throw CancellationError()
         } catch {
+            try checkCancellationBeforeAudioSessionMutation()
             restoreAudioSessionAfterCapture()
             needsEngineRestart = true
-            try? await Task.sleep(nanoseconds: 150_000_000)
+            try await Task.sleep(nanoseconds: 150_000_000)
+            try Task.checkCancellation()
             do {
                 return try await beginRecordingNow()
+            } catch is CancellationError {
+                clearPendingCaptureTransition()
+                throw CancellationError()
             } catch {
+                try checkCancellationBeforeAudioSessionMutation()
                 restoreAudioSessionAfterCapture()
                 throw error
             }
@@ -1110,6 +1497,7 @@ final class StandbyAudioSession: ObservableObject {
     }
 
     private func beginRecordingNow() async throws -> URL {
+        try Task.checkCancellation()
         let needsRestart = needsEngineRestart || !engine.isRunning || !hasInstalledTap
         let shouldInterruptOtherAudio = IOSRecordingAudioSession.shouldInterruptOtherAudioForKeyboardRecording()
         recordAudioDiagnostic(
@@ -1123,19 +1511,30 @@ final class StandbyAudioSession: ObservableObject {
             recordingDidActivateCaptureCategory = true
             recordingShouldYieldOtherAudio = shouldInterruptOtherAudio
             try await IOSRecordingAudioSession.activateKeyboardRecording(reuseActiveSession: true)
+            try Task.checkCancellation()
             try restartEngine(purpose: .keyboardRecording)
         } else {
             if shouldInterruptOtherAudio {
                 recordingDidActivateCaptureCategory = true
                 recordingShouldYieldOtherAudio = true
+                try Task.checkCancellation()
                 try? IOSRecordingAudioSession.configureActiveSessionCategory(purpose: .keyboardRecording)
             }
-            currentFormat = currentFormat ?? engine.inputNode.outputFormat(forBus: 0)
             needsEngineRestart = false
         }
+        try Task.checkCancellation()
         level = 0
-        let format = currentFormat ?? engine.inputNode.outputFormat(forBus: 0)
+        let format: AVAudioFormat
+        if let currentFormat {
+            format = currentFormat
+        } else {
+            let input = try validatedInputNode()
+            format = try validatedCaptureFormat(for: input)
+            currentFormat = format
+        }
+        let captureStartedAt = Date()
         let url = try fileWriter.begin(format: format)
+        beginCaptureHealth(startedAt: captureStartedAt)
         recordAudioDiagnostic(
             event: "keyboard_audio_recording_begin",
             fields: Self.formatFields(format, prefix: "tap_format")
@@ -1148,9 +1547,22 @@ final class StandbyAudioSession: ObservableObject {
         return url
     }
 
+    private func checkCancellationBeforeAudioSessionMutation() throws {
+        guard !Task.isCancelled else {
+            clearPendingCaptureTransition()
+            throw CancellationError()
+        }
+    }
+
+    private func clearPendingCaptureTransition() {
+        recordingDidActivateCaptureCategory = false
+        recordingShouldYieldOtherAudio = false
+    }
+
     func finishRecording() -> URL? {
         level = 0
         let url = fileWriter.finish()
+        endCaptureHealth()
         recordAudioDiagnostic(
             event: "keyboard_audio_recording_finish",
             fields: ["had_file": "\(url != nil)"]
@@ -1163,6 +1575,7 @@ final class StandbyAudioSession: ObservableObject {
         let wasRecording = fileWriter.isRecording
         level = 0
         _ = fileWriter.cancel()
+        endCaptureHealth()
         if wasRecording {
             recordAudioDiagnostic(event: "keyboard_audio_recording_cancel")
             restoreStandbyAfterRecording()
@@ -1186,6 +1599,7 @@ final class StandbyAudioSession: ObservableObject {
             isActive = false
             level = 0
             currentFormat = nil
+            currentHardwareInputFormat = nil
             needsEngineRestart = true
             IOSRecordingAudioSession.deactivateAndNotifyOthers()
             KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.sessionEnded)
@@ -1197,7 +1611,20 @@ final class StandbyAudioSession: ObservableObject {
             return
         }
         if engine.isRunning, hasInstalledTap {
-            currentFormat = currentFormat ?? engine.inputNode.outputFormat(forBus: 0)
+            if currentFormat == nil {
+                do {
+                    let input = try validatedInputNode()
+                    currentFormat = try validatedCaptureFormat(for: input)
+                } catch {
+                    recordAudioDiagnostic(
+                        event: "keyboard_audio_restore_standby_failed",
+                        fields: ["error": error.localizedDescription]
+                    )
+                    needsEngineRestart = true
+                    KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.sessionEnded)
+                    return
+                }
+            }
             needsEngineRestart = false
             if shouldRestoreStandbyCategory {
                 try? IOSRecordingAudioSession.configureActiveSessionCategory(purpose: .standby)
@@ -1259,10 +1686,16 @@ final class StandbyAudioSession: ObservableObject {
         for (key, value) in Self.formatFields(currentFormat, prefix: "current_format") {
             fields[key] = value
         }
-        for (key, value) in Self.formatFields(engine.inputNode.outputFormat(forBus: 0), prefix: "input_node_format") {
+        for (key, value) in Self.formatFields(currentHardwareInputFormat, prefix: "input_node_format") {
             fields[key] = value
         }
         return fields
+    }
+
+    private static func isUsableAudioFormat(_ format: AVAudioFormat) -> Bool {
+        format.sampleRate.isFinite
+            && format.sampleRate > 0
+            && format.channelCount > 0
     }
 
     private static func formatFields(_ format: AVAudioFormat?, prefix: String) -> [String: String] {
@@ -1346,6 +1779,12 @@ private final class LevelUpdateThrottler: @unchecked Sendable {
 
     init(interval: TimeInterval) {
         self.interval = interval
+    }
+
+    func reset() {
+        lock.lock()
+        lastUpdateAt = 0
+        lock.unlock()
     }
 
     func shouldPublish(now: TimeInterval = CFAbsoluteTimeGetCurrent()) -> Bool {

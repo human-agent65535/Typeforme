@@ -54,7 +54,6 @@ final class DictationCoordinator: ObservableObject {
     private var asrLivePreviewLease: ASRLivePreviewLease?
     private var remoteBridgeLivePreviewStreamer: RemoteBridgeLivePreviewStreamer?
     private var livePreviewOwnerSessionID: UUID?
-    private var livePreviewFinalSeed: ASRTranscriptionSeed?
     private var activeFastASRRoute: FastASRRoute?
 
     private static let errorResetDelay: TimeInterval = 8.0
@@ -695,7 +694,6 @@ final class DictationCoordinator: ObservableObject {
         activeCancelToken = nil
         activeBridgeDictateJobID = nil
         activeFastASRRoute = nil
-        livePreviewFinalSeed = nil
     }
 
     private func clearTextEditRequest() {
@@ -713,7 +711,6 @@ final class DictationCoordinator: ObservableObject {
         previewCorrectionMode = nil
         voicePreviewHUDExpanded = false
         lastWarning = nil
-        livePreviewFinalSeed = nil
     }
 
     func reportError(_ message: String) {
@@ -946,18 +943,11 @@ final class DictationCoordinator: ObservableObject {
     }
 
     private func asrService(for correctionMode: CorrectionMode) throws -> ASRService {
-        let reusableSeeds = livePreviewFinalSeed.map { [$0] } ?? []
         if correctionMode == .fast {
             let source = try fastRouteForCurrentSession().source
-            return ASRFactory.shared.getInstalled(
-                source: source,
-                reusableSeed: reusableSeeds.first { $0.source == source }
-            )
+            return ASRFactory.shared.getInstalled(source: source)
         }
-        return ASRFactory.shared.get(
-            sources: try recognitionSources(for: correctionMode),
-            reusableSeeds: reusableSeeds
-        )
+        return ASRFactory.shared.get(sources: try recognitionSources(for: correctionMode))
     }
 
     private func validateCorrectionModeAvailable(_ correctionMode: CorrectionMode) throws {
@@ -1340,9 +1330,6 @@ final class DictationCoordinator: ObservableObject {
             let completed = await lease.session.finishInputAndWaitForFinal(
                 timeout: Self.asrLivePreviewFinishTimeout
             )
-            if completed, activeSessionID == sessionID {
-                cacheLivePreviewFinalSeed(from: lease)
-            }
             if completed {
                 lease.returnIdle(reason: "mac_preview_finished")
             } else {
@@ -1350,16 +1337,6 @@ final class DictationCoordinator: ObservableObject {
                 lease.preloadReplacement()
             }
         }
-    }
-
-    private func cacheLivePreviewFinalSeed(from lease: ASRLivePreviewLease) {
-        guard let source = RecognitionSource(rawValue: lease.provider) else { return }
-        let text = lease.session.currentTranscript()?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard !text.isEmpty else { return }
-        livePreviewFinalSeed = ASRTranscriptionSeed(source: source, text: text)
-        Log.asr.notice(
-            "ASR live preview final cached source=\(source.rawValue, privacy: .public) text_chars=\(text.count, privacy: .public)"
-        )
     }
 
     /// Called after a final ASR/correction result owns the display (or on reset / error).

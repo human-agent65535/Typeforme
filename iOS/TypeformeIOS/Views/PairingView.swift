@@ -13,6 +13,9 @@ struct PairingView: View {
     @State private var tokenVisible = false
     @State private var showingQRScanner = false
     @State private var pairingParseTask: Task<Void, Never>?
+    @State private var refreshTask: Task<Void, Never>?
+    @State private var refreshGeneration: UInt64 = 0
+    @State private var activeRefreshFingerprint: PairingRefreshFingerprint?
     @State private var isUnpairing = false
 
     let onSave: (PairingConfig) -> Bool
@@ -60,6 +63,7 @@ struct PairingView: View {
                             .autocorrectionDisabled()
                             .textInputAutocapitalization(.never)
                             .onChange(of: pairingJSON) { _, _ in
+                                cancelRefreshIfInputChanged()
                                 schedulePairingParse(pairingJSON)
                             }
                     }
@@ -151,6 +155,7 @@ struct PairingView: View {
                         Button(role: .destructive) {
                             pairingParseTask?.cancel()
                             pairingParseTask = nil
+                            cancelRefresh()
                             isUnpairing = true
                             Task { @MainActor in
                                 await onUnpair()
@@ -216,10 +221,16 @@ struct PairingView: View {
             .navigationTitle("Pairing")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    Button("Cancel") {
+                        cancelRefresh()
+                        dismiss()
+                    }
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") {
+                        pairingParseTask?.cancel()
+                        pairingParseTask = nil
+                        cancelRefresh()
                         if onSave(config) {
                             dismiss()
                         } else {
@@ -234,13 +245,18 @@ struct PairingView: View {
             }
             .sheet(isPresented: $showingQRScanner) {
                 PairingQRScannerView { payload in
+                    cancelRefresh()
                     pairingJSON = payload
                     schedulePairingParse(payload)
                 }
             }
+            .onChange(of: config) { _, _ in
+                cancelRefreshIfInputChanged()
+            }
             .onDisappear {
                 pairingParseTask?.cancel()
                 pairingParseTask = nil
+                cancelRefresh()
             }
         }
     }
@@ -279,33 +295,44 @@ struct PairingView: View {
         guard !isPulling else { return }
         isPulling = true
         parseError = nil
-        Task {
-            let route = await BridgeRouteResolver().resolve(config: config, probeAllEndpoints: true)
+        refreshGeneration &+= 1
+        let generation = refreshGeneration
+        let fingerprint = currentRefreshFingerprint
+        activeRefreshFingerprint = fingerprint
+        refreshTask = Task { @MainActor in
+            let route = await BridgeRouteResolver().resolve(
+                config: fingerprint.config,
+                probeAllEndpoints: true
+            )
+            guard refreshIsCurrent(generation, fingerprint: fingerprint) else { return }
             let refreshedConfig: PairingConfig?
             if let activeURL = route.activeURL {
-                refreshedConfig = try? await BridgeClient(baseURL: activeURL, token: config.token).pairing(timeout: 4)
+                refreshedConfig = try? await BridgeClient(
+                    baseURL: activeURL,
+                    token: fingerprint.config.token
+                ).pairing(timeout: 4)
             } else {
                 refreshedConfig = nil
             }
-            await MainActor.run {
-                routeStatus = route
-                let previousConfig = config
-                if let refreshedConfig {
-                    config.bridgeEndpoints = refreshedConfig.bridgeEndpoints
-                } else if route.activeKind == .local, let activeURL = route.activeURL?.absoluteString {
-                    config.promoteLocalBridgeURL(activeURL)
+            guard refreshIsCurrent(generation, fingerprint: fingerprint) else { return }
+            var candidate = fingerprint.config
+            if let refreshedConfig {
+                candidate.bridgeEndpoints = refreshedConfig.bridgeEndpoints
+            } else if route.activeKind == .local, let activeURL = route.activeURL?.absoluteString {
+                candidate.promoteLocalBridgeURL(activeURL)
+            }
+            candidate.normalizeBridgeEndpoints()
+            guard completeRefresh(generation, fingerprint: fingerprint) else { return }
+            routeStatus = route
+            if candidate.bridgeEndpoints != fingerprint.config.bridgeEndpoints {
+                if !onSaveConnection(candidate.bridgeEndpoints) {
+                    parseError = NSLocalizedString(
+                        "Couldn't save pairing securely. Your previous pairing is unchanged.",
+                        comment: "Pairing persistence failure"
+                    )
+                } else {
+                    config = candidate
                 }
-                config.normalizeBridgeEndpoints()
-                if config.bridgeEndpoints != previousConfig.bridgeEndpoints {
-                    if !onSaveConnection(config.bridgeEndpoints) {
-                        config = previousConfig
-                        parseError = NSLocalizedString(
-                            "Couldn't save pairing securely. Your previous pairing is unchanged.",
-                            comment: "Pairing persistence failure"
-                        )
-                    }
-                }
-                isPulling = false
             }
         }
     }
@@ -320,6 +347,7 @@ struct PairingView: View {
         if pasted == pairingJSON {
             schedulePairingParse(pasted)
         } else {
+            cancelRefresh()
             pairingJSON = pasted
             schedulePairingParse(pasted)
         }
@@ -356,6 +384,7 @@ struct PairingView: View {
                 correctionMode: config.correctionMode
             )
             decoded.normalize()
+            cancelRefresh()
             config = decoded
             parsedSuccessfully = true
             parsedSource = trimmed
@@ -373,52 +402,105 @@ struct PairingView: View {
     private func refreshFromMac(saveAfterRefresh: Bool) {
         guard !isPulling else { return }
         parseError = nil
-        let token = config.token
         isPulling = true
-        Task {
-            let route = await BridgeRouteResolver().resolve(config: config, probeAllEndpoints: true)
+        refreshGeneration &+= 1
+        let generation = refreshGeneration
+        let fingerprint = currentRefreshFingerprint
+        activeRefreshFingerprint = fingerprint
+        refreshTask = Task { @MainActor in
+            let route = await BridgeRouteResolver().resolve(
+                config: fingerprint.config,
+                probeAllEndpoints: true
+            )
+            guard refreshIsCurrent(generation, fingerprint: fingerprint) else { return }
             guard let activeURL = route.activeURL else {
-                await MainActor.run {
-                    routeStatus = route
-                    parseError = BridgeClientError.unauthorizedOrUnavailable.localizedDescription
-                    isPulling = false
-                }
+                guard completeRefresh(generation, fingerprint: fingerprint) else { return }
+                routeStatus = route
+                parseError = BridgeClientError.unauthorizedOrUnavailable.localizedDescription
                 return
             }
-            let client = BridgeClient(baseURL: activeURL, token: token)
+            let client = BridgeClient(baseURL: activeURL, token: fingerprint.config.token)
             do {
                 let refreshedConfig = try? await client.pairing(timeout: 4)
+                guard refreshIsCurrent(generation, fingerprint: fingerprint) else { return }
                 var settings = try await client.macSettings()
                 settings.normalize()
-                await MainActor.run {
-                    routeStatus = route
-                    if let refreshedConfig {
-                        config.bridgeEndpoints = refreshedConfig.bridgeEndpoints
-                    } else if route.activeKind == .local {
-                        config.promoteLocalBridgeURL(activeURL.absoluteString)
+                guard refreshIsCurrent(generation, fingerprint: fingerprint) else { return }
+                var candidate = fingerprint.config
+                if let refreshedConfig {
+                    candidate.bridgeEndpoints = refreshedConfig.bridgeEndpoints
+                } else if route.activeKind == .local {
+                    candidate.promoteLocalBridgeURL(activeURL.absoluteString)
+                }
+                applyMacSettings(settings, to: &candidate)
+                guard completeRefresh(generation, fingerprint: fingerprint) else { return }
+                routeStatus = route
+                config = candidate
+                parsedSuccessfully = true
+                if saveAfterRefresh {
+                    if !onSave(candidate) {
+                        parseError = NSLocalizedString(
+                            "Couldn't save pairing securely. Your previous pairing is unchanged.",
+                            comment: "Pairing persistence failure"
+                        )
                     }
-                    applyMacSettings(settings)
-                    parsedSuccessfully = true
-                    if saveAfterRefresh {
-                        if !onSave(config) {
-                            parseError = NSLocalizedString(
-                                "Couldn't save pairing securely. Your previous pairing is unchanged.",
-                                comment: "Pairing persistence failure"
-                            )
-                        }
-                    }
-                    isPulling = false
                 }
             } catch {
-                await MainActor.run {
-                    parseError = error.localizedDescription
-                    isPulling = false
-                }
+                guard completeRefresh(generation, fingerprint: fingerprint) else { return }
+                parseError = error.localizedDescription
             }
         }
     }
 
-    private func applyMacSettings(_ settings: BridgeMacSettingsPayload) {
+    private var currentRefreshFingerprint: PairingRefreshFingerprint {
+        PairingRefreshFingerprint(config: config, pairingJSON: pairingJSON)
+    }
+
+    private func refreshIsCurrent(
+        _ generation: UInt64,
+        fingerprint: PairingRefreshFingerprint
+    ) -> Bool {
+        guard !Task.isCancelled,
+              !isUnpairing,
+              refreshGeneration == generation,
+              activeRefreshFingerprint == fingerprint,
+              currentRefreshFingerprint == fingerprint
+        else {
+            if refreshGeneration == generation {
+                cancelRefresh()
+            }
+            return false
+        }
+        return true
+    }
+
+    private func completeRefresh(
+        _ generation: UInt64,
+        fingerprint: PairingRefreshFingerprint
+    ) -> Bool {
+        guard refreshIsCurrent(generation, fingerprint: fingerprint) else { return false }
+        refreshTask = nil
+        activeRefreshFingerprint = nil
+        isPulling = false
+        return true
+    }
+
+    private func cancelRefreshIfInputChanged() {
+        guard let activeRefreshFingerprint,
+              activeRefreshFingerprint != currentRefreshFingerprint
+        else { return }
+        cancelRefresh()
+    }
+
+    private func cancelRefresh() {
+        refreshGeneration &+= 1
+        refreshTask?.cancel()
+        refreshTask = nil
+        activeRefreshFingerprint = nil
+        isPulling = false
+    }
+
+    private func applyMacSettings(_ settings: BridgeMacSettingsPayload, to config: inout PairingConfig) {
         config.supportedLanguages = settings.supportedLanguages
         config.languageIDs = ASRLanguageSelection.validatedIDs(
             config.languageIDs,
@@ -427,6 +509,11 @@ struct PairingView: View {
         config.normalize()
     }
 
+}
+
+private struct PairingRefreshFingerprint: Equatable {
+    let config: PairingConfig
+    let pairingJSON: String
 }
 
 private struct PairingRouteRow: View {

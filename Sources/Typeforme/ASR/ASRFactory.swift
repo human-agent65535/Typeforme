@@ -12,18 +12,14 @@ final class ASRFactory {
         MultiSourceASRService(sources: AppSettings.enabledRecognitionSources)
     }
 
-    func get(
-        sources: [RecognitionSource],
-        reusableSeeds: [ASRTranscriptionSeed] = []
-    ) -> ASRService {
-        MultiSourceASRService(sources: sources, reusableSeeds: reusableSeeds)
+    // Final recognition accepts only the recorded audio. Live preview output may
+    // be incomplete and must never satisfy a batch source attempt.
+    func get(sources: [RecognitionSource]) -> ASRService {
+        MultiSourceASRService(sources: sources)
     }
 
-    func getInstalled(
-        source: RecognitionSource,
-        reusableSeed: ASRTranscriptionSeed? = nil
-    ) -> ASRService {
-        InstalledSingleSourceASRService(source: source, reusableSeed: reusableSeed)
+    func getInstalled(source: RecognitionSource) -> ASRService {
+        InstalledSingleSourceASRService(source: source)
     }
 
     var isQwenLlamaInstalledForCurrentSettings: Bool {
@@ -197,7 +193,6 @@ private struct UnavailableASRService: ASRService {
 
 private struct InstalledSingleSourceASRService: ASRService {
     let source: RecognitionSource
-    let reusableSeed: ASRTranscriptionSeed?
 
     func transcribe(audioFileURL: URL, languageIDs: [String]) async throws -> String {
         try await transcribeResult(audioFileURL: audioFileURL, languageIDs: languageIDs).text
@@ -214,21 +209,6 @@ private struct InstalledSingleSourceASRService: ASRService {
     ) async throws -> ASRTranscription {
         if let progress {
             await progress(ASRTranscriptionProgress(completedSources: 0, totalSources: 1, source: source))
-        }
-        if let reusableSeed,
-           reusableSeed.source == source,
-           reusableSeed.isUsable {
-            let text = reusableSeed.normalizedText
-            if let progress {
-                await progress(ASRTranscriptionProgress(completedSources: 1, totalSources: 1, source: source))
-            }
-            return ASRTranscription(
-                text: text,
-                hypotheses: [text],
-                modelOutputs: [
-                    ASRModelOutputFactory.output(for: source, text: text, latencyMs: 0)
-                ]
-            )
         }
         let started = Date()
         let text: String
@@ -379,15 +359,6 @@ private struct InstalledNvidiaNemotronASRService: ASRService {
 
 private struct MultiSourceASRService: ASRService {
     let sources: [RecognitionSource]
-    let reusableSeeds: [ASRTranscriptionSeed]
-
-    init(
-        sources: [RecognitionSource],
-        reusableSeeds: [ASRTranscriptionSeed] = []
-    ) {
-        self.sources = sources
-        self.reusableSeeds = reusableSeeds
-    }
 
     func transcribe(audioFileURL: URL, languageIDs: [String]) async throws -> String {
         try await transcribeResult(audioFileURL: audioFileURL, languageIDs: languageIDs).text
@@ -405,39 +376,6 @@ private struct MultiSourceASRService: ASRService {
         let enabledSources = sources
         guard !enabledSources.isEmpty else {
             throw ASRAudioSupportError.httpStatus(503, "No ASR source enabled")
-        }
-        var reusableSeedsBySource: [RecognitionSource: ASRTranscriptionSeed] = [:]
-        for seed in reusableSeeds where seed.isUsable {
-            reusableSeedsBySource[seed.source] = seed
-        }
-        if enabledSources.allSatisfy({ reusableSeedsBySource[$0]?.isUsable == true }) {
-            if let progress, enabledSources.count > 1 {
-                await progress(ASRTranscriptionProgress(
-                    completedSources: 0,
-                    totalSources: enabledSources.count,
-                    source: nil
-                ))
-            }
-            let attempts = enabledSources.enumerated().map { index, source in
-                ASRSourceAttemptResult(
-                    source: source,
-                    index: index,
-                    status: "ok",
-                    text: reusableSeedsBySource[source]?.normalizedText,
-                    error: nil,
-                    latencyMs: 0
-                )
-            }
-            if let progress, enabledSources.count > 1 {
-                for (completedCount, attempt) in attempts.enumerated() {
-                    await progress(ASRTranscriptionProgress(
-                        completedSources: completedCount + 1,
-                        totalSources: enabledSources.count,
-                        source: attempt.source
-                    ))
-                }
-            }
-            return try Self.transcription(from: attempts)
         }
         let selectedLanguageIDs = ASRLanguageSelection.validatedIDs(
             languageIDs,
@@ -461,15 +399,13 @@ private struct MultiSourceASRService: ASRService {
         await withTaskGroup(of: ASRSourceAttemptResult.self) { group in
             var completedSourceCount = 0
             for (index, source) in enabledSources.enumerated() {
-                let reusableSeed = reusableSeedsBySource[source]
                 group.addTask {
                     await Self.attempt(
                         source: source,
                         index: index,
                         audioFileURL: canonicalAudioURL,
                         selectedLanguageIDs: selectedLanguageIDs,
-                        timeoutSeconds: timeoutSeconds,
-                        reusableSeed: reusableSeed
+                        timeoutSeconds: timeoutSeconds
                     )
                 }
             }
@@ -533,22 +469,9 @@ private struct MultiSourceASRService: ASRService {
         index: Int,
         audioFileURL: URL,
         selectedLanguageIDs: [String],
-        timeoutSeconds: TimeInterval,
-        reusableSeed: ASRTranscriptionSeed?
+        timeoutSeconds: TimeInterval
     ) async -> ASRSourceAttemptResult {
         let started = Date()
-        if let reusableSeed,
-           reusableSeed.source == source,
-           reusableSeed.isUsable {
-            return ASRSourceAttemptResult(
-                source: source,
-                index: index,
-                status: "ok",
-                text: reusableSeed.normalizedText,
-                error: nil,
-                latencyMs: 0
-            )
-        }
         let effectiveLanguageIDs = ASRLanguageSelection.effectiveIDs(selectedLanguageIDs, for: source)
         guard !effectiveLanguageIDs.isEmpty else {
             return ASRSourceAttemptResult(

@@ -50,19 +50,6 @@ struct ASRTranscriptionProgress: Sendable, Equatable {
     }
 }
 
-struct ASRTranscriptionSeed: Sendable, Equatable {
-    let source: RecognitionSource
-    let text: String
-
-    var normalizedText: String {
-        text.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    var isUsable: Bool {
-        !normalizedText.isEmpty
-    }
-}
-
 typealias ASRTranscriptionProgressHandler = @Sendable (ASRTranscriptionProgress) async -> Void
 
 struct ASRTranscriptModelOutput: Sendable {
@@ -93,8 +80,8 @@ struct ASRTranscriptModelOutput: Sendable {
     }
 }
 
-/// Recognition sources return final text for an audio file. Live partial preview is
-/// handled outside this protocol.
+/// Recognition sources return final text derived from `audioFileURL`. Live partial
+/// preview is handled outside this protocol and cannot substitute for recorded audio.
 protocol ASRService: Sendable {
     func transcribe(audioFileURL: URL, languageIDs: [String]) async throws -> String
     func transcribeResult(audioFileURL: URL, languageIDs: [String]) async throws -> ASRTranscription

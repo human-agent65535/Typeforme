@@ -128,19 +128,17 @@ struct ASRAudioSupportTests {
         #expect(QwenLlamaLivePreviewSession.shouldRequestPreview(totalSamples: 35_200, lastRequestedSamples: 19_200))
     }
 
-    @Test @MainActor func asrFactoryUsesReusablePreviewSeedForMatchingSource() async throws {
-        let url = try TestAudioFixtures.makeFLACFile(frameCount: 1_600)
-        defer { try? FileManager.default.removeItem(at: url) }
+    @Test @MainActor func finalASRRequiresRecordedAudio() async {
+        let missingAudio = FileManager.default.temporaryDirectory
+            .appendingPathComponent("typeforme-missing-final-audio-\(UUID().uuidString).flac")
+        let service = ASRFactory.shared.get(sources: [.qwen])
 
-        let seed = ASRTranscriptionSeed(source: .qwen, text: " cached final ")
-        let singleSource = ASRFactory.shared.getInstalled(source: .qwen, reusableSeed: seed)
-        let singleResult = try await singleSource.transcribeResult(audioFileURL: url, languageIDs: ["en-US"])
-        #expect(singleResult.text == "cached final")
-
-        let multiSource = ASRFactory.shared.get(sources: [.qwen], reusableSeeds: [seed])
-        let multiResult = try await multiSource.transcribeResult(audioFileURL: url, languageIDs: ["en-US"])
-        #expect(multiResult.text == "cached final")
-        #expect(multiResult.modelOutputs.first?.provider == RecognitionSource.qwen.rawValue)
+        await #expect(throws: ASRAudioSupportError.self) {
+            _ = try await service.transcribeResult(
+                audioFileURL: missingAudio,
+                languageIDs: ["en-US"]
+            )
+        }
     }
 
     @Test func qwenLivePreviewRegistryCancelsRegisteredAndPendingTasks() async {

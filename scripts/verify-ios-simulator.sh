@@ -24,6 +24,13 @@ if ! command -v /usr/bin/python3 >/dev/null 2>&1; then
     exit 2
 fi
 
+echo "==> Checking iOS URL handoff security invariants"
+"$ROOT/scripts/smoke-ios-url-handoff-security.sh"
+echo "==> Checking iOS keyboard command/status invariants"
+"$ROOT/scripts/smoke-ios-command-status-invariants.sh"
+echo "==> Checking iOS mailbox/destination/Rime ownership invariants"
+"$ROOT/scripts/smoke-ios-mailbox-ownership-invariants.sh"
+
 simctl() {
     typeforme_xcrun simctl "$@"
 }

@@ -30,6 +30,32 @@ struct KeyboardLocalBridgeReadiness: Sendable {
 }
 
 final class KeyboardLocalServer: @unchecked Sendable {
+    private enum SelfProbeOutcome {
+        case succeeded
+        case failed
+        case cancelled
+        case staleGeneration
+    }
+
+    private enum ListenerReadinessOutcome {
+        case ready
+        case timedOut
+        case cancelled
+        case staleGeneration
+    }
+
+    private enum RestartCondition {
+        case listenerNotReady
+        case selfProbeFailed
+    }
+
+    private struct ReadinessFlight {
+        let id: UUID
+        let initialGeneration: UInt
+        let task: Task<KeyboardLocalBridgeReadiness, Never>
+        var waiterIDs: Set<UUID>
+    }
+
     static let port: UInt16 = 18082
     private static let maxMessageBytes = 1 * 1024 * 1024
     private static let maxTotalConnections = 16
@@ -37,7 +63,7 @@ final class KeyboardLocalServer: @unchecked Sendable {
     private static let helloTimeoutNanoseconds: UInt64 = 1_500_000_000
     private static let requestReadTimeoutNanoseconds: UInt64 = 2_000_000_000
     private static let connectionIdleTimeoutNanoseconds: UInt64 = 8_000_000_000
-    private static let refineHandlingTimeoutNanoseconds: UInt64 = 35_000_000_000
+    private static let refineHandlingTimeoutNanoseconds: UInt64 = 225_000_000_000
     private static let statusStreamHeartbeatIntervalNanoseconds: UInt64 = 2_000_000_000
     private static let readinessPollIntervalNanoseconds: UInt64 = 25_000_000
     private static let defaultReadinessTimeout: TimeInterval = 0.45
@@ -63,6 +89,7 @@ final class KeyboardLocalServer: @unchecked Sendable {
     private var lastAcceptedAt: TimeInterval = 0
     private var lastSelfProbeAt: TimeInterval = 0
     private var lastSelfProbeSucceeded = false
+    private var readinessFlight: ReadinessFlight?
 
     var isRunning: Bool {
         stateLock.lock()
@@ -119,8 +146,19 @@ final class KeyboardLocalServer: @unchecked Sendable {
         listener.stateUpdateHandler = { [weak self] state in
             keyboardLocalServerLog.notice("listener state=\(String(describing: state), privacy: .public)")
             self?.recordListenerState(state, generation: currentGeneration)
-            if case .failed = state {
-                self?.stop(reason: "listener_failed", onlyGeneration: currentGeneration)
+            if case .failed(let error) = state {
+                // Keep the failed listener attached to its generation. The next
+                // readiness flight can then replace exactly that generation;
+                // clearing it here would erase ownership and let a stale flight
+                // race a newly healthy listener.
+                KeyboardDiagnosticEventLog.record(
+                    source: "host-local-server",
+                    event: "listener_failed_awaiting_conditional_restart",
+                    fields: [
+                        "generation": "\(currentGeneration)",
+                        "error": error.localizedDescription,
+                    ]
+                )
             }
         }
         listener.start(queue: queue)
@@ -133,10 +171,15 @@ final class KeyboardLocalServer: @unchecked Sendable {
     }
 
     func stop(reason: String = "explicit") {
-        stop(reason: reason, onlyGeneration: nil)
+        stop(reason: reason, onlyGeneration: nil, restartCondition: nil)
     }
 
-    private func stop(reason: String, onlyGeneration expectedGeneration: UInt?) {
+    @discardableResult
+    private func stop(
+        reason: String,
+        onlyGeneration expectedGeneration: UInt?,
+        restartCondition: RestartCondition?
+    ) -> Bool {
         stateLock.lock()
         if let expectedGeneration,
            generation != expectedGeneration || listener == nil {
@@ -152,7 +195,24 @@ final class KeyboardLocalServer: @unchecked Sendable {
                 event: "server_stop_skipped_stale_generation",
                 fields: fields
             )
-            return
+            return false
+        }
+        if case .listenerNotReady? = restartCondition,
+           listenerStateDescription == "ready" {
+            let fields = listenerDiagnosticFieldsLocked().merging([
+                "reason": reason,
+                "expected_generation": "\(expectedGeneration ?? generation)",
+                "skipped": "true",
+                "skip_reason": "listener_became_ready",
+            ]) { current, _ in current }
+            stateLock.unlock()
+            keyboardLocalServerLog.debug("server stop skipped: listener became ready reason=\(reason, privacy: .public)")
+            KeyboardDiagnosticEventLog.record(
+                source: "host-local-server",
+                event: "server_stop_skipped_listener_became_ready",
+                fields: fields
+            )
+            return false
         }
         let currentListener = listener
         listener = nil
@@ -186,6 +246,7 @@ final class KeyboardLocalServer: @unchecked Sendable {
                 "tasks": "\(tasks.count)",
             ]
         )
+        return true
     }
 
     func ensureReady(
@@ -194,49 +255,245 @@ final class KeyboardLocalServer: @unchecked Sendable {
         forceProbe: Bool = false
     ) async -> KeyboardLocalBridgeReadiness {
         let startedAt = Date().timeIntervalSince1970
-        var restarted = false
-        var failureReason: String?
-        var selfProbeSucceeded = false
         KeyboardDiagnosticEventLog.record(
             source: "host-local-server",
             event: "bridge_ensure_begin",
             fields: listenerDiagnosticFields(reason: reason)
         )
 
+        guard !Task.isCancelled else {
+            return finishEnsureReady(
+                reason: reason,
+                startedAt: startedAt,
+                restarted: false,
+                selfProbeSucceeded: false,
+                failureReason: "cancelled",
+                cancelled: true,
+                forceProbe: forceProbe,
+                ownedGeneration: nil,
+                additionalDiagnosticFields: ["singleflight": "not_started"]
+            )
+        }
+
         do {
             if !hasListener {
                 try start()
             }
+        } catch {
+            return finishEnsureReady(
+                reason: reason,
+                startedAt: startedAt,
+                restarted: false,
+                selfProbeSucceeded: false,
+                failureReason: Self.isCancellation(error) ? "cancelled" : error.localizedDescription,
+                cancelled: Self.isCancellation(error),
+                forceProbe: forceProbe,
+                ownedGeneration: nil,
+                additionalDiagnosticFields: ["singleflight": "start_failed"]
+            )
+        }
 
-            let listenerBecameReady = await waitUntilListenerReady(timeout: timeout)
-            if !listenerBecameReady {
-                restarted = true
+        guard !Task.isCancelled else {
+            return finishEnsureReady(
+                reason: reason,
+                startedAt: startedAt,
+                restarted: false,
+                selfProbeSucceeded: false,
+                failureReason: "cancelled",
+                cancelled: true,
+                forceProbe: forceProbe,
+                ownedGeneration: nil,
+                additionalDiagnosticFields: ["singleflight": "not_started"]
+            )
+        }
+
+        let waiterID = UUID()
+        let flight = acquireReadinessFlight(
+            waiterID: waiterID,
+            reason: reason,
+            timeout: timeout,
+            forceProbe: forceProbe
+        )
+        let singleflightFields = [
+            "reason": reason,
+            "flight_id": flight.id.uuidString,
+            "flight_generation": "\(flight.initialGeneration)",
+            "joined": "\(flight.joined)",
+        ]
+        KeyboardDiagnosticEventLog.record(
+            source: "host-local-server",
+            event: flight.joined ? "bridge_ensure_singleflight_joined" : "bridge_ensure_singleflight_started",
+            fields: singleflightFields
+        )
+
+        // Readiness owns process infrastructure, not a recording command. A
+        // caller cancellation must not cancel/restart the listener underneath
+        // the immediately following command; the short shared flight finishes.
+        let sharedResult = await flight.task.value
+        completeReadinessWaiter(flightID: flight.id, waiterID: waiterID)
+
+        let result = KeyboardLocalBridgeReadiness(
+            ready: sharedResult.ready,
+            listenerState: sharedResult.listenerState,
+            generation: sharedResult.generation,
+            restarted: sharedResult.restarted,
+            selfProbeSucceeded: sharedResult.selfProbeSucceeded,
+            failureReason: sharedResult.failureReason,
+            elapsedMilliseconds: Int((Date().timeIntervalSince1970 - startedAt) * 1_000)
+        )
+        KeyboardDiagnosticEventLog.record(
+            source: "host-local-server",
+            event: "bridge_ensure_result",
+            fields: result.diagnosticFields.merging(singleflightFields) { current, _ in current }
+        )
+        keyboardLocalServerLog.notice("bridge ensure result reason=\(reason, privacy: .public) ready=\(result.ready, privacy: .public) state=\(result.listenerState, privacy: .public) generation=\(result.generation, privacy: .public) restarted=\(result.restarted, privacy: .public) probe=\(result.selfProbeSucceeded, privacy: .public) elapsed_ms=\(result.elapsedMilliseconds, privacy: .public)")
+        return result
+    }
+
+    private func performEnsureReady(
+        reason: String,
+        timeout: TimeInterval,
+        forceProbe: Bool,
+        initialGeneration: UInt
+    ) async -> KeyboardLocalBridgeReadiness {
+        let startedAt = Date().timeIntervalSince1970
+        var ownedGeneration = initialGeneration
+        var restarted = false
+        var failureReason: String?
+        var selfProbeSucceeded = false
+        var readinessCheckCancelled = false
+
+        do {
+            switch await waitUntilListenerReady(timeout: timeout, generation: ownedGeneration) {
+            case .ready:
+                break
+            case .cancelled:
+                readinessCheckCancelled = true
+                failureReason = "cancelled"
+            case .staleGeneration:
+                failureReason = "stale_generation"
+            case .timedOut:
                 failureReason = "listener_not_ready"
-                try forceRestart(reason: "\(reason):listener_not_ready")
-                _ = await waitUntilListenerReady(timeout: timeout)
+                guard !Task.isCancelled else {
+                    readinessCheckCancelled = true
+                    failureReason = "cancelled"
+                    break
+                }
+                if let replacementGeneration = try forceRestart(
+                    reason: "\(reason):listener_not_ready",
+                    expectedGeneration: ownedGeneration,
+                    condition: .listenerNotReady
+                ) {
+                    restarted = true
+                    ownedGeneration = replacementGeneration
+                    switch await waitUntilListenerReady(timeout: timeout, generation: ownedGeneration) {
+                    case .ready:
+                        break
+                    case .cancelled:
+                        readinessCheckCancelled = true
+                        failureReason = "cancelled"
+                    case .staleGeneration:
+                        failureReason = "stale_generation"
+                    case .timedOut:
+                        failureReason = "listener_not_ready_after_restart"
+                    }
+                }
             }
 
-            if isListenerReady {
-                if forceProbe || shouldSelfProbeForReadiness() {
-                    selfProbeSucceeded = await selfProbe(reason: reason)
-                    if !selfProbeSucceeded {
-                        restarted = true
+            let listenerSnapshot = listenerDiagnosticSnapshot()
+            if !readinessCheckCancelled,
+               listenerSnapshot.generation == ownedGeneration,
+               listenerSnapshot.isReady {
+                if forceProbe || shouldSelfProbeForReadiness(generation: ownedGeneration) {
+                    switch await selfProbe(reason: reason, generation: ownedGeneration) {
+                    case .succeeded:
+                        selfProbeSucceeded = true
+                    case .cancelled:
+                        readinessCheckCancelled = true
+                        failureReason = "cancelled"
+                    case .staleGeneration:
+                        failureReason = "stale_generation"
+                    case .failed:
                         failureReason = "self_probe_failed"
-                        try forceRestart(reason: "\(reason):self_probe_failed")
-                        if await waitUntilListenerReady(timeout: timeout) {
-                            selfProbeSucceeded = await selfProbe(reason: "\(reason):after_restart")
+                        guard !Task.isCancelled else {
+                            readinessCheckCancelled = true
+                            failureReason = "cancelled"
+                            break
+                        }
+                        if let replacementGeneration = try forceRestart(
+                            reason: "\(reason):self_probe_failed",
+                            expectedGeneration: ownedGeneration,
+                            condition: .selfProbeFailed
+                        ) {
+                            restarted = true
+                            ownedGeneration = replacementGeneration
+                            if case .ready = await waitUntilListenerReady(
+                                timeout: timeout,
+                                generation: ownedGeneration
+                            ) {
+                                switch await selfProbe(
+                                    reason: "\(reason):after_restart",
+                                    generation: ownedGeneration
+                                ) {
+                                case .succeeded:
+                                    selfProbeSucceeded = true
+                                case .cancelled:
+                                    readinessCheckCancelled = true
+                                    failureReason = "cancelled"
+                                case .staleGeneration:
+                                    failureReason = "stale_generation"
+                                case .failed:
+                                    failureReason = "self_probe_failed_after_restart"
+                                }
+                            } else if Task.isCancelled {
+                                readinessCheckCancelled = true
+                                failureReason = "cancelled"
+                            } else {
+                                failureReason = "listener_not_ready_after_restart"
+                            }
                         }
                     }
                 } else {
-                    selfProbeSucceeded = listenerDiagnosticSnapshot().lastSelfProbeSucceeded
+                    selfProbeSucceeded = listenerSnapshot.lastSelfProbeSucceeded
                 }
             }
         } catch {
-            failureReason = error.localizedDescription
+            let cancelled = Task.isCancelled || Self.isCancellation(error)
+            readinessCheckCancelled = cancelled
+            failureReason = cancelled ? "cancelled" : error.localizedDescription
         }
 
+        return finishEnsureReady(
+            reason: reason,
+            startedAt: startedAt,
+            restarted: restarted,
+            selfProbeSucceeded: selfProbeSucceeded,
+            failureReason: failureReason,
+            cancelled: readinessCheckCancelled,
+            forceProbe: forceProbe,
+            ownedGeneration: ownedGeneration,
+            additionalDiagnosticFields: ["singleflight": "operation"]
+        )
+    }
+
+    private func finishEnsureReady(
+        reason: String,
+        startedAt: TimeInterval,
+        restarted: Bool,
+        selfProbeSucceeded: Bool,
+        failureReason: String?,
+        cancelled: Bool,
+        forceProbe: Bool,
+        ownedGeneration: UInt?,
+        additionalDiagnosticFields: [String: String]
+    ) -> KeyboardLocalBridgeReadiness {
         let snapshot = listenerDiagnosticSnapshot()
-        let ready = snapshot.isReady && (!forceProbe || selfProbeSucceeded)
+        // Cancellation is not evidence that a ready shared listener is broken.
+        // A stale non-cancelled flight, however, must not certify a replacement
+        // generation it never checked.
+        let ownsSnapshot = ownedGeneration == nil || ownedGeneration == snapshot.generation
+        let ready = snapshot.isReady
+            && (cancelled || (ownsSnapshot && (!forceProbe || selfProbeSucceeded)))
         let result = KeyboardLocalBridgeReadiness(
             ready: ready,
             listenerState: snapshot.listenerState,
@@ -248,27 +505,120 @@ final class KeyboardLocalServer: @unchecked Sendable {
         )
         KeyboardDiagnosticEventLog.record(
             source: "host-local-server",
-            event: "bridge_ensure_result",
-            fields: result.diagnosticFields.merging(["reason": reason]) { current, _ in current }
+            event: "bridge_ensure_operation_result",
+            fields: result.diagnosticFields.merging(
+                additionalDiagnosticFields.merging(["reason": reason]) { current, _ in current }
+            ) { current, _ in current }
         )
-        keyboardLocalServerLog.notice("bridge ensure result reason=\(reason, privacy: .public) ready=\(result.ready, privacy: .public) state=\(result.listenerState, privacy: .public) generation=\(result.generation, privacy: .public) restarted=\(result.restarted, privacy: .public) probe=\(result.selfProbeSucceeded, privacy: .public) elapsed_ms=\(result.elapsedMilliseconds, privacy: .public)")
         return result
     }
 
-    private func forceRestart(reason: String) throws {
+    private func acquireReadinessFlight(
+        waiterID: UUID,
+        reason: String,
+        timeout: TimeInterval,
+        forceProbe: Bool
+    ) -> (
+        id: UUID,
+        initialGeneration: UInt,
+        task: Task<KeyboardLocalBridgeReadiness, Never>,
+        joined: Bool
+    ) {
+        stateLock.lock()
+        if var flight = readinessFlight {
+            flight.waiterIDs.insert(waiterID)
+            readinessFlight = flight
+            stateLock.unlock()
+            return (flight.id, flight.initialGeneration, flight.task, true)
+        }
+
+        let flightID = UUID()
+        let initialGeneration = generation
+        let task = Task { [self] in
+            let result = await performEnsureReady(
+                reason: reason,
+                timeout: timeout,
+                forceProbe: forceProbe,
+                initialGeneration: initialGeneration
+            )
+            completeReadinessFlightOperation(flightID: flightID)
+            return result
+        }
+        readinessFlight = ReadinessFlight(
+            id: flightID,
+            initialGeneration: initialGeneration,
+            task: task,
+            waiterIDs: [waiterID]
+        )
+        stateLock.unlock()
+        return (flightID, initialGeneration, task, false)
+    }
+
+    private func completeReadinessFlightOperation(flightID: UUID) {
+        stateLock.lock()
+        if readinessFlight?.id == flightID {
+            readinessFlight = nil
+        }
+        stateLock.unlock()
+    }
+
+    private func completeReadinessWaiter(flightID: UUID, waiterID: UUID) {
+        stateLock.lock()
+        guard var flight = readinessFlight, flight.id == flightID else {
+            stateLock.unlock()
+            return
+        }
+        flight.waiterIDs.remove(waiterID)
+        if flight.waiterIDs.isEmpty {
+            readinessFlight = nil
+        } else {
+            readinessFlight = flight
+        }
+        stateLock.unlock()
+    }
+
+    private func forceRestart(
+        reason: String,
+        expectedGeneration: UInt,
+        condition: RestartCondition
+    ) throws -> UInt? {
+        guard !Task.isCancelled else { throw CancellationError() }
         KeyboardDiagnosticEventLog.record(
             source: "host-local-server",
             event: "listener_force_restart_begin",
-            fields: listenerDiagnosticFields(reason: reason)
+            fields: listenerDiagnosticFields(reason: reason).merging([
+                "expected_generation": "\(expectedGeneration)",
+            ]) { current, _ in current }
         )
-        keyboardLocalServerLog.notice("listener force restart begin reason=\(reason, privacy: .public)")
-        stop(reason: "force_restart:\(reason)")
+        keyboardLocalServerLog.notice("listener conditional restart begin reason=\(reason, privacy: .public) expected_generation=\(expectedGeneration, privacy: .public)")
+        guard stop(
+            reason: "force_restart:\(reason)",
+            onlyGeneration: expectedGeneration,
+            restartCondition: condition
+        ) else {
+            KeyboardDiagnosticEventLog.record(
+                source: "host-local-server",
+                event: "listener_force_restart_skipped",
+                fields: listenerDiagnosticFields(reason: reason).merging([
+                    "expected_generation": "\(expectedGeneration)",
+                ]) { current, _ in current }
+            )
+            return nil
+        }
+        // Once this operation detached the old listener, complete the restart
+        // transaction even if its last waiter was cancelled. Leaving a nil
+        // listener would poison the immediately following recording round.
         try start()
+        let replacement = listenerDiagnosticSnapshot()
         KeyboardDiagnosticEventLog.record(
             source: "host-local-server",
             event: "listener_force_restart_end",
-            fields: listenerDiagnosticFields(reason: reason)
+            fields: listenerDiagnosticFields(reason: reason).merging([
+                "expected_generation": "\(expectedGeneration)",
+                "replacement_generation": "\(replacement.generation)",
+            ]) { current, _ in current }
         )
+        return replacement.hasListener ? replacement.generation : nil
     }
 
     private var hasListener: Bool {
@@ -277,25 +627,42 @@ final class KeyboardLocalServer: @unchecked Sendable {
         return listener != nil
     }
 
-    private var isListenerReady: Bool {
-        stateLock.lock()
-        defer { stateLock.unlock() }
-        return listener != nil && listenerStateDescription == "ready"
-    }
-
-    private func waitUntilListenerReady(timeout: TimeInterval) async -> Bool {
+    private func waitUntilListenerReady(
+        timeout: TimeInterval,
+        generation expectedGeneration: UInt
+    ) async -> ListenerReadinessOutcome {
         let deadline = Date().timeIntervalSince1970 + max(timeout, 0)
         while Date().timeIntervalSince1970 < deadline {
-            if isListenerReady { return true }
-            try? await Task.sleep(nanoseconds: Self.readinessPollIntervalNanoseconds)
+            guard !Task.isCancelled else { return .cancelled }
+            let snapshot = listenerDiagnosticSnapshot()
+            guard snapshot.generation == expectedGeneration, snapshot.hasListener else {
+                return .staleGeneration
+            }
+            if snapshot.isReady { return .ready }
+            do {
+                try await Task.sleep(nanoseconds: Self.readinessPollIntervalNanoseconds)
+            } catch {
+                return .cancelled
+            }
         }
-        return isListenerReady
+        guard !Task.isCancelled else { return .cancelled }
+        let snapshot = listenerDiagnosticSnapshot()
+        guard snapshot.generation == expectedGeneration, snapshot.hasListener else {
+            return .staleGeneration
+        }
+        return snapshot.isReady ? .ready : .timedOut
     }
 
-    private func shouldSelfProbeForReadiness(now: TimeInterval = Date().timeIntervalSince1970) -> Bool {
+    private func shouldSelfProbeForReadiness(
+        generation expectedGeneration: UInt,
+        now: TimeInterval = Date().timeIntervalSince1970
+    ) -> Bool {
         stateLock.lock()
         defer { stateLock.unlock() }
-        guard listener != nil, listenerStateDescription == "ready" else { return false }
+        guard generation == expectedGeneration,
+              listener != nil,
+              listenerStateDescription == "ready"
+        else { return false }
         guard lastSelfProbeSucceeded else { return true }
         return now - lastSelfProbeAt > 30
     }
@@ -551,9 +918,9 @@ final class KeyboardLocalServer: @unchecked Sendable {
                 return
             }
             if request.command?.action == .refineText {
-                // The keyboard client permits a 30-second refine request so a
-                // cold correction model can start. Keep a small transport
-                // margin instead of applying the short command timeout.
+                // Refinement may include cold model startup, format repair,
+                // and verification. Do not let the localhost connection cancel
+                // its command owner before the paired bridge reaches terminal.
                 self.scheduleConnectionTimeout(
                     connectionID,
                     generation: generation,
@@ -969,17 +1336,61 @@ final class KeyboardLocalServer: @unchecked Sendable {
         return fields
     }
 
-    private func selfProbe(reason: String) async -> Bool {
+    private func selfProbe(reason: String, generation expectedGeneration: UInt) async -> SelfProbeOutcome {
         let startedAt = Date().timeIntervalSince1970
         KeyboardDiagnosticEventLog.record(
             source: "host-local-server",
             event: "self_probe_begin",
-            fields: listenerDiagnosticFields(reason: reason, now: startedAt)
+            fields: listenerDiagnosticFields(reason: reason, now: startedAt).merging([
+                "expected_generation": "\(expectedGeneration)",
+            ]) { current, _ in current }
         )
+        guard !Task.isCancelled else {
+            KeyboardDiagnosticEventLog.record(
+                source: "host-local-server",
+                event: "self_probe_cancelled",
+                fields: ["reason": reason, "elapsed_ms": "0"]
+            )
+            return .cancelled
+        }
+        guard isCurrentGeneration(expectedGeneration) else {
+            KeyboardDiagnosticEventLog.record(
+                source: "host-local-server",
+                event: "self_probe_stale_generation",
+                fields: [
+                    "reason": reason,
+                    "expected_generation": "\(expectedGeneration)",
+                    "elapsed_ms": "0",
+                ]
+            )
+            return .staleGeneration
+        }
         guard let expectedToken = await expectedTokenProvider?(),
               !expectedToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else {
-            updateSelfProbeResult(false)
+            if Task.isCancelled {
+                KeyboardDiagnosticEventLog.record(
+                    source: "host-local-server",
+                    event: "self_probe_cancelled",
+                    fields: [
+                        "reason": reason,
+                        "elapsed_ms": "\(Int((Date().timeIntervalSince1970 - startedAt) * 1_000))",
+                    ]
+                )
+                return .cancelled
+            }
+            guard updateSelfProbeResult(false, generation: expectedGeneration) else {
+                KeyboardDiagnosticEventLog.record(
+                    source: "host-local-server",
+                    event: "self_probe_stale_generation",
+                    fields: [
+                        "reason": reason,
+                        "expected_generation": "\(expectedGeneration)",
+                        "elapsed_ms": "\(Int((Date().timeIntervalSince1970 - startedAt) * 1_000))",
+                    ]
+                )
+                return .staleGeneration
+            }
             KeyboardDiagnosticEventLog.record(
                 source: "host-local-server",
                 event: "self_probe_failure",
@@ -989,7 +1400,30 @@ final class KeyboardLocalServer: @unchecked Sendable {
                     "elapsed_ms": "\(Int((Date().timeIntervalSince1970 - startedAt) * 1_000))",
                 ]
             )
-            return false
+            return .failed
+        }
+        guard !Task.isCancelled else {
+            KeyboardDiagnosticEventLog.record(
+                source: "host-local-server",
+                event: "self_probe_cancelled",
+                fields: [
+                    "reason": reason,
+                    "elapsed_ms": "\(Int((Date().timeIntervalSince1970 - startedAt) * 1_000))",
+                ]
+            )
+            return .cancelled
+        }
+        guard isCurrentGeneration(expectedGeneration) else {
+            KeyboardDiagnosticEventLog.record(
+                source: "host-local-server",
+                event: "self_probe_stale_generation",
+                fields: [
+                    "reason": reason,
+                    "expected_generation": "\(expectedGeneration)",
+                    "elapsed_ms": "\(Int((Date().timeIntervalSince1970 - startedAt) * 1_000))",
+                ]
+            )
+            return .staleGeneration
         }
 
         let session = URLSession(configuration: .ephemeral)
@@ -1020,7 +1454,19 @@ final class KeyboardLocalServer: @unchecked Sendable {
                 KeyboardBridgeStatus.self,
                 from: try Self.messageData(try await Self.receiveMessage(on: task, timeout: Self.selfProbeTimeout))
             )
-            updateSelfProbeResult(true)
+            guard !Task.isCancelled else { throw CancellationError() }
+            guard updateSelfProbeResult(true, generation: expectedGeneration) else {
+                KeyboardDiagnosticEventLog.record(
+                    source: "host-local-server",
+                    event: "self_probe_stale_generation",
+                    fields: [
+                        "reason": reason,
+                        "expected_generation": "\(expectedGeneration)",
+                        "elapsed_ms": "\(Int((Date().timeIntervalSince1970 - startedAt) * 1_000))",
+                    ]
+                )
+                return .staleGeneration
+            }
             KeyboardDiagnosticEventLog.record(
                 source: "host-local-server",
                 event: "self_probe_success",
@@ -1029,9 +1475,33 @@ final class KeyboardLocalServer: @unchecked Sendable {
                     "elapsed_ms": "\(Int((Date().timeIntervalSince1970 - startedAt) * 1_000))",
                 ]
             )
-            return true
+            return .succeeded
         } catch {
-            updateSelfProbeResult(false)
+            if Task.isCancelled || Self.isCancellation(error) {
+                KeyboardDiagnosticEventLog.record(
+                    source: "host-local-server",
+                    event: "self_probe_cancelled",
+                    fields: [
+                        "reason": reason,
+                        "error": error.localizedDescription,
+                        "elapsed_ms": "\(Int((Date().timeIntervalSince1970 - startedAt) * 1_000))",
+                    ]
+                )
+                return .cancelled
+            }
+            guard updateSelfProbeResult(false, generation: expectedGeneration) else {
+                KeyboardDiagnosticEventLog.record(
+                    source: "host-local-server",
+                    event: "self_probe_stale_generation",
+                    fields: [
+                        "reason": reason,
+                        "expected_generation": "\(expectedGeneration)",
+                        "error": error.localizedDescription,
+                        "elapsed_ms": "\(Int((Date().timeIntervalSince1970 - startedAt) * 1_000))",
+                    ]
+                )
+                return .staleGeneration
+            }
             KeyboardDiagnosticEventLog.record(
                 source: "host-local-server",
                 event: "self_probe_failure",
@@ -1041,15 +1511,59 @@ final class KeyboardLocalServer: @unchecked Sendable {
                     "elapsed_ms": "\(Int((Date().timeIntervalSince1970 - startedAt) * 1_000))",
                 ]
             )
-            return false
+            return .failed
         }
     }
 
-    private func updateSelfProbeResult(_ succeeded: Bool) {
+    private static func isCancellation(_ error: Error) -> Bool {
+        isCancellation(error, depth: 0)
+    }
+
+    private static func isCancellation(_ error: Error, depth: Int) -> Bool {
+        if error is CancellationError { return true }
+        if let urlError = error as? URLError, urlError.code == .cancelled { return true }
+        if let cocoaError = error as? CocoaError, cocoaError.code == .userCancelled { return true }
+        if let posixError = error as? POSIXError, posixError.code == .ECANCELED { return true }
+
+        let nsError = error as NSError
+        if nsError.domain == NSURLErrorDomain,
+           nsError.code == URLError.Code.cancelled.rawValue {
+            return true
+        }
+        if nsError.domain == NSCocoaErrorDomain,
+           nsError.code == CocoaError.Code.userCancelled.rawValue {
+            return true
+        }
+        if nsError.domain == NSPOSIXErrorDomain,
+           nsError.code == POSIXError.Code.ECANCELED.rawValue {
+            return true
+        }
+        if nsError.domain == "Swift.CancellationError" {
+            return true
+        }
+
+        if depth < 4,
+           let underlyingError = nsError.userInfo[NSUnderlyingErrorKey] as? Error,
+           (underlyingError as NSError) !== nsError {
+            return isCancellation(underlyingError, depth: depth + 1)
+        }
+        return false
+    }
+
+    @discardableResult
+    private func updateSelfProbeResult(_ succeeded: Bool, generation expectedGeneration: UInt) -> Bool {
         stateLock.lock()
+        guard generation == expectedGeneration,
+              listener != nil,
+              listenerStateDescription == "ready"
+        else {
+            stateLock.unlock()
+            return false
+        }
         lastSelfProbeAt = Date().timeIntervalSince1970
         lastSelfProbeSucceeded = succeeded
         stateLock.unlock()
+        return true
     }
 
     private static func listenerStateDescription(for state: NWListener.State) -> String {

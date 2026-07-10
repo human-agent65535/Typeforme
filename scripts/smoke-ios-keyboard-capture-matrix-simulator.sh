@@ -294,7 +294,7 @@ post_start_and_expect() {
     local command_id="$1"
     local expected_phase="$2"
     echo "==> Posting Darwin start $command_id expecting $expected_phase"
-    debug_url "keyboard-darwin-start" "command_id=$command_id"
+    debug_url "keyboard-darwin-start" "command_id=$command_id&allow_unpaired_capture=true"
     local result
     result="$(wait_darwin_result "$command_id" "$expected_phase")"
     echo "==> Darwin result: $result"

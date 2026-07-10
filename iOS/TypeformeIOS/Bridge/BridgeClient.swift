@@ -24,6 +24,9 @@ enum BridgeClientError: LocalizedError {
 }
 
 struct BridgeClient: Sendable {
+    // One transport deadline owns the whole Host request. Progress events do
+    // not run a second completion clock on the keyboard.
+    private static let processingRequestTimeout: TimeInterval = 210
     private static let clientAppName = "iOS"
     private static let clientAppCategory = AppCategory.chat
 
@@ -135,7 +138,7 @@ struct BridgeClient: Sendable {
                 method: endpoint.method,
                 body: multipart.body,
                 contentType: multipart.contentType,
-                timeout: 45
+                timeout: Self.processingRequestTimeout
             )
         }
     }
@@ -203,7 +206,7 @@ struct BridgeClient: Sendable {
 
     func jobEventsWebSocketTask(
         jobID: String,
-        timeout: TimeInterval = 60
+        timeout: TimeInterval = 120
     ) throws -> URLSessionWebSocketTask {
         guard let safeJobID = BridgeClientJobID.normalized(jobID),
               let encodedJobID = safeJobID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed)
@@ -280,7 +283,12 @@ struct BridgeClient: Sendable {
                 appCategory: Self.clientAppCategory.rawValue
             )
             let endpoint = BridgeAPIEndpoint.refine
-            return try await request(path: endpoint.path, method: endpoint.method, json: payload, timeout: 20)
+            return try await request(
+                path: endpoint.path,
+                method: endpoint.method,
+                json: payload,
+                timeout: Self.processingRequestTimeout
+            )
         }
     }
 
@@ -307,7 +315,12 @@ struct BridgeClient: Sendable {
                 clientJobID: normalizedJobID
             )
             let endpoint = BridgeAPIEndpoint.editText
-            return try await request(path: endpoint.path, method: endpoint.method, json: payload, timeout: 30)
+            return try await request(
+                path: endpoint.path,
+                method: endpoint.method,
+                json: payload,
+                timeout: Self.processingRequestTimeout
+            )
         }
     }
 
@@ -335,9 +348,8 @@ struct BridgeClient: Sendable {
             var attempt = 0
             while !Task.isCancelled {
                 do {
-                    if try await streamJobEvents(jobID: jobID, onEvent: onEvent) {
-                        return
-                    }
+                    try await streamJobEvents(jobID: jobID, onEvent: onEvent)
+                    return
                 } catch is CancellationError {
                     return
                 } catch {
@@ -352,23 +364,21 @@ struct BridgeClient: Sendable {
         }
     }
 
-    @discardableResult
     func streamJobEvents(
         jobID: String,
         onEvent: @Sendable (BridgeJobStatusEvent) async -> Void
-    ) async throws -> Bool {
+    ) async throws {
         let task = try jobEventsWebSocketTask(jobID: jobID)
-        return try await withTaskCancellationHandler(operation: {
+        try await withTaskCancellationHandler(operation: {
             task.resume()
             defer { task.cancel(with: .normalClosure, reason: nil) }
             while !Task.isCancelled {
                 let event = try Self.decodeJobStatusEvent(try await task.receive())
                 await onEvent(event)
                 if event.stage.isTerminal {
-                    return true
+                    return
                 }
             }
-            return false
         }, onCancel: {
             task.cancel(with: .normalClosure, reason: nil)
         })
