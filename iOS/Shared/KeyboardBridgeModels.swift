@@ -1045,8 +1045,12 @@ enum KeyboardLocalBridgeAuth {
               authentication.serverNonce == serverNonce
         else { return false }
         let nowMilliseconds = Int64((now * 1_000).rounded(.down))
-        guard authentication.createdAtMilliseconds <= nowMilliseconds,
-              nowMilliseconds - authentication.createdAtMilliseconds <= clientProofMaxAgeMilliseconds
+        let (ageMilliseconds, overflowed) = nowMilliseconds.subtractingReportingOverflow(
+            authentication.createdAtMilliseconds
+        )
+        guard !overflowed,
+              ageMilliseconds >= 0,
+              ageMilliseconds <= clientProofMaxAgeMilliseconds
         else { return false }
         guard let expectedProof = clientProof(
             bridgeToken: bridgeToken,
