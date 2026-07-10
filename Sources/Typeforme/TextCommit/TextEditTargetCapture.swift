@@ -22,8 +22,8 @@ struct TextEditTargetSnapshot {
 struct TextInsertionTargetSnapshot {
     let element: AXUIElement
     let selectedRange: CFRange?
-    let contextBefore: String
-    let contextAfter: String
+    let contextBefore: String?
+    let contextAfter: String?
 }
 
 enum TextEditTargetCapture {
@@ -45,7 +45,7 @@ enum TextEditTargetCapture {
         let selectedRange = selectedRange(in: focused)
         if let selected = stringAttribute(kAXSelectedTextAttribute, from: focused),
            !selected.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            let context = contextAroundSelection(in: focused)
+            let context = contextAroundSelection(in: focused) ?? ("", "")
             return TextEditTargetSnapshot(
                 kind: .selection,
                 element: focused,
@@ -100,8 +100,8 @@ enum TextEditTargetCapture {
         return TextInsertionTargetSnapshot(
             element: focused,
             selectedRange: selectedRange(in: focused),
-            contextBefore: context.before,
-            contextAfter: context.after
+            contextBefore: context?.before,
+            contextAfter: context?.after
         )
     }
 
@@ -115,18 +115,41 @@ enum TextEditTargetCapture {
               sameElement(focused, target.element),
               !isSecureTextElement(focused)
         else { return false }
-        return insertionRangesMatch(
-            captured: target.selectedRange,
-            current: selectedRange(in: focused)
+        let currentContext = contextAroundSelection(in: focused)
+        return insertionEvidenceMatches(
+            capturedRange: target.selectedRange,
+            currentRange: selectedRange(in: focused),
+            capturedContextBefore: target.contextBefore,
+            capturedContextAfter: target.contextAfter,
+            currentContextBefore: currentContext?.before,
+            currentContextAfter: currentContext?.after
         )
     }
 
-    static func insertionRangesMatch(captured: CFRange?, current: CFRange?) -> Bool {
-        switch (captured, current) {
-        case (.none, .none):
-            return true
+    static func insertionEvidenceMatches(
+        capturedRange: CFRange?,
+        currentRange: CFRange?,
+        capturedContextBefore: String?,
+        capturedContextAfter: String?,
+        currentContextBefore: String?,
+        currentContextAfter: String?
+    ) -> Bool {
+        let capturedContext = capturedContextBefore.flatMap { before in
+            capturedContextAfter.map { after in (before, after) }
+        }
+        let currentContext = currentContextBefore.flatMap { before in
+            currentContextAfter.map { after in (before, after) }
+        }
+
+        switch (capturedRange, currentRange) {
         case (.some(let captured), .some(let current)):
-            return sameRange(captured, current)
+            guard sameRange(captured, current) else { return false }
+            guard let capturedContext else { return true }
+            guard let currentContext else { return false }
+            return capturedContext == currentContext
+        case (.none, .none):
+            guard let capturedContext, let currentContext else { return false }
+            return capturedContext == currentContext
         case (.none, .some), (.some, .none):
             return false
         }
@@ -167,7 +190,7 @@ enum TextEditTargetCapture {
         guard let focused = focusedElement(in: app) else { return ("", "") }
         AXUIElementSetMessagingTimeout(focused, 0.25)
         guard !isSecureTextElement(focused) else { return ("", "") }
-        return contextAroundSelection(in: focused)
+        return contextAroundSelection(in: focused) ?? ("", "")
     }
 
     static func currentValue(of target: TextEditTargetSnapshot) -> String? {
@@ -264,8 +287,8 @@ enum TextEditTargetCapture {
         }
     }
 
-    private static func contextAroundSelection(in element: AXUIElement) -> (before: String, after: String) {
-        guard let range = selectedRange(in: element) else { return ("", "") }
+    private static func contextAroundSelection(in element: AXUIElement) -> (before: String, after: String)? {
+        guard let range = selectedRange(in: element) else { return nil }
         let start = max(0, range.location - contextLimit)
         let beforeLength = range.location - start
         let afterStart = range.location + range.length
@@ -302,12 +325,12 @@ enum TextEditTargetCapture {
     private static func contextAroundSelectionFromFullValue(
         in element: AXUIElement,
         selectedRange range: CFRange
-    ) -> (before: String, after: String) {
+    ) -> (before: String, after: String)? {
         guard let fullValue = stringAttribute(kAXValueAttribute, from: element) else {
-            return ("", "")
+            return nil
         }
         let ns = fullValue as NSString
-        guard range.location <= ns.length else { return ("", "") }
+        guard range.location <= ns.length else { return nil }
         let start = max(0, range.location - contextLimit)
         let beforeLength = range.location - start
         let afterStart = min(ns.length, range.location + range.length)

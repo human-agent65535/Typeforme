@@ -11,14 +11,16 @@ fi
 
 /usr/bin/python3 - \
     "$ROOT/iOS/TypeformeIOS/AppState.swift" \
-    "$ROOT/iOS/TypeformeKeyboard/KeyboardViewController.swift" <<'PY'
+    "$ROOT/iOS/TypeformeKeyboard/KeyboardViewController.swift" \
+    "$ROOT/iOS/Shared/KeyboardBridgeModels.swift" <<'PY'
 from pathlib import Path
 import re
 import sys
 
-app_state_path, keyboard_path = map(Path, sys.argv[1:])
+app_state_path, keyboard_path, shared_models_path = map(Path, sys.argv[1:])
 app_state = app_state_path.read_text(encoding="utf-8")
 keyboard = keyboard_path.read_text(encoding="utf-8")
+shared_models = shared_models_path.read_text(encoding="utf-8")
 
 
 def block(source: str, signature: str) -> str:
@@ -55,11 +57,41 @@ def segment(source: str, start: str, end: str) -> str:
     return source[start_index:end_index]
 
 
-# The host's durable mailbox is the source of truth for a final result. Persist
-# it before publishing any result status that can wake the keyboard consumer.
+# The mailbox is a single protected App Group file. Keychain remains reserved
+# for the bridge token; result text must not return to shared defaults or a
+# second Keychain-backed payload store.
+mailbox = block(shared_models, "enum KeyboardSharedMailbox")
+for snippet, message in (
+    ('private static let fileName = "keyboard-mailbox.v1.json"', "mailbox file name changed unexpectedly"),
+    ("options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication]", "mailbox write lost atomic file protection"),
+    ("resourceValues.isExcludedFromBackup = true", "mailbox file is no longer excluded from backup"),
+    ("guard var mailbox = load(now: now),", "host result can be saved without an existing destination mailbox"),
+    ("mailbox.commandID == result.commandID", "host result no longer matches the destination command"),
+):
+    require(mailbox, snippet, message)
+
+envelope = block(shared_models, "private struct KeyboardPendingMailbox")
+for snippet, message in (
+    ("destination.commandID == commandID", "mailbox destination is not command-scoped"),
+    ("finalResult.commandID == commandID", "mailbox result is not command-scoped"),
+):
+    require(envelope, snippet, message)
+
+keychain = block(shared_models, "enum KeyboardSharedKeychain")
+for forbidden in (
+    "pendingFinalResultAccount",
+    "pendingDestinationAccount",
+    "savePendingFinalResult",
+    "savePendingDestination",
+):
+    if forbidden in keychain:
+        raise AssertionError(f"Keychain still stores mailbox payloads: {forbidden}")
+
+# The host persists the final result before publishing any status that can wake
+# the keyboard consumer.
 publish_status = block(app_state, "private func publishKeyboardStatus(")
 require(publish_status, "if state == .result,", "final result persistence lost its result-state guard")
-save_result_index = publish_status.find("KeyboardSharedKeychain.savePendingFinalResult(")
+save_result_index = publish_status.find("KeyboardSharedMailbox.savePendingFinalResult(")
 publish_result_index = publish_status.find("setKeyboardBridgeStatus(")
 if save_result_index < 0:
     raise AssertionError("host no longer saves a pending final result")
@@ -108,7 +140,7 @@ for snippet, message in (
 ):
     require(plain_destination, snippet, message)
 
-save_destination_index = start_dictation.find("KeyboardSharedKeychain.savePendingDestination(destination)")
+save_destination_index = start_dictation.find("KeyboardSharedMailbox.savePendingDestination(destination)")
 send_start_index = start_dictation.find("sendBridgeCommand(command)")
 if save_destination_index < 0 or send_start_index < 0:
     raise AssertionError("keyboard start lost destination persistence or command dispatch")
@@ -150,11 +182,34 @@ for snippet, message in (
 recovery = block(keyboard, "private func recoverPendingFinalResultIfPossible()")
 require(
     recovery,
-    "result.commandID == destination.commandID",
-    "recovery no longer binds result and destination to the same command",
+    "let delivery = KeyboardSharedMailbox.loadPendingDelivery()",
+    "recovery no longer consumes one atomic destination/result snapshot",
 )
-validation_index = recovery.find("guard dictationDestinationIsCurrent(destination),")
+for snippet, message in (
+    (
+        "preview.commandID == result.commandID",
+        "mailbox recovery no longer scopes live partial replacement to the result command",
+    ),
+    (
+        "guard activeMarkedText.isEmpty || activeMarkedTextOwner == .livePartial else {",
+        "mailbox recovery can replace Rime or unknown marked text",
+    ),
+    (
+        "let didApply = applyFinalResultForLivePartialPreview(",
+        "mailbox recovery no longer reuses the live partial final-commit plan",
+    ),
+    (
+        "finishRecoveredPendingFinalResult(result, didApply: didApply)",
+        "mailbox recovery does not finish or safely copy a live partial result",
+    ),
+):
+    require(recovery, snippet, message)
 commit_index = recovery.find("commitTextReplacingMarkedText(result.text, reason: .bridgeResult)")
+validation_index = recovery.rfind(
+    "guard dictationDestinationIsCurrent(destination),",
+    0,
+    commit_index,
+)
 if validation_index < 0 or commit_index < 0 or validation_index >= commit_index:
     raise AssertionError("recovery can insert a final result before validating its destination")
 
@@ -163,15 +218,20 @@ already_inserted = segment(
     "if defaults.string(forKey: lastInsertedCommandIDKey) == result.commandID {",
     "guard dictationDestinationIsCurrent(destination),",
 )
-for acknowledgment in (
-    "acknowledgePendingFinalResult(commandID: result.commandID)",
-    "acknowledgePendingDestination(commandID: result.commandID)",
-):
-    require(already_inserted, acknowledgment, "idempotent recovery uses an unscoped mailbox acknowledgment")
-    require(recovery[commit_index:], acknowledgment, "successful recovery uses an unscoped mailbox acknowledgment")
-
-if re.search(r"acknowledgePending(?:FinalResult|Destination)\s*\(\s*\)", recovery):
-    raise AssertionError("recovery contains an unscoped mailbox acknowledgment")
+acknowledgment = "KeyboardSharedMailbox.clear(commandID: result.commandID)"
+require(already_inserted, acknowledgment, "idempotent recovery uses an unscoped mailbox acknowledgment")
+require(
+    recovery[commit_index:],
+    "finishRecoveredPendingFinalResult(result, didApply: true)",
+    "successful direct recovery bypasses its command-scoped completion helper",
+)
+finish_recovery = block(keyboard, "private func finishRecoveredPendingFinalResult(")
+require(finish_recovery, acknowledgment, "recovery completion uses an unscoped mailbox acknowledgment")
+require(
+    finish_recovery,
+    "copyFallbackText(result.text)",
+    "failed live partial recovery can discard the final result instead of copying it",
+)
 
 
 # The live result path follows the same command ownership contract. Its final
@@ -184,21 +244,14 @@ normal_result = segment(
 )
 require(
     normal_result,
-    "KeyboardSharedKeychain.acknowledgePendingFinalResult(commandID: commandID)",
-    "normal result delivery does not ACK the matching final-result command",
+    "acknowledgePendingMailbox(commandID: commandID)",
+    "normal result delivery does not clear the matching mailbox command",
 )
-require(
-    normal_result,
-    "clearDictationDestinationIfMatching(commandID: commandID)",
-    "normal result delivery clears destination without command ownership",
-)
-if re.search(r"acknowledgePendingFinalResult\s*\(\s*\)", normal_result):
-    raise AssertionError("normal result delivery contains an unscoped final-result ACK")
 
 clear_destination = block(keyboard, "private func clearDictationDestinationIfMatching(")
 require(
     clear_destination,
-    "KeyboardSharedKeychain.clearPendingDestination(commandID: commandID)",
+    "KeyboardSharedMailbox.clear(commandID: commandID)",
     "destination cleanup helper drops command ownership",
 )
 

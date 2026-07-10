@@ -6213,7 +6213,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
         if let destination = durableDestination {
             activeDictationDestination = destination
-            let saved = KeyboardSharedKeychain.savePendingDestination(destination)
+            let saved = KeyboardSharedMailbox.savePendingDestination(destination)
             KeyboardDiagnosticEventLog.record(
                 source: "keyboard-ui",
                 event: saved ? "pending_destination_saved" : "pending_destination_save_failed",
@@ -6221,7 +6221,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             )
         } else {
             activeDictationDestination = nil
-            KeyboardSharedKeychain.clearPendingDestination()
+            KeyboardSharedMailbox.clear()
         }
         livePartialPreviewState = nil
         activeRecordingCommandID = command.id
@@ -7035,7 +7035,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         )
         let destination = pendingDestination(commandID: command.id, replacing: target)
         activeDictationDestination = destination
-        let savedDestination = KeyboardSharedKeychain.savePendingDestination(destination)
+        let savedDestination = KeyboardSharedMailbox.savePendingDestination(destination)
         defaults.set(command.id, forKey: pendingStyleRewriteCommandIDKey)
         KeyboardDiagnosticEventLog.record(
             source: "keyboard-ui",
@@ -7422,7 +7422,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
            activeDictationDestination.commandID == commandID {
             return activeDictationDestination
         }
-        guard let destination = KeyboardSharedKeychain.loadPendingDestination(),
+        guard let destination = KeyboardSharedMailbox.loadPendingDestination(),
               destination.commandID == commandID
         else { return nil }
         return destination
@@ -7433,10 +7433,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             if activeDictationDestination?.commandID == commandID {
                 activeDictationDestination = nil
             }
-            KeyboardSharedKeychain.clearPendingDestination(commandID: commandID)
+            KeyboardSharedMailbox.clear(commandID: commandID)
         } else {
             activeDictationDestination = nil
-            KeyboardSharedKeychain.clearPendingDestination()
+            KeyboardSharedMailbox.clear()
         }
     }
 
@@ -7444,19 +7444,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         if activeDictationDestination?.commandID == commandID {
             activeDictationDestination = nil
         }
-        let resultAcknowledged = KeyboardSharedKeychain.acknowledgePendingFinalResult(
-            commandID: commandID
-        )
-        let destinationAcknowledged = KeyboardSharedKeychain.acknowledgePendingDestination(
-            commandID: commandID
-        )
+        let acknowledged = KeyboardSharedMailbox.clear(commandID: commandID)
         KeyboardDiagnosticEventLog.record(
             source: "keyboard-ui",
             event: "pending_mailbox_acknowledged",
             fields: [
                 "command_id": commandID,
-                "result": "\(resultAcknowledged)",
-                "destination": "\(destinationAcknowledged)",
+                "cleared": "\(acknowledged)",
             ]
         )
     }
@@ -7465,15 +7459,15 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private func recoverPendingFinalResultIfPossible() -> Bool {
         guard !isRecoveringPendingFinalResult,
               hasFullAccess,
-              let result = KeyboardSharedKeychain.loadPendingFinalResult()
+              let delivery = KeyboardSharedMailbox.loadPendingDelivery()
         else { return false }
+        let result = delivery.result
 
         // A result that was already inserted, copied, or explicitly
         // suppressed may arrive after the first ACK attempt. Clear it even if
         // its destination has already been removed so it cannot linger.
         if defaults.string(forKey: lastInsertedCommandIDKey) == result.commandID {
-            KeyboardSharedKeychain.acknowledgePendingFinalResult(commandID: result.commandID)
-            KeyboardSharedKeychain.acknowledgePendingDestination(commandID: result.commandID)
+            KeyboardSharedMailbox.clear(commandID: result.commandID)
             if activeDictationDestination?.commandID == result.commandID {
                 activeDictationDestination = nil
             }
@@ -7483,25 +7477,21 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             return true
         }
 
-        guard let destination = KeyboardSharedKeychain.loadPendingDestination(),
-              result.commandID == destination.commandID
-        else { return false }
-
-        guard dictationDestinationIsCurrent(destination),
-              activeMarkedText.isEmpty
-        else {
-            KeyboardDiagnosticEventLog.record(
-                source: "keyboard-ui",
-                event: "pending_final_result_destination_not_current",
-                fields: ["command_id": result.commandID]
-            )
-            return false
-        }
-
+        let destination = delivery.destination
         isRecoveringPendingFinalResult = true
         defer { isRecoveringPendingFinalResult = false }
 
         if defaults.string(forKey: pendingStyleRewriteCommandIDKey) == result.commandID {
+            guard dictationDestinationIsCurrent(destination),
+                  activeMarkedText.isEmpty
+            else {
+                KeyboardDiagnosticEventLog.record(
+                    source: "keyboard-ui",
+                    event: "pending_final_result_destination_not_current",
+                    fields: ["command_id": result.commandID]
+                )
+                return false
+            }
             let status = KeyboardBridgeStatus(
                 commandID: result.commandID,
                 state: .result,
@@ -7521,11 +7511,47 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             return true
         }
 
+        if let preview = livePartialPreviewState,
+           preview.commandID == result.commandID {
+            guard activeMarkedText.isEmpty || activeMarkedTextOwner == .livePartial else {
+                KeyboardDiagnosticEventLog.record(
+                    source: "keyboard-ui",
+                    event: "pending_final_result_marked_text_not_owned",
+                    fields: ["command_id": result.commandID]
+                )
+                return false
+            }
+            let didApply = applyFinalResultForLivePartialPreview(
+                preview,
+                finalText: result.text
+            )
+            finishRecoveredPendingFinalResult(result, didApply: didApply)
+            return true
+        }
+
+        guard dictationDestinationIsCurrent(destination),
+              activeMarkedText.isEmpty
+        else {
+            KeyboardDiagnosticEventLog.record(
+                source: "keyboard-ui",
+                event: "pending_final_result_destination_not_current",
+                fields: ["command_id": result.commandID]
+            )
+            return false
+        }
+
         commitTextReplacingMarkedText(result.text, reason: .bridgeResult)
         clearLocalMarkedTextState()
+        finishRecoveredPendingFinalResult(result, didApply: true)
+        return true
+    }
+
+    private func finishRecoveredPendingFinalResult(
+        _ result: KeyboardPendingFinalResult,
+        didApply: Bool
+    ) {
         defaults.set(result.commandID, forKey: lastInsertedCommandIDKey)
-        KeyboardSharedKeychain.acknowledgePendingFinalResult(commandID: result.commandID)
-        KeyboardSharedKeychain.acknowledgePendingDestination(commandID: result.commandID)
+        KeyboardSharedMailbox.clear(commandID: result.commandID)
         if activeDictationDestination?.commandID == result.commandID {
             activeDictationDestination = nil
         }
@@ -7533,24 +7559,34 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         pendingStartCommandID = nil
         pendingStopCommandID = nil
         pendingCancelCommandID = nil
-        bridgeStatus = KeyboardBridgeStatus(
-            commandID: result.commandID,
-            state: .result,
-            message: result.message.isEmpty ? "Inserted" : result.message,
-            resultText: result.text,
-            audioDurationSeconds: result.audioDurationSeconds,
-            audioByteCount: result.audioByteCount,
-            rawTranscriptLength: result.rawTranscriptLength
-        )
+        if didApply {
+            bridgeStatus = KeyboardBridgeStatus(
+                commandID: result.commandID,
+                state: .result,
+                message: result.message.isEmpty ? "Inserted" : result.message,
+                resultText: result.text,
+                audioDurationSeconds: result.audioDurationSeconds,
+                audioByteCount: result.audioByteCount,
+                rawTranscriptLength: result.rawTranscriptLength
+            )
+            beginInsertedFlash()
+        } else {
+            copyFallbackText(result.text)
+            bridgeStatus = KeyboardBridgeStatus(
+                commandID: result.commandID,
+                state: .error,
+                message: "Input changed; result copied."
+            )
+        }
         lastBridgeContactAt = Date().timeIntervalSince1970
-        beginInsertedFlash()
         KeyboardDiagnosticEventLog.record(
             source: "keyboard-ui",
-            event: "pending_final_result_recovered",
+            event: didApply
+                ? "pending_final_result_recovered"
+                : "pending_final_result_recovery_copied",
             fields: ["command_id": result.commandID]
         )
         updateUI(animated: hasPresentedInitialFrame)
-        return true
     }
 
     private func limitedContextBefore(_ text: String) -> String {
@@ -12279,13 +12315,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             if activeRecordingTextTarget?.commandID == commandID {
                 activeRecordingTextTarget = nil
             }
-            clearDictationDestinationIfMatching(commandID: commandID)
-            let acknowledged = KeyboardSharedKeychain.acknowledgePendingFinalResult(commandID: commandID)
-            KeyboardDiagnosticEventLog.record(
-                source: "keyboard-ui",
-                event: acknowledged ? "pending_final_result_acknowledged" : "pending_final_result_ack_failed",
-                fields: ["command_id": commandID]
-            )
+            acknowledgePendingMailbox(commandID: commandID)
             activeRecordingTextEditIntent = nil
         }
 

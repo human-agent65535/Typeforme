@@ -2,6 +2,40 @@ import Foundation
 import Testing
 @testable import Typeforme
 
+private actor RuntimeActivationGate {
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var isOpen = false
+
+    func wait() async {
+        guard !isOpen else { return }
+        await withCheckedContinuation { continuation in
+            if isOpen {
+                continuation.resume()
+            } else {
+                self.continuation = continuation
+            }
+        }
+    }
+
+    func open() {
+        isOpen = true
+        continuation?.resume()
+        continuation = nil
+    }
+}
+
+private actor RuntimeCompletionCounter {
+    private var count = 0
+
+    func record() {
+        count += 1
+    }
+
+    func value() -> Int {
+        count
+    }
+}
+
 @Suite("Corrector runtime lifecycle")
 struct CorrectorRuntimeLifecycleTests {
     @Test func everyLaunchSettingParticipatesInRuntimeReuse() {
@@ -64,5 +98,48 @@ struct CorrectorRuntimeLifecycleTests {
         } catch {
             Issue.record("Expected LlamaServerError.retired, got \(error)")
         }
+    }
+
+    @Test func concurrentStartsShareActivationBarrier() async {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let gate = RuntimeActivationGate()
+        let barrier = Task {
+            await gate.wait()
+        }
+        let manager = LlamaCppServerManager(
+            modelPath: root.appendingPathComponent("missing-model.gguf").path,
+            contextSize: 512,
+            useFlashAttn: false,
+            binaryURL: root.appendingPathComponent("missing-llama-server"),
+            pidFile: root.appendingPathComponent("llama.pid"),
+            activationBarrier: barrier
+        )
+        let completions = RuntimeCompletionCounter()
+        let attempts = (0..<8).map { _ in
+            Task {
+                do {
+                    _ = try await manager.ensureRunning()
+                } catch {
+                    // The fixture intentionally has no binary. Completion is
+                    // expected only after the activation barrier opens.
+                }
+                await completions.record()
+            }
+        }
+
+        for _ in 0..<4 {
+            await Task.yield()
+        }
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        let completedBeforeBarrier = await completions.value()
+        #expect(completedBeforeBarrier == 0)
+
+        await gate.open()
+        for attempt in attempts {
+            await attempt.value
+        }
+        let completedAfterBarrier = await completions.value()
+        #expect(completedAfterBarrier == attempts.count)
     }
 }

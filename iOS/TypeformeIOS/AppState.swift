@@ -1084,8 +1084,7 @@ final class AppState {
         recorderPreWarmTask = nil
         recorder.discardPreWarm()
         keyboardServer.stop()
-        KeyboardSharedKeychain.clearPendingFinalResult()
-        KeyboardSharedKeychain.clearPendingDestination()
+        KeyboardSharedMailbox.clear()
         KeyboardSharedDefaults.clearHostHandoff()
         KeyboardSharedDefaults.clearAllDarwinCommands()
         KeyboardSharedDefaults.clearCommandReceipt()
@@ -5911,7 +5910,7 @@ final class AppState {
            let commandID,
            let resultText,
            !resultText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            let saved = KeyboardSharedKeychain.savePendingFinalResult(
+            let saved = KeyboardSharedMailbox.savePendingFinalResult(
                 KeyboardPendingFinalResult(
                     commandID: commandID,
                     text: resultText,

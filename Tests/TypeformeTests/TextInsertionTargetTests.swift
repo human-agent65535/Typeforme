@@ -4,23 +4,70 @@ import Testing
 
 @Suite("TextInsertionTarget")
 struct TextInsertionTargetTests {
-    @Test func insertionRangeMustRemainExactlyOwned() {
-        #expect(TextEditTargetCapture.insertionRangesMatch(captured: nil, current: nil))
-        #expect(!TextEditTargetCapture.insertionRangesMatch(
-            captured: nil,
-            current: CFRange(location: 0, length: 0)
+    @Test func insertionEvidenceMustRemainExactlyOwned() {
+        #expect(!TextEditTargetCapture.insertionEvidenceMatches(
+            capturedRange: nil,
+            currentRange: nil,
+            capturedContextBefore: nil,
+            capturedContextAfter: nil,
+            currentContextBefore: nil,
+            currentContextAfter: nil
         ))
-        #expect(TextEditTargetCapture.insertionRangesMatch(
-            captured: CFRange(location: 7, length: 0),
-            current: CFRange(location: 7, length: 0)
+        #expect(TextEditTargetCapture.insertionEvidenceMatches(
+            capturedRange: nil,
+            currentRange: nil,
+            capturedContextBefore: "",
+            capturedContextAfter: "",
+            currentContextBefore: "",
+            currentContextAfter: ""
         ))
-        #expect(!TextEditTargetCapture.insertionRangesMatch(
-            captured: CFRange(location: 7, length: 0),
-            current: CFRange(location: 8, length: 0)
+        #expect(!TextEditTargetCapture.insertionEvidenceMatches(
+            capturedRange: nil,
+            currentRange: nil,
+            capturedContextBefore: "before",
+            capturedContextAfter: "after",
+            currentContextBefore: "changed",
+            currentContextAfter: "after"
         ))
-        #expect(!TextEditTargetCapture.insertionRangesMatch(
-            captured: CFRange(location: 7, length: 3),
-            current: CFRange(location: 7, length: 2)
+        #expect(TextEditTargetCapture.insertionEvidenceMatches(
+            capturedRange: CFRange(location: 7, length: 0),
+            currentRange: CFRange(location: 7, length: 0),
+            capturedContextBefore: nil,
+            capturedContextAfter: nil,
+            currentContextBefore: nil,
+            currentContextAfter: nil
+        ))
+        #expect(TextEditTargetCapture.insertionEvidenceMatches(
+            capturedRange: CFRange(location: 7, length: 0),
+            currentRange: CFRange(location: 7, length: 0),
+            capturedContextBefore: "before",
+            capturedContextAfter: "after",
+            currentContextBefore: "before",
+            currentContextAfter: "after"
+        ))
+        #expect(!TextEditTargetCapture.insertionEvidenceMatches(
+            capturedRange: CFRange(location: 7, length: 0),
+            currentRange: CFRange(location: 7, length: 0),
+            capturedContextBefore: "before",
+            capturedContextAfter: "after",
+            currentContextBefore: "before",
+            currentContextAfter: "changed"
+        ))
+        #expect(!TextEditTargetCapture.insertionEvidenceMatches(
+            capturedRange: CFRange(location: 7, length: 0),
+            currentRange: CFRange(location: 8, length: 0),
+            capturedContextBefore: "before",
+            capturedContextAfter: "after",
+            currentContextBefore: "before",
+            currentContextAfter: "after"
+        ))
+        #expect(!TextEditTargetCapture.insertionEvidenceMatches(
+            capturedRange: CFRange(location: 7, length: 3),
+            currentRange: CFRange(location: 7, length: 2),
+            capturedContextBefore: nil,
+            capturedContextAfter: nil,
+            currentContextBefore: nil,
+            currentContextAfter: nil
         ))
     }
 }

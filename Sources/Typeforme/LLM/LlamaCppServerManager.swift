@@ -77,8 +77,8 @@ actor LlamaCppServerManager {
     /// Bring the server up if not already running. Returns the port.
     func ensureRunning() async throws -> Int {
         if let activationBarrier {
-            self.activationBarrier = nil
             await activationBarrier.value
+            self.activationBarrier = nil
         }
         try Task.checkCancellation()
         guard !isRetired else { throw LlamaServerError.retired }

@@ -412,6 +412,7 @@ private enum KeyboardPendingMailboxLimits {
     static let maxResultBytes = 256 * 1_024
     static let maxResultMessageBytes = 16 * 1_024
     static let maxDestinationBytes = 128 * 1_024
+    static let maxMailboxBytes = 400 * 1_024
     static let maxDocumentIdentifierBytes = 4 * 1_024
     static let maxContextBytes = 16 * 1_024
 
@@ -431,7 +432,8 @@ private enum KeyboardPendingMailboxLimits {
 
 /// A final keyboard result that remains available across host/extension
 /// suspension until the destination keyboard explicitly acknowledges it.
-/// Persistence is Keychain-only; result text must never enter shared defaults.
+/// Persistence is the protected App Group mailbox; result text must never
+/// enter shared defaults.
 struct KeyboardPendingFinalResult: Codable, Equatable, Sendable {
     static let maxAge: TimeInterval = KeyboardPendingMailboxLimits.maxAge
     static let maxEncodedByteCount = KeyboardPendingMailboxLimits.maxResultBytes
@@ -555,11 +557,153 @@ struct KeyboardPendingDestination: Codable, Equatable, Sendable {
     }
 }
 
+/// One command-scoped handoff between the keyboard extension and host app.
+/// The keyboard creates the destination before dispatching the command; the
+/// host atomically fills in the final result; the keyboard deletes the file
+/// after applying or explicitly rejecting that result.
+private struct KeyboardPendingMailbox: Codable, Equatable, Sendable {
+    let commandID: String
+    let destination: KeyboardPendingDestination
+    var finalResult: KeyboardPendingFinalResult?
+
+    fileprivate func isValid(now: TimeInterval) -> Bool {
+        guard KeyboardPendingMailboxLimits.isValidCommandID(commandID),
+              destination.commandID == commandID,
+              destination.isValid(now: now)
+        else { return false }
+        guard let finalResult else { return true }
+        return finalResult.commandID == commandID && finalResult.isValid(now: now)
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case commandID = "command_id"
+        case destination
+        case finalResult = "final_result"
+    }
+}
+
+enum KeyboardSharedMailbox {
+    private static let directoryName = "typeforme"
+    private static let fileName = "keyboard-mailbox.v1.json"
+
+    @discardableResult
+    static func savePendingDestination(
+        _ destination: KeyboardPendingDestination,
+        now: TimeInterval = Date().timeIntervalSince1970
+    ) -> Bool {
+        let mailbox = KeyboardPendingMailbox(
+            commandID: destination.commandID,
+            destination: destination,
+            finalResult: nil
+        )
+        return save(mailbox, now: now)
+    }
+
+    @discardableResult
+    static func savePendingFinalResult(
+        _ result: KeyboardPendingFinalResult,
+        now: TimeInterval = Date().timeIntervalSince1970
+    ) -> Bool {
+        guard var mailbox = load(now: now),
+              mailbox.commandID == result.commandID
+        else { return false }
+        mailbox.finalResult = result
+        return save(mailbox, now: now)
+    }
+
+    static func loadPendingDestination(
+        now: TimeInterval = Date().timeIntervalSince1970
+    ) -> KeyboardPendingDestination? {
+        load(now: now)?.destination
+    }
+
+    static func loadPendingDelivery(
+        now: TimeInterval = Date().timeIntervalSince1970
+    ) -> (destination: KeyboardPendingDestination, result: KeyboardPendingFinalResult)? {
+        guard let mailbox = load(now: now),
+              let result = mailbox.finalResult
+        else { return nil }
+        return (mailbox.destination, result)
+    }
+
+    @discardableResult
+    static func clear(commandID: String) -> Bool {
+        guard KeyboardPendingMailboxLimits.isValidCommandID(commandID) else { return false }
+        guard let mailbox = load() else { return clear() }
+        guard mailbox.commandID == commandID else { return false }
+        return clear()
+    }
+
+    @discardableResult
+    static func clear() -> Bool {
+        guard let fileURL = fileURL() else { return false }
+        let fileManager = FileManager.default
+        guard fileManager.fileExists(atPath: fileURL.path) else { return true }
+        do {
+            try fileManager.removeItem(at: fileURL)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    private static func load(
+        now: TimeInterval = Date().timeIntervalSince1970
+    ) -> KeyboardPendingMailbox? {
+        guard let fileURL = fileURL(),
+              let data = try? Data(contentsOf: fileURL),
+              data.count <= KeyboardPendingMailboxLimits.maxMailboxBytes,
+              let mailbox = try? JSONDecoder().decode(KeyboardPendingMailbox.self, from: data),
+              mailbox.isValid(now: now)
+        else {
+            _ = clear()
+            return nil
+        }
+        return mailbox
+    }
+
+    private static func save(_ mailbox: KeyboardPendingMailbox, now: TimeInterval) -> Bool {
+        guard mailbox.isValid(now: now),
+              let data = try? JSONEncoder().encode(mailbox),
+              data.count <= KeyboardPendingMailboxLimits.maxMailboxBytes,
+              let fileURL = fileURL()
+        else { return false }
+
+        let directoryURL = fileURL.deletingLastPathComponent()
+        do {
+            try FileManager.default.createDirectory(
+                at: directoryURL,
+                withIntermediateDirectories: true,
+                attributes: [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication]
+            )
+            try data.write(
+                to: fileURL,
+                options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication]
+            )
+            var protectedURL = fileURL
+            var resourceValues = URLResourceValues()
+            resourceValues.isExcludedFromBackup = true
+            try protectedURL.setResourceValues(resourceValues)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    private static func fileURL() -> URL? {
+        FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: TypeformeBundleConfiguration.appGroupIdentifier
+        )?
+        .appendingPathComponent("Library", isDirectory: true)
+        .appendingPathComponent("Application Support", isDirectory: true)
+        .appendingPathComponent(directoryName, isDirectory: true)
+        .appendingPathComponent(fileName, isDirectory: false)
+    }
+}
+
 enum KeyboardSharedKeychain {
     private static let keyboardBridgeService = "\(TypeformeBundleConfiguration.hostBundleIdentifier).keyboard-bridge"
     private static let keyboardBridgeAccount = "keyboard-bridge-token"
-    private static let pendingFinalResultAccount = "keyboard-pending-final-result"
-    private static let pendingDestinationAccount = "keyboard-pending-destination"
 
     static func keyboardBridgeToken() -> String? {
         string(service: keyboardBridgeService, account: keyboardBridgeAccount)
@@ -573,102 +717,6 @@ enum KeyboardSharedKeychain {
     @discardableResult
     static func deleteKeyboardBridgeToken() -> Bool {
         delete(service: keyboardBridgeService, account: keyboardBridgeAccount)
-    }
-
-    @discardableResult
-    static func savePendingFinalResult(
-        _ result: KeyboardPendingFinalResult,
-        now: TimeInterval = Date().timeIntervalSince1970
-    ) -> Bool {
-        guard result.isValid(now: now),
-              let data = try? JSONEncoder().encode(result),
-              data.count <= KeyboardPendingFinalResult.maxEncodedByteCount
-        else { return false }
-        return saveData(data, service: keyboardBridgeService, account: pendingFinalResultAccount)
-    }
-
-    static func loadPendingFinalResult(
-        now: TimeInterval = Date().timeIntervalSince1970
-    ) -> KeyboardPendingFinalResult? {
-        guard let data = data(service: keyboardBridgeService, account: pendingFinalResultAccount) else {
-            return nil
-        }
-        guard data.count <= KeyboardPendingFinalResult.maxEncodedByteCount,
-              let result = try? JSONDecoder().decode(KeyboardPendingFinalResult.self, from: data),
-              result.isValid(now: now)
-        else {
-            _ = clearPendingFinalResult()
-            return nil
-        }
-        return result
-    }
-
-    @discardableResult
-    static func acknowledgePendingFinalResult(commandID: String) -> Bool {
-        clearPendingFinalResult(commandID: commandID)
-    }
-
-    @discardableResult
-    static func clearPendingFinalResult(commandID: String) -> Bool {
-        guard KeyboardPendingMailboxLimits.isValidCommandID(commandID) else { return false }
-        guard let pending = loadPendingFinalResult() else {
-            return clearPendingFinalResult()
-        }
-        guard pending.commandID == commandID else { return false }
-        return clearPendingFinalResult()
-    }
-
-    @discardableResult
-    static func clearPendingFinalResult() -> Bool {
-        delete(service: keyboardBridgeService, account: pendingFinalResultAccount)
-    }
-
-    @discardableResult
-    static func savePendingDestination(
-        _ destination: KeyboardPendingDestination,
-        now: TimeInterval = Date().timeIntervalSince1970
-    ) -> Bool {
-        guard destination.isValid(now: now),
-              let data = try? JSONEncoder().encode(destination),
-              data.count <= KeyboardPendingDestination.maxEncodedByteCount
-        else { return false }
-        return saveData(data, service: keyboardBridgeService, account: pendingDestinationAccount)
-    }
-
-    static func loadPendingDestination(
-        now: TimeInterval = Date().timeIntervalSince1970
-    ) -> KeyboardPendingDestination? {
-        guard let data = data(service: keyboardBridgeService, account: pendingDestinationAccount) else {
-            return nil
-        }
-        guard data.count <= KeyboardPendingDestination.maxEncodedByteCount,
-              let destination = try? JSONDecoder().decode(KeyboardPendingDestination.self, from: data),
-              destination.isValid(now: now)
-        else {
-            _ = clearPendingDestination()
-            return nil
-        }
-        return destination
-    }
-
-    @discardableResult
-    static func acknowledgePendingDestination(commandID: String) -> Bool {
-        clearPendingDestination(commandID: commandID)
-    }
-
-    @discardableResult
-    static func clearPendingDestination(commandID: String) -> Bool {
-        guard KeyboardPendingMailboxLimits.isValidCommandID(commandID) else { return false }
-        guard let pending = loadPendingDestination() else {
-            return clearPendingDestination()
-        }
-        guard pending.commandID == commandID else { return false }
-        return clearPendingDestination()
-    }
-
-    @discardableResult
-    static func clearPendingDestination() -> Bool {
-        delete(service: keyboardBridgeService, account: pendingDestinationAccount)
     }
 
     private static func string(service: String, account: String) -> String? {
