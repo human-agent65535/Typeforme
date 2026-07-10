@@ -297,6 +297,16 @@ enum VocabularyCandidateSelector {
 
         guard let evidence = best else { return nil }
 
+        // A fuzzy near-pinyin window alone is not enough to turn ordinary
+        // Chinese prose into a person's name. Require independent person-use
+        // context (for example, calling, meeting, or confirming with someone);
+        // exact/same-pinyin matches keep their stronger acoustic evidence.
+        if entry.type == "person",
+           evidence.matchKind == "near_pinyin",
+           signals.person <= 0 {
+            return nil
+        }
+
         var score = basePriority(for: entry.type) + evidence.score
         if entry.type == "person" {
             score += 20

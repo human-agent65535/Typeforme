@@ -65,6 +65,19 @@ struct VocabularyCandidateSelectorTests {
         #expect(result.first?.surface == "样例山")
     }
 
+    @Test func nearPinyinAloneDoesNotInsertPersonIntoCoherentProse() {
+        let entries = [
+            DictionaryEntry(type: "person", surface: "郭霁"),
+        ]
+
+        let payload = VocabularyCandidateSelector.promptPayload(
+            from: entries,
+            rawText: "他没有啊，他不是医生啊，他走开路进去的。他是小孩，他可以到任何地方住。"
+        )
+
+        #expect(payload.isEmpty)
+    }
+
     @Test func selectsSpokenEnglishAcronym() {
         let entries = [
             DictionaryEntry(type: "acronym", surface: "CLI"),
