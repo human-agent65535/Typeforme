@@ -191,6 +191,18 @@ struct BenchmarkMain {
             try await requestJSON(method: "POST", path: path, body: body)
         }
 
+        func postSettings(_ body: [String: Any]) async throws -> [String: Any] {
+            let current = try await getJSON("/v1/settings")
+            guard let revision = current["settings_revision"] as? String,
+                  !revision.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            else {
+                throw benchmarkError("Bridge settings response is missing settings_revision")
+            }
+            var requestBody = body
+            requestBody["expected_settings_revision"] = revision
+            return try await postJSON("/v1/settings", body: requestBody)
+        }
+
         private func requestJSON(method: String, path: String, body: [String: Any]?) async throws -> [String: Any] {
             guard let url = URL(string: baseURL + path) else {
                 throw benchmarkError("Invalid bridge URL: \(baseURL + path)")
@@ -315,12 +327,12 @@ struct BenchmarkMain {
             body["correction_cold_timeout_ms"] = coldTimeout
         }
         if let baseURL = backend.lmStudioBaseURL {
-            body["lm_studio_base_url"] = baseURL
+            body["external_llm_base_url"] = baseURL
         }
         if let model = backend.lmStudioModel {
-            body["lm_studio_model"] = model
+            body["external_llm_model"] = model
         }
-        _ = try await client.postJSON("/v1/settings", body: body)
+        _ = try await client.postSettings(body)
     }
 
     private static func runSample(_ sample: EvalSample, client: BridgeClient) async throws -> [String: Any] {
@@ -421,8 +433,8 @@ struct BenchmarkMain {
             "correction_backend",
             "correction_timeout_ms",
             "correction_cold_timeout_ms",
-            "lm_studio_base_url",
-            "lm_studio_model",
+            "external_llm_base_url",
+            "external_llm_model",
         ] {
             if let value = settings[key] {
                 body[key] = value
@@ -430,7 +442,7 @@ struct BenchmarkMain {
         }
         guard !body.isEmpty else { return }
         do {
-            _ = try await client.postJSON("/v1/settings", body: body)
+            _ = try await client.postSettings(body)
         } catch {
             fputs("warn: failed to restore bridge settings: \(error.localizedDescription)\n", stderr)
         }
