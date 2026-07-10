@@ -13,17 +13,18 @@ struct PairingView: View {
     @State private var tokenVisible = false
     @State private var showingQRScanner = false
     @State private var pairingParseTask: Task<Void, Never>?
+    @State private var isUnpairing = false
 
     let onSave: (PairingConfig) -> Void
     let onSaveConnection: (BridgeEndpoints) -> Void
-    let onUnpair: () -> Void
+    let onUnpair: () async -> Void
 
     init(
         config: PairingConfig,
         routeStatus: BridgeRouteResolutionStatus,
         onSave: @escaping (PairingConfig) -> Void,
         onSaveConnection: @escaping (BridgeEndpoints) -> Void,
-        onUnpair: @escaping () -> Void
+        onUnpair: @escaping () async -> Void
     ) {
         self._config = State(initialValue: config)
         self._routeStatus = State(initialValue: routeStatus)
@@ -150,16 +151,24 @@ struct PairingView: View {
                         Button(role: .destructive) {
                             pairingParseTask?.cancel()
                             pairingParseTask = nil
-                            config = .empty
-                            pairingJSON = ""
-                            parseError = nil
-                            parsedSuccessfully = false
-                            routeStatus = BridgeRouteResolutionStatus()
-                            onUnpair()
-                            dismiss()
+                            isUnpairing = true
+                            Task { @MainActor in
+                                await onUnpair()
+                                config = .empty
+                                pairingJSON = ""
+                                parseError = nil
+                                parsedSuccessfully = false
+                                routeStatus = BridgeRouteResolutionStatus()
+                                isUnpairing = false
+                                dismiss()
+                            }
                         } label: {
-                            Label("Unpair This Device", systemImage: "link.badge.minus")
+                            Label(
+                                isUnpairing ? "Unpairing…" : "Unpair This Device",
+                                systemImage: "link.badge.minus"
+                            )
                         }
+                        .disabled(isUnpairing)
                     }
                 }
 

@@ -210,6 +210,40 @@ PY
 if [ "$phase" = "recording_started" ]; then
     echo "==> Recording started in simulator; posting stop"
     simctl openurl "$SIMULATOR_ID" "typeforme://debug/keyboard-darwin-stop?command_id=$COMMAND_ID" >/dev/null
+    /usr/bin/python3 - "$DIAGNOSTIC_LOG" "$COMMAND_ID" <<'PY'
+import json
+import sys
+import time
+
+diagnostic_log, command_id = sys.argv[1:]
+deadline = time.time() + 6.0
+matched = None
+
+while time.time() < deadline:
+    try:
+        with open(diagnostic_log, "r", encoding="utf-8") as handle:
+            lines = handle.readlines()
+    except FileNotFoundError:
+        lines = []
+    for line in reversed(lines[-300:]):
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        fields = entry.get("fields") or {}
+        if entry.get("event") == "capture_writer_stopped" and fields.get("command_id") == command_id:
+            matched = fields
+            break
+    if matched is not None:
+        break
+    time.sleep(0.15)
+
+if matched is None:
+    raise SystemExit("error: host did not report that the capture writer stopped")
+if matched.get("keyboard_recording") != "false" or matched.get("recorder_recording") != "false":
+    raise SystemExit(f"error: capture writer remained active after stop: {matched}")
+print("==> Stop confirmed: both capture writers inactive")
+PY
 fi
 
 echo "OK: keyboard Darwin simulator smoke test passed."

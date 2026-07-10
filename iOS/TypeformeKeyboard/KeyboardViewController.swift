@@ -2119,8 +2119,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         textToolbarStatusText = nil
         stopBridgeStatusStream()
         cancelRefineTimeoutWatchdog()
-        cancelActiveRecordingForKeyboardDismissal()
+        // Clear stale work before dispatching the dismissal cancel below. The
+        // newly created cancel task must not be swept up by this cleanup pass.
         cancelBridgeCommandTasks()
+        cancelActiveRecordingForKeyboardDismissal()
         refineUndoState = nil
         styleRewriteTask?.cancel()
         styleRewriteTask = nil
@@ -6585,7 +6587,34 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         cancelDarwinStartAckTimeout()
         cancelScheduledHostOpen()
         shouldCancelWhenStartCompletes = isStartRequestInFlight
-        sendBridgeCommand(.cancel)
+        let commandID = activeRecordingCommandID
+            ?? activeRecordingTextTarget?.commandID
+            ?? UUID().uuidString
+        let command = KeyboardBridgeCommand(
+            id: commandID,
+            action: .cancel,
+            correctionMode: correctionMode.rawValue
+        )
+        sendBridgeCommand(command)
+
+        // Dismissal can deallocate the extension before the local request
+        // finishes. Post the authenticated Darwin command immediately as an
+        // independent path. Both deliveries carry the same command id, so a
+        // pending start is canceled consistently whichever arrives first.
+        let savedForDarwin = KeyboardSharedDefaults.saveDarwinCommand(command)
+        let postedDarwin = postAuthenticatedKeyboardRequest(
+            KeyboardDarwinNotificationName.requestCancelDictation
+        )
+        kbLog.notice("keyboard dismissal cancel backup saved=\(savedForDarwin, privacy: .public) posted=\(postedDarwin, privacy: .public) command_id=\(commandID, privacy: .public)")
+        KeyboardDiagnosticEventLog.record(
+            source: "keyboard-ui",
+            event: "dismissal_cancel_backup_dispatched",
+            fields: [
+                "command_id": commandID,
+                "saved": "\(savedForDarwin)",
+                "posted": "\(postedDarwin)",
+            ]
+        )
     }
 
     private func cancelActiveHoldRecording() {

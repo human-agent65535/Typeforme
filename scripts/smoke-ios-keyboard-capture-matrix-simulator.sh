@@ -253,6 +253,43 @@ if errors:
 PY
 }
 
+wait_cancel_cleanup() {
+    local command_id="$1"
+    /usr/bin/python3 - "$DIAGNOSTIC_LOG" "$command_id" <<'PY'
+import json
+import sys
+import time
+
+diagnostic_log, command_id = sys.argv[1:]
+deadline = time.time() + 6.0
+matched = None
+while time.time() < deadline:
+    try:
+        with open(diagnostic_log, "r", encoding="utf-8") as handle:
+            lines = handle.readlines()
+    except FileNotFoundError:
+        lines = []
+    for line in reversed(lines[-600:]):
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        fields = entry.get("fields") or {}
+        if entry.get("event") == "capture_cancel_cleanup_completed" and fields.get("command_id") == command_id:
+            matched = fields
+            break
+    if matched is not None:
+        break
+    time.sleep(0.15)
+
+if matched is None:
+    raise SystemExit("error: host did not report cancel cleanup completion")
+if matched.get("keyboard_recording") != "false" or matched.get("recorder_recording") != "false":
+    raise SystemExit(f"error: capture writer remained active after cancel: {matched}")
+print("==> Cancel confirmed: both capture writers inactive")
+PY
+}
+
 post_start_and_expect() {
     local command_id="$1"
     local expected_phase="$2"
@@ -263,7 +300,7 @@ post_start_and_expect() {
     echo "==> Darwin result: $result"
     if [ "$expected_phase" = "recording_started" ]; then
         debug_url "keyboard-darwin-cancel" "command_id=$command_id"
-        sleep 1
+        wait_cancel_cleanup "$command_id"
     fi
 }
 

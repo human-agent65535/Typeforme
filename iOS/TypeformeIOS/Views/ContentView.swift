@@ -67,7 +67,7 @@ struct ContentView: View {
                             state.saveBridgeEndpoints(bridgeEndpoints)
                         },
                         onUnpair: {
-                            state.unpair()
+                            await state.unpair()
                         }
                     )
                     .environment(state)
@@ -1105,7 +1105,7 @@ private struct HeroRecordCard: View {
     }
 
     private var isRecording: Bool {
-        (audio.recorder.isRecording || state.phase == .recording) && !state.isStopAndSendInFlight
+        (state.isRecordingCaptureActive || state.phase == .recording) && !state.isStopAndSendInFlight
     }
 
     /// Title carries the live stage label when a job is in flight (so it
@@ -1795,7 +1795,7 @@ private struct ResultCard: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.regular)
-                .disabled(!hasResult)
+                .disabled(!hasResult || !state.canMutateResult)
 
                 Button(role: .destructive) {
                     state.clearResult()
@@ -1805,7 +1805,7 @@ private struct ResultCard: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.regular)
-                .disabled(!hasResult && state.rawTranscript.isEmpty)
+                .disabled((!hasResult && state.rawTranscript.isEmpty) || !state.canMutateResult)
             }
         }
         .padding(14)
@@ -2542,12 +2542,14 @@ private struct MacSettingsView: View {
     }
 
     private func repairPairing(clearExisting: Bool) {
-        if clearExisting {
-            state.unpair()
-        }
-        dismiss()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
-            onRepairPairing()
+        Task { @MainActor in
+            if clearExisting {
+                await state.unpair()
+            }
+            dismiss()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                onRepairPairing()
+            }
         }
     }
 
