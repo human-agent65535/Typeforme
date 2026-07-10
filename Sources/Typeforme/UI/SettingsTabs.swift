@@ -1740,7 +1740,7 @@ struct ASRSettingsView: View {
         }
         .onChange(of: savedNvidiaModelID) { _, _ in
             Task { @MainActor in
-                ASRFactory.shared.stopNvidiaNemotron()
+                await ASRFactory.shared.stopNvidiaNemotron()
                 await ASRFactory.shared.preloadCachedActiveModel()
             }
         }

@@ -6,6 +6,7 @@ enum LlamaServerError: LocalizedError {
     case modelMissing(String)
     case launchFailed(String)
     case warmupTimeout(seconds: TimeInterval)
+    case retired
 
     var errorDescription: String? {
         switch self {
@@ -13,6 +14,7 @@ enum LlamaServerError: LocalizedError {
         case .modelMissing(let path): return "model not found at \(path)"
         case .launchFailed(let why): return "llama-server launch failed: \(why)"
         case .warmupTimeout(let s): return "llama-server didn't become healthy in \(Int(s))s"
+        case .retired: return "llama-server configuration is no longer active"
         }
     }
 }
@@ -39,6 +41,13 @@ actor LlamaCppServerManager {
     /// Per-request override is also possible by passing a different timeout
     /// at call time, but the default tracks AppSettings.correctionColdTimeoutMs.
     private let coldTimeoutSec: TimeInterval
+    /// A replacement manager waits for the previous configuration to finish
+    /// shutting down before it may launch. This keeps model switches exclusive
+    /// even when settings change several times in quick succession.
+    private var activationBarrier: Task<Void, Never>?
+    /// Unlike `stop()`, retirement is permanent. Services retained by an older
+    /// request must not be able to restart a superseded model configuration.
+    private var isRetired = false
     private var process: Process?
     private var logFileHandle: FileHandle?
 
@@ -52,7 +61,8 @@ actor LlamaCppServerManager {
          pidFile: URL = AppPaths.llamaPidFile,
          requiredFiles: [String] = [],
          extraArguments: [String] = [],
-         coldTimeoutSec: TimeInterval = 30) {
+         coldTimeoutSec: TimeInterval = 30,
+         activationBarrier: Task<Void, Never>? = nil) {
         self.modelPath = modelPath
         self.contextSize = contextSize
         self.useFlashAttn = useFlashAttn
@@ -61,10 +71,18 @@ actor LlamaCppServerManager {
         self.requiredFiles = requiredFiles
         self.extraArguments = extraArguments
         self.coldTimeoutSec = coldTimeoutSec
+        self.activationBarrier = activationBarrier
     }
 
     /// Bring the server up if not already running. Returns the port.
     func ensureRunning() async throws -> Int {
+        if let activationBarrier {
+            self.activationBarrier = nil
+            await activationBarrier.value
+        }
+        try Task.checkCancellation()
+        guard !isRetired else { throw LlamaServerError.retired }
+
         // Self-heal: if we *think* we're running but the process died (crash,
         // OOM, user-killed via Activity Monitor), drop the stale state so the
         // next request starts a fresh server.
@@ -98,6 +116,7 @@ actor LlamaCppServerManager {
     }
 
     func stop() async {
+        let ownedProcess = process
         if let p = process, p.isRunning {
             let pidToKill = p.processIdentifier
             let expectedBinary = binaryURL
@@ -122,12 +141,24 @@ actor LlamaCppServerManager {
         closeLogFile()
         status = .stopped
         try? FileManager.default.removeItem(at: pidFile)
-        Log.llm.info("llama-server stopped")
+        if ownedProcess != nil {
+            Log.llm.info("llama-server stopped")
+        }
+    }
+
+    /// Permanently disables this manager, then stops its helper. A normal
+    /// timeout uses `stop()` so the same configuration can cold-start again;
+    /// configuration replacement uses `retire()` so stale services cannot.
+    func retire() async {
+        isRetired = true
+        activationBarrier = nil
+        await stop()
     }
 
     // MARK: - Private
 
     private func start() async throws -> Int {
+        guard !isRetired else { throw LlamaServerError.retired }
         status = .starting
 
         guard FileManager.default.fileExists(atPath: binaryURL.path) else {
@@ -144,6 +175,7 @@ actor LlamaCppServerManager {
         }
 
         await terminateStaleServer()
+        guard !isRetired else { throw LlamaServerError.retired }
 
         let port: Int
         do {
@@ -152,6 +184,7 @@ actor LlamaCppServerManager {
             status = .failed(error.localizedDescription)
             throw error
         }
+        guard !isRetired else { throw LlamaServerError.retired }
 
         let pid = process?.processIdentifier ?? -1
         status = .running(port: port, pid: pid)

@@ -29,46 +29,79 @@ enum CommandLineHandler {
         UserDefaults.standard.setVolatileDomain(overrides, forName: UserDefaults.argumentDomain)
 
         Task { @MainActor in
-            let startedAt = Date()
-            do {
-                let text = try await ASRFactory.shared.get().transcribe(
-                    audioFileURL: request.audioURL,
-                    languageIDs: AppSettings.asrLanguageIDs
-                )
-                let payload = DebugTranscribeResult(
+            let execution = await executeDebugTranscribe(
+                request,
+                provider: AppSettings.enabledRecognitionSources.map(\.rawValue).joined(separator: ","),
+                languageIDs: AppSettings.asrLanguageIDs,
+                transcribe: { audioURL, languageIDs in
+                    try await ASRFactory.shared.get().transcribe(
+                        audioFileURL: audioURL,
+                        languageIDs: languageIDs
+                    )
+                },
+                cleanup: {
+                    await ASRFactory.shared.stopQwenLlama()
+                    await NvidiaNemotronWarmPool.shared.shutdown(reason: "debug_transcribe_exit")
+                    await CorrectorFactory.shared.shutdownAll()
+                }
+            )
+            let data = (try? BridgeJSON.encodePrettySorted(execution.payload))
+                ?? Data("{\"error\":\"Could not encode debug transcribe result\",\"ok\":false}".utf8)
+            let output = String(decoding: data, as: UTF8.self)
+            if execution.writesToStandardError {
+                fputs(output + "\n", stderr)
+            } else {
+                print(output)
+            }
+            Foundation.exit(execution.exitCode)
+        }
+    }
+
+    /// Runs the command's fallible work and then performs helper teardown on
+    /// both success and failure. Keeping `exit` outside makes this ordering
+    /// directly testable without terminating the test process.
+    @MainActor
+    static func executeDebugTranscribe(
+        _ request: DebugTranscribeCommand,
+        provider: String,
+        languageIDs: [String],
+        transcribe: @escaping @MainActor @Sendable (URL, [String]) async throws -> String,
+        cleanup: @escaping @MainActor @Sendable () async -> Void
+    ) async -> DebugTranscribeExecution {
+        let startedAt = Date()
+        let execution: DebugTranscribeExecution
+        do {
+            let text = try await transcribe(request.audioURL, languageIDs)
+            execution = DebugTranscribeExecution(
+                payload: DebugTranscribeResult(
                     ok: true,
-                    provider: AppSettings.enabledRecognitionSources.map(\.rawValue).joined(separator: ","),
-                    languageIDs: AppSettings.asrLanguageIDs,
+                    provider: provider,
+                    languageIDs: languageIDs,
                     audioPath: request.audioURL.path,
-                    latencyMs: Int(Date().timeIntervalSince(startedAt) * 1000),
+                    latencyMs: Int(Date().timeIntervalSince(startedAt) * 1_000),
                     transcript: text,
                     error: nil
-                )
-                print(String(data: try BridgeJSON.encodePrettySorted(payload), encoding: .utf8) ?? "")
-                Foundation.exit(0)
-            } catch {
-                let payload = DebugTranscribeResult(
+                ),
+                exitCode: 0,
+                writesToStandardError: false
+            )
+        } catch {
+            execution = DebugTranscribeExecution(
+                payload: DebugTranscribeResult(
                     ok: false,
-                    provider: AppSettings.enabledRecognitionSources.map(\.rawValue).joined(separator: ","),
-                    languageIDs: AppSettings.asrLanguageIDs,
+                    provider: provider,
+                    languageIDs: languageIDs,
                     audioPath: request.audioURL.path,
-                    latencyMs: Int(Date().timeIntervalSince(startedAt) * 1000),
+                    latencyMs: Int(Date().timeIntervalSince(startedAt) * 1_000),
                     transcript: nil,
                     error: error.localizedDescription
-                )
-                let data: Data
-                do {
-                    data = try BridgeJSON.encodePrettySorted(payload)
-                } catch {
-                    preconditionFailure("Could not encode debug transcribe error payload: \(error)")
-                }
-                guard let output = String(data: data, encoding: .utf8) else {
-                    preconditionFailure("Could not decode debug transcribe error payload as UTF-8")
-                }
-                fputs(output + "\n", stderr)
-                Foundation.exit(2)
-            }
+                ),
+                exitCode: 2,
+                writesToStandardError: true
+            )
         }
+        await cleanup()
+        return execution
     }
 }
 
@@ -114,7 +147,13 @@ struct DebugTranscribeCommand: Equatable {
     }
 }
 
-private struct DebugTranscribeResult: Encodable {
+struct DebugTranscribeExecution {
+    let payload: DebugTranscribeResult
+    let exitCode: Int32
+    let writesToStandardError: Bool
+}
+
+struct DebugTranscribeResult: Encodable {
     let ok: Bool
     let provider: String
     let languageIDs: [String]

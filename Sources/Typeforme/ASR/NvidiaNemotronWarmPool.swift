@@ -149,6 +149,31 @@ final class NvidiaNemotronWarmPool {
         terminateIdleSession(reason: reason)
     }
 
+    /// Process-exit cleanup must wait for warm helpers to terminate; merely
+    /// sending SIGTERM is insufficient because child processes survive a
+    /// command-line invocation that calls `exit` immediately afterwards.
+    func shutdown(reason: String) async {
+        var sessions: [NvidiaNemotronLivePreviewSession] = []
+        if let warmingSession {
+            sessions.append(warmingSession)
+        }
+        if let idleSession = idle?.session,
+           !sessions.contains(where: { $0 === idleSession }) {
+            sessions.append(idleSession)
+        }
+        warmingSession = nil
+        warmingKey = nil
+        idle = nil
+
+        await withTaskGroup(of: Void.self) { group in
+            for session in sessions {
+                group.addTask {
+                    await session.terminateAndWait(reason: reason)
+                }
+            }
+        }
+    }
+
     private func terminateIdleSession(reason: String) {
         guard let idle else { return }
         self.idle = nil

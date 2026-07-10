@@ -1,4 +1,5 @@
 @preconcurrency import AVFoundation
+import Darwin
 import Foundation
 
 final class NvidiaNemotronLivePreviewSession: ASRLivePreviewSession, @unchecked Sendable {
@@ -254,6 +255,7 @@ final class NvidiaNemotronLivePreviewSession: ASRLivePreviewSession, @unchecked 
         let file = try AVAudioFile(forReading: url)
         let framesPerRead: AVAudioFrameCount = 4096
         while file.framePosition < file.length {
+            try Task.checkCancellation()
             guard let buffer = AVAudioPCMBuffer(
                 pcmFormat: file.processingFormat,
                 frameCapacity: framesPerRead
@@ -288,7 +290,11 @@ final class NvidiaNemotronLivePreviewSession: ASRLivePreviewSession, @unchecked 
 
     func finishInputAndWaitForFinal(timeout: TimeInterval) async -> Bool {
         finishInput()
-        return await waitForFinal(timeout: timeout)
+        return await withTaskCancellationHandler {
+            await waitForFinal(timeout: timeout)
+        } onCancel: {
+            self.terminate(reason: "asr_task_cancelled")
+        }
     }
 
     func currentTranscript() -> String? {
@@ -321,10 +327,27 @@ final class NvidiaNemotronLivePreviewSession: ASRLivePreviewSession, @unchecked 
         closeInputImmediately()
         if process.isRunning {
             process.terminate()
-        } else {
-            resumeFinalWaiters(success: false)
-            resumeResetWaiters(success: false)
         }
+        // Termination means no future final/reset event can be consumed. Wake
+        // callers immediately instead of making a cancelled task wait for the
+        // helper or its full ASR timeout.
+        resumeFinalWaiters(success: false)
+        resumeResetWaiters(success: false)
+        resumeDecodedChunkWaiters(success: false)
+    }
+
+    /// Terminates an owned helper and waits for it to exit. The SIGKILL
+    /// escalation is reserved for process-wide teardown, where returning while
+    /// the helper is still alive would orphan it after Typeforme exits.
+    func terminateAndWait(reason: String, timeout: TimeInterval = 2) async {
+        terminate(reason: reason)
+        let terminated = await waitForTermination(timeout: timeout)
+        guard !terminated else { return }
+        guard process.isRunning else { return }
+        let pid = process.processIdentifier
+        Log.asr.notice("Nemotron helper didn't exit on SIGTERM; SIGKILL pid=\(pid)")
+        _ = kill(pid, SIGKILL)
+        _ = await waitForTermination(timeout: 1)
     }
 
     private func appendOnAudioQueue(_ buffer: AVAudioPCMBuffer) {

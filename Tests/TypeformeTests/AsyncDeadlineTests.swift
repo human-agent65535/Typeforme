@@ -14,13 +14,15 @@ struct AsyncDeadlineTests {
         let started = Date()
         let completed = await AsyncDeadline.run(timeoutNanoseconds: 10_000_000) {
             await withCheckedContinuation { continuation in
-                DispatchQueue.global().asyncAfter(deadline: .now() + 0.4) {
+                DispatchQueue.global().asyncAfter(deadline: .now() + 2.0) {
                     continuation.resume()
                 }
             }
         }
 
         #expect(!completed)
-        #expect(Date().timeIntervalSince(started) < 0.25)
+        // Leave enough scheduler headroom for a loaded parallel test run while
+        // still proving that the deadline did not await the 2-second loser.
+        #expect(Date().timeIntervalSince(started) < 1.0)
     }
 }

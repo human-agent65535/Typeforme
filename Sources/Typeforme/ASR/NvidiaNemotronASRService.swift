@@ -28,10 +28,12 @@ final class NvidiaNemotronASRService: ASRService {
         var returnedToPool = false
         var failureHandled = false
         do {
+            try Task.checkCancellation()
             try session.appendAudioFile(uploadURL)
             let completed = await session.finishInputAndWaitForFinal(
                 timeout: AppSettings.asrTimeoutSeconds
             )
+            try Task.checkCancellation()
             guard completed else {
                 session.terminate(reason: "asr_timeout")
                 await MainActor.run {
@@ -53,6 +55,9 @@ final class NvidiaNemotronASRService: ASRService {
                 throw ASRAudioSupportError.emptyTranscript
             }
             return LocaleTextNormalizer.normalize(text, languageIDs: supportedLanguageIDs)
+        } catch is CancellationError {
+            await session.terminateAndWait(reason: "asr_task_cancelled")
+            throw CancellationError()
         } catch {
             if returnedToPool || failureHandled {
                 throw error

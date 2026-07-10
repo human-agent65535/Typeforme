@@ -202,15 +202,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Stops owned ASR and correction helper subprocesses before the system
     /// kills the app.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        coordinator.shutdown()
         bridgeServer.stop()
         terminationTask?.cancel()
         terminationTask = Task { @MainActor in
             let completed = await AsyncDeadline.run(
                 timeoutNanoseconds: Self.terminationShutdownDeadline
             ) { @MainActor in
+                await self.coordinator.shutdown()
                 await ASRFactory.shared.stopQwenLlama()
-                ASRFactory.shared.stopNvidiaNemotron()
+                await ASRFactory.shared.stopNvidiaNemotron()
                 await CorrectorFactory.shared.shutdownAll()
             }
             if !completed {
@@ -443,7 +443,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             clientSettingsSync.syncIfNeeded(force: true)
             Task { @MainActor in
                 await ASRFactory.shared.stopQwenLlama()
-                ASRFactory.shared.stopNvidiaNemotron()
+                await ASRFactory.shared.stopNvidiaNemotron()
                 await CorrectorFactory.shared.shutdownAll()
             }
         }

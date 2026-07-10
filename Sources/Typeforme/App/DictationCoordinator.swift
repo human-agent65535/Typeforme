@@ -804,14 +804,14 @@ final class DictationCoordinator: ObservableObject {
         audioLevel = max(0, min(1, level))
     }
 
-    func shutdown() {
-        activeProcessingTask?.cancel()
+    func shutdown() async {
+        let processingTask = activeProcessingTask
+        processingTask?.cancel()
         activeProcessingTask = nil
         activeProcessingTaskID = nil
         autoStopTask?.cancel()
         resetTask?.cancel()
         let cancelToken = activeCancelToken
-        Task { await cancelToken?.cancel() }
         clearActiveSession()
         clearTextEditRequest()
         clearDictationContext()
@@ -821,6 +821,8 @@ final class DictationCoordinator: ObservableObject {
             try? FileManager.default.removeItem(at: url)
         }
         teardownLivePartialPreview(clearText: true)
+        await cancelToken?.cancel()
+        await processingTask?.value
     }
 
     // MARK: - Mode switching
@@ -830,7 +832,19 @@ final class DictationCoordinator: ObservableObject {
     /// active dictation the chips are disabled.
     func requestCorrectionModeChange(to newMode: CorrectionMode) async {
         guard canRefineFocusedInputFromHUD else { return }
-        await refineFocusedInput(to: newMode)
+        let taskID = UUID()
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.refineFocusedInput(to: newMode)
+        }
+        activeProcessingTask?.cancel()
+        activeProcessingTask = task
+        activeProcessingTaskID = taskID
+        await task.value
+        if activeProcessingTaskID == taskID {
+            activeProcessingTask = nil
+            activeProcessingTaskID = nil
+        }
     }
 
     // MARK: - Request building

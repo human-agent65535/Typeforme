@@ -133,8 +133,8 @@ final class ASRFactory {
         qwenLlamaKey = nil
     }
 
-    func stopNvidiaNemotron() {
-        NvidiaNemotronWarmPool.shared.terminateIdle(reason: "stop_requested")
+    func stopNvidiaNemotron() async {
+        await NvidiaNemotronWarmPool.shared.shutdown(reason: "stop_requested")
     }
 
     func nvidiaNemotronService() -> NvidiaNemotronASRService {

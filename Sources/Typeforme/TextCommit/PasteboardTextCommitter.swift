@@ -46,8 +46,12 @@ final class PasteboardTextCommitter: TextCommitter {
         }
         try await checkCancelled(cancelToken)
 
-        if let target,
-           !TextEditTargetCapture.insertionTargetStillMatches(target, in: snapshot) {
+        // A nil target means this session began without a verifiable AX input
+        // owner. Never upgrade it to automatic insertion merely because the
+        // user granted Accessibility while transcription was in flight.
+        guard let target,
+              TextEditTargetCapture.insertionTargetStillMatches(target, in: snapshot)
+        else {
             Self.copyForManualPaste(text)
             throw TextCommitterError.inputTargetChanged
         }
