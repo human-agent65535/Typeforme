@@ -88,6 +88,18 @@ Sources: [Best practices for human evaluation of generated text](https://aclanth
 - A candidate is ready only when manually reviewed holdout results improve overall without a material increase in serious semantic regressions.
 - Report unreviewed samples as pending, never as correct.
 
+## Evaluation record: compact zero-example base
+
+On 2026-07-10, Candidate L replaced only the shared correction base with a compact principle-led contract. It kept the production mode addenda unchanged, contained no examples, and removed source-specific and text-style-based ASR reliability adjudication. The compact base was frozen from source document SHA-256 `f8bf851a8ec52535cea54cc02ad3ac47e7861bf69458c971ac39aee227b1cd20` before confirmation and holdout runs.
+
+The production and candidate prompts used identical non-thinking transport and sampling parameters. Across a 12-case development set, an 8-case confirmation set, and a 22-case frozen evaluation set, both prompts were run on the local Qwen3.5 9B runtime and the external Qwen3.6 27B runtime. This produced 84 blinded A/B pairs. Every pair was reviewed manually from its mode, raw transcript, context, and two outputs before prompt identity was revealed.
+
+The combined human judgments were 63 equivalent pairs, 11 preferences for Candidate L, and 10 preferences for production. In the final frozen set alone, 35 of 44 pairs were equivalent, 4 slightly preferred Candidate L, and 5 slightly preferred production. There was no Candidate L-only serious semantic regression. Shared weaknesses included the local 9B model retaining an explicit time-repair process, translating a Korean/English technical span, and under-realizing one Structure+ sequence. They were recorded as model/prompt limitations and were not converted into new rules.
+
+Mechanical checks reported only that all 88 final-set requests completed and returned valid JSON. They did not contribute to the semantic judgments. The selected prompt reduces the full system message from 7,172 to 3,154 characters in Clean and from 7,995 to 3,977 in Polish+, while preserving the existing mode contracts. It was selected for comparable human-reviewed quality, lower prompt load, and removal of unsupported linguistic-form ASR gating—not because it achieved perfect sample accuracy.
+
+This evaluation does not establish ASR hallucination accuracy. The frozen text set did not include original audio, so any disagreement about whether speech existed remains pending and cannot be resolved from transcript form alone. The set is retired from future blind use after this decision.
+
 ## Next experiment order
 
 1. Freeze the current production prompt as baseline.

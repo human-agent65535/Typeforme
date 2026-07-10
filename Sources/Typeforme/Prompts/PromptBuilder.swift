@@ -76,10 +76,6 @@ enum PromptBuilder {
             ?? BuiltInPrompts.modePrompt(request.correctionMode)
         var parts = [systemPrompt, modePrompt]
 
-        if let asrSourceNotes = BuiltInPrompts.asrSourceNotesPrompt(for: request.sourceHypotheses) {
-            parts.append(asrSourceNotes)
-        }
-
         let additional = AppSettings.promptAdditionalSystem.trimmingCharacters(in: .whitespacesAndNewlines)
         if !additional.isEmpty {
             parts.append("""
