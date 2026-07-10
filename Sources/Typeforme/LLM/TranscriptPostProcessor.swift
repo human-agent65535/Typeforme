@@ -6,20 +6,17 @@ enum TranscriptPostProcessor {
         _ text: String,
         languageIDs: [String],
         preserveLineBreaks: Bool = false,
-        appendTerminalPunctuation: Bool = true,
         numberPreference: NumberOutputPreference = .automatic,
         punctuationPreference: PunctuationOutputPreference = .normal
     ) -> String {
-        var out = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let mask = VerbatimSpanMask(text)
+        var out = mask.maskedText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !out.isEmpty else { return out }
 
         let preferChinesePunctuation = UnicodeScriptClassifier.containsHanCore(out)
 
         out = normalizeLineBreaks(out)
-        out = removeMandarinSentenceParticles(out)
         out = normalizeWhitespace(out, preserveLineBreaks: preserveLineBreaks)
-        out = collapseRepeatedMandarinFillers(out)
-        out = repairDictatedCommaWord(out)
         out = normalizeRepeatedPunctuation(out, preferChinesePunctuation: preferChinesePunctuation)
         out = normalizePunctuationSpacing(
             out,
@@ -28,24 +25,14 @@ enum TranscriptPostProcessor {
         )
         out = normalizeWhitespace(out, preserveLineBreaks: preserveLineBreaks)
         out = applyNumberPreference(out, numberPreference: numberPreference)
-        out = insertChineseQuestionBreaks(out, preferChinesePunctuation: preferChinesePunctuation)
-        if appendTerminalPunctuation && punctuationPreference != .spaces {
-            out = appendMissingTerminalPunctuation(out, preferChinesePunctuation: preferChinesePunctuation)
-        }
-        out = normalizePunctuationSpacing(
-            out,
-            preferChinesePunctuation: preferChinesePunctuation,
-            preserveLineBreaks: preserveLineBreaks
-        )
-        if preserveLineBreaks {
-            out = normalizeStructuredLayout(out)
-        }
         out = applyPunctuationPreference(
             out,
             punctuationPreference: punctuationPreference,
             preserveLineBreaks: preserveLineBreaks
         )
-        return out.trimmingCharacters(in: .whitespacesAndNewlines)
+        out = normalizeWhitespace(out, preserveLineBreaks: preserveLineBreaks)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return mask.restoring(out) ?? text
     }
 
     private static func applyNumberPreference(_ text: String, numberPreference: NumberOutputPreference) -> String {
@@ -189,39 +176,9 @@ enum TranscriptPostProcessor {
         return total
     }
 
-    private static func removeMandarinSentenceParticles(_ text: String) -> String {
-        // Remove spoken tail particles when ASR leaves them before punctuation
-        // or at sentence end: "好不好用哦,," -> "好不好用,,".
-        regexReplace(
-            text,
-            pattern: #"(?<=\p{Han})\s*(哦|噢|喔)(?=\s*($|[,，。.!?！？]))"#,
-            with: ""
-        )
-    }
-
-    private static func repairDictatedCommaWord(_ text: String) -> String {
-        // Common mixed ASR artifact when the user says "逗号": "好几个,号".
-        regexReplace(
-            text,
-            pattern: #"(好?几个|很多|好多|多个|一个|这个|那个)[,，]\s*号"#,
-            with: "$1逗号"
-        )
-    }
-
-    private static func collapseRepeatedMandarinFillers(_ text: String) -> String {
-        regexReplace(
-            text,
-            pattern: #"(这个|那个|就是|嗯|呃|啊)(?:\s*[，,]?\s*)\1+"#,
-            with: "$1"
-        )
-    }
-
     private static func normalizeRepeatedPunctuation(_ text: String, preferChinesePunctuation: Bool) -> String {
         let comma = preferChinesePunctuation ? "，" : ", "
-        var out = regexReplace(text, pattern: #"[,，](?:\s*[,，])+"#, with: comma)
-        out = regexReplace(out, pattern: #"[,，]\s*([。.!?！？])"#, with: "$1")
-        out = regexReplace(out, pattern: #"([。.!?！？])(?:\s*[。.!?！？])+"#, with: "$1")
-        return out
+        return regexReplace(text, pattern: #"[,，](?:\s*[,，])+"#, with: comma)
     }
 
     private static func normalizePunctuationSpacing(
@@ -258,37 +215,6 @@ enum TranscriptPostProcessor {
         text
             .replacingOccurrences(of: "\r\n", with: "\n")
             .replacingOccurrences(of: "\r", with: "\n")
-    }
-
-    private static func normalizeStructuredLayout(_ text: String) -> String {
-        var out = text
-        if !out.contains("\n") {
-            out = regexReplace(
-                out,
-                pattern: #"^(.+?https?://\S+)[，,]\s*然后(.+)$"#,
-                with: "- 操作：$1\n- 下一步：$2"
-            )
-        }
-        if !out.contains("\n") {
-            out = regexReplace(
-                out,
-                pattern: #"^(.+?\bprod\b)[，,]\s*但是\s*(.+?)[，,]\s*先(不要\s+.+)$"#,
-                with: "- 动作：$1\n- 状态：$2\n- 指令：先$3"
-            )
-        }
-        if !out.contains("\n") {
-            out = regexReplace(out, pattern: #"(?<!^)\s+-\s+"#, with: "\n- ")
-            out = regexReplace(
-                out,
-                pattern: #"(?<!^)\s+(?=(要买|时间|地点|对象|事件|动作|状态|约束|问题|下一步|URL|Path)[：:])"#,
-                with: "\n"
-            )
-        }
-        out = regexReplace(out, pattern: #"\n{3,}"#, with: "\n\n")
-        return out
-            .split(separator: "\n", omittingEmptySubsequences: false)
-            .map { String($0).trimmingCharacters(in: .whitespaces) }
-            .joined(separator: "\n")
     }
 
     private static func applyPunctuationPreference(
@@ -385,59 +311,6 @@ enum TranscriptPostProcessor {
         return nil
     }
 
-    private static func insertChineseQuestionBreaks(_ text: String, preferChinesePunctuation: Bool) -> String {
-        guard preferChinesePunctuation else { return text }
-        var out = text
-        for phrase in ["咋样", "怎么样", "如何"] {
-            out = out.replacingOccurrences(of: phrase + phrase, with: phrase + "？" + phrase)
-        }
-        out = regexReplace(
-            out,
-            pattern: #"(咋样|怎么样|如何)(?=(快|赶紧|麻烦|帮|给|说|讲|告诉|看看|看一下|查|算))"#,
-            with: "$1？"
-        )
-        return out
-    }
-
-    private static func appendMissingTerminalPunctuation(_ text: String, preferChinesePunctuation: Bool) -> String {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, preferChinesePunctuation || UnicodeScriptClassifier.containsHanCore(trimmed) else { return trimmed }
-        guard !hasTerminalPunctuation(trimmed) else { return trimmed }
-        return trimmed + (isQuestionLike(trimmed) ? "？" : "。")
-    }
-
-    private static func hasTerminalPunctuation(_ text: String) -> Bool {
-        var index = text.endIndex
-        while index > text.startIndex {
-            let previous = text.index(before: index)
-            let ch = text[previous]
-            if trailingClosers.contains(ch) || isWhitespace(ch) {
-                index = previous
-                continue
-            }
-            return terminalPunctuation.contains(ch)
-        }
-        return false
-    }
-
-    private static func isQuestionLike(_ text: String) -> Bool {
-        let zhMarkers = [
-            "吗", "呢", "什么", "怎么", "为什么", "为啥", "哪", "谁",
-            "多少", "多大", "多长", "多高", "多远", "多久",
-            "是不是", "能不能", "可不可以", "可以吗", "行吗", "对吗",
-            "咋样", "怎么样", "如何",
-        ]
-        for marker in zhMarkers where text.contains(marker) { return true }
-
-        let lower = text.lowercased()
-        let enMarkers = [
-            "what ", "how ", "why ", "where ", "when ", "who ", "which ",
-            "can you", "could you", "would you", "is it", "are you", "do you",
-        ]
-        for marker in enMarkers where lower.contains(marker) { return true }
-        return false
-    }
-
     private static func isWhitespace(_ character: Character) -> Bool {
         character.unicodeScalars.allSatisfy { CharacterSet.whitespacesAndNewlines.contains($0) }
     }
@@ -500,7 +373,5 @@ enum TranscriptPostProcessor {
         return compiled
     }
 
-    private static let terminalPunctuation: Set<Character> = [".", "!", "?", "。", "！", "？", "…", ":", "："]
-    private static let trailingClosers: Set<Character> = ["\"", "'", "”", "’", ")", "]", "}", "）", "】", "》", "」", "』"]
     private static let regexCache = OSAllocatedUnfairLock(initialState: [String: NSRegularExpression]())
 }

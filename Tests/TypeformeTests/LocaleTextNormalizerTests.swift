@@ -39,4 +39,17 @@ struct LocaleTextNormalizerTests {
         #expect(prompt.contains("Preserve code-switching"))
         #expect(prompt.contains("Chinese script: Simplified"))
     }
+
+    @Test func scriptConversionDoesNotAlterProtectedTechnicalSpans() {
+        let url = "https://例子.test/資料?q=繁體,保留"
+        let path = "/使用者/資料"
+        let code = "`let 名稱 = \"繁體\"`"
+        let input = "這是正文 \(url) \(path) \(code)"
+        let output = LocaleTextNormalizer.normalize(input, languageIDs: ["zh-CN"])
+
+        #expect(output.hasPrefix("这是正文 "))
+        #expect(output.contains(url))
+        #expect(output.contains(path))
+        #expect(output.contains(code))
+    }
 }

@@ -4,9 +4,13 @@ enum LocaleTextNormalizer {
     static func normalize(_ text: String, languageIDs: [String]) -> String {
         switch ASRLanguageSelection.scriptPreference(for: languageIDs) {
         case .simplified:
-            return transformHanRuns(text, using: "Hant-Hans")
+            return VerbatimSpanMask.transforming(text) {
+                transformHanRuns($0, using: "Hant-Hans")
+            }
         case .traditional:
-            return transformHanRuns(text, using: "Hans-Hant")
+            return VerbatimSpanMask.transforming(text) {
+                transformHanRuns($0, using: "Hans-Hant")
+            }
         case .preserve:
             return text
         }

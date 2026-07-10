@@ -73,7 +73,6 @@ final class TextEditService {
             result.text,
             languageIDs: request.languageIDs,
             preserveLineBreaks: true,
-            appendTerminalPunctuation: false,
             numberPreference: AppSettings.numberOutputPreference,
             punctuationPreference: AppSettings.punctuationPreference
         )
