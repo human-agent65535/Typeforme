@@ -35,6 +35,12 @@ struct QwenLivePreviewSessionTests {
         #expect(QwenLlamaLivePreviewSession.hasAudiblePreviewSignal(speechLikeAudio))
     }
 
+    @Test func canonicalFinalRequiresNonEmptyFullResult() {
+        #expect(!QwenLlamaLivePreviewSession.hasUsableCanonicalFinal(""))
+        #expect(!QwenLlamaLivePreviewSession.hasUsableCanonicalFinal(" \n\t "))
+        #expect(QwenLlamaLivePreviewSession.hasUsableCanonicalFinal("complete recording"))
+    }
+
     private func float32PCMData(repeating value: Float, sampleCount: Int) -> Data {
         var data = Data(count: sampleCount * MemoryLayout<Float>.size)
         data.withUnsafeMutableBytes { rawBuffer in

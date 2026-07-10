@@ -33,10 +33,13 @@ final class DictationCoordinator: ObservableObject {
 
     private var autoStopTask: Task<Void, Never>?
     private var resetTask: Task<Void, Never>?
+    private var activeProcessingTask: Task<Void, Never>?
+    private var activeProcessingTaskID: UUID?
     private var activeSessionID: UUID?
     private var activeCancelToken: CommitCancellationToken?
     private var activeBridgeDictateJobID: String?
     private var activeTextEditTarget: TextEditTargetSnapshot?
+    private var activeInsertionTarget: TextInsertionTargetSnapshot?
     private var activeTextEditIntent: TextEditIntent?
     private var activeDictationContextBefore = ""
     private var activeDictationContextAfter = ""
@@ -50,6 +53,7 @@ final class DictationCoordinator: ObservableObject {
     private var liveSpeechTask: SFSpeechRecognitionTask?
     private var asrLivePreviewLease: ASRLivePreviewLease?
     private var remoteBridgeLivePreviewStreamer: RemoteBridgeLivePreviewStreamer?
+    private var livePreviewOwnerSessionID: UUID?
     private var livePreviewFinalSeed: ASRTranscriptionSeed?
     private var activeFastASRRoute: FastASRRoute?
 
@@ -106,6 +110,9 @@ final class DictationCoordinator: ObservableObject {
 
         let sessionID = UUID()
         let cancelToken = CommitCancellationToken()
+        activeProcessingTask?.cancel()
+        activeProcessingTask = nil
+        activeProcessingTaskID = nil
         activeSessionID = sessionID
         activeCancelToken = cancelToken
         activeBridgeDictateJobID = Self.bridgeJobID(prefix: "mac_dictate", sessionID: sessionID)
@@ -125,18 +132,19 @@ final class DictationCoordinator: ObservableObject {
             if AppSettings.processingMode == .server {
                 try validateCorrectionModeAvailable(AppSettings.correctionMode)
             }
-            let livePreviewPCMHandler = await makeLivePartialPreviewPCMHandlerIfAvailable()
+            let livePreviewPCMHandler = await makeLivePartialPreviewPCMHandlerIfAvailable(sessionID: sessionID)
+            guard activeSessionID == sessionID else { return }
             let startedURL = try await recorder.start(pcmHandler: livePreviewPCMHandler)
-            startInProgress = false
-            guard await isActive(sessionID: sessionID, token: cancelToken) else {
-                if let stoppedURL = recorder.stop() {
-                    try? FileManager.default.removeItem(at: stoppedURL)
-                } else {
-                    try? FileManager.default.removeItem(at: startedURL)
-                }
-                teardownLivePartialPreview(clearText: true)
+            guard activeSessionID == sessionID else {
+                let stoppedURL = recorder.stop()
+                try? FileManager.default.removeItem(at: stoppedURL ?? startedURL)
+                teardownLivePartialPreview(clearText: true, ifOwnedBy: sessionID)
                 return
             }
+            guard await isActive(sessionID: sessionID, token: cancelToken) else {
+                return
+            }
+            startInProgress = false
             transition(to: .recording)
             guard captureDictationContextAndTarget(intent: intent) else {
                 if let stoppedURL = recorder.stop() {
@@ -155,10 +163,10 @@ final class DictationCoordinator: ObservableObject {
                 await stopDictation()
             }
         } catch {
-            teardownLivePartialPreview(clearText: true)
+            guard activeSessionID == sessionID else { return }
+            teardownLivePartialPreview(clearText: true, ifOwnedBy: sessionID)
             startInProgress = false
             stopAfterStart = false
-            guard activeSessionID == sessionID else { return }
             clearActiveSession()
             reportError(error.localizedDescription)
             scheduleAutoReset(after: Self.errorResetDelay)
@@ -177,10 +185,14 @@ final class DictationCoordinator: ObservableObject {
         }
 
         clearTextEditRequest()
-        let focusedTextContext = TextEditTargetCapture.focusedTextContext(in: frontmostSnapshot)
-        activeDictationContextBefore = focusedTextContext.before
-        activeDictationContextAfter = focusedTextContext.after
-        return true
+        activeInsertionTarget = TextEditTargetCapture.insertionTarget(in: frontmostSnapshot)
+        activeDictationContextBefore = activeInsertionTarget?.contextBefore ?? ""
+        activeDictationContextAfter = activeInsertionTarget?.contextAfter ?? ""
+        // Without AX permission we still allow recording so the existing
+        // Clipboard fallback remains available. Once AX is trusted, require a
+        // concrete non-secure focused control so a later insertion can prove it
+        // still owns the original target.
+        return activeInsertionTarget != nil || !AppPermissions.accessibilityTrusted
     }
 
     func toggleCommandTextEdit() async {
@@ -271,13 +283,33 @@ final class DictationCoordinator: ObservableObject {
             stopAfterStart = true
             return
         }
-        autoStopTask?.cancel(); autoStopTask = nil
         guard state == .recording else { return }
         guard let sessionID = activeSessionID, let cancelToken = activeCancelToken else {
             reportError("Internal state error: missing dictation session")
             scheduleAutoReset(after: Self.errorResetDelay)
             return
         }
+        let taskID = UUID()
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.processStoppedDictation(sessionID: sessionID, cancelToken: cancelToken)
+        }
+        activeProcessingTask?.cancel()
+        activeProcessingTask = task
+        activeProcessingTaskID = taskID
+        await task.value
+        if activeProcessingTaskID == taskID {
+            activeProcessingTask = nil
+            activeProcessingTaskID = nil
+        }
+    }
+
+    private func processStoppedDictation(
+        sessionID: UUID,
+        cancelToken: CommitCancellationToken
+    ) async {
+        autoStopTask?.cancel(); autoStopTask = nil
+        guard activeSessionID == sessionID, state == .recording else { return }
         // Keep the recorder open briefly after the stop trigger so the final
         // syllable is not cut off. SFSpeech is ended after the tail so the
         // preview can include the same audio that goes to the Mac ASR.
@@ -290,12 +322,16 @@ final class DictationCoordinator: ObservableObject {
             return
         }
         let url = recorder.stop()
-        await endLivePartialPreviewAudio()
+        await endLivePartialPreviewAudio(sessionID: sessionID)
         audioLevel = 0
 
         guard let url else {
             reportError("No audio captured")
             scheduleAutoReset(after: Self.errorResetDelay)
+            return
+        }
+        guard await isActive(sessionID: sessionID, token: cancelToken) else {
+            try? FileManager.default.removeItem(at: url)
             return
         }
 
@@ -341,6 +377,8 @@ final class DictationCoordinator: ObservableObject {
             let asrProgressHandler: ASRTranscriptionProgressHandler = { [weak self] progress in
                 await self?.applyASRTranscriptionProgress(
                     progress,
+                    sessionID: sessionID,
+                    token: cancelToken,
                     shouldAdvanceToCorrectionWhenComplete: shouldAdvanceToCorrectionWhenASRCompletes
                 )
             }
@@ -560,7 +598,7 @@ final class DictationCoordinator: ObservableObject {
             try? FileManager.default.removeItem(at: url)
             return
         } catch TextCommitterError.cancelled {
-            transition(to: .idle)
+            returnToIdleIfOwned(sessionID: sessionID)
         } catch {
             if !didRecordASR {
                 DebugLogStore.recordASR(
@@ -666,6 +704,7 @@ final class DictationCoordinator: ObservableObject {
     }
 
     private func clearDictationContext() {
+        activeInsertionTarget = nil
         activeDictationContextBefore = ""
         activeDictationContextAfter = ""
     }
@@ -678,6 +717,9 @@ final class DictationCoordinator: ObservableObject {
     }
 
     func reportError(_ message: String) {
+        activeProcessingTask?.cancel()
+        activeProcessingTask = nil
+        activeProcessingTaskID = nil
         if let token = activeCancelToken {
             Task { await token.cancel() }
         }
@@ -698,6 +740,9 @@ final class DictationCoordinator: ObservableObject {
     }
 
     func reset(keepVoicePreviewExpanded: Bool = false) {
+        activeProcessingTask?.cancel()
+        activeProcessingTask = nil
+        activeProcessingTaskID = nil
         autoStopTask?.cancel()
         autoStopTask = nil
         resetTask?.cancel()
@@ -732,8 +777,12 @@ final class DictationCoordinator: ObservableObject {
         }
         autoStopTask?.cancel(); autoStopTask = nil
         resetTask?.cancel();     resetTask = nil
-        await activeCancelToken?.cancel()
+        let cancelToken = activeCancelToken
         clearActiveSession()
+        activeProcessingTask?.cancel()
+        activeProcessingTask = nil
+        activeProcessingTaskID = nil
+        await cancelToken?.cancel()
         clearTextEditRequest()
         clearDictationContext()
         clearPreviewState()
@@ -756,15 +805,21 @@ final class DictationCoordinator: ObservableObject {
     }
 
     func shutdown() {
+        activeProcessingTask?.cancel()
+        activeProcessingTask = nil
+        activeProcessingTaskID = nil
         autoStopTask?.cancel()
         resetTask?.cancel()
-        Task { await activeCancelToken?.cancel() }
+        let cancelToken = activeCancelToken
+        Task { await cancelToken?.cancel() }
         clearActiveSession()
         clearTextEditRequest()
         clearDictationContext()
         clearPreviewState()
         recordingStartedAt = nil
-        _ = recorder.stop()
+        if let url = recorder.stop() {
+            try? FileManager.default.removeItem(at: url)
+        }
         teardownLivePartialPreview(clearText: true)
     }
 
@@ -940,7 +995,9 @@ final class DictationCoordinator: ObservableObject {
     // Any preview failure silently degrades to "no preview" — recording still
     // works and final ASR still runs.
 
-    private func makeLivePartialPreviewPCMHandlerIfAvailable() async -> ((AVAudioPCMBuffer) -> Void)? {
+    private func makeLivePartialPreviewPCMHandlerIfAvailable(
+        sessionID: UUID
+    ) async -> ((AVAudioPCMBuffer) -> Void)? {
         teardownLivePartialPreview(clearText: true)
         if AppSettings.correctionMode == .fast, AppSettings.voiceLivePreview {
             let source: RecognitionSource = {
@@ -955,24 +1012,34 @@ final class DictationCoordinator: ObservableObject {
                     return nil
                 }
                 if AppSettings.processingMode == .client {
-                    return await makeRemoteBridgeLivePartialPreviewPCMHandlerIfAvailable(source: .qwen)
+                    return await makeRemoteBridgeLivePartialPreviewPCMHandlerIfAvailable(
+                        source: .qwen,
+                        sessionID: sessionID
+                    )
                 }
-                return makeASRLivePartialPreviewPCMHandlerIfAvailable(source: .qwen)
+                return makeASRLivePartialPreviewPCMHandlerIfAvailable(source: .qwen, sessionID: sessionID)
             case .appleSpeech:
                 guard AppSettings.processingMode == .server || AppSettings.clientBridgeEnabledRecognitionSources.contains(.appleSpeech) else {
                     return nil
                 }
                 return makeAppleSpeechLivePartialPreviewPCMHandlerIfAvailable(
-                    requiresEnabledRecognitionSource: AppSettings.processingMode == .server
+                    requiresEnabledRecognitionSource: AppSettings.processingMode == .server,
+                    sessionID: sessionID
                 )
             case .nvidiaNemotron:
                 guard AppSettings.processingMode == .server || AppSettings.clientBridgeEnabledRecognitionSources.contains(.nvidiaNemotron) else {
                     return nil
                 }
                 if AppSettings.processingMode == .client {
-                    return await makeRemoteBridgeLivePartialPreviewPCMHandlerIfAvailable(source: .nvidiaNemotron)
+                    return await makeRemoteBridgeLivePartialPreviewPCMHandlerIfAvailable(
+                        source: .nvidiaNemotron,
+                        sessionID: sessionID
+                    )
                 }
-                return makeASRLivePartialPreviewPCMHandlerIfAvailable(source: .nvidiaNemotron)
+                return makeASRLivePartialPreviewPCMHandlerIfAvailable(
+                    source: .nvidiaNemotron,
+                    sessionID: sessionID
+                )
             }
         }
         if AppSettings.processingMode == .client {
@@ -980,25 +1047,35 @@ final class DictationCoordinator: ObservableObject {
             case .off:
                 return nil
             case .appleSpeech:
-                return makeAppleSpeechLivePartialPreviewPCMHandlerIfAvailable(requiresEnabledRecognitionSource: false)
+                return makeAppleSpeechLivePartialPreviewPCMHandlerIfAvailable(
+                    requiresEnabledRecognitionSource: false,
+                    sessionID: sessionID
+                )
             case .qwen, .nvidiaNemotron:
-                return await makeRemoteBridgeLivePartialPreviewPCMHandlerIfAvailable(source: AppSettings.voiceLivePreviewSource)
+                return await makeRemoteBridgeLivePartialPreviewPCMHandlerIfAvailable(
+                    source: AppSettings.voiceLivePreviewSource,
+                    sessionID: sessionID
+                )
             }
         }
         switch AppSettings.voiceLivePreviewSource {
         case .off:
             return nil
         case .qwen:
-            return makeASRLivePartialPreviewPCMHandlerIfAvailable(source: .qwen)
+            return makeASRLivePartialPreviewPCMHandlerIfAvailable(source: .qwen, sessionID: sessionID)
         case .appleSpeech:
-            return makeAppleSpeechLivePartialPreviewPCMHandlerIfAvailable()
+            return makeAppleSpeechLivePartialPreviewPCMHandlerIfAvailable(sessionID: sessionID)
         case .nvidiaNemotron:
-            return makeASRLivePartialPreviewPCMHandlerIfAvailable(source: .nvidiaNemotron)
+            return makeASRLivePartialPreviewPCMHandlerIfAvailable(
+                source: .nvidiaNemotron,
+                sessionID: sessionID
+            )
         }
     }
 
     private func makeRemoteBridgeLivePartialPreviewPCMHandlerIfAvailable(
-        source: VoiceLivePreviewSource
+        source: VoiceLivePreviewSource,
+        sessionID: UUID
     ) async -> ((AVAudioPCMBuffer) -> Void)? {
         guard source == .qwen || source == .nvidiaNemotron else {
             if source != .off {
@@ -1009,6 +1086,7 @@ final class DictationCoordinator: ObservableObject {
         let displaysLivePartial = activeTextEditIntent != .command
         do {
             let resolved = try await RemoteBridgeClient.resolvedFromSettings(probeAllEndpoints: false)
+            guard activeSessionID == sessionID else { return nil }
             let snapshot = frontmostSnapshot
             let streamer = RemoteBridgeLivePreviewStreamer(
                 client: resolved.client,
@@ -1022,6 +1100,7 @@ final class DictationCoordinator: ObservableObject {
                     Task { @MainActor [weak self] in
                         self?.applyLivePartialPreview(
                             text,
+                            sessionID: sessionID,
                             displaysLivePartial: displaysLivePartial,
                             source: source.rawValue
                         )
@@ -1031,6 +1110,7 @@ final class DictationCoordinator: ObservableObject {
                     Log.bridge.notice("Mac client live preview failed: \(message, privacy: .public)")
                 }
             )
+            livePreviewOwnerSessionID = sessionID
             remoteBridgeLivePreviewStreamer = streamer
             streamer.start()
             return { [streamer] buffer in
@@ -1043,7 +1123,8 @@ final class DictationCoordinator: ObservableObject {
     }
 
     private func makeASRLivePartialPreviewPCMHandlerIfAvailable(
-        source: VoiceLivePreviewSource
+        source: VoiceLivePreviewSource,
+        sessionID: UUID
     ) -> ((AVAudioPCMBuffer) -> Void)? {
         let displaysLivePartial = activeTextEditIntent != .command
         do {
@@ -1055,6 +1136,7 @@ final class DictationCoordinator: ObservableObject {
                 Task { @MainActor [weak self] in
                     self?.applyLivePartialPreview(
                         text,
+                        sessionID: sessionID,
                         displaysLivePartial: displaysLivePartial,
                         source: source.rawValue
                     )
@@ -1064,6 +1146,7 @@ final class DictationCoordinator: ObservableObject {
                 lease.returnIdle(reason: "mac_preview_unsupported_session")
                 return nil
             }
+            livePreviewOwnerSessionID = sessionID
             asrLivePreviewLease = lease
             return handler
         } catch {
@@ -1072,12 +1155,18 @@ final class DictationCoordinator: ObservableObject {
         }
     }
 
-    private func makeAppleSpeechLivePartialPreviewPCMHandlerIfAvailable() -> ((AVAudioPCMBuffer) -> Void)? {
-        makeAppleSpeechLivePartialPreviewPCMHandlerIfAvailable(requiresEnabledRecognitionSource: true)
+    private func makeAppleSpeechLivePartialPreviewPCMHandlerIfAvailable(
+        sessionID: UUID
+    ) -> ((AVAudioPCMBuffer) -> Void)? {
+        makeAppleSpeechLivePartialPreviewPCMHandlerIfAvailable(
+            requiresEnabledRecognitionSource: true,
+            sessionID: sessionID
+        )
     }
 
     private func makeAppleSpeechLivePartialPreviewPCMHandlerIfAvailable(
-        requiresEnabledRecognitionSource: Bool
+        requiresEnabledRecognitionSource: Bool,
+        sessionID: UUID
     ) -> ((AVAudioPCMBuffer) -> Void)? {
         guard !requiresEnabledRecognitionSource || AppSettings.enabledRecognitionSources.contains(.appleSpeech) else {
             return nil
@@ -1115,6 +1204,7 @@ final class DictationCoordinator: ObservableObject {
         }
 
         let displaysLivePartial = activeTextEditIntent != .command
+        livePreviewOwnerSessionID = sessionID
         liveSpeechRecognizer = recognizer
         liveSpeechRequest = request
         liveSpeechTask = recognizer.recognitionTask(with: request) { [weak self] result, error in
@@ -1126,13 +1216,14 @@ final class DictationCoordinator: ObservableObject {
                     let text = result.bestTranscription.formattedString
                     self.applyLivePartialPreview(
                         text,
+                        sessionID: sessionID,
                         displaysLivePartial: displaysLivePartial,
                         source: VoiceLivePreviewSource.appleSpeech.rawValue
                     )
                 }
                 if let error {
                     _ = AppleSpeechAvailability.recordRecognitionError(error)
-                    self.teardownLivePartialPreview(clearText: false)
+                    self.teardownLivePartialPreview(clearText: false, ifOwnedBy: sessionID)
                 }
             }
         }
@@ -1142,9 +1233,13 @@ final class DictationCoordinator: ObservableObject {
 
     private func applyLivePartialPreview(
         _ rawText: String,
+        sessionID: UUID,
         displaysLivePartial: Bool,
         source: String
     ) {
+        guard activeSessionID == sessionID,
+              livePreviewOwnerSessionID == sessionID
+        else { return }
         let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         guard displaysLivePartial else { return }
@@ -1215,8 +1310,15 @@ final class DictationCoordinator: ObservableObject {
     /// of the request so the recognizer finalises its last partial. We keep
     /// `livePartialTranscript` on screen until final ASR/correction output
     /// replaces it.
-    func endLivePartialPreviewAudio() async {
-        _ = await remoteBridgeLivePreviewStreamer?.finishAndWait(timeout: Self.asrLivePreviewFinishTimeout)
+    func endLivePartialPreviewAudio(sessionID: UUID) async {
+        guard activeSessionID == sessionID,
+              livePreviewOwnerSessionID == sessionID
+        else { return }
+        let remoteStreamer = remoteBridgeLivePreviewStreamer
+        _ = await remoteStreamer?.finishAndWait(timeout: Self.asrLivePreviewFinishTimeout)
+        guard activeSessionID == sessionID,
+              livePreviewOwnerSessionID == sessionID
+        else { return }
         remoteBridgeLivePreviewStreamer = nil
         liveSpeechRequest?.endAudio()
         if let lease = asrLivePreviewLease {
@@ -1224,8 +1326,10 @@ final class DictationCoordinator: ObservableObject {
             let completed = await lease.session.finishInputAndWaitForFinal(
                 timeout: Self.asrLivePreviewFinishTimeout
             )
-            if completed {
+            if completed, activeSessionID == sessionID {
                 cacheLivePreviewFinalSeed(from: lease)
+            }
+            if completed {
                 lease.returnIdle(reason: "mac_preview_finished")
             } else {
                 lease.session.terminate(reason: "mac_preview_finish_timeout")
@@ -1246,6 +1350,7 @@ final class DictationCoordinator: ObservableObject {
 
     /// Called after a final ASR/correction result owns the display (or on reset / error).
     func teardownLivePartialPreview(clearText: Bool) {
+        livePreviewOwnerSessionID = nil
         remoteBridgeLivePreviewStreamer?.cancel()
         remoteBridgeLivePreviewStreamer = nil
         liveSpeechTask?.cancel()
@@ -1278,6 +1383,11 @@ final class DictationCoordinator: ObservableObject {
         }
     }
 
+    private func teardownLivePartialPreview(clearText: Bool, ifOwnedBy sessionID: UUID) {
+        guard livePreviewOwnerSessionID == sessionID else { return }
+        teardownLivePartialPreview(clearText: clearText)
+    }
+
     private func normalizeResult(_ result: CorrectionResult, correctionMode: CorrectionMode) -> CorrectionResult {
         var normalized = result
         normalized.text = LocaleTextNormalizer.normalize(result.text, languageIDs: AppSettings.activeLanguageIDs)
@@ -1304,6 +1414,7 @@ final class DictationCoordinator: ObservableObject {
         do {
             let appCategory = AppCategory.from(bundleID: snapshot?.bundleID)
             let resolved = try await RemoteBridgeClient.resolvedFromSettings(probeAllEndpoints: false)
+            try await ensureActive(sessionID: sessionID, token: cancelToken)
             let client = resolved.client
             let hasTextEditRequest = activeTextEditTarget != nil && activeTextEditIntent != nil
             let remoteDictateCorrectionMode: CorrectionMode = hasTextEditRequest ? .clean : selectedCorrectionMode
@@ -1420,9 +1531,9 @@ final class DictationCoordinator: ObservableObject {
             lastCorrected = result.text
             await finish(with: result, sessionID: sessionID, cancelToken: cancelToken)
         } catch is CancellationError {
-            transition(to: .idle)
+            returnToIdleIfOwned(sessionID: sessionID)
         } catch TextCommitterError.cancelled {
-            transition(to: .idle)
+            returnToIdleIfOwned(sessionID: sessionID)
         } catch {
             DebugLogStore.recordASR(
                 debugLog,
@@ -1561,10 +1672,11 @@ final class DictationCoordinator: ObservableObject {
                 keepVoicePreviewExpanded: true
             )
         } catch is CancellationError {
-            transition(to: .idle)
+            returnToIdleIfOwned(sessionID: sessionID)
         } catch TextCommitterError.cancelled {
-            transition(to: .idle)
+            returnToIdleIfOwned(sessionID: sessionID)
         } catch {
+            guard activeSessionID == sessionID else { return }
             reportError("Refine failed: \(error.localizedDescription)")
             scheduleAutoReset(after: Self.errorResetDelay)
         }
@@ -1622,8 +1734,11 @@ final class DictationCoordinator: ObservableObject {
 
     private func applyASRTranscriptionProgress(
         _ progress: ASRTranscriptionProgress,
+        sessionID: UUID,
+        token: CommitCancellationToken,
         shouldAdvanceToCorrectionWhenComplete: Bool
-    ) {
+    ) async {
+        guard await isActive(sessionID: sessionID, token: token) else { return }
         guard progress.isMultiSource else { return }
         transcriptionProgress = progress
         if shouldAdvanceToCorrectionWhenComplete,
@@ -1650,6 +1765,7 @@ final class DictationCoordinator: ObservableObject {
         sessionID: UUID,
         cancelToken: CommitCancellationToken
     ) async {
+        guard activeSessionID == sessionID else { return }
         guard !result.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             Log.coordinator.notice("refine returned empty text — returning to idle without commit")
             clearActiveSession()
@@ -1662,7 +1778,12 @@ final class DictationCoordinator: ObservableObject {
         transition(to: .inserting)
         do {
             try await ensureActive(sessionID: sessionID, token: cancelToken)
-            try await committer.commit(result.text, to: frontmostSnapshot, cancelToken: cancelToken)
+            try await committer.commit(
+                result.text,
+                to: frontmostSnapshot,
+                target: activeInsertionTarget,
+                cancelToken: cancelToken
+            )
             try await ensureActive(sessionID: sessionID, token: cancelToken)
             clearActiveSession()
             collapseVoicePreviewHUDAfterAction()
@@ -1674,10 +1795,11 @@ final class DictationCoordinator: ObservableObject {
                 keepVoicePreviewExpanded: true
             )
         } catch is CancellationError {
-            transition(to: .idle)
+            returnToIdleIfOwned(sessionID: sessionID)
         } catch TextCommitterError.cancelled {
-            transition(to: .idle)
+            returnToIdleIfOwned(sessionID: sessionID)
         } catch {
+            guard activeSessionID == sessionID else { return }
             reportError(error.localizedDescription)
             scheduleAutoReset(after: Self.errorResetDelay)
         }
@@ -1691,6 +1813,7 @@ final class DictationCoordinator: ObservableObject {
         sessionID: UUID,
         cancelToken: CommitCancellationToken
     ) async {
+        guard activeSessionID == sessionID else { return }
         let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else {
             clearActiveSession()
@@ -1719,10 +1842,11 @@ final class DictationCoordinator: ObservableObject {
                 keepVoicePreviewExpanded: true
             )
         } catch is CancellationError {
-            transition(to: .idle)
+            returnToIdleIfOwned(sessionID: sessionID)
         } catch TextCommitterError.cancelled {
-            transition(to: .idle)
+            returnToIdleIfOwned(sessionID: sessionID)
         } catch {
+            guard activeSessionID == sessionID else { return }
             reportError(error.localizedDescription)
             scheduleAutoReset(after: Self.errorResetDelay)
         }
@@ -1757,6 +1881,15 @@ final class DictationCoordinator: ObservableObject {
     private func isActive(sessionID: UUID, token: CommitCancellationToken) async -> Bool {
         let cancelled = await token.isCancelled()
         return activeSessionID == sessionID && !cancelled
+    }
+
+    private func returnToIdleIfOwned(sessionID: UUID) {
+        guard activeSessionID == sessionID else { return }
+        clearActiveSession()
+        clearTextEditRequest()
+        clearDictationContext()
+        collapseVoicePreviewHUDAfterAction()
+        transition(to: .idle)
     }
 
     private func elapsedMs(since date: Date) -> Int {

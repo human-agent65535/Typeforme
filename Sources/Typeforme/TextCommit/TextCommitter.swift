@@ -19,6 +19,7 @@ protocol TextCommitter: AnyObject {
     func commit(
         _ text: String,
         to snapshot: FrontmostAppSnapshot?,
+        target: TextInsertionTargetSnapshot?,
         cancelToken: CommitCancellationToken?
     ) async throws
 }
@@ -28,6 +29,7 @@ enum TextCommitterError: LocalizedError {
     case eventSourceFailed
     case eventPostFailed
     case targetFocusLost
+    case inputTargetChanged
     case selectionChanged
     case cancelled
 
@@ -38,6 +40,7 @@ enum TextCommitterError: LocalizedError {
         case .eventSourceFailed: return "Could not create CGEventSource. Text copied to Clipboard."
         case .eventPostFailed:   return "Could not synthesize text input. Text copied to Clipboard."
         case .targetFocusLost:   return "Target app lost focus. Text copied to Clipboard."
+        case .inputTargetChanged:return "Input target changed. Text copied to Clipboard."
         case .selectionChanged:  return "Selection changed. Replacement copied to Clipboard."
         case .cancelled:         return "Insertion cancelled."
         }

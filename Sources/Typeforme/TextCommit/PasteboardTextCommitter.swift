@@ -23,6 +23,7 @@ final class PasteboardTextCommitter: TextCommitter {
     func commit(
         _ text: String,
         to snapshot: FrontmostAppSnapshot?,
+        target: TextInsertionTargetSnapshot?,
         cancelToken: CommitCancellationToken?
     ) async throws {
         try await checkCancelled(cancelToken)
@@ -44,6 +45,12 @@ final class PasteboardTextCommitter: TextCommitter {
             }
         }
         try await checkCancelled(cancelToken)
+
+        if let target,
+           !TextEditTargetCapture.insertionTargetStillMatches(target, in: snapshot) {
+            Self.copyForManualPaste(text)
+            throw TextCommitterError.inputTargetChanged
+        }
 
         do {
             try await sendUnicodeText(text, cancelToken: cancelToken)

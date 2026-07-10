@@ -15,6 +15,57 @@ private struct BridgeListenerSettings: Equatable {
     }
 }
 
+private actor AsyncDeadlineRace {
+    private var result: Bool?
+    private var continuation: CheckedContinuation<Bool, Never>?
+
+    func resolve(_ value: Bool) {
+        guard result == nil else { return }
+        result = value
+        continuation?.resume(returning: value)
+        continuation = nil
+    }
+
+    func wait() async -> Bool {
+        if let result { return result }
+        return await withCheckedContinuation { continuation in
+            self.continuation = continuation
+        }
+    }
+}
+
+enum AsyncDeadline {
+    /// Races an unstructured operation against a deadline. The losing task is
+    /// cancelled but deliberately not awaited, so a non-cooperative shutdown
+    /// cannot turn a UI deadline into an unbounded structured-concurrency wait.
+    static func run(
+        timeoutNanoseconds: UInt64,
+        operation: @escaping @Sendable () async -> Void
+    ) async -> Bool {
+        let race = AsyncDeadlineRace()
+        let operationTask = Task {
+            await operation()
+            await race.resolve(true)
+        }
+        let timeoutTask = Task {
+            do {
+                try await Task.sleep(nanoseconds: timeoutNanoseconds)
+            } catch {
+                return
+            }
+            await race.resolve(false)
+        }
+
+        let completed = await race.wait()
+        if completed {
+            timeoutTask.cancel()
+        } else {
+            operationTask.cancel()
+        }
+        return completed
+    }
+}
+
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let coordinator: DictationCoordinator
@@ -155,29 +206,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         bridgeServer.stop()
         terminationTask?.cancel()
         terminationTask = Task { @MainActor in
-            let deadline = Self.terminationShutdownDeadline
-            let shutdownTask = Task {
+            let completed = await AsyncDeadline.run(
+                timeoutNanoseconds: Self.terminationShutdownDeadline
+            ) { @MainActor in
                 await ASRFactory.shared.stopQwenLlama()
-                await MainActor.run {
-                    ASRFactory.shared.stopNvidiaNemotron()
-                }
+                ASRFactory.shared.stopNvidiaNemotron()
                 await CorrectorFactory.shared.shutdownAll()
-            }
-            let completed = await withTaskGroup(of: Bool.self, returning: Bool.self) { group in
-                group.addTask {
-                    await shutdownTask.value
-                    return true
-                }
-                group.addTask {
-                    try? await Task.sleep(nanoseconds: deadline)
-                    return false
-                }
-                let result = await group.next() ?? false
-                group.cancelAll()
-                if !result {
-                    shutdownTask.cancel()
-                }
-                return result
             }
             if !completed {
                 Log.app.error("Shutdown timed out; allowing macOS termination")
@@ -331,9 +365,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func handleHoldEnd() {
         Task { @MainActor in
-            if coordinator.state == .recording {
-                await coordinator.stopDictation()
-            }
+            // stopDictation records stopAfterStart while recorder startup is
+            // still awaiting permissions / device warmup. Filtering on the
+            // published state here would lose a quick hold release because the
+            // state remains idle until startup completes.
+            await coordinator.stopDictation()
         }
     }
 

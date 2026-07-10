@@ -169,9 +169,9 @@ final class QwenLlamaLivePreviewSession: ASRLivePreviewSession, @unchecked Senda
 
     func finishInputAndWaitForFinal(timeout: TimeInterval) async -> Bool {
         let snapshot = finishSnapshotOnQueue()
-        await Self.waitForTaskCompletion(snapshot.inFlightTask, timeout: timeout)
+        _ = await Self.waitForTaskCompletion(snapshot.inFlightTask, timeout: timeout)
         guard !snapshot.fullPCM.isEmpty else {
-            return currentTranscript()?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+            return false
         }
         do {
             let text = try await snapshot.service.transcribeLivePreviewPCM16kMonoFloat32Data(
@@ -180,9 +180,7 @@ final class QwenLlamaLivePreviewSession: ASRLivePreviewSession, @unchecked Senda
                 timeout: timeout,
                 maxTokens: AppSettings.asrQwenLlamaMaxTokens
             ).trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !text.isEmpty else {
-                return currentTranscript()?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
-            }
+            guard Self.hasUsableCanonicalFinal(text) else { return false }
             let handler = storeTranscriptAndGetHandler(text)
             Log.asr.notice(
                 "Qwen3-ASR live preview final session=\(snapshot.logID, privacy: .public) text_chars=\(text.count, privacy: .public) input_audio_ms=\(snapshot.totalSampleCount * 1_000 / 16_000, privacy: .public) elapsed_ms=\(Self.elapsedMS(since: snapshot.startedAt), privacy: .public)"
@@ -193,8 +191,12 @@ final class QwenLlamaLivePreviewSession: ASRLivePreviewSession, @unchecked Senda
             Log.asr.notice(
                 "Qwen3-ASR live preview final failed session=\(snapshot.logID, privacy: .public) input_audio_ms=\(snapshot.totalSampleCount * 1_000 / 16_000, privacy: .public) elapsed_ms=\(Self.elapsedMS(since: snapshot.startedAt), privacy: .public) error=\(error.localizedDescription, privacy: .public)"
             )
-            return currentTranscript()?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+            return false
         }
+    }
+
+    static func hasUsableCanonicalFinal(_ text: String) -> Bool {
+        !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     func cancelInputAndWaitForReset(timeout: TimeInterval) async -> Bool {

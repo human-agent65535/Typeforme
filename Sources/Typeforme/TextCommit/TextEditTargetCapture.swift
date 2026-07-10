@@ -15,6 +15,17 @@ struct TextEditTargetSnapshot {
     let targetRange: CFRange?
 }
 
+/// The exact focused control and insertion range that owned a normal
+/// dictation when recording began. Unlike `TextEditTargetSnapshot`, this does
+/// not capture text for replacement; it only protects direct insertion from a
+/// later focus or caret change.
+struct TextInsertionTargetSnapshot {
+    let element: AXUIElement
+    let selectedRange: CFRange?
+    let contextBefore: String
+    let contextAfter: String
+}
+
 enum TextEditTargetCapture {
     private static let contextLimit = 600
 
@@ -74,6 +85,51 @@ enum TextEditTargetCapture {
         guard !isSecureTextElement(focused) else { return nil }
         guard let text = stringAttribute(kAXSelectedTextAttribute, from: focused) else { return nil }
         return (text, selectedRange(in: focused))
+    }
+
+    @MainActor
+    static func insertionTarget(in appSnapshot: FrontmostAppSnapshot?) -> TextInsertionTargetSnapshot? {
+        guard AppPermissions.accessibilityTrusted else { return nil }
+        guard let appSnapshot else { return nil }
+        let app = AXUIElementCreateApplication(appSnapshot.pid)
+        AXUIElementSetMessagingTimeout(app, 0.25)
+        guard let focused = focusedElement(in: app) else { return nil }
+        AXUIElementSetMessagingTimeout(focused, 0.25)
+        guard !isSecureTextElement(focused) else { return nil }
+        let context = contextAroundSelection(in: focused)
+        return TextInsertionTargetSnapshot(
+            element: focused,
+            selectedRange: selectedRange(in: focused),
+            contextBefore: context.before,
+            contextAfter: context.after
+        )
+    }
+
+    static func insertionTargetStillMatches(
+        _ target: TextInsertionTargetSnapshot,
+        in appSnapshot: FrontmostAppSnapshot?
+    ) -> Bool {
+        guard AppPermissions.accessibilityTrusted else { return false }
+        guard let appSnapshot else { return false }
+        guard let focused = currentFocusedElement(in: appSnapshot),
+              sameElement(focused, target.element),
+              !isSecureTextElement(focused)
+        else { return false }
+        return insertionRangesMatch(
+            captured: target.selectedRange,
+            current: selectedRange(in: focused)
+        )
+    }
+
+    static func insertionRangesMatch(captured: CFRange?, current: CFRange?) -> Bool {
+        switch (captured, current) {
+        case (.none, .none):
+            return true
+        case (.some(let captured), .some(let current)):
+            return sameRange(captured, current)
+        case (.none, .some), (.some, .none):
+            return false
+        }
     }
 
     static func selectionStillMatches(_ target: TextEditTargetSnapshot, in appSnapshot: FrontmostAppSnapshot?) -> Bool {
