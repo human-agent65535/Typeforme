@@ -8,6 +8,7 @@ import os.lock
 /// different sidebar structure.
 enum AppSettings {
     private static let currentMacDefaultsDomain = BundleIdentity.mainBundleIdentifier
+    static let correctionContextSizeRange = 2_048...8_192
 
     enum Keys {
         // Recording
@@ -436,7 +437,12 @@ enum AppSettings {
     static var correctionTimeoutMs: Int     { max(100, ud.integer(forKey: Keys.correctionTimeoutMs)) }
     static var correctionColdTimeoutMs: Int { max(1000, ud.integer(forKey: Keys.correctionColdTimeoutMs)) }
     static var correctionMaxTokens: Int     { max(16, ud.integer(forKey: Keys.correctionMaxTokens)) }
-    static var correctionContextSize: Int   { max(512, ud.integer(forKey: Keys.correctionContextSize)) }
+    static var correctionContextSize: Int {
+        normalizedCorrectionContextSize(ud.integer(forKey: Keys.correctionContextSize))
+    }
+    static func normalizedCorrectionContextSize(_ value: Int) -> Int {
+        max(correctionContextSizeRange.lowerBound, value)
+    }
     static var correctionMode: CorrectionMode {
         rawSetting(forKey: Keys.correctionMode, default: .polishPlus)
     }

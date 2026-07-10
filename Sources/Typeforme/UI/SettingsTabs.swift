@@ -3040,7 +3040,12 @@ struct CorrectionSettingsView: View {
                     }
                     IntegerSettingField(title: "Model startup timeout", value: $coldTimeoutMs, range: 1000...60000, suffix: "ms")
                     IntegerSettingField(title: "Max output tokens", value: $maxTokens, range: 32...512, suffix: "tokens")
-                    IntegerSettingField(title: "Context size", value: $contextSize, range: 1024...8192, suffix: "tokens")
+                    IntegerSettingField(
+                        title: "Context size",
+                        value: $contextSize,
+                        range: AppSettings.correctionContextSizeRange,
+                        suffix: "tokens"
+                    )
                 }
             }
         }
