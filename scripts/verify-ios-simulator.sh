@@ -143,10 +143,19 @@ APP_PATH="$DERIVED/Build/Products/${CONFIG}-iphonesimulator/Typeforme.app"
 KEYBOARD_APPEX_PATH="$APP_PATH/PlugIns/TypeformeKeyboard.appex"
 typeforme_verify_ios_host_keyboard_bundle "$APP_PATH" "$KEYBOARD_APPEX_PATH" "built"
 BUNDLE_ID="$TYPEFORME_IOS_HOST_BUNDLE_ID"
+APP_GROUP_ID="$TYPEFORME_IOS_HOST_APP_GROUP_ID"
 
 echo "==> Built identifiers verified"
 echo "==> Installing built app"
 run_simctl_quiet "install app" install "$SIMULATOR_ID" "$APP_PATH"
+
+GROUP_PATH="$(simctl get_app_container "$SIMULATOR_ID" "$BUNDLE_ID" "$APP_GROUP_ID")"
+DIAGNOSTIC_LOG="$GROUP_PATH/Library/Caches/KeyboardDiagnostics/host-app.jsonl"
+LAUNCH_STARTED_AT="$(/usr/bin/python3 - <<'PY'
+import time
+print(time.time())
+PY
+)"
 
 echo "==> Launching Typeforme"
 LAUNCH_OUTPUT="$(simctl launch --terminate-running-process "$SIMULATOR_ID" "$BUNDLE_ID")"
@@ -156,6 +165,35 @@ if [ -n "$LAUNCH_PID" ]; then
 else
     printf '%s\n' "$LAUNCH_OUTPUT" | sanitize_output
 fi
+
+echo "==> Waiting for host UI readiness marker"
+/usr/bin/python3 - "$DIAGNOSTIC_LOG" "$LAUNCH_STARTED_AT" <<'PY'
+import json
+import sys
+import time
+
+diagnostic_log, launch_started_at = sys.argv[1], float(sys.argv[2])
+deadline = time.time() + 12.0
+while time.time() < deadline:
+    try:
+        with open(diagnostic_log, "r", encoding="utf-8") as handle:
+            lines = handle.readlines()
+    except FileNotFoundError:
+        lines = []
+    for line in reversed(lines[-400:]):
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if (
+            entry.get("event") == "simulator_host_ui_ready"
+            and float(entry.get("timestamp", 0)) >= launch_started_at
+        ):
+            print("==> Host UI readiness marker observed")
+            raise SystemExit
+    time.sleep(0.1)
+raise SystemExit("error: Typeforme did not publish the host UI readiness marker within 12 seconds")
+PY
 
 echo "==> Verifying installed app info"
 run_simctl_quiet "verify installed app container" get_app_container "$SIMULATOR_ID" "$BUNDLE_ID" app

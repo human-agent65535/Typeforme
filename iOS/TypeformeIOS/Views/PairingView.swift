@@ -15,15 +15,15 @@ struct PairingView: View {
     @State private var pairingParseTask: Task<Void, Never>?
     @State private var isUnpairing = false
 
-    let onSave: (PairingConfig) -> Void
-    let onSaveConnection: (BridgeEndpoints) -> Void
+    let onSave: (PairingConfig) -> Bool
+    let onSaveConnection: (BridgeEndpoints) -> Bool
     let onUnpair: () async -> Void
 
     init(
         config: PairingConfig,
         routeStatus: BridgeRouteResolutionStatus,
-        onSave: @escaping (PairingConfig) -> Void,
-        onSaveConnection: @escaping (BridgeEndpoints) -> Void,
+        onSave: @escaping (PairingConfig) -> Bool,
+        onSaveConnection: @escaping (BridgeEndpoints) -> Bool,
         onUnpair: @escaping () async -> Void
     ) {
         self._config = State(initialValue: config)
@@ -220,8 +220,14 @@ struct PairingView: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") {
-                        onSave(config)
-                        dismiss()
+                        if onSave(config) {
+                            dismiss()
+                        } else {
+                            parseError = NSLocalizedString(
+                                "Couldn't save pairing securely. Your previous pairing is unchanged.",
+                                comment: "Pairing persistence failure"
+                            )
+                        }
                     }
                     .disabled(!config.hasAnyBridgeURL || config.token.isEmpty)
                 }
@@ -291,7 +297,13 @@ struct PairingView: View {
                 }
                 config.normalizeBridgeEndpoints()
                 if config.bridgeEndpoints != previousConfig.bridgeEndpoints {
-                    onSaveConnection(config.bridgeEndpoints)
+                    if !onSaveConnection(config.bridgeEndpoints) {
+                        config = previousConfig
+                        parseError = NSLocalizedString(
+                            "Couldn't save pairing securely. Your previous pairing is unchanged.",
+                            comment: "Pairing persistence failure"
+                        )
+                    }
                 }
                 isPulling = false
             }
@@ -388,7 +400,12 @@ struct PairingView: View {
                     applyMacSettings(settings)
                     parsedSuccessfully = true
                     if saveAfterRefresh {
-                        onSave(config)
+                        if !onSave(config) {
+                            parseError = NSLocalizedString(
+                                "Couldn't save pairing securely. Your previous pairing is unchanged.",
+                                comment: "Pairing persistence failure"
+                            )
+                        }
                     }
                     isPulling = false
                 }

@@ -32,6 +32,12 @@ struct KeyboardLocalBridgeReadiness: Sendable {
 final class KeyboardLocalServer: @unchecked Sendable {
     static let port: UInt16 = 18082
     private static let maxMessageBytes = 1 * 1024 * 1024
+    private static let maxTotalConnections = 16
+    private static let maxUnauthenticatedConnections = 4
+    private static let helloTimeoutNanoseconds: UInt64 = 1_500_000_000
+    private static let requestReadTimeoutNanoseconds: UInt64 = 2_000_000_000
+    private static let connectionIdleTimeoutNanoseconds: UInt64 = 8_000_000_000
+    private static let refineHandlingTimeoutNanoseconds: UInt64 = 35_000_000_000
     private static let statusStreamHeartbeatIntervalNanoseconds: UInt64 = 2_000_000_000
     private static let readinessPollIntervalNanoseconds: UInt64 = 25_000_000
     private static let defaultReadinessTimeout: TimeInterval = 0.45
@@ -45,8 +51,11 @@ final class KeyboardLocalServer: @unchecked Sendable {
     private let stateLock = NSLock()
     private var listener: NWListener?
     private var activeConnections: [ObjectIdentifier: NWConnection] = [:]
+    private var unauthenticatedConnections: Set<ObjectIdentifier> = []
     private var activeStatusStreams: [ObjectIdentifier: NWConnection] = [:]
     private var activeTasks: [UUID: Task<Void, Never>] = [:]
+    private var activeTaskConnections: [UUID: ObjectIdentifier] = [:]
+    private var connectionTimeouts: [ObjectIdentifier: (token: UUID, task: Task<Void, Never>)] = [:]
     private var statusStreamHeartbeatTask: Task<Void, Never>?
     private var generation: UInt = 0
     private var listenerStateDescription = "stopped"
@@ -79,6 +88,7 @@ final class KeyboardLocalServer: @unchecked Sendable {
         let parameters = NWParameters.tcp
         let webSocketOptions = NWProtocolWebSocket.Options()
         webSocketOptions.autoReplyPing = true
+        webSocketOptions.maximumMessageSize = Self.maxMessageBytes
         parameters.defaultProtocolStack.applicationProtocols.insert(webSocketOptions, at: 0)
         let listener = try NWListener(using: parameters, on: NWEndpoint.Port(rawValue: Self.port)!)
         stateLock.lock()
@@ -150,9 +160,13 @@ final class KeyboardLocalServer: @unchecked Sendable {
         listenerStateDescription = "stopped"
         let connections = Array(activeConnections.values)
         activeConnections.removeAll()
+        unauthenticatedConnections.removeAll()
         activeStatusStreams.removeAll()
         let tasks = Array(activeTasks.values)
         activeTasks.removeAll()
+        activeTaskConnections.removeAll()
+        let timeoutTasks = connectionTimeouts.values.map(\.task)
+        connectionTimeouts.removeAll()
         let heartbeatTask = statusStreamHeartbeatTask
         statusStreamHeartbeatTask = nil
         stateLock.unlock()
@@ -160,6 +174,7 @@ final class KeyboardLocalServer: @unchecked Sendable {
         currentListener?.cancel()
         connections.forEach { $0.cancel() }
         tasks.forEach { $0.cancel() }
+        timeoutTasks.forEach { $0.cancel() }
         heartbeatTask?.cancel()
         keyboardLocalServerLog.notice("server stopped reason=\(reason, privacy: .public) connections=\(connections.count, privacy: .public) tasks=\(tasks.count, privacy: .public)")
         KeyboardDiagnosticEventLog.record(
@@ -337,7 +352,32 @@ final class KeyboardLocalServer: @unchecked Sendable {
             connection.cancel()
             return
         }
+        guard activeConnections.count < Self.maxTotalConnections else {
+            let count = activeConnections.count
+            stateLock.unlock()
+            keyboardLocalServerLog.notice("connection rejected: total limit count=\(count, privacy: .public)")
+            KeyboardDiagnosticEventLog.record(
+                source: "host-local-server",
+                event: "connection_rejected_total_limit",
+                fields: ["active_connections": "\(count)"]
+            )
+            connection.cancel()
+            return
+        }
+        guard unauthenticatedConnections.count < Self.maxUnauthenticatedConnections else {
+            let count = unauthenticatedConnections.count
+            stateLock.unlock()
+            keyboardLocalServerLog.notice("connection rejected: unauthenticated limit count=\(count, privacy: .public)")
+            KeyboardDiagnosticEventLog.record(
+                source: "host-local-server",
+                event: "connection_rejected_unauthenticated_limit",
+                fields: ["unauthenticated_connections": "\(count)"]
+            )
+            connection.cancel()
+            return
+        }
         activeConnections[id] = connection
+        unauthenticatedConnections.insert(id)
         lastAcceptedAt = acceptedAt
         let diagnosticFields = listenerDiagnosticFieldsLocked(now: acceptedAt)
         stateLock.unlock()
@@ -350,10 +390,20 @@ final class KeyboardLocalServer: @unchecked Sendable {
             ]) { current, _ in current }
         )
         connection.stateUpdateHandler = { [weak self] state in
-            guard case .cancelled = state else { return }
-            self?.removeConnection(id)
+            switch state {
+            case .failed, .cancelled:
+                self?.removeConnection(id)
+            default:
+                break
+            }
         }
         connection.start(queue: queue)
+        scheduleConnectionTimeout(
+            id,
+            generation: generation,
+            after: Self.helloTimeoutNanoseconds,
+            reason: "hello"
+        )
         sendHelloThenReceive(from: connection, generation: generation)
     }
 
@@ -406,6 +456,12 @@ final class KeyboardLocalServer: @unchecked Sendable {
                     source: "host-local-server",
                     event: "hello_sent"
                 )
+                self.scheduleConnectionTimeout(
+                    ObjectIdentifier(connection),
+                    generation: generation,
+                    after: Self.requestReadTimeoutNanoseconds,
+                    reason: "request_read"
+                )
                 self.receiveMessage(
                     from: connection,
                     generation: generation,
@@ -415,7 +471,12 @@ final class KeyboardLocalServer: @unchecked Sendable {
                 self.removeTask(taskID)
             }
         }
-        storeTask(task, id: taskID, generation: generation)
+        storeTask(
+            task,
+            id: taskID,
+            generation: generation,
+            connectionID: ObjectIdentifier(connection)
+        )
     }
 
     func publishStatus(_ status: KeyboardBridgeStatus) {
@@ -434,11 +495,13 @@ final class KeyboardLocalServer: @unchecked Sendable {
         expectedToken: String,
         serverNonce: String
     ) {
+        let connectionID = ObjectIdentifier(connection)
         connection.receiveMessage { [weak self] data, _, _, error in
             guard let self else {
                 connection.cancel()
                 return
             }
+            self.cancelConnectionTimeout(connectionID)
 
             // Transport error or peer close — nothing left to answer.
             guard error == nil, let data else {
@@ -451,6 +514,12 @@ final class KeyboardLocalServer: @unchecked Sendable {
                 connection.cancel()
                 return
             }
+            self.scheduleConnectionTimeout(
+                connectionID,
+                generation: generation,
+                after: Self.connectionIdleTimeoutNanoseconds,
+                reason: "request_handling"
+            )
             guard data.count <= Self.maxMessageBytes else {
                 keyboardLocalServerLog.notice("request rejected: oversized bytes=\(data.count, privacy: .public)")
                 KeyboardDiagnosticEventLog.record(
@@ -481,6 +550,17 @@ final class KeyboardLocalServer: @unchecked Sendable {
                 )
                 return
             }
+            if request.command?.action == .refineText {
+                // The keyboard client permits a 30-second refine request so a
+                // cold correction model can start. Keep a small transport
+                // margin instead of applying the short command timeout.
+                self.scheduleConnectionTimeout(
+                    connectionID,
+                    generation: generation,
+                    after: Self.refineHandlingTimeoutNanoseconds,
+                    reason: "refine_handling"
+                )
+            }
 
             let taskID = UUID()
             let task = Task { [weak self] in
@@ -496,6 +576,13 @@ final class KeyboardLocalServer: @unchecked Sendable {
                     expectedToken: expectedToken,
                     serverNonce: serverNonce
                 )
+                if authorized {
+                    guard self.markConnectionAuthenticated(connectionID, generation: generation) else {
+                        connection.cancel()
+                        self.removeTask(taskID)
+                        return
+                    }
+                }
                 let actionName = request.command?.action.rawValue ?? request.action.rawValue
                 keyboardLocalServerLog.notice("request received action=\(actionName, privacy: .public) authorized=\(authorized, privacy: .public) command_id=\(request.command?.id ?? "none", privacy: .public)")
                 KeyboardDiagnosticEventLog.record(
@@ -545,7 +632,12 @@ final class KeyboardLocalServer: @unchecked Sendable {
                 }
                 self.removeTask(taskID)
             }
-            self.storeTask(task, id: taskID, generation: generation)
+            self.storeTask(
+                task,
+                id: taskID,
+                generation: generation,
+                connectionID: connectionID
+            )
         }
     }
 
@@ -625,6 +717,7 @@ final class KeyboardLocalServer: @unchecked Sendable {
         activeStatusStreams[id] = connection
         let shouldStartHeartbeat = statusStreamHeartbeatTask == nil
         stateLock.unlock()
+        cancelConnectionTimeout(id)
         if shouldStartHeartbeat {
             startStatusStreamHeartbeatIfNeeded(generation: generation)
         }
@@ -686,10 +779,18 @@ final class KeyboardLocalServer: @unchecked Sendable {
         return Array(activeStatusStreams.values)
     }
 
-    private func storeTask(_ task: Task<Void, Never>, id: UUID, generation: UInt) {
+    private func storeTask(
+        _ task: Task<Void, Never>,
+        id: UUID,
+        generation: UInt,
+        connectionID: ObjectIdentifier
+    ) {
         stateLock.lock()
-        if generation == self.generation, listener != nil {
+        if generation == self.generation,
+           listener != nil,
+           activeConnections[connectionID] != nil {
             activeTasks[id] = task
+            activeTaskConnections[id] = connectionID
         } else {
             task.cancel()
         }
@@ -699,13 +800,21 @@ final class KeyboardLocalServer: @unchecked Sendable {
     private func removeTask(_ id: UUID) {
         stateLock.lock()
         activeTasks[id] = nil
+        activeTaskConnections[id] = nil
         stateLock.unlock()
     }
 
     private func removeConnection(_ id: ObjectIdentifier) {
         stateLock.lock()
         activeConnections[id] = nil
+        unauthenticatedConnections.remove(id)
         activeStatusStreams[id] = nil
+        let connectionTaskIDs = activeTaskConnections.compactMap { taskID, connectionID in
+            connectionID == id ? taskID : nil
+        }
+        let connectionTasks = connectionTaskIDs.compactMap { activeTasks.removeValue(forKey: $0) }
+        connectionTaskIDs.forEach { activeTaskConnections[$0] = nil }
+        let timeoutTask = connectionTimeouts.removeValue(forKey: id)?.task
         let heartbeatTask: Task<Void, Never>?
         if activeStatusStreams.isEmpty {
             heartbeatTask = statusStreamHeartbeatTask
@@ -714,7 +823,84 @@ final class KeyboardLocalServer: @unchecked Sendable {
             heartbeatTask = nil
         }
         stateLock.unlock()
+        connectionTasks.forEach { $0.cancel() }
+        timeoutTask?.cancel()
         heartbeatTask?.cancel()
+    }
+
+    private func markConnectionAuthenticated(_ id: ObjectIdentifier, generation: UInt) -> Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        guard generation == self.generation,
+              listener != nil,
+              activeConnections[id] != nil
+        else { return false }
+        unauthenticatedConnections.remove(id)
+        return true
+    }
+
+    private func scheduleConnectionTimeout(
+        _ id: ObjectIdentifier,
+        generation: UInt,
+        after nanoseconds: UInt64,
+        reason: String
+    ) {
+        let token = UUID()
+        let task = Task { [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: nanoseconds)
+            } catch {
+                return
+            }
+            self?.expireConnection(id, generation: generation, token: token, reason: reason)
+        }
+
+        stateLock.lock()
+        guard generation == self.generation,
+              listener != nil,
+              activeConnections[id] != nil
+        else {
+            stateLock.unlock()
+            task.cancel()
+            return
+        }
+        let previous = connectionTimeouts.updateValue((token: token, task: task), forKey: id)?.task
+        stateLock.unlock()
+        previous?.cancel()
+    }
+
+    private func cancelConnectionTimeout(_ id: ObjectIdentifier) {
+        stateLock.lock()
+        let task = connectionTimeouts.removeValue(forKey: id)?.task
+        stateLock.unlock()
+        task?.cancel()
+    }
+
+    private func expireConnection(
+        _ id: ObjectIdentifier,
+        generation: UInt,
+        token: UUID,
+        reason: String
+    ) {
+        stateLock.lock()
+        guard generation == self.generation,
+              connectionTimeouts[id]?.token == token,
+              let connection = activeConnections[id]
+        else {
+            stateLock.unlock()
+            return
+        }
+        connectionTimeouts[id] = nil
+        stateLock.unlock()
+
+        keyboardLocalServerLog.notice("connection timed out phase=\(reason, privacy: .public)")
+        KeyboardDiagnosticEventLog.record(
+            source: "host-local-server",
+            event: "connection_timed_out",
+            fields: ["phase": reason]
+        )
+        connection.cancel()
+        removeConnection(id)
     }
 
     private func isCurrentGeneration(_ generation: UInt) -> Bool {

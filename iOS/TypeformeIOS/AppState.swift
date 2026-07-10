@@ -501,6 +501,7 @@ final class AppState {
     private var transientMessageTask: Task<Void, Never>?
     private var initialRenderDelayTask: Task<Void, Never>?
     @ObservationIgnored private var autoStartPiPTask: Task<Void, Never>?
+    private var autoStartPiPTaskID: UUID?
     private var suppressAutomaticPiPStart = false
     private var automaticPiPStartAttemptsRemaining = 0
     private var automaticPiPStartShowsErrors = false
@@ -879,32 +880,52 @@ final class AppState {
         }
     }
 
-    func saveConfig(_ newConfig: PairingConfig) {
+    @discardableResult
+    func saveConfig(_ newConfig: PairingConfig) -> Bool {
         var normalized = newConfig
         normalized.normalize()
+        guard persistPairingConfig(normalized) else { return false }
         config = normalized
         correctionMode = normalized.correctionMode
         selectedLanguageIDs = Set(normalized.validatedLanguageIDs)
-        store.save(normalized)
         publishKeyboardDefaults()
         routeFetchedAt = nil
         Task {
             await refreshRoute(force: true, syncPairingEndpoints: true, reason: "save_config")
             _ = try? await refreshMacSettings()
         }
+        return true
     }
 
-    func saveBridgeEndpoints(_ bridgeEndpoints: BridgeEndpoints) {
+    @discardableResult
+    func saveBridgeEndpoints(_ bridgeEndpoints: BridgeEndpoints) -> Bool {
         var normalized = config
         normalized.bridgeEndpoints = bridgeEndpoints
         normalized.normalizeBridgeEndpoints()
-        guard normalized.bridgeEndpoints != config.bridgeEndpoints else { return }
-        config.bridgeEndpoints = normalized.bridgeEndpoints
-        store.save(config)
+        guard normalized.bridgeEndpoints != config.bridgeEndpoints else { return true }
+        guard persistPairingConfig(normalized) else { return false }
+        config = normalized
         publishKeyboardDefaults()
         routeFetchedAt = nil
         Task {
             await refreshRoute(force: true, syncPairingEndpoints: true, reason: "save_bridge_endpoints")
+        }
+        return true
+    }
+
+    @discardableResult
+    private func persistPairingConfig(_ candidate: PairingConfig) -> Bool {
+        do {
+            try store.save(candidate)
+            return true
+        } catch {
+            appLog.error("pairing save failed: \(error.localizedDescription, privacy: .public)")
+            errorMessage = NSLocalizedString(
+                "Couldn't save pairing securely. Your previous pairing is unchanged.",
+                comment: "Pairing persistence failure"
+            )
+            showTransient(errorMessage ?? error.localizedDescription)
+            return false
         }
     }
 
@@ -960,9 +981,14 @@ final class AppState {
             Array(selectedLanguageIDs),
             supportedOptions: config.supportedLanguageOptions
         )
+        var candidate = config
+        candidate.languageIDs = ordered
+        guard persistPairingConfig(candidate) else {
+            selectedLanguageIDs = Set(config.validatedLanguageIDs)
+            return
+        }
         selectedLanguageIDs = Set(ordered)
-        config.languageIDs = ordered
-        store.save(config)
+        config = candidate
     }
 
     func setInputMode(_ mode: VoiceInputMode) {
@@ -1484,16 +1510,18 @@ final class AppState {
         let previous = config.bridgeEndpoints
         do {
             let refreshed = try await BridgeClient(baseURL: activeURL, token: config.token).pairing(timeout: timeout)
-            config.bridgeEndpoints = refreshed.bridgeEndpoints
+            var candidate = config
+            candidate.bridgeEndpoints = refreshed.bridgeEndpoints
             recordRouteEndpointSyncResult(
-                changed: config.bridgeEndpoints != previous,
+                changed: candidate.bridgeEndpoints != previous,
                 previous: previous,
-                refreshed: config.bridgeEndpoints,
+                refreshed: candidate.bridgeEndpoints,
                 activeKind: status.activeKind.rawValue,
                 error: nil
             )
-            if config.bridgeEndpoints != previous {
-                store.save(config)
+            if candidate.bridgeEndpoints != previous {
+                guard persistPairingConfig(candidate) else { return false }
+                config = candidate
                 publishKeyboardDefaults()
                 routeFetchedAt = nil
                 return true
@@ -1539,7 +1567,9 @@ final class AppState {
         let client = try await activeBridgeClient()
         var settings = try await client.macSettings(timeout: timeout)
         settings.normalize()
-        applyMacSettings(settings)
+        guard applyMacSettings(settings) else {
+            throw PairingStoreError.secureTokenWriteFailed
+        }
         return settings
     }
 
@@ -1559,7 +1589,9 @@ final class AppState {
         }
         var settings = try await client.macSettings(timeout: timeout)
         settings.normalize()
-        applyMacSettings(settings)
+        guard applyMacSettings(settings) else {
+            throw PairingStoreError.secureTokenWriteFailed
+        }
         return settings
     }
 
@@ -1569,25 +1601,31 @@ final class AppState {
         let client = try await activeBridgeClient()
         var updated = try await client.updateMacSettings(normalized)
         updated.normalize()
-        applyMacSettings(updated)
+        guard applyMacSettings(updated) else {
+            throw PairingStoreError.secureTokenWriteFailed
+        }
         return updated
     }
 
-    private func applyMacSettings(_ settings: BridgeMacSettingsPayload) {
+    @discardableResult
+    private func applyMacSettings(_ settings: BridgeMacSettingsPayload) -> Bool {
+        var candidate = config
+        candidate.supportedLanguages = settings.supportedLanguages
+        candidate.languageIDs = ASRLanguageSelection.validatedIDs(
+            candidate.languageIDs,
+            supportedOptions: candidate.supportedLanguageOptions
+        )
+        guard persistPairingConfig(candidate) else { return false }
+        config = candidate
         macSettings = settings
         macSettingsFetchedAt = Date()
         macSettingsRevision = settings.settingsRevision?.trimmingCharacters(in: .whitespacesAndNewlines)
         cachedServerRimeUserPhrases = settings.rimeUserPhrases
         UserDefaults.standard.set(settings.rimeUserPhrases, forKey: Self.serverRimeUserPhrasesKey)
         constrainKeyboardLivePreviewSourceToMacSettings()
-        config.supportedLanguages = settings.supportedLanguages
-        config.languageIDs = ASRLanguageSelection.validatedIDs(
-            config.languageIDs,
-            supportedOptions: config.supportedLanguageOptions
-        )
         selectedLanguageIDs = Set(config.validatedLanguageIDs)
-        store.save(config)
         publishKeyboardDefaults()
+        return true
     }
 
     private func scheduleHostRecorderPreWarm() {
@@ -1606,11 +1644,15 @@ final class AppState {
         let configChanged = config.correctionMode != mode
         let visibleChanged = correctionMode != mode
         guard configChanged || visibleChanged else { return }
-        config.correctionMode = mode
+        if configChanged {
+            var candidate = config
+            candidate.correctionMode = mode
+            guard persistPairingConfig(candidate) else { return }
+            config = candidate
+        }
         correctionMode = mode
         constrainKeyboardLivePreviewSourceToMacSettings()
         if configChanged {
-            store.save(config)
             publishKeyboardDefaults()
         }
     }
@@ -1660,9 +1702,11 @@ final class AppState {
         else { return }
 
         let previous = config.localBridgeURLCandidates
-        config.promoteLocalBridgeURL(activeURL)
-        if config.localBridgeURLCandidates != previous {
-            store.save(config)
+        var candidate = config
+        candidate.promoteLocalBridgeURL(activeURL)
+        if candidate.localBridgeURLCandidates != previous,
+           persistPairingConfig(candidate) {
+            config = candidate
         }
     }
 
@@ -3155,6 +3199,7 @@ final class AppState {
     private func cancelAutomaticPiPStart() {
         autoStartPiPTask?.cancel()
         autoStartPiPTask = nil
+        autoStartPiPTaskID = nil
         automaticPiPStartAttemptsRemaining = 0
         automaticPiPStartShowsErrors = false
     }
@@ -3162,11 +3207,24 @@ final class AppState {
     private func scheduleAutomaticPiPVisibilityStart(showErrors: Bool) {
         guard autoStartPiPTask == nil else { return }
         guard automaticPiPStartAttemptsRemaining > 0 else { return }
+        let taskID = UUID()
+        autoStartPiPTaskID = taskID
         autoStartPiPTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: 250_000_000)
+            do {
+                try await Task.sleep(nanoseconds: 250_000_000)
+            } catch {
+                return
+            }
             guard let self, !Task.isCancelled else { return }
+            let didStart = await self.startAutomaticPiPVisibilityIfNeeded(showErrors: showErrors)
+            guard self.autoStartPiPTaskID == taskID else { return }
             self.autoStartPiPTask = nil
-            await self.startAutomaticPiPVisibilityIfNeeded(showErrors: showErrors)
+            self.autoStartPiPTaskID = nil
+            if !didStart,
+               self.automaticPiPStartAttemptsRemaining > 0,
+               !self.suppressAutomaticPiPStart {
+                self.scheduleAutomaticPiPVisibilityStart(showErrors: showErrors)
+            }
         }
     }
 
@@ -3189,10 +3247,7 @@ final class AppState {
             automaticPiPStartShowsErrors = false
             return true
         }
-        if automaticPiPStartAttemptsRemaining > 0,
-           !suppressAutomaticPiPStart {
-            scheduleAutomaticPiPVisibilityStart(showErrors: showErrors)
-        } else {
+        if automaticPiPStartAttemptsRemaining == 0 || suppressAutomaticPiPStart {
             automaticPiPStartShowsErrors = false
         }
         return false
@@ -3218,11 +3273,17 @@ final class AppState {
             guard !honorManualSuppression || showErrors || !suppressAutomaticPiPStart else { return false }
             suppressAutomaticPiPStart = false
             if showErrors || !honorManualSuppression {
+                let pendingAutomaticStart = autoStartPiPTask
                 cancelAutomaticPiPStart()
+                await pendingAutomaticStart?.value
                 return await startPiPVisibilityWithForegroundRetry(showErrors: showErrors)
             }
             requestAutomaticPiPVisibilityStart(showErrors: showErrors)
-            return await startAutomaticPiPVisibilityIfNeeded(showErrors: showErrors)
+            guard let task = autoStartPiPTask else {
+                return pipDictationCoordinator.isActive
+            }
+            await task.value
+            return pipDictationCoordinator.isActive
         }
     }
 

@@ -1,6 +1,20 @@
 import Foundation
 import Security
 
+enum PairingStoreError: LocalizedError {
+    case encodeFailed
+    case secureTokenWriteFailed
+
+    var errorDescription: String? {
+        switch self {
+        case .encodeFailed:
+            return "Pairing details could not be encoded."
+        case .secureTokenWriteFailed:
+            return "The pairing token could not be saved securely."
+        }
+    }
+}
+
 struct PairingStore {
     private let key = "pairing.config.v1"
 
@@ -16,24 +30,29 @@ struct PairingStore {
         return config
     }
 
-    func save(_ config: PairingConfig) {
+    /// Publishes matching endpoints only after Keychain reports a successful
+    /// token write. This prevents an explicit Keychain failure from producing
+    /// a mixed tuple; the two system stores do not provide a shared transaction.
+    func save(_ config: PairingConfig) throws {
         var persisted = config
         persisted.normalize()
-        let token = persisted.token
+        let token = persisted.token.trimmingCharacters(in: .whitespacesAndNewlines)
         persisted.token = ""
-        _ = PairingTokenStore.macBridge.save(token)
-        _ = persistConfig(persisted)
+
+        guard let data = try? JSONEncoder().encode(persisted) else {
+            throw PairingStoreError.encodeFailed
+        }
+        let tokenStore = PairingTokenStore.macBridge
+        if tokenStore.load() != token,
+           !tokenStore.save(token) {
+            throw PairingStoreError.secureTokenWriteFailed
+        }
+        UserDefaults.standard.set(data, forKey: key)
     }
 
     func delete() {
         UserDefaults.standard.removeObject(forKey: key)
         PairingTokenStore.macBridge.delete()
-    }
-
-    private func persistConfig(_ config: PairingConfig) -> Bool {
-        guard let data = try? JSONEncoder().encode(config) else { return false }
-        UserDefaults.standard.set(data, forKey: key)
-        return true
     }
 }
 

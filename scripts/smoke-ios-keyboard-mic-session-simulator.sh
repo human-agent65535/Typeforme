@@ -148,4 +148,59 @@ PY
 echo "==> Stopping simulator keyboard mic session"
 simctl openurl "$SIMULATOR_ID" "$STOP_URL" >/dev/null
 
+stop_result="$(
+    /usr/bin/python3 - "$DIAGNOSTIC_LOG" "$RUN_ID" <<'PY'
+import json
+import sys
+import time
+
+diagnostic_log, run_id = sys.argv[1:]
+deadline = time.time() + 8.0
+result = None
+while time.time() < deadline:
+    try:
+        with open(diagnostic_log, "r", encoding="utf-8") as handle:
+            lines = handle.readlines()
+    except FileNotFoundError:
+        lines = []
+    for line in reversed(lines[-400:]):
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        fields = entry.get("fields") or {}
+        if (
+            entry.get("event") == "simulator_keyboard_mic_session_stopped"
+            and fields.get("run_id") == run_id
+        ):
+            result = fields
+            break
+    if result is not None:
+        break
+    time.sleep(0.1)
+print(json.dumps(result or {"run_id": run_id}, sort_keys=True))
+PY
+)"
+
+echo "==> Stop result: $stop_result"
+/usr/bin/python3 - "$stop_result" <<'PY'
+import json
+import sys
+
+result = json.loads(sys.argv[1])
+errors = []
+if result.get("keyboard_recording") != "false":
+    errors.append(f"keyboard writer remained active: {result}")
+if result.get("keyboard_active") != "false":
+    errors.append(f"keyboard audio session remained active: {result}")
+if result.get("host_session_active") != "false":
+    errors.append(f"host keyboard session remained active: {result}")
+if result.get("audio_host_session_active") != "false":
+    errors.append(f"audio host session remained active: {result}")
+if errors:
+    for error in errors:
+        print(f"error: {error}", file=sys.stderr)
+    raise SystemExit(1)
+PY
+
 echo "OK: keyboard mic session simulator smoke test passed."

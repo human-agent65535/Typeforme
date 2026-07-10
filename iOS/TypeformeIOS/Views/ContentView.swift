@@ -122,6 +122,12 @@ struct ContentView: View {
                     PiPSourceViewMount()
                 }
                 .onAppear {
+#if targetEnvironment(simulator)
+                    KeyboardDiagnosticEventLog.record(
+                        source: "host-app",
+                        event: "simulator_host_ui_ready"
+                    )
+#endif
                     presentFirstRunReadinessIfNeeded()
                 }
                 .onChange(of: state.shouldPresentSetupReadiness) { _, _ in

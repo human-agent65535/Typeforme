@@ -10003,7 +10003,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
         case .missingAnchor:
             logLivePartialFinalCommitMiss(plan: plan, preview: preview, finalText: finalText)
-            return commitLivePartialBeforeHostReturnIfNeeded(commandID: preview.commandID)
+            // The locally tracked marked text can diverge from the anchored
+            // preview after the client changes selection or replaces input.
+            // Never promote that stale partial to a successful final commit;
+            // returning false sends the actual final result through the
+            // clipboard fallback in applyBridgeStatus.
+            discardOwnedLivePartialMarkedText(reason: "missing_anchor")
+            return false
         }
     }
 
