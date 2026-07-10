@@ -36,3 +36,7 @@ typeforme_bundle_non_system_deps "$VENDOR" "llama-server-arm64"
 
 echo "vendored to $VENDOR:"
 ls -1 "$VENDOR"
+echo
+echo "Before the next release, review these native artifacts and update"
+echo "Resources/vendor-artifacts.sha256 intentionally; release builds reject"
+echo "missing, extra, or changed bundled native bytes."

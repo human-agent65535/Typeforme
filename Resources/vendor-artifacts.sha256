@@ -1,0 +1,12 @@
+# llama.cpp revision reported by llama-server --version: 59778f0
+# typeforme-nemotron-asr is built from Tools/NvidiaNemotronHelper/Cargo.lock.
+c07fd0cc58a5341375fc8b05c21d0afa640cfc31abc9cc6b33cba9a78189ea1e  vendor/llama-server-arm64
+e15820a338b3f3cfedf5fc7bba5c2cc1076387c23b39e327b374f2552fb938a8  vendor/libggml-base.0.dylib
+3ea703ab362e27d8045d2a53cbbf6d7851877e37af26c8f6875f7a7155e963e2  vendor/libggml-blas.0.dylib
+33347dfc55e70955c44905bfeeb0abdaeac4643eb2e905b183e9b83b4d211ed6  vendor/libggml-cpu.0.dylib
+218f989b1b8d4b917d99c09f0d4db1915e824e8e630f9350246fc77c01e94286  vendor/libggml-metal.0.dylib
+f0f36693d0e02225c89ff1cf4d36c1d0456fda5decbdad283638338e9d163b84  vendor/libggml.0.dylib
+62dbf33e9d154fcca7928131b2c4bc714a099637ad33261e5b97a591135a3913  vendor/libllama-common.0.dylib
+e8e2b4ad650cc7ea05bd18dc7e180a1da98f70f29f66b48e1708f243e485a7d9  vendor/libllama.0.dylib
+f2907e6612128c59cac6994daeec0936175bb10b3f1de1e8d2822a0b7f85ad72  vendor/libmtmd.0.dylib
+cf8a305f62b502e96856832daa0b30ea28d2210fce14fa904d0a20bea63821cb  vendor/nvidia-nemotron/typeforme-nemotron-asr

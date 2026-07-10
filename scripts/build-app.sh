@@ -243,9 +243,6 @@ EOF
     identity="$(find_codesign_identity "Apple Development:")"
     [ -n "$identity" ] && { printf '%s\n' "$identity"; return; }
 
-    identity="$(find_codesign_identity "Typeforme Local Dev")"
-    [ -n "$identity" ] && { printf '%s\n' "$identity"; return; }
-
     printf '%s\n' "-"
 }
 
@@ -273,6 +270,10 @@ else
 fi
 LLAMA_ENT="$ROOT/Resources/llama-server.entitlements"
 LLAMA_SRC="$ROOT/vendor/llama-server-arm64"
+if [ "$CONFIG" = "release" ]; then
+    "$ROOT/scripts/verify-vendor-artifacts.sh"
+fi
+
 if [ -x "$LLAMA_SRC" ]; then
     cp "$LLAMA_SRC" "$LLAMA_DIR/llama-server-arm64"
     chmod +x "$LLAMA_DIR/llama-server-arm64"

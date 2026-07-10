@@ -4,14 +4,18 @@
 # macOS's TCC and Keychain trust decisions use the app's code requirement, so a
 # stable self-signed identity keeps grants and secure items stable across builds.
 #
-# Run once per machine:
-#   scripts/create-signing-identity.sh
+# Run only when a specific non-Apple identity is intentionally required:
 #   IDENTITY="Typeforme Unidentified" scripts/create-signing-identity.sh
 # Then rebuild:
-#   IDENTITY="Typeforme Local Dev" ./scripts/build-app.sh debug
+#   IDENTITY="Typeforme Unidentified" ./scripts/build-app.sh debug
 set -euo pipefail
 
-IDENTITY="${IDENTITY:-Typeforme Local Dev}"
+IDENTITY="${IDENTITY:-}"
+if [ -z "$IDENTITY" ]; then
+    echo "error: set IDENTITY explicitly before creating a self-signed code-signing identity." >&2
+    echo "example: IDENTITY=\"Typeforme Unidentified\" scripts/create-signing-identity.sh" >&2
+    exit 2
+fi
 KEYCHAIN="$HOME/Library/Keychains/login.keychain-db"
 
 if security find-identity -p codesigning -v "$KEYCHAIN" 2>/dev/null | grep -q "\"$IDENTITY\""; then
