@@ -70,6 +70,92 @@ struct DictationPromptContextPayload: Codable, Sendable, Equatable {
     }
 }
 
+/// Prompt-only representation of an ASR result. Embedded requests may replace
+/// text that is already present in `raw_transcript`, or a completed empty
+/// result, with an explicit status. This preserves the evidence without paying
+/// to encode the same transcript twice.
+struct DictationPromptASRHypothesisPayload: Codable, Sendable, Equatable {
+    let source: String
+    let text: String?
+    let matchesRawTranscript: Bool
+    let completedEmpty: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case source
+        case text
+        case matchesRawTranscript = "matches_raw_transcript"
+        case completedEmpty = "completed_empty"
+    }
+
+    private init(
+        source: String,
+        text: String?,
+        matchesRawTranscript: Bool,
+        completedEmpty: Bool
+    ) {
+        self.source = source
+        self.text = text
+        self.matchesRawTranscript = matchesRawTranscript
+        self.completedEmpty = completedEmpty
+    }
+
+    static func full(_ hypothesis: ASRSourceHypothesis) -> Self {
+        Self(
+            source: hypothesis.source,
+            text: hypothesis.text,
+            matchesRawTranscript: false,
+            completedEmpty: false
+        )
+    }
+
+    static func compact(_ hypothesis: ASRSourceHypothesis, rawTranscript: String) -> Self {
+        if hypothesis.text == rawTranscript {
+            return Self(
+                source: hypothesis.source,
+                text: nil,
+                matchesRawTranscript: true,
+                completedEmpty: false
+            )
+        }
+        if hypothesis.text.isEmpty {
+            return Self(
+                source: hypothesis.source,
+                text: nil,
+                matchesRawTranscript: false,
+                completedEmpty: true
+            )
+        }
+        return Self(
+            source: hypothesis.source,
+            text: hypothesis.text,
+            matchesRawTranscript: false,
+            completedEmpty: false
+        )
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        source = try container.decode(String.self, forKey: .source)
+        text = try container.decodeIfPresent(String.self, forKey: .text)
+        matchesRawTranscript = try container.decodeIfPresent(Bool.self, forKey: .matchesRawTranscript) ?? false
+        completedEmpty = try container.decodeIfPresent(Bool.self, forKey: .completedEmpty) ?? false
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(source, forKey: .source)
+        if let text {
+            try container.encode(text, forKey: .text)
+        }
+        if matchesRawTranscript {
+            try container.encode(true, forKey: .matchesRawTranscript)
+        }
+        if completedEmpty {
+            try container.encode(true, forKey: .completedEmpty)
+        }
+    }
+}
+
 struct DictationPromptInputPayload: Codable, Sendable, Equatable {
     let context: DictationPromptContextPayload
     let contextBefore: String
@@ -78,7 +164,7 @@ struct DictationPromptInputPayload: Codable, Sendable, Equatable {
     let rawTranscript: String
     let audioDurationMs: Int?
     /// Source-aware ASR hypotheses. Source is evidence metadata, not authority.
-    let asrHypotheses: [ASRSourceHypothesis]
+    let asrHypotheses: [DictationPromptASRHypothesisPayload]
 
     enum CodingKeys: String, CodingKey {
         case context
@@ -115,7 +201,7 @@ struct DictationPromptInputPayload: Codable, Sendable, Equatable {
         guard !asrHypotheses.isEmpty else { return false }
         if asrHypotheses.count == 1,
            asrHypotheses[0].source == ASRSourceHypothesis.unattributedSource,
-           asrHypotheses[0].text == rawTranscript {
+           (asrHypotheses[0].text == rawTranscript || asrHypotheses[0].matchesRawTranscript) {
             return false
         }
         return true

@@ -12,9 +12,15 @@ enum CorrectorPipeline {
     static func correct(
         request: CorrectionRequest,
         timeoutMs: Int,
+        promptBudget: CorrectionPromptBudget? = nil,
         complete: Completion
     ) async throws -> CorrectorOutput {
-        let (system, user) = PromptBuilder.build(for: request)
+        let (system, user): (String, String)
+        if let promptBudget {
+            (system, user) = try PromptBuilder.build(for: request, budget: promptBudget)
+        } else {
+            (system, user) = PromptBuilder.build(for: request)
+        }
         let originalMessages: [CorrectorChatMessage] = [.user(user)]
         let rawOutput = try await complete(system, originalMessages, timeoutMs)
         let trace = CorrectionDebugTrace(rawModelOutput: rawOutput)
@@ -102,6 +108,11 @@ enum CorrectorPipeline {
         do {
             repairOutput = try await complete(system, messages, timeoutMs)
         } catch {
+            if let correctorError = error as? CorrectorError,
+               case .requestFailed(let message) = correctorError,
+               message.hasPrefix(CorrectionPromptBudget.chatCapacityFailurePrefix) {
+                throw correctorError
+            }
             trace.formatRepairError = "Format repair request failed: \(error.localizedDescription)"
             throw CorrectorError.validationFailed(trace.formatRepairError ?? error.localizedDescription, trace: trace)
         }
@@ -211,6 +222,11 @@ enum CorrectorPipeline {
         do {
             verifierOutput = try await complete(system, messages, timeoutMs)
         } catch {
+            if let correctorError = error as? CorrectorError,
+               case .requestFailed(let message) = correctorError,
+               message.hasPrefix(CorrectionPromptBudget.chatCapacityFailurePrefix) {
+                throw correctorError
+            }
             trace.verifierError = "Verifier request failed: \(error.localizedDescription)"
             throw CorrectorError.validationFailed(trace.verifierError ?? error.localizedDescription, trace: trace)
         }

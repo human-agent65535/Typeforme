@@ -13,16 +13,51 @@ final class EmbeddedLlamaCorrectorService: CorrectorService {
     }
 
     func correct(_ request: CorrectionRequest, timeoutMs: Int) async throws -> CorrectorOutput {
-        try await CorrectorPipeline.correct(
+        let contextSize = AppSettings.correctionContextSize
+        let maxOutputTokens = AppSettings.correctionMaxTokens
+        return try await CorrectorPipeline.correct(
             request: request,
             timeoutMs: timeoutMs,
+            promptBudget: CorrectionPromptBudget(
+                contextSize: contextSize,
+                maxOutputTokens: maxOutputTokens
+            ),
             complete: { system, messages, timeoutMs in
-                try await complete(system: system, messages: messages, timeoutMs: timeoutMs)
+                try await complete(
+                    system: system,
+                    messages: messages,
+                    contextSize: contextSize,
+                    maxTokens: maxOutputTokens,
+                    timeoutMs: timeoutMs
+                )
             }
         )
     }
 
     func complete(system: String, messages: [CorrectorChatMessage], timeoutMs: Int) async throws -> String {
+        try await complete(
+            system: system,
+            messages: messages,
+            contextSize: AppSettings.correctionContextSize,
+            maxTokens: AppSettings.correctionMaxTokens,
+            timeoutMs: timeoutMs
+        )
+    }
+
+    private func complete(
+        system: String,
+        messages: [CorrectorChatMessage],
+        contextSize: Int,
+        maxTokens: Int,
+        timeoutMs: Int
+    ) async throws -> String {
+        try Self.validatePromptCapacity(
+            system: system,
+            messages: messages,
+            contextSize: contextSize,
+            maxTokens: maxTokens
+        )
+
         // Warmup uses the cold-timeout window from settings.
         let port: Int
         do {
@@ -35,7 +70,7 @@ final class EmbeddedLlamaCorrectorService: CorrectorService {
             model: "qwen3.5",
             system: system,
             messages: messages,
-            maxTokens: AppSettings.correctionMaxTokens
+            maxTokens: maxTokens
         )
         do {
             return try await OpenAICompatibleClient.chatCompletionContent(
@@ -47,6 +82,26 @@ final class EmbeddedLlamaCorrectorService: CorrectorService {
             }
         } catch let error as OpenAICompatibleClientError {
             throw error.correctorError
+        }
+    }
+
+    static func validatePromptCapacity(
+        system: String,
+        messages: [CorrectorChatMessage],
+        contextSize: Int,
+        maxTokens: Int
+    ) throws {
+        let budget = CorrectionPromptBudget(
+            contextSize: contextSize,
+            maxOutputTokens: maxTokens
+        )
+        guard budget.canFit(system: system, messages: messages) else {
+            let estimated = budget.estimatedInputTokens(system: system, messages: messages)
+            throw CorrectorError.requestFailed(
+                CorrectionPromptBudget.chatCapacityFailurePrefix + " "
+                    + "(estimated input \(estimated), output \(max(0, maxTokens)), "
+                    + "context \(max(0, contextSize)))"
+            )
         }
     }
 }
