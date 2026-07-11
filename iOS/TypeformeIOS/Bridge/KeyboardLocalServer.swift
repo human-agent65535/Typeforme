@@ -197,6 +197,7 @@ final class KeyboardLocalServer: @unchecked Sendable {
         var restarted = false
         var failureReason: String?
         var selfProbeSucceeded = false
+        var wasCancelled = false
         KeyboardDiagnosticEventLog.record(
             source: "host-local-server",
             event: "bridge_ensure_begin",
@@ -204,39 +205,47 @@ final class KeyboardLocalServer: @unchecked Sendable {
         )
 
         do {
+            try Task.checkCancellation()
             if !hasListener {
                 try start()
             }
 
             let listenerBecameReady = await waitUntilListenerReady(timeout: timeout)
+            try Task.checkCancellation()
             if !listenerBecameReady {
                 restarted = true
                 failureReason = "listener_not_ready"
                 try forceRestart(reason: "\(reason):listener_not_ready")
                 _ = await waitUntilListenerReady(timeout: timeout)
+                try Task.checkCancellation()
             }
 
             if isListenerReady {
                 if forceProbe || shouldSelfProbeForReadiness() {
-                    selfProbeSucceeded = await selfProbe(reason: reason)
+                    selfProbeSucceeded = try await selfProbe(reason: reason)
+                    try Task.checkCancellation()
                     if !selfProbeSucceeded {
                         restarted = true
                         failureReason = "self_probe_failed"
                         try forceRestart(reason: "\(reason):self_probe_failed")
                         if await waitUntilListenerReady(timeout: timeout) {
-                            selfProbeSucceeded = await selfProbe(reason: "\(reason):after_restart")
+                            try Task.checkCancellation()
+                            selfProbeSucceeded = try await selfProbe(reason: "\(reason):after_restart")
                         }
                     }
                 } else {
                     selfProbeSucceeded = listenerDiagnosticSnapshot().lastSelfProbeSucceeded
                 }
             }
+        } catch is CancellationError {
+            wasCancelled = true
+            failureReason = "cancelled"
         } catch {
             failureReason = error.localizedDescription
         }
 
         let snapshot = listenerDiagnosticSnapshot()
-        let ready = snapshot.isReady && (!forceProbe || selfProbeSucceeded)
+        let ready = !wasCancelled && snapshot.isReady && (!forceProbe || selfProbeSucceeded)
         let result = KeyboardLocalBridgeReadiness(
             ready: ready,
             listenerState: snapshot.listenerState,
@@ -969,13 +978,14 @@ final class KeyboardLocalServer: @unchecked Sendable {
         return fields
     }
 
-    private func selfProbe(reason: String) async -> Bool {
+    private func selfProbe(reason: String) async throws -> Bool {
         let startedAt = Date().timeIntervalSince1970
         KeyboardDiagnosticEventLog.record(
             source: "host-local-server",
             event: "self_probe_begin",
             fields: listenerDiagnosticFields(reason: reason, now: startedAt)
         )
+        try Task.checkCancellation()
         guard let expectedToken = await expectedTokenProvider?(),
               !expectedToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else {
@@ -991,6 +1001,7 @@ final class KeyboardLocalServer: @unchecked Sendable {
             )
             return false
         }
+        try Task.checkCancellation()
 
         let session = URLSession(configuration: .ephemeral)
         var urlRequest = URLRequest(url: URL(string: "ws://127.0.0.1:\(Self.port)/keyboard")!)
@@ -1030,6 +1041,8 @@ final class KeyboardLocalServer: @unchecked Sendable {
                 ]
             )
             return true
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             updateSelfProbeResult(false)
             KeyboardDiagnosticEventLog.record(

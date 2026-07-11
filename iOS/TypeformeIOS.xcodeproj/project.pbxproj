@@ -63,6 +63,7 @@
 		B10000000000000000000045 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000046 /* PrivacyInfo.xcprivacy */; };
 		B10000000000000000000050 /* ../Sources/Typeforme/Models/KeyboardTouchGapPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000050 /* ../Sources/Typeforme/Models/KeyboardTouchGapPolicy.swift */; };
 		B10000000000000000000053 /* ../Sources/Typeforme/Models/KeyboardStartHandshakePolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000053 /* ../Sources/Typeforme/Models/KeyboardStartHandshakePolicy.swift */; };
+		B10000000000000000000054 /* ../Sources/Typeforme/Models/KeyboardMarkedTextOwnershipPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000054 /* ../Sources/Typeforme/Models/KeyboardMarkedTextOwnershipPolicy.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -133,6 +134,7 @@
 		A20000000000000000000046 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		A20000000000000000000050 /* ../Sources/Typeforme/Models/KeyboardTouchGapPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Sources/Typeforme/Models/KeyboardTouchGapPolicy.swift; sourceTree = SOURCE_ROOT; };
 		A20000000000000000000053 /* ../Sources/Typeforme/Models/KeyboardStartHandshakePolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Sources/Typeforme/Models/KeyboardStartHandshakePolicy.swift; sourceTree = SOURCE_ROOT; };
+		A20000000000000000000054 /* ../Sources/Typeforme/Models/KeyboardMarkedTextOwnershipPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Sources/Typeforme/Models/KeyboardMarkedTextOwnershipPolicy.swift; sourceTree = SOURCE_ROOT; };
 		A20000000000000000000051 /* BridgeLivePreviewStreamer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BridgeLivePreviewStreamer.swift; sourceTree = "<group>"; };
 		A20000000000000000000052 /* PiPDictationCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PiPDictationCoordinator.swift; sourceTree = "<group>"; };
 		A20000000000000000000099 /* StandbyKeeper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StandbyKeeper.swift; sourceTree = "<group>"; };
@@ -272,6 +274,7 @@
 				A2000000000000000000001D /* ../Sources/Typeforme/Models/VoiceLivePreviewSource.swift */,
 				A20000000000000000000050 /* ../Sources/Typeforme/Models/KeyboardTouchGapPolicy.swift */,
 				A20000000000000000000053 /* ../Sources/Typeforme/Models/KeyboardStartHandshakePolicy.swift */,
+				A20000000000000000000054 /* ../Sources/Typeforme/Models/KeyboardMarkedTextOwnershipPolicy.swift */,
 				A20000000000000000000010 /* Shared/KeyboardBridgeModels.swift */,
 				A20000000000000000000020 /* Shared/DesignTokens.swift */,
 			);
@@ -518,6 +521,7 @@
 				B1000000000000000000001E /* ../Sources/Typeforme/Bridge/BridgeTextEditContract.swift in Sources */,
 				B10000000000000000000050 /* ../Sources/Typeforme/Models/KeyboardTouchGapPolicy.swift in Sources */,
 				B10000000000000000000053 /* ../Sources/Typeforme/Models/KeyboardStartHandshakePolicy.swift in Sources */,
+				B10000000000000000000054 /* ../Sources/Typeforme/Models/KeyboardMarkedTextOwnershipPolicy.swift in Sources */,
 				B10000000000000000000003 /* Shared/KeyboardBridgeModels.swift in Sources */,
 				B10000000000000000000020 /* Shared/DesignTokens.swift in Sources */,
 			);
@@ -682,7 +686,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = TypeformeIOS/TypeformeIOS.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 580;
+				CURRENT_PROJECT_VERSION = 584;
 				DEVELOPMENT_ASSET_PATHS = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = TypeformeIOS/Info.plist;
@@ -691,7 +695,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.1.529;
+				MARKETING_VERSION = 0.1.533;
 				PRODUCT_BUNDLE_IDENTIFIER = "$(TYPEFORME_HOST_BUNDLE_IDENTIFIER)";
 				PRODUCT_NAME = Typeforme;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
@@ -711,7 +715,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = TypeformeIOS/TypeformeIOS.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 580;
+				CURRENT_PROJECT_VERSION = 584;
 				DEVELOPMENT_ASSET_PATHS = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = TypeformeIOS/Info.plist;
@@ -720,7 +724,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.1.529;
+				MARKETING_VERSION = 0.1.533;
 				PRODUCT_BUNDLE_IDENTIFIER = "$(TYPEFORME_HOST_BUNDLE_IDENTIFIER)";
 				PRODUCT_NAME = Typeforme;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
@@ -739,7 +743,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = TypeformeKeyboard/TypeformeKeyboard.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 580;
+				CURRENT_PROJECT_VERSION = 584;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = TypeformeKeyboard/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
@@ -748,7 +752,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 0.1.529;
+				MARKETING_VERSION = 0.1.533;
 				PRODUCT_BUNDLE_IDENTIFIER = "$(TYPEFORME_KEYBOARD_BUNDLE_IDENTIFIER)";
 				PRODUCT_NAME = TypeformeKeyboard;
 				SKIP_INSTALL = YES;
@@ -768,7 +772,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = TypeformeKeyboard/TypeformeKeyboard.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 580;
+				CURRENT_PROJECT_VERSION = 584;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = TypeformeKeyboard/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
@@ -777,7 +781,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 0.1.529;
+				MARKETING_VERSION = 0.1.533;
 				PRODUCT_BUNDLE_IDENTIFIER = "$(TYPEFORME_KEYBOARD_BUNDLE_IDENTIFIER)";
 				PRODUCT_NAME = TypeformeKeyboard;
 				SKIP_INSTALL = YES;

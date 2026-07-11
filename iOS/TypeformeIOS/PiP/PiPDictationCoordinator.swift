@@ -97,13 +97,23 @@ final class PiPDictationCoordinator: NSObject, ObservableObject {
             statusMessage = lastErrorMessage ?? ""
             return false
         }
-        guard let sourceView = await waitForSourceView() else {
+        let sourceView: UIView
+        do {
+            guard let readySourceView = try await waitForSourceView() else {
+                pipLog.notice("start rejected: source view missing")
+                lastErrorMessage = NSLocalizedString(
+                    "Picture in Picture is still preparing.",
+                    comment: "PiP source view missing status"
+                )
+                statusMessage = lastErrorMessage ?? ""
+                return false
+            }
+            sourceView = readySourceView
+        } catch is CancellationError {
+            pipLog.debug("start cancelled while waiting for source view")
+            return false
+        } catch {
             pipLog.notice("start rejected: source view missing")
-            lastErrorMessage = NSLocalizedString(
-                "Picture in Picture is still preparing.",
-                comment: "PiP source view missing status"
-            )
-            statusMessage = lastErrorMessage ?? ""
             return false
         }
 
@@ -117,7 +127,12 @@ final class PiPDictationCoordinator: NSObject, ObservableObject {
 
         let controller = ensureController(for: sourceView)
         startContentUpdates()
-        await waitUntilPictureInPictureIsPossible(controller)
+        do {
+            try await waitUntilPictureInPictureIsPossible(controller)
+        } catch {
+            stopContentUpdatesIfIdle()
+            return false
+        }
         pipLog.notice(
             "start check: supported=\(self.isSupported, privacy: .public) possible=\(controller.isPictureInPicturePossible, privacy: .public) active=\(controller.isPictureInPictureActive, privacy: .public) sourceWindow=\(sourceView.window != nil, privacy: .public) sourceBounds=\(sourceView.bounds.debugDescription, privacy: .public)"
         )
@@ -133,9 +148,22 @@ final class PiPDictationCoordinator: NSObject, ObservableObject {
             return false
         }
 
+        guard !Task.isCancelled else {
+            stopContentUpdatesIfIdle()
+            return false
+        }
         controller.startPictureInPicture()
         pipLog.notice("start requested")
-        await waitUntilPictureInPictureIsActive(controller)
+        do {
+            try await waitUntilPictureInPictureIsActive(controller)
+        } catch {
+            // Cancellation after the start request owns one matching stop so a
+            // delayed AVKit activation cannot resurrect the cancelled attempt.
+            controller.stopPictureInPicture()
+            stopContentUpdatesIfIdle()
+            refreshCapability()
+            return false
+        }
         refreshCapability()
         guard controller.isPictureInPictureActive else {
             pipLog.notice("start rejected: PiP did not become active")
@@ -171,18 +199,21 @@ final class PiPDictationCoordinator: NSObject, ObservableObject {
         }
     }
 
-    private func waitForSourceView() async -> UIView? {
+    private func waitForSourceView() async throws -> UIView? {
+        try Task.checkCancellation()
         if let sourceView, isReadySourceView(sourceView) {
             return sourceView
         }
 
         let deadline = Date().addingTimeInterval(Self.startupSourceViewTimeout)
         while Date() < deadline {
+            try Task.checkCancellation()
             if let sourceView, isReadySourceView(sourceView) {
                 return sourceView
             }
-            try? await Task.sleep(nanoseconds: Self.startupReadinessPollInterval)
+            try await Task.sleep(nanoseconds: Self.startupReadinessPollInterval)
         }
+        try Task.checkCancellation()
         return sourceView.flatMap { isReadySourceView($0) ? $0 : nil }
     }
 
@@ -192,23 +223,27 @@ final class PiPDictationCoordinator: NSObject, ObservableObject {
             && view.bounds.height >= 1
     }
 
-    private func waitUntilPictureInPictureIsPossible(_ controller: AVPictureInPictureController) async {
+    private func waitUntilPictureInPictureIsPossible(_ controller: AVPictureInPictureController) async throws {
         let deadline = Date().addingTimeInterval(Self.startupReadinessTimeout)
         while !controller.isPictureInPicturePossible, Date() < deadline {
+            try Task.checkCancellation()
             updateContentView()
             refreshCapability()
-            try? await Task.sleep(nanoseconds: Self.startupReadinessPollInterval)
+            try await Task.sleep(nanoseconds: Self.startupReadinessPollInterval)
         }
+        try Task.checkCancellation()
         updateContentView()
         refreshCapability()
     }
 
-    private func waitUntilPictureInPictureIsActive(_ controller: AVPictureInPictureController) async {
+    private func waitUntilPictureInPictureIsActive(_ controller: AVPictureInPictureController) async throws {
         let deadline = Date().addingTimeInterval(Self.startupActivationTimeout)
         while !controller.isPictureInPictureActive, Date() < deadline {
+            try Task.checkCancellation()
             refreshCapability()
-            try? await Task.sleep(nanoseconds: Self.startupReadinessPollInterval)
+            try await Task.sleep(nanoseconds: Self.startupReadinessPollInterval)
         }
+        try Task.checkCancellation()
         refreshCapability()
     }
 
@@ -277,7 +312,11 @@ final class PiPDictationCoordinator: NSObject, ObservableObject {
         contentUpdateTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 self?.updateContentView()
-                try? await Task.sleep(nanoseconds: Self.contentUpdateInterval)
+                do {
+                    try await Task.sleep(nanoseconds: Self.contentUpdateInterval)
+                } catch {
+                    return
+                }
             }
         }
     }

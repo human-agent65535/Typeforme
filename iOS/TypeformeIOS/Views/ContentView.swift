@@ -67,7 +67,9 @@ struct ContentView: View {
                             state.saveBridgeEndpoints(bridgeEndpoints)
                         },
                         onUnpair: {
-                            state.unpair()
+                            Task {
+                                await state.unpair()
+                            }
                         }
                     )
                     .environment(state)
@@ -2549,7 +2551,13 @@ private struct MacSettingsView: View {
 
     private func repairPairing(clearExisting: Bool) {
         if clearExisting {
-            state.unpair()
+            Task {
+                await state.unpair()
+                dismiss()
+                try? await Task.sleep(nanoseconds: 250_000_000)
+                onRepairPairing()
+            }
+            return
         }
         dismiss()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {

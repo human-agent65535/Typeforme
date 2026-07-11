@@ -478,6 +478,8 @@ final class AppState {
     private var keyboardCaptureStartedFromKeyboard = false
     private var activeKeyboardRecordingCommandID: String?
     private var activeKeyboardCommandCreatedAt: TimeInterval = 0
+    @ObservationIgnored private var keyboardStartTask: Task<Void, Never>?
+    private var keyboardStartCommandID: String?
     @ObservationIgnored private var keyboardProcessingTask: Task<Void, Never>?
     private var keyboardProcessingCommandID: String?
     private var activeBridgeDictateJobID: String?
@@ -485,6 +487,7 @@ final class AppState {
     @ObservationIgnored private var hostAudioSessionExpiryTask: Task<Void, Never>?
     @ObservationIgnored private var keyboardStandbyRefreshTask: Task<Void, Never>?
     private var routeFetchedAt: Date?
+    private var pairingRevision: UInt64 = 0
     private var networkPathSignature: String?
     private var lastNetworkPathRefreshAt: Date?
     private var lastForegroundRouteRefreshAt: Date?
@@ -497,6 +500,7 @@ final class AppState {
     private var transientMessageTask: Task<Void, Never>?
     private var initialRenderDelayTask: Task<Void, Never>?
     @ObservationIgnored private var autoStartPiPTask: Task<Void, Never>?
+    private var autoStartPiPTaskID: UUID?
     private var suppressAutomaticPiPStart = false
     private var automaticPiPStartAttemptsRemaining = 0
     private var automaticPiPStartShowsErrors = false
@@ -536,7 +540,7 @@ final class AppState {
     private static let localRouteCacheTTL: TimeInterval = 5
     private static let foregroundRouteRefreshTTL: TimeInterval = 20
     private static let networkPathSameSignatureRefreshInterval: TimeInterval = 15
-    private static let canceledKeyboardCommandTTL: TimeInterval = 10
+    private static let canceledKeyboardCommandTTL: TimeInterval = KeyboardBridgeCommand.maxAge + 5
     private static let bridgeProgressStatusDelay: TimeInterval = 1.2
     private static let keyboardStatusAudioLevelInterval: UInt64 = 100_000_000
     private static let keyboardStatusAudioLevelMinimumDelta: Float = 0.025
@@ -712,7 +716,7 @@ final class AppState {
         configureKeyboardServer()
         configureKeyboardDarwinBridge()
         pipDictationCoordinator.audioLevelProvider = { [weak self] in
-            self?.hostRecordingLevel ?? 0
+            self?.currentKeyboardStatusAudioLevel() ?? 0
         }
         pipDictationCoordinator.onDidStop = { [weak self] in
             Task { @MainActor [weak self] in
@@ -860,6 +864,8 @@ final class AppState {
         var normalized = newConfig
         normalized.normalize()
         guard persistPairingConfig(normalized) else { return false }
+        pairingRevision &+= 1
+        _ = nextRouteRefreshGeneration()
         config = normalized
         correctionMode = normalized.correctionMode
         selectedLanguageIDs = Set(normalized.validatedLanguageIDs)
@@ -879,6 +885,8 @@ final class AppState {
         normalized.normalizeBridgeEndpoints()
         guard normalized.bridgeEndpoints != config.bridgeEndpoints else { return true }
         guard persistPairingConfig(normalized) else { return false }
+        pairingRevision &+= 1
+        _ = nextRouteRefreshGeneration()
         config = normalized
         publishKeyboardDefaults()
         routeFetchedAt = nil
@@ -904,7 +912,33 @@ final class AppState {
         }
     }
 
-    func unpair() {
+    func unpair() async {
+        pairingRevision &+= 1
+        _ = nextRouteRefreshGeneration()
+        let automaticPiPStartTask = autoStartPiPTask
+        cancelAutomaticPiPStart()
+        let startTask = keyboardStartTask
+        let processingTask = keyboardProcessingTask
+        startTask?.cancel()
+        processingTask?.cancel()
+        await automaticPiPStartTask?.value
+        await startTask?.value
+        await processingTask?.value
+        await cancelActiveRecordingWithoutSending(
+            hostFailureMessage: nil,
+            keyboardCommandID: activeKeyboardRecordingCommandID ?? keyboardBridgeStatus.commandID,
+            keyboardMessage: "Ready",
+            resumeKeyboardStandby: false
+        )
+        clearKeyboardHostSessionTimers()
+        recorderPreWarmTask?.cancel()
+        recorderPreWarmTask = nil
+        recorder.discardPreWarm()
+        pipDictationCoordinator.stop()
+        standbyKeeper.stop()
+        keyboardAudioSession.stop(discardInputEngine: true)
+        keyboardServer.stop()
+
         let empty = PairingConfig.empty
         config = empty
         correctionMode = empty.correctionMode
@@ -920,6 +954,7 @@ final class AppState {
         errorMessage = nil
         setPhase(.idle)
         publishKeyboardDefaults(force: true)
+        KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.sessionEnded)
     }
 
     func persistLanguageSelection() {
@@ -1183,6 +1218,7 @@ final class AppState {
             return
         }
         let configSnapshot = config
+        let pairingRevisionSnapshot = pairingRevision
         let generation = nextRouteRefreshGeneration()
         let startedAt = Date()
         let shouldSyncPairingEndpoints = syncPairingEndpoints ?? showIndicator
@@ -1202,6 +1238,7 @@ final class AppState {
         guard commitRouteRefreshResult(
             resolved,
             generation: generation,
+            pairingRevision: pairingRevisionSnapshot,
             reason: reason,
             config: configSnapshot,
             startedAt: startedAt
@@ -1212,10 +1249,16 @@ final class AppState {
         guard shouldSyncPairingEndpoints,
               shouldRefreshPairingEndpointsAfterRouteRefresh(force: force, status: routeStatus),
               routeRefreshGeneration == generation,
-              await refreshPairingEndpointsFromActiveRoute(status: routeStatus)
+              pairingRevision == pairingRevisionSnapshot,
+              await refreshPairingEndpointsFromActiveRoute(
+                  status: routeStatus,
+                  expectedPairingRevision: pairingRevisionSnapshot
+              )
         else { return }
 
-        guard routeRefreshGeneration == generation else {
+        guard routeRefreshGeneration == generation,
+              pairingRevision == pairingRevisionSnapshot
+        else {
             recordRouteRefreshDiscarded(
                 generation: generation,
                 reason: "\(reason):endpoint_sync",
@@ -1229,6 +1272,7 @@ final class AppState {
         _ = commitRouteRefreshResult(
             rerouted,
             generation: generation,
+            pairingRevision: pairingRevisionSnapshot,
             reason: "\(reason):endpoint_sync",
             config: refreshedConfig,
             startedAt: startedAt
@@ -1236,6 +1280,7 @@ final class AppState {
     }
 
     private func preflightActiveBridgeRoute() async {
+        guard !Task.isCancelled else { return }
         guard let baseURL = routeStatus.activeURL else {
             await refreshRoute(
                 force: true,
@@ -1248,6 +1293,7 @@ final class AppState {
 
         let timeout = routeStatus.activeKind == .cloud ? 3.0 : 1.5
         let isHealthy = await BridgeClient(baseURL: baseURL, token: config.token).health(timeout: timeout)
+        guard !Task.isCancelled else { return }
         guard isHealthy else {
             routeFetchedAt = nil
             await refreshRoute(
@@ -1304,6 +1350,7 @@ final class AppState {
     private func commitRouteRefreshResult(
         _ status: BridgeRouteResolutionStatus,
         generation: UInt64,
+        pairingRevision: UInt64,
         reason: String,
         config: PairingConfig,
         startedAt: Date
@@ -1314,6 +1361,15 @@ final class AppState {
                 reason: reason,
                 candidate: status,
                 discardReason: "stale_generation"
+            )
+            return false
+        }
+        guard pairingRevision == self.pairingRevision else {
+            recordRouteRefreshDiscarded(
+                generation: generation,
+                reason: reason,
+                candidate: status,
+                discardReason: "stale_pairing_revision"
             )
             return false
         }
@@ -1450,13 +1506,21 @@ final class AppState {
     @discardableResult
     private func refreshPairingEndpointsFromActiveRoute(
         status: BridgeRouteResolutionStatus,
+        expectedPairingRevision: UInt64,
         timeout: TimeInterval = 4
     ) async -> Bool {
-        guard let activeURL = status.activeURL else { return false }
-        let previous = config.bridgeEndpoints
+        guard expectedPairingRevision == pairingRevision,
+              let activeURL = status.activeURL
+        else { return false }
+        let configSnapshot = config
+        let previous = configSnapshot.bridgeEndpoints
         do {
-            let refreshed = try await BridgeClient(baseURL: activeURL, token: config.token).pairing(timeout: timeout)
-            var candidate = config
+            let refreshed = try await BridgeClient(
+                baseURL: activeURL,
+                token: configSnapshot.token
+            ).pairing(timeout: timeout)
+            guard expectedPairingRevision == pairingRevision else { return false }
+            var candidate = configSnapshot
             candidate.bridgeEndpoints = refreshed.bridgeEndpoints
             recordRouteEndpointSyncResult(
                 changed: candidate.bridgeEndpoints != previous,
@@ -1465,8 +1529,10 @@ final class AppState {
                 activeKind: status.activeKind.rawValue,
                 error: nil
             )
-            if candidate.bridgeEndpoints != previous,
-               persistPairingConfig(candidate) {
+            if candidate.bridgeEndpoints != previous {
+                guard expectedPairingRevision == pairingRevision,
+                      persistPairingConfig(candidate)
+                else { return false }
                 config = candidate
                 publishKeyboardDefaults()
                 routeFetchedAt = nil
@@ -1510,10 +1576,12 @@ final class AppState {
     }
 
     func refreshMacSettings(timeout: TimeInterval = 10) async throws -> BridgeMacSettingsPayload {
+        let expectedPairingRevision = pairingRevision
         let client = try await activeBridgeClient()
         var settings = try await client.macSettings(timeout: timeout)
         settings.normalize()
-        guard applyMacSettings(settings) else {
+        guard expectedPairingRevision == pairingRevision else { throw CancellationError() }
+        guard applyMacSettings(settings, expectedPairingRevision: expectedPairingRevision) else {
             throw PairingStoreError.secureTokenWriteFailed
         }
         return settings
@@ -1521,6 +1589,7 @@ final class AppState {
 
     @discardableResult
     private func refreshMacSettingsIfChanged(timeout: TimeInterval = 10) async throws -> BridgeMacSettingsPayload? {
+        let expectedPairingRevision = pairingRevision
         let client = try await activeBridgeClient()
         let localRevision = macSettingsRevision ?? macSettings?.settingsRevision
         if let localRevision,
@@ -1529,32 +1598,40 @@ final class AppState {
             if let remoteRevision = health.settingsRevision?.trimmingCharacters(in: .whitespacesAndNewlines),
                !remoteRevision.isEmpty,
                remoteRevision == localRevision {
+                guard expectedPairingRevision == pairingRevision else { throw CancellationError() }
                 macSettingsFetchedAt = Date()
                 return macSettings
             }
         }
         var settings = try await client.macSettings(timeout: timeout)
         settings.normalize()
-        guard applyMacSettings(settings) else {
+        guard expectedPairingRevision == pairingRevision else { throw CancellationError() }
+        guard applyMacSettings(settings, expectedPairingRevision: expectedPairingRevision) else {
             throw PairingStoreError.secureTokenWriteFailed
         }
         return settings
     }
 
     func updateMacSettings(_ settings: BridgeMacSettingsPayload) async throws -> BridgeMacSettingsPayload {
+        let expectedPairingRevision = pairingRevision
         var normalized = settings
         normalized.normalize()
         let client = try await activeBridgeClient()
         var updated = try await client.updateMacSettings(normalized)
         updated.normalize()
-        guard applyMacSettings(updated) else {
+        guard expectedPairingRevision == pairingRevision else { throw CancellationError() }
+        guard applyMacSettings(updated, expectedPairingRevision: expectedPairingRevision) else {
             throw PairingStoreError.secureTokenWriteFailed
         }
         return updated
     }
 
     @discardableResult
-    private func applyMacSettings(_ settings: BridgeMacSettingsPayload) -> Bool {
+    private func applyMacSettings(
+        _ settings: BridgeMacSettingsPayload,
+        expectedPairingRevision: UInt64
+    ) -> Bool {
+        guard expectedPairingRevision == pairingRevision else { return false }
         var candidate = config
         candidate.supportedLanguages = settings.supportedLanguages
         candidate.languageIDs = ASRLanguageSelection.validatedIDs(
@@ -1586,9 +1663,12 @@ final class AppState {
         constrainKeyboardLivePreviewSourceToMacSettings()
     }
 
-    private func applyKeyboardDefaultCorrectionMode(_ mode: CorrectionMode) {
+    private func applyKeyboardDefaultCorrectionMode(
+        _ mode: CorrectionMode,
+        updateActiveCorrectionMode: Bool = true
+    ) {
         let configChanged = config.correctionMode != mode
-        let visibleChanged = correctionMode != mode
+        let visibleChanged = updateActiveCorrectionMode && correctionMode != mode
         guard configChanged || visibleChanged else { return }
         if configChanged {
             var candidate = config
@@ -1596,8 +1676,10 @@ final class AppState {
             guard persistPairingConfig(candidate) else { return }
             config = candidate
         }
-        correctionMode = mode
-        constrainKeyboardLivePreviewSourceToMacSettings()
+        if updateActiveCorrectionMode {
+            correctionMode = mode
+            constrainKeyboardLivePreviewSourceToMacSettings()
+        }
         if configChanged {
             publishKeyboardDefaults()
         }
@@ -1658,8 +1740,10 @@ final class AppState {
 
     private func activeBridgeClient() async throws -> BridgeClient {
         await waitForRouteRefreshToSettleIfNeeded(reason: "active_bridge_client")
+        try Task.checkCancellation()
         if shouldPreflightBridgeRouteBeforeRequest(routeIsFresh: currentBridgeRouteIsFresh()) {
             await preflightActiveBridgeRoute()
+            try Task.checkCancellation()
         }
         guard let baseURL = routeStatus.activeURL else {
             throw BridgeClientError.unauthorizedOrUnavailable
@@ -1675,7 +1759,11 @@ final class AppState {
         let startedAt = Date()
         let deadline = startedAt.addingTimeInterval(timeout)
         while isCheckingRouteStatus, Date() < deadline {
-            try? await Task.sleep(nanoseconds: 50_000_000)
+            do {
+                try await Task.sleep(nanoseconds: 50_000_000)
+            } catch {
+                return
+            }
         }
         KeyboardDiagnosticEventLog.record(
             source: "host-app",
@@ -2905,6 +2993,7 @@ final class AppState {
             showErrors: showErrors,
             forceProbe: true
         ) else {
+            guard !Task.isCancelled else { return false }
             let message = NSLocalizedString("Keyboard bridge is unavailable.", comment: "Keyboard local bridge unavailable")
             KeyboardDiagnosticEventLog.record(
                 source: "host-app",
@@ -2986,7 +3075,6 @@ final class AppState {
 
     private func cancelAutomaticPiPStart() {
         autoStartPiPTask?.cancel()
-        autoStartPiPTask = nil
         automaticPiPStartAttemptsRemaining = 0
         automaticPiPStartShowsErrors = false
     }
@@ -2994,11 +3082,39 @@ final class AppState {
     private func scheduleAutomaticPiPVisibilityStart(showErrors: Bool) {
         guard autoStartPiPTask == nil else { return }
         guard automaticPiPStartAttemptsRemaining > 0 else { return }
+        let taskID = UUID()
+        autoStartPiPTaskID = taskID
         autoStartPiPTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: 250_000_000)
-            guard let self, !Task.isCancelled else { return }
+            do {
+                try await Task.sleep(nanoseconds: 250_000_000)
+            } catch {
+                guard let self, self.autoStartPiPTaskID == taskID else { return }
+                self.autoStartPiPTask = nil
+                self.autoStartPiPTaskID = nil
+                return
+            }
+            guard let self else { return }
+            guard !Task.isCancelled else {
+                if self.autoStartPiPTaskID == taskID {
+                    self.autoStartPiPTask = nil
+                    self.autoStartPiPTaskID = nil
+                }
+                return
+            }
+            let didStart = await self.startAutomaticPiPVisibilityIfNeeded(showErrors: showErrors)
+            guard self.autoStartPiPTaskID == taskID else {
+                if didStart, Task.isCancelled {
+                    self.pipDictationCoordinator.stop()
+                }
+                return
+            }
             self.autoStartPiPTask = nil
-            await self.startAutomaticPiPVisibilityIfNeeded(showErrors: showErrors)
+            self.autoStartPiPTaskID = nil
+            if !didStart,
+               self.automaticPiPStartAttemptsRemaining > 0,
+               !self.suppressAutomaticPiPStart {
+                self.scheduleAutomaticPiPVisibilityStart(showErrors: showErrors)
+            }
         }
     }
 
@@ -3021,10 +3137,7 @@ final class AppState {
             automaticPiPStartShowsErrors = false
             return true
         }
-        if automaticPiPStartAttemptsRemaining > 0,
-           !suppressAutomaticPiPStart {
-            scheduleAutomaticPiPVisibilityStart(showErrors: showErrors)
-        } else {
+        if automaticPiPStartAttemptsRemaining == 0 || suppressAutomaticPiPStart {
             automaticPiPStartShowsErrors = false
         }
         return false
@@ -3050,11 +3163,18 @@ final class AppState {
             guard !honorManualSuppression || showErrors || !suppressAutomaticPiPStart else { return false }
             suppressAutomaticPiPStart = false
             if showErrors || !honorManualSuppression {
+                let pendingAutomaticStart = autoStartPiPTask
                 cancelAutomaticPiPStart()
+                await pendingAutomaticStart?.value
+                guard !Task.isCancelled else { return false }
                 return await startPiPVisibilityWithForegroundRetry(showErrors: showErrors)
             }
             requestAutomaticPiPVisibilityStart(showErrors: showErrors)
-            return await startAutomaticPiPVisibilityIfNeeded(showErrors: showErrors)
+            guard let task = autoStartPiPTask else {
+                return pipDictationCoordinator.isActive
+            }
+            await task.value
+            return pipDictationCoordinator.isActive
         }
     }
 
@@ -3076,6 +3196,7 @@ final class AppState {
 
         let maxAttempts = Self.automaticPiPStartMaxAttempts
         for attempt in 1...maxAttempts {
+            guard !Task.isCancelled else { return false }
             let shouldSurfaceFailure = showErrors && attempt == maxAttempts
             if await startPiPVisibility(showErrors: shouldSurfaceFailure) {
                 return true
@@ -3084,7 +3205,11 @@ final class AppState {
                   !pipDictationCoordinator.isActive,
                   keyboardDictationCaptureMode == .pictureInPicture
             else { break }
-            try? await Task.sleep(nanoseconds: 250_000_000)
+            do {
+                try await Task.sleep(nanoseconds: 250_000_000)
+            } catch {
+                return false
+            }
         }
         return pipDictationCoordinator.isActive
     }
@@ -3093,6 +3218,7 @@ final class AppState {
     private func preparePiPDictationSession(showErrors: Bool) async -> Bool {
         syncPiPDictationPresentation()
         if !(await waitUntilApplicationIsActive(timeout: 3.0)) {
+            guard !Task.isCancelled else { return false }
             appLog.notice("preparePiPDictationSession: app did not become active before PiP start; continuing with readiness retry")
         }
         let didStart = await pipDictationCoordinator.start()
@@ -3240,8 +3366,7 @@ final class AppState {
             state: .idle,
             message: keyboardMicrophonePreparationMessage,
             defaultCorrectionMode: status.defaultCorrectionMode,
-            backendReachable: status.backendReachable,
-            correctionTimeoutMs: status.correctionTimeoutMs
+            backendReachable: status.backendReachable
         )
     }
 
@@ -3380,10 +3505,14 @@ final class AppState {
     private func waitUntilApplicationIsActive(timeout: TimeInterval = 2.0) async -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while UIApplication.shared.applicationState != .active {
-            guard Date() < deadline else { return false }
-            try? await Task.sleep(nanoseconds: 100_000_000)
+            guard !Task.isCancelled, Date() < deadline else { return false }
+            do {
+                try await Task.sleep(nanoseconds: 100_000_000)
+            } catch {
+                return false
+            }
         }
-        return true
+        return !Task.isCancelled
     }
 
     @discardableResult
@@ -3762,6 +3891,7 @@ final class AppState {
     ) async -> Bool {
         configureKeyboardServer()
         let result = await keyboardServer.ensureReady(reason: reason, forceProbe: forceProbe)
+        guard !Task.isCancelled else { return false }
         appLog.notice("keyboard bridge ensure result reason=\(reason, privacy: .public) ready=\(result.ready, privacy: .public) state=\(result.listenerState, privacy: .public) generation=\(result.generation, privacy: .public) restarted=\(result.restarted, privacy: .public) probe=\(result.selfProbeSucceeded, privacy: .public) elapsed_ms=\(result.elapsedMilliseconds, privacy: .public)")
         KeyboardDiagnosticEventLog.record(
             source: "host-app",
@@ -3937,6 +4067,7 @@ final class AppState {
         }
 
         guard phase.allowsRecordingStart,
+              keyboardStartTask == nil,
               keyboardProcessingTask == nil
         else {
             publishKeyboardBusyStatus(for: command.id)
@@ -3947,15 +4078,51 @@ final class AppState {
         return true
     }
 
+    private func runKeyboardRecordingStart(commandID: String, allowSessionStart: Bool) async {
+        guard keyboardStartTask == nil else {
+            publishKeyboardBusyStatus(for: commandID)
+            return
+        }
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.startKeyboardRecording(commandID: commandID, allowSessionStart: allowSessionStart)
+        }
+        keyboardStartCommandID = commandID
+        keyboardStartTask = task
+        await task.value
+        guard keyboardStartCommandID == commandID else { return }
+        keyboardStartTask = nil
+        keyboardStartCommandID = nil
+    }
+
+    private func cancelKeyboardCommand(_ commandID: String, resumeKeyboardStandby: Bool) async {
+        let startTask = keyboardStartCommandID == commandID ? keyboardStartTask : nil
+        let processingTask = keyboardProcessingCommandID == commandID ? keyboardProcessingTask : nil
+        startTask?.cancel()
+        processingTask?.cancel()
+        await startTask?.value
+        await processingTask?.value
+        guard activeKeyboardRecordingCommandID == commandID else { return }
+        if phase == .sending || phase == .refining {
+            setPhase(.idle)
+        }
+        await cancelActiveRecordingWithoutSending(
+            hostFailureMessage: nil,
+            keyboardCommandID: commandID,
+            keyboardMessage: "Ready",
+            resumeKeyboardStandby: resumeKeyboardStandby
+        )
+    }
+
     private func rememberCanceledKeyboardCommand(_ commandID: String) {
         guard !commandID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         pruneCanceledKeyboardCommands()
         canceledKeyboardCommandIDs[commandID] = Date().timeIntervalSince1970
     }
 
-    private func consumeCanceledKeyboardCommand(_ commandID: String) -> Bool {
+    private func isCanceledKeyboardCommand(_ commandID: String) -> Bool {
         pruneCanceledKeyboardCommands()
-        return canceledKeyboardCommandIDs.removeValue(forKey: commandID) != nil
+        return canceledKeyboardCommandIDs[commandID] != nil
     }
 
     private func pruneCanceledKeyboardCommands() {
@@ -4046,10 +4213,7 @@ final class AppState {
                         phase: .accepted,
                         reason: "darwin_start_received"
                     )
-                    if let requestedMode = CorrectionMode(rawValue: command.correctionMode) {
-                        self.applyKeyboardDefaultCorrectionMode(requestedMode)
-                    }
-                    guard !self.consumeCanceledKeyboardCommand(command.id) else {
+                    guard !self.isCanceledKeyboardCommand(command.id) else {
                         appLog.notice("darwin requestStart command was canceled command_id=\(command.id, privacy: .public)")
                         KeyboardDiagnosticEventLog.record(
                             source: "host-app",
@@ -4066,6 +4230,9 @@ final class AppState {
                         return
                     }
                     guard await self.prepareKeyboardStart(command) else { return }
+                    if let requestedMode = CorrectionMode(rawValue: command.correctionMode) {
+                        self.applyKeyboardDefaultCorrectionMode(requestedMode)
+                    }
                     self.activeKeyboardTextEditContext = command.textEditContext
                     self.activeKeyboardDictationContext = command.dictationContext
                     self.keyboardCaptureStartedFromKeyboard = true
@@ -4074,6 +4241,7 @@ final class AppState {
                         showErrors: false,
                         forceProbe: true
                     )
+                    guard !Task.isCancelled, self.ownsKeyboardCommand(command.id) else { return }
                     self.postKeyboardCommandReceipt(
                         commandID: command.id,
                         action: .start,
@@ -4083,7 +4251,7 @@ final class AppState {
                     guard self.ownsKeyboardCommand(command.id) else {
                         return
                     }
-                    await self.startKeyboardRecording(commandID: command.id, allowSessionStart: true)
+                    await self.runKeyboardRecordingStart(commandID: command.id, allowSessionStart: true)
                 }
             },
             KeyboardDarwinBridge.observe(requestStopName) { [weak self] in
@@ -4105,14 +4273,7 @@ final class AppState {
                     guard let command = KeyboardSharedDefaults.consumeDarwinCommand(action: .cancel) else { return }
                     self.rememberCanceledKeyboardCommand(command.id)
                     guard self.activeKeyboardRecordingCommandID == command.id else { return }
-                    self.keyboardProcessingTask?.cancel()
-                    self.clearKeyboardCaptureContext()
-                    await self.cancelActiveRecordingWithoutSending(
-                        hostFailureMessage: nil,
-                        keyboardCommandID: command.id,
-                        keyboardMessage: "Ready",
-                        resumeKeyboardStandby: true
-                    )
+                    await self.cancelKeyboardCommand(command.id, resumeKeyboardStandby: true)
                 }
             },
             KeyboardDarwinBridge.observe(requestSessionStatusName) { [weak self] in
@@ -4198,7 +4359,7 @@ final class AppState {
         }
         switch command.action {
         case .start:
-            guard !consumeCanceledKeyboardCommand(command.id) else {
+            guard !isCanceledKeyboardCommand(command.id) else {
                 appLog.notice("local start command canceled command_id=\(command.id, privacy: .public)")
                 KeyboardDiagnosticEventLog.record(
                     source: "host-app",
@@ -4221,28 +4382,29 @@ final class AppState {
             activeKeyboardTextEditContext = command.textEditContext
             activeKeyboardDictationContext = command.dictationContext
             keyboardCaptureStartedFromKeyboard = true
-            await startKeyboardRecording(commandID: command.id, allowSessionStart: true)
+            await runKeyboardRecordingStart(commandID: command.id, allowSessionStart: true)
         case .stop:
             return beginKeyboardStopAndSend(commandID: command.id)
         case .cancel:
             rememberCanceledKeyboardCommand(command.id)
             guard activeKeyboardRecordingCommandID == command.id else { return keyboardBridgeStatus }
-            keyboardProcessingTask?.cancel()
-            clearKeyboardCaptureContext()
-            await cancelActiveRecordingWithoutSending(
-                hostFailureMessage: nil,
-                keyboardCommandID: command.id,
-                keyboardMessage: "Ready",
-                resumeKeyboardStandby: true
-            )
+            await cancelKeyboardCommand(command.id, resumeKeyboardStandby: true)
             resetCorrectionModeToDefault()
         case .configure:
+            let hasActiveKeyboardCommand = activeKeyboardRecordingCommandID != nil
+                || keyboardStartTask != nil
+                || keyboardProcessingTask != nil
             if let requestedMode = CorrectionMode(rawValue: command.correctionMode) {
-                applyKeyboardDefaultCorrectionMode(requestedMode)
-            } else {
+                applyKeyboardDefaultCorrectionMode(
+                    requestedMode,
+                    updateActiveCorrectionMode: !hasActiveKeyboardCommand
+                )
+            } else if !hasActiveKeyboardCommand {
                 resetCorrectionModeToDefault()
             }
-            clearKeyboardCaptureContext()
+            if !hasActiveKeyboardCommand {
+                clearKeyboardCaptureContext()
+            }
             publishKeyboardStatus(.standby, commandID: command.id, message: "Ready")
         case .refineText:
             await refineKeyboardText(command)
@@ -4412,7 +4574,7 @@ final class AppState {
         commandID: String?,
         allowSessionStart: Bool
     ) async {
-        guard ownsKeyboardCommand(commandID) else { return }
+        guard ownsKeyboardCommand(commandID), !Task.isCancelled else { return }
         let startAttemptedAt = Date().timeIntervalSince1970
         let audioSession = AVAudioSession.sharedInstance()
         let otherAudioPlaying = audioSession.isOtherAudioPlaying
@@ -4452,7 +4614,7 @@ final class AppState {
             return
         }
         let didStartVisibleCapture = await startSelectedVisibleCaptureMode(showErrors: false)
-        guard ownsKeyboardCommand(commandID) else { return }
+        guard ownsKeyboardCommand(commandID), !Task.isCancelled else { return }
         appLog.notice("start keyboard recording visible capture result command_id=\(commandID ?? "none", privacy: .public) did_start=\(didStartVisibleCapture, privacy: .public) pip_active=\(self.pipDictationCoordinator.isActive, privacy: .public)")
         KeyboardDiagnosticEventLog.record(
             source: "host-app",
@@ -4537,7 +4699,7 @@ final class AppState {
                     requestMicrophoneIfNeeded: false,
                     waitForApplicationActive: keyboardDictationCaptureMode != .pictureInPicture
                 )
-                guard ownsKeyboardCommand(commandID) else { return }
+                guard ownsKeyboardCommand(commandID), !Task.isCancelled else { return }
                 guard isInputReady else {
                     appLog.notice("start keyboard recording failed: input standby not ready command_id=\(commandID ?? "none", privacy: .public)")
                     KeyboardDiagnosticEventLog.record(
@@ -4558,7 +4720,7 @@ final class AppState {
                 }
                 scheduleHostAudioSessionExpiry()
             } catch {
-                guard ownsKeyboardCommand(commandID) else { return }
+                guard ownsKeyboardCommand(commandID), !Task.isCancelled else { return }
                 if let commandID { clearKeyboardCaptureContext(ifOwnedBy: commandID) }
                 resetCorrectionModeToDefault()
                 let message = keyboardAudioStatusMessage(for: error)
@@ -4592,13 +4754,13 @@ final class AppState {
         // graph or keep rendering after the stop transition.
         standbyKeeper.stop(deactivateSession: false)
         do {
-            guard ownsKeyboardCommand(commandID) else { return }
+            guard ownsKeyboardCommand(commandID), !Task.isCancelled else { return }
             try await beginPreparedKeyboardAudioRecording(
                 commandID: commandID,
                 startAttemptedAt: startAttemptedAt
             )
         } catch {
-            guard ownsKeyboardCommand(commandID) else { return }
+            guard ownsKeyboardCommand(commandID), !Task.isCancelled else { return }
             if let commandID { clearKeyboardCaptureContext(ifOwnedBy: commandID) }
             let message = keyboardAudioStatusMessage(for: error)
             appLog.notice("start keyboard recording failed: begin recording error command_id=\(commandID ?? "none", privacy: .public) error=\(message, privacy: .public)")
@@ -4628,7 +4790,7 @@ final class AppState {
         commandID: String?,
         startAttemptedAt: TimeInterval
     ) async {
-        guard ownsKeyboardCommand(commandID) else { return }
+        guard ownsKeyboardCommand(commandID), !Task.isCancelled else { return }
         do {
             if keyboardAudioSession.isActive, !keyboardAudioSession.isRecording {
                 keyboardAudioSession.discardInactiveInputEngine(
@@ -4653,13 +4815,28 @@ final class AppState {
                 KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.dictationStopped)
                 return
             }
-            guard ownsKeyboardCommand(commandID) else { return }
+            guard ownsKeyboardCommand(commandID), !Task.isCancelled else {
+                keyboardAudioSession.discardInactiveInputEngine(
+                    deactivateSession: true,
+                    reason: "pip_start_cancelled"
+                )
+                return
+            }
             try await beginPreparedKeyboardAudioRecording(
                 commandID: commandID,
                 startAttemptedAt: startAttemptedAt
             )
         } catch {
-            guard ownsKeyboardCommand(commandID) else { return }
+            guard ownsKeyboardCommand(commandID), !Task.isCancelled else {
+                if keyboardAudioSession.isRecording {
+                    keyboardAudioSession.cancelRecording()
+                }
+                keyboardAudioSession.discardInactiveInputEngine(
+                    deactivateSession: true,
+                    reason: "pip_start_cancelled"
+                )
+                return
+            }
             if let commandID { clearKeyboardCaptureContext(ifOwnedBy: commandID) }
             resetCorrectionModeToDefault()
             if !keyboardAudioSession.isRecording {
@@ -4715,6 +4892,10 @@ final class AppState {
     ) async throws {
         _ = try await keyboardAudioSession.beginRecording()
         guard ownsKeyboardCommand(commandID), !Task.isCancelled else {
+            keyboardAudioSession.cancelRecording()
+            if keyboardDictationCaptureMode == .pictureInPicture {
+                keyboardAudioSession.stop(discardInputEngine: true)
+            }
             throw CancellationError()
         }
         keyboardCaptureStartedFromKeyboard = true
@@ -4777,6 +4958,7 @@ final class AppState {
                 showErrors: false,
                 forceProbe: true
             ) else {
+                guard !Task.isCancelled else { return }
                 if !preserveCommandStatus {
                     publishKeyboardStatus(.idle, message: keyboardMicrophonePreparationMessage)
                 }
@@ -4884,8 +5066,7 @@ final class AppState {
                 state: .recording,
                 message: "Recording",
                 defaultCorrectionMode: config.correctionMode.rawValue,
-                backendReachable: reachable,
-                correctionTimeoutMs: keyboardCorrectionTimeoutMsForStatus()
+                backendReachable: reachable
             ))
             syncPiPDictationPresentation()
             return
@@ -4903,15 +5084,10 @@ final class AppState {
             defaultCorrectionMode: config.correctionMode.rawValue,
             livePartialTranscript: partial,
             backendReachable: reachable,
-            processingStage: state == .sending ? processingStage : nil,
-            correctionTimeoutMs: keyboardCorrectionTimeoutMsForStatus()
+            processingStage: state == .sending ? processingStage : nil
         )
         setKeyboardBridgeStatus(status)
         syncPiPDictationPresentation()
-    }
-
-    private func keyboardCorrectionTimeoutMsForStatus() -> Int {
-        BridgeMacSettingsPayload.clampedCorrectionTimeoutMs(macSettings?.correctionTimeoutMs ?? 1500)
     }
 
     private func setKeyboardBridgeStatus(_ status: KeyboardBridgeStatus, persistSnapshot: Bool = true) {

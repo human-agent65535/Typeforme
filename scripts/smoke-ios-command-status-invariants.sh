@@ -13,7 +13,9 @@ app = (root / "iOS/TypeformeIOS/AppState.swift").read_text()
 keyboard = (root / "iOS/TypeformeKeyboard/KeyboardViewController.swift").read_text()
 shared = (root / "iOS/Shared/KeyboardBridgeModels.swift").read_text()
 pip = (root / "iOS/TypeformeIOS/PiP/PiPDictationCoordinator.swift").read_text()
+local_server = (root / "iOS/TypeformeIOS/Bridge/KeyboardLocalServer.swift").read_text()
 handshake = (root / "Sources/Typeforme/Models/KeyboardStartHandshakePolicy.swift").read_text()
+marked_policy = (root / "Sources/Typeforme/Models/KeyboardMarkedTextOwnershipPolicy.swift").read_text()
 
 
 def block(source: str, marker: str) -> str:
@@ -82,11 +84,48 @@ for required in (
     if required not in begin_stop:
         raise AssertionError(f"exact processing task is not retained: {required}")
 
+start_flight = block(app, "private func runKeyboardRecordingStart(")
+for required in (
+    "keyboardStartCommandID = commandID",
+    "keyboardStartTask = task",
+    "await task.value",
+):
+    if required not in start_flight:
+        raise AssertionError(f"exact start task is not retained: {required}")
+
+cancel_command = block(app, "private func cancelKeyboardCommand(")
+for required in (
+    "startTask?.cancel()",
+    "processingTask?.cancel()",
+    "await startTask?.value",
+    "await processingTask?.value",
+    "phase == .sending || phase == .refining",
+):
+    if required not in cancel_command:
+        raise AssertionError(f"keyboard cancel lost exact task cleanup: {required}")
+
 darwin = block(app, "private func configureKeyboardDarwinBridge(")
 if "_ = self.beginKeyboardStopAndSend(commandID: command.id)" not in darwin:
     raise AssertionError("Darwin stop bypasses the retained processing task")
 if "await self.stopAndSend(keyboardCommandID:" in darwin:
     raise AssertionError("Darwin stop directly awaits an unowned processing operation")
+if darwin.index("guard await self.prepareKeyboardStart(command)") > darwin.index("self.applyKeyboardDefaultCorrectionMode(requestedMode)"):
+    raise AssertionError("a stale Darwin start can change the active correction mode")
+
+unpair = block(app, "func unpair() async")
+for required in (
+    "startTask?.cancel()",
+    "processingTask?.cancel()",
+    "await automaticPiPStartTask?.value",
+    "await startTask?.value",
+    "await processingTask?.value",
+    "keyboardAudioSession.stop(discardInputEngine: true)",
+):
+    if required not in unpair:
+        raise AssertionError(f"unpair does not finish active capture work: {required}")
+
+if "pairingRevision" not in app or "expectedPairingRevision" not in app:
+    raise AssertionError("pairing async commits are not revision scoped")
 
 darwin_observers = block(keyboard, "private func configureKeyboardDarwinBridge(")
 stopped = darwin_observers[darwin_observers.index("KeyboardDarwinNotificationName.dictationStopped"):]
@@ -103,18 +142,64 @@ if "status.state == .result" in ignore_suppressed:
     raise AssertionError("suppressed A must ignore every command-scoped status, not only Result")
 
 voice_press = block(keyboard, "@objc private func voicePressDown(")
-skip_call = voice_press.index("stopActiveRefineFromUserAction()")
-next_start = voice_press.index("guard !isVoicePressActive")
-if "return" in voice_press[skip_call:next_start]:
-    raise AssertionError("the same mic press must continue from skipping A into starting B")
+if "stopActiveStyleRewriteFromUserAction()" not in voice_press:
+    raise AssertionError("style rewrite stop boundary is missing")
+skip_call = voice_press.index("stopLivePartialRefineFromUserAction()")
+transport_guard = voice_press.index("if currentBridgeStatus?.state == .sending", skip_call)
+if "return" not in voice_press[skip_call:transport_guard]:
+    raise AssertionError("voice-mode Send Without Refine must not also start the next recording")
 
 text_voice = block(keyboard, "@objc private func textVoiceTapped(")
-if "guard stopActiveRefineFromUserAction()" not in text_voice:
+if "guard stopLivePartialRefineFromUserAction()" not in text_voice:
     raise AssertionError("text keyboard mic cannot replace an active refine")
-skip_call = text_voice.index("guard stopActiveRefineFromUserAction()")
+if "stopActiveStyleRewriteFromUserAction()" not in text_voice:
+    raise AssertionError("text keyboard style rewrite stop boundary is missing")
+skip_call = text_voice.index("guard stopLivePartialRefineFromUserAction()")
 next_start = text_voice.index("beginDictationFromKeyboard(")
 if "return" in text_voice[skip_call:next_start].split("}", 1)[-1]:
     raise AssertionError("text keyboard mic stops after skipping A instead of starting B")
+
+text_space = block(keyboard, "private func handleTextSpace(")
+space_sending = text_space[text_space.index("if currentBridgeStatus?.state == .sending"):]
+space_sending = space_sending[:space_sending.index("clearTransientKeyboardErrorIfShowing()")]
+if "stopActiveRefineFromUserAction()" not in space_sending or "return" not in space_sending:
+    raise AssertionError("text-keyboard Send Without Refine must commit A without starting B")
+
+rime_mutation = block(keyboard, "private func applyRimeState(")
+if "validateRimeInputTargetForMutation()" not in rime_mutation:
+    raise AssertionError("Rime proxy mutation is not target scoped")
+rime_discard = block(keyboard, "private func discardStaleRimeInput(")
+for forbidden in ("textDocumentProxy", "replaceMarkedText", "unmarkText"):
+    if forbidden in rime_discard:
+        raise AssertionError(f"stale Rime cleanup mutates the new input target: {forbidden}")
+
+apply_status = block(keyboard, "private func applyBridgeStatus(")
+if "status.state == .error" not in apply_status or "finishStartRequestIfNeeded(status: status)" not in apply_status:
+    raise AssertionError("a command-matched start error can leave the start flight active")
+
+for marker in (
+    "private func waitForSourceView() async throws",
+    "private func waitUntilPictureInPictureIsPossible(",
+    "private func waitUntilPictureInPictureIsActive(",
+):
+    wait = block(pip, marker)
+    if "try? await Task.sleep" in wait:
+        raise AssertionError(f"PiP cancellation is swallowed in {marker}")
+
+pip_retry = block(app, "private func startPiPVisibilityWithForegroundRetry(")
+if "try? await Task.sleep" in pip_retry or "guard !Task.isCancelled" not in pip_retry:
+    raise AssertionError("PiP outer retry does not propagate cancellation")
+active_wait = block(app, "private func waitUntilApplicationIsActive(")
+if "try? await Task.sleep" in active_wait or "!Task.isCancelled" not in active_wait:
+    raise AssertionError("foreground wait swallows PiP cancellation")
+
+ensure_ready = block(local_server, "func ensureReady(")
+for required in ("catch is CancellationError", "wasCancelled = true", "!wasCancelled"):
+    if required not in ensure_ready:
+        raise AssertionError(f"local bridge cancellation can mutate readiness: {required}")
+self_probe = block(local_server, "private func selfProbe(")
+if "async throws -> Bool" not in self_probe or "catch is CancellationError" not in self_probe:
+    raise AssertionError("cancelled self-probe can be treated as a bridge failure")
 
 final_plan = block(keyboard, "private func livePartialFinalCommitPlan(")
 if "anchoredCommitted" in final_plan or "visibleCommitted" in final_plan:
@@ -123,11 +208,26 @@ if "anchoredCommitted" in final_plan or "visibleCommitted" in final_plan:
 ownership = block(keyboard, "private func canCommitOwnedLivePartialMarkedText(")
 for required in (
     "activeMarkedText == preview.text",
-    "before.hasSuffix(activeMarkedText)",
-    "beforeMatches && afterMatches",
+    "capturedIdentity != currentTextInputIdentity",
+    "KeyboardMarkedTextOwnershipPolicy.contextsMatch",
 ):
     if required not in ownership:
         raise AssertionError(f"marked text proof lost invariant: {required}")
+
+for forbidden in (
+    "refineTimeoutTask",
+    "sendingTimeoutTask",
+    "updateRefineTimeoutWatchdog",
+    "updateSendingTimeoutWatchdog",
+):
+    if forbidden in keyboard:
+        raise AssertionError(f"keyboard duplicated host terminal ownership: {forbidden}")
+if "correctionTimeoutMs" in shared or "correctionTimeoutMs" in keyboard:
+    raise AssertionError("keyboard status still carries a duplicate refine timeout contract")
+
+for required in ("beforeCandidates = [before]", "before.hasSuffix(markedText)", "beforeCandidates.append"):
+    if required not in marked_policy:
+        raise AssertionError(f"marked-text host representation regression: {required}")
 
 partial_update = block(keyboard, "private func canPresentLivePartialPreview(")
 for required in (
@@ -151,12 +251,18 @@ start_command = block(keyboard, "private func startDictationCommand(")
 if start_command.index("clearLivePartialMarkedTextIfStillOwned(") > start_command.index("livePartialPreviewState = nil"):
     raise AssertionError("new command forgets the old preview before safely clearing it")
 for required in (
+    "commitDisplayedRimeCompositionIfNeeded()",
     "PendingDictationInsertionAnchor(",
     "contextBefore: limitedContextBefore",
     "contextAfter: limitedContextAfter",
 ):
     if required not in start_command:
         raise AssertionError(f"plain dictation lost insertion anchor: {required}")
+if start_command.index("commitDisplayedRimeCompositionIfNeeded()") > start_command.index("currentDictationContext()"):
+    raise AssertionError("voice input captures its anchor before committing Rime composition")
+
+if "hasRecentProcessingTransportContact" not in keyboard or "processing_host_unavailable" not in keyboard:
+    raise AssertionError("lost host transport can leave the keyboard stuck in Sending")
 
 apply_status = block(keyboard, "private func applyBridgeStatus(")
 for required in (
