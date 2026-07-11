@@ -682,7 +682,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = TypeformeIOS/TypeformeIOS.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 572;
+				CURRENT_PROJECT_VERSION = 580;
 				DEVELOPMENT_ASSET_PATHS = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = TypeformeIOS/Info.plist;
@@ -691,7 +691,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.1.526;
+				MARKETING_VERSION = 0.1.529;
 				PRODUCT_BUNDLE_IDENTIFIER = "$(TYPEFORME_HOST_BUNDLE_IDENTIFIER)";
 				PRODUCT_NAME = Typeforme;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
@@ -711,7 +711,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = TypeformeIOS/TypeformeIOS.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 572;
+				CURRENT_PROJECT_VERSION = 580;
 				DEVELOPMENT_ASSET_PATHS = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = TypeformeIOS/Info.plist;
@@ -720,7 +720,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.1.526;
+				MARKETING_VERSION = 0.1.529;
 				PRODUCT_BUNDLE_IDENTIFIER = "$(TYPEFORME_HOST_BUNDLE_IDENTIFIER)";
 				PRODUCT_NAME = Typeforme;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
@@ -739,7 +739,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = TypeformeKeyboard/TypeformeKeyboard.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 572;
+				CURRENT_PROJECT_VERSION = 580;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = TypeformeKeyboard/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
@@ -748,7 +748,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 0.1.526;
+				MARKETING_VERSION = 0.1.529;
 				PRODUCT_BUNDLE_IDENTIFIER = "$(TYPEFORME_KEYBOARD_BUNDLE_IDENTIFIER)";
 				PRODUCT_NAME = TypeformeKeyboard;
 				SKIP_INSTALL = YES;
@@ -768,7 +768,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = TypeformeKeyboard/TypeformeKeyboard.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 572;
+				CURRENT_PROJECT_VERSION = 580;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = TypeformeKeyboard/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
@@ -777,7 +777,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 0.1.526;
+				MARKETING_VERSION = 0.1.529;
 				PRODUCT_BUNDLE_IDENTIFIER = "$(TYPEFORME_KEYBOARD_BUNDLE_IDENTIFIER)";
 				PRODUCT_NAME = TypeformeKeyboard;
 				SKIP_INSTALL = YES;

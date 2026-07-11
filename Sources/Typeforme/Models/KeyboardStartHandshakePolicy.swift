@@ -49,11 +49,9 @@ struct KeyboardStartHandshakePolicy {
         switch state {
         case .idle, .standby:
             return true
-        case .recording:
+        case .recording, .sending, .result, .error:
             guard let commandID else { return true }
             return !isTrackedStartCommandID(commandID, in: snapshot)
-        case .sending, .result, .error:
-            return false
         }
     }
 }

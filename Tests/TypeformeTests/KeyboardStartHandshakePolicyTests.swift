@@ -68,6 +68,38 @@ struct KeyboardStartHandshakePolicyTests {
         ))
     }
 
+    @Test func ignoresUnscopedAndMismatchedTerminalStatusesDuringStart() {
+        let snapshot = KeyboardStartHandshakePolicy.Snapshot(
+            isStartRequestInFlight: true,
+            pendingStartCommandID: "start-1",
+            activeRecordingCommandID: "start-1",
+            pendingDarwinStartAckCommandID: nil,
+            trackedStartCommandIDs: ["start-1"]
+        )
+
+        for state in [
+            KeyboardStartHandshakePolicy.StatusState.sending,
+            .result,
+            .error,
+        ] {
+            #expect(KeyboardStartHandshakePolicy.shouldIgnoreStatusDuringStart(
+                state: state,
+                commandID: nil,
+                snapshot: snapshot
+            ))
+            #expect(KeyboardStartHandshakePolicy.shouldIgnoreStatusDuringStart(
+                state: state,
+                commandID: "old-start",
+                snapshot: snapshot
+            ))
+            #expect(!KeyboardStartHandshakePolicy.shouldIgnoreStatusDuringStart(
+                state: state,
+                commandID: "start-1",
+                snapshot: snapshot
+            ))
+        }
+    }
+
     @Test func allowsIdleWhenNoStartHandshakeIsActive() {
         let snapshot = KeyboardStartHandshakePolicy.Snapshot(
             isStartRequestInFlight: false,

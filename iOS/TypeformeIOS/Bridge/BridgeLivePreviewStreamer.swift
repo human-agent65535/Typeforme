@@ -16,9 +16,6 @@ final class BridgeLivePreviewStreamer: @unchecked Sendable {
         channels: 1,
         interleaved: false
     )!
-    // Preview transport is intentionally bounded and may discard old packets under
-    // backpressure. Its transcript is display-only; final dictate always uploads
-    // the independently recorded audio file for authoritative batch recognition.
     private static let maxPendingByteCount = 512 * 1024
     private static let finishRequestTimeout: TimeInterval = BridgeSettingsNormalization.asrTimeoutSecondsRange.upperBound + 5
 

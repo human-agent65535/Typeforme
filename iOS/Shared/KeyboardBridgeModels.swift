@@ -258,25 +258,6 @@ enum KeyboardSharedDefaults {
         return handoff
     }
 
-    @discardableResult
-    static func clearHostHandoff(id: String) -> Bool {
-        guard let defaults = suite(),
-              let handoff = loadCodable(KeyboardHostHandoff.self, key: hostHandoffKey),
-              handoff.id == id
-        else { return false }
-        defaults.removeObject(forKey: hostHandoffKey)
-        defaults.synchronize()
-        return true
-    }
-
-    @discardableResult
-    static func clearHostHandoff() -> Bool {
-        guard let defaults = suite() else { return false }
-        defaults.removeObject(forKey: hostHandoffKey)
-        defaults.synchronize()
-        return true
-    }
-
     static func consumeLatestHostHandoff(now: TimeInterval = Date().timeIntervalSince1970) -> KeyboardHostHandoff? {
         guard let defaults = suite(),
               let handoff = loadCodable(KeyboardHostHandoff.self, key: hostHandoffKey),
@@ -326,56 +307,6 @@ enum KeyboardSharedDefaults {
         return command
     }
 
-    @discardableResult
-    static func clearDarwinCommand(
-        action: KeyboardBridgeCommandAction,
-        commandID: String
-    ) -> Bool {
-        let key = darwinCommandKey(for: action)
-        guard let defaults = suite(),
-              let command = loadCodable(KeyboardBridgeCommand.self, key: key),
-              command.action == action,
-              command.id == commandID
-        else { return false }
-        defaults.removeObject(forKey: key)
-        defaults.synchronize()
-        return true
-    }
-
-    static func clearAllDarwinCommands() {
-        guard let defaults = suite() else { return }
-        for action in KeyboardBridgeCommandAction.allCases {
-            defaults.removeObject(forKey: darwinCommandKey(for: action))
-        }
-        defaults.synchronize()
-    }
-
-    static func pruneExpiredControlPlanePayloads(
-        now: TimeInterval = Date().timeIntervalSince1970
-    ) {
-        guard let defaults = suite() else { return }
-        if defaults.object(forKey: hostHandoffKey) != nil {
-            let handoff = loadCodable(KeyboardHostHandoff.self, key: hostHandoffKey)
-            if handoff?.isFresh(now: now) != true {
-                defaults.removeObject(forKey: hostHandoffKey)
-            }
-        }
-        for action in KeyboardBridgeCommandAction.allCases {
-            let key = darwinCommandKey(for: action)
-            guard defaults.object(forKey: key) != nil else { continue }
-            let command = loadCodable(KeyboardBridgeCommand.self, key: key)
-            if command?.action != action || command?.isFresh(now: now) != true {
-                defaults.removeObject(forKey: key)
-            }
-        }
-        if defaults.object(forKey: commandReceiptKey) != nil {
-            let receipt = loadCodable(KeyboardCommandReceipt.self, key: commandReceiptKey)
-            if receipt?.isFresh(now: now) != true {
-                defaults.removeObject(forKey: commandReceiptKey)
-            }
-        }
-    }
-
     private static func darwinCommandKey(for action: KeyboardBridgeCommandAction) -> String {
         "keyboard.darwin-command.\(action.rawValue).v1"
     }
@@ -406,301 +337,6 @@ enum KeyboardSharedDefaults {
     }
 }
 
-private enum KeyboardPendingMailboxLimits {
-    static let maxAge: TimeInterval = 10 * 60
-    static let maxCommandIDBytes = 1_024
-    static let maxResultBytes = 256 * 1_024
-    static let maxResultMessageBytes = 16 * 1_024
-    static let maxDestinationBytes = 128 * 1_024
-    static let maxMailboxBytes = 400 * 1_024
-    static let maxDocumentIdentifierBytes = 4 * 1_024
-    static let maxContextBytes = 16 * 1_024
-
-    static func isValidCommandID(_ commandID: String) -> Bool {
-        let trimmed = commandID.trimmingCharacters(in: .whitespacesAndNewlines)
-        return !trimmed.isEmpty
-            && trimmed == commandID
-            && commandID.utf8.count <= maxCommandIDBytes
-    }
-
-    static func isFresh(_ createdAt: TimeInterval, now: TimeInterval) -> Bool {
-        guard createdAt.isFinite, now.isFinite else { return false }
-        let age = now - createdAt
-        return age >= 0 && age <= maxAge
-    }
-}
-
-/// A final keyboard result that remains available across host/extension
-/// suspension until the destination keyboard explicitly acknowledges it.
-/// Persistence is the protected App Group mailbox; result text must never
-/// enter shared defaults.
-struct KeyboardPendingFinalResult: Codable, Equatable, Sendable {
-    static let maxAge: TimeInterval = KeyboardPendingMailboxLimits.maxAge
-    static let maxEncodedByteCount = KeyboardPendingMailboxLimits.maxResultBytes
-
-    let commandID: String
-    let text: String
-    let message: String
-    let audioDurationSeconds: Double?
-    let audioByteCount: Int?
-    let rawTranscriptLength: Int?
-    let createdAt: TimeInterval
-
-    init(
-        commandID: String,
-        text: String,
-        message: String = "",
-        audioDurationSeconds: Double? = nil,
-        audioByteCount: Int? = nil,
-        rawTranscriptLength: Int? = nil,
-        createdAt: TimeInterval = Date().timeIntervalSince1970
-    ) {
-        self.commandID = commandID
-        self.text = text
-        self.message = message
-        self.audioDurationSeconds = audioDurationSeconds
-        self.audioByteCount = audioByteCount
-        self.rawTranscriptLength = rawTranscriptLength
-        self.createdAt = createdAt
-    }
-
-    func isFresh(now: TimeInterval = Date().timeIntervalSince1970) -> Bool {
-        KeyboardPendingMailboxLimits.isFresh(createdAt, now: now)
-    }
-
-    fileprivate func isValid(now: TimeInterval) -> Bool {
-        guard KeyboardPendingMailboxLimits.isValidCommandID(commandID),
-              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              text.utf8.count <= Self.maxEncodedByteCount,
-              message.utf8.count <= KeyboardPendingMailboxLimits.maxResultMessageBytes,
-              isFresh(now: now)
-        else { return false }
-        if let audioDurationSeconds,
-           (!audioDurationSeconds.isFinite || audioDurationSeconds < 0) {
-            return false
-        }
-        if let audioByteCount, audioByteCount < 0 { return false }
-        if let rawTranscriptLength, rawTranscriptLength < 0 { return false }
-        return true
-    }
-
-    enum CodingKeys: String, CodingKey {
-        case commandID = "command_id"
-        case text
-        case message
-        case audioDurationSeconds = "audio_duration_seconds"
-        case audioByteCount = "audio_byte_count"
-        case rawTranscriptLength = "raw_transcript_length"
-        case createdAt = "created_at"
-    }
-}
-
-/// The document context captured when a keyboard command starts. The final
-/// result is applied only when this command-scoped destination is still valid.
-struct KeyboardPendingDestination: Codable, Equatable, Sendable {
-    static let maxAge: TimeInterval = KeyboardPendingMailboxLimits.maxAge
-    static let maxContextByteCount = KeyboardPendingMailboxLimits.maxContextBytes
-    static let maxEncodedByteCount = KeyboardPendingMailboxLimits.maxDestinationBytes
-
-    let commandID: String
-    let documentIdentifier: String
-    let contextBefore: String
-    let contextAfter: String
-    let contextBeforeAvailable: Bool
-    let contextAfterAvailable: Bool
-    let selectedText: String?
-    let createdAt: TimeInterval
-
-    init(
-        commandID: String,
-        documentIdentifier: String,
-        contextBefore: String,
-        contextAfter: String,
-        contextBeforeAvailable: Bool = true,
-        contextAfterAvailable: Bool = true,
-        selectedText: String?,
-        createdAt: TimeInterval = Date().timeIntervalSince1970
-    ) {
-        self.commandID = commandID
-        self.documentIdentifier = documentIdentifier
-        self.contextBefore = contextBefore
-        self.contextAfter = contextAfter
-        self.contextBeforeAvailable = contextBeforeAvailable
-        self.contextAfterAvailable = contextAfterAvailable
-        self.selectedText = selectedText
-        self.createdAt = createdAt
-    }
-
-    func isFresh(now: TimeInterval = Date().timeIntervalSince1970) -> Bool {
-        KeyboardPendingMailboxLimits.isFresh(createdAt, now: now)
-    }
-
-    fileprivate func isValid(now: TimeInterval) -> Bool {
-        guard KeyboardPendingMailboxLimits.isValidCommandID(commandID),
-              documentIdentifier.utf8.count <= KeyboardPendingMailboxLimits.maxDocumentIdentifierBytes,
-              contextBefore.utf8.count <= Self.maxContextByteCount,
-              contextAfter.utf8.count <= Self.maxContextByteCount,
-              isFresh(now: now)
-        else { return false }
-        return (selectedText?.utf8.count ?? 0) <= Self.maxContextByteCount
-    }
-
-    enum CodingKeys: String, CodingKey {
-        case commandID = "command_id"
-        case documentIdentifier = "document_identifier"
-        case contextBefore = "context_before"
-        case contextAfter = "context_after"
-        case contextBeforeAvailable = "context_before_available"
-        case contextAfterAvailable = "context_after_available"
-        case selectedText = "selected_text"
-        case createdAt = "created_at"
-    }
-}
-
-/// One command-scoped handoff between the keyboard extension and host app.
-/// The keyboard creates the destination before dispatching the command; the
-/// host atomically fills in the final result; the keyboard deletes the file
-/// after applying or explicitly rejecting that result.
-private struct KeyboardPendingMailbox: Codable, Equatable, Sendable {
-    let commandID: String
-    let destination: KeyboardPendingDestination
-    var finalResult: KeyboardPendingFinalResult?
-
-    fileprivate func isValid(now: TimeInterval) -> Bool {
-        guard KeyboardPendingMailboxLimits.isValidCommandID(commandID),
-              destination.commandID == commandID,
-              destination.isValid(now: now)
-        else { return false }
-        guard let finalResult else { return true }
-        return finalResult.commandID == commandID && finalResult.isValid(now: now)
-    }
-
-    enum CodingKeys: String, CodingKey {
-        case commandID = "command_id"
-        case destination
-        case finalResult = "final_result"
-    }
-}
-
-enum KeyboardSharedMailbox {
-    private static let directoryName = "typeforme"
-    private static let fileName = "keyboard-mailbox.v1.json"
-
-    @discardableResult
-    static func savePendingDestination(
-        _ destination: KeyboardPendingDestination,
-        now: TimeInterval = Date().timeIntervalSince1970
-    ) -> Bool {
-        let mailbox = KeyboardPendingMailbox(
-            commandID: destination.commandID,
-            destination: destination,
-            finalResult: nil
-        )
-        return save(mailbox, now: now)
-    }
-
-    @discardableResult
-    static func savePendingFinalResult(
-        _ result: KeyboardPendingFinalResult,
-        now: TimeInterval = Date().timeIntervalSince1970
-    ) -> Bool {
-        guard var mailbox = load(now: now),
-              mailbox.commandID == result.commandID
-        else { return false }
-        mailbox.finalResult = result
-        return save(mailbox, now: now)
-    }
-
-    static func loadPendingDestination(
-        now: TimeInterval = Date().timeIntervalSince1970
-    ) -> KeyboardPendingDestination? {
-        load(now: now)?.destination
-    }
-
-    static func loadPendingDelivery(
-        now: TimeInterval = Date().timeIntervalSince1970
-    ) -> (destination: KeyboardPendingDestination, result: KeyboardPendingFinalResult)? {
-        guard let mailbox = load(now: now),
-              let result = mailbox.finalResult
-        else { return nil }
-        return (mailbox.destination, result)
-    }
-
-    @discardableResult
-    static func clear(commandID: String) -> Bool {
-        guard KeyboardPendingMailboxLimits.isValidCommandID(commandID) else { return false }
-        guard let mailbox = load() else { return clear() }
-        guard mailbox.commandID == commandID else { return false }
-        return clear()
-    }
-
-    @discardableResult
-    static func clear() -> Bool {
-        guard let fileURL = fileURL() else { return false }
-        let fileManager = FileManager.default
-        guard fileManager.fileExists(atPath: fileURL.path) else { return true }
-        do {
-            try fileManager.removeItem(at: fileURL)
-            return true
-        } catch {
-            return false
-        }
-    }
-
-    private static func load(
-        now: TimeInterval = Date().timeIntervalSince1970
-    ) -> KeyboardPendingMailbox? {
-        guard let fileURL = fileURL(),
-              let data = try? Data(contentsOf: fileURL),
-              data.count <= KeyboardPendingMailboxLimits.maxMailboxBytes,
-              let mailbox = try? JSONDecoder().decode(KeyboardPendingMailbox.self, from: data),
-              mailbox.isValid(now: now)
-        else {
-            _ = clear()
-            return nil
-        }
-        return mailbox
-    }
-
-    private static func save(_ mailbox: KeyboardPendingMailbox, now: TimeInterval) -> Bool {
-        guard mailbox.isValid(now: now),
-              let data = try? JSONEncoder().encode(mailbox),
-              data.count <= KeyboardPendingMailboxLimits.maxMailboxBytes,
-              let fileURL = fileURL()
-        else { return false }
-
-        let directoryURL = fileURL.deletingLastPathComponent()
-        do {
-            try FileManager.default.createDirectory(
-                at: directoryURL,
-                withIntermediateDirectories: true,
-                attributes: [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication]
-            )
-            try data.write(
-                to: fileURL,
-                options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication]
-            )
-            var protectedURL = fileURL
-            var resourceValues = URLResourceValues()
-            resourceValues.isExcludedFromBackup = true
-            try protectedURL.setResourceValues(resourceValues)
-            return true
-        } catch {
-            return false
-        }
-    }
-
-    private static func fileURL() -> URL? {
-        FileManager.default.containerURL(
-            forSecurityApplicationGroupIdentifier: TypeformeBundleConfiguration.appGroupIdentifier
-        )?
-        .appendingPathComponent("Library", isDirectory: true)
-        .appendingPathComponent("Application Support", isDirectory: true)
-        .appendingPathComponent(directoryName, isDirectory: true)
-        .appendingPathComponent(fileName, isDirectory: false)
-    }
-}
-
 enum KeyboardSharedKeychain {
     private static let keyboardBridgeService = "\(TypeformeBundleConfiguration.hostBundleIdentifier).keyboard-bridge"
     private static let keyboardBridgeAccount = "keyboard-bridge-token"
@@ -720,7 +356,14 @@ enum KeyboardSharedKeychain {
     }
 
     private static func string(service: String, account: String) -> String? {
-        guard let data = data(service: service, account: account),
+        var query = baseQuery(service: service, account: account)
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        guard status == errSecSuccess,
+              let data = item as? Data,
               let token = String(data: data, encoding: .utf8)
         else {
             return nil
@@ -730,17 +373,6 @@ enum KeyboardSharedKeychain {
         return trimmed.isEmpty ? nil : trimmed
     }
 
-    private static func data(service: String, account: String) -> Data? {
-        var query = baseQuery(service: service, account: account)
-        query[kSecReturnData as String] = true
-        query[kSecMatchLimit as String] = kSecMatchLimitOne
-
-        var item: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &item)
-        guard status == errSecSuccess else { return nil }
-        return item as? Data
-    }
-
     @discardableResult
     private static func save(_ token: String, service: String, account: String) -> Bool {
         let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -748,12 +380,7 @@ enum KeyboardSharedKeychain {
             return delete(service: service, account: account)
         }
 
-        return saveData(Data(trimmed.utf8), service: service, account: account)
-    }
-
-    @discardableResult
-    private static func saveData(_ data: Data, service: String, account: String) -> Bool {
-        guard !data.isEmpty else { return false }
+        let data = Data(trimmed.utf8)
         let query = baseQuery(service: service, account: account)
         let update: [String: Any] = [
             kSecValueData as String: data,
@@ -1141,25 +768,6 @@ enum KeyboardDarwinNotificationName {
     static let keyboardIssueReported = "\(namespace).issueReported"
     static let commandReceiptUpdated = "\(namespace).commandReceiptUpdated"
 
-    static func authenticatedHostEvent(_ name: String, token: String?) -> String? {
-        guard requiresHostAuthentication(name) else { return name }
-        return authenticatedRequest(name, token: token)
-    }
-
-    private static func requiresHostAuthentication(_ name: String) -> Bool {
-        switch name {
-        case transcriptionReady,
-             dictationStarted,
-             dictationStopped,
-             sessionStarted,
-             sessionEnded,
-             commandReceiptUpdated:
-            return true
-        default:
-            return false
-        }
-    }
-
     static func authenticatedRequest(_ name: String, token: String?) -> String? {
         guard let token,
               !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -1170,20 +778,12 @@ enum KeyboardDarwinNotificationName {
 
 enum KeyboardDarwinBridge {
     static func post(_ name: String) {
-        guard let name = KeyboardDarwinNotificationName.authenticatedHostEvent(
-            name,
-            token: KeyboardSharedKeychain.keyboardBridgeToken()
-        ) else { return }
         let center = CFNotificationCenterGetDarwinNotifyCenter()
         CFNotificationCenterPostNotification(center, CFNotificationName(name as CFString), nil, nil, true)
     }
 
     static func observe(_ name: String, callback: @escaping () -> Void) -> KeyboardDarwinNotificationObserver {
-        let resolvedName = KeyboardDarwinNotificationName.authenticatedHostEvent(
-            name,
-            token: KeyboardSharedKeychain.keyboardBridgeToken()
-        ) ?? "\(name).authentication-unavailable"
-        return KeyboardDarwinNotificationObserver(name: resolvedName, callback: callback)
+        KeyboardDarwinNotificationObserver(name: name, callback: callback)
     }
 }
 
@@ -1263,7 +863,7 @@ enum VoiceInputMode: String, CaseIterable, Identifiable, Codable {
     }
 }
 
-enum KeyboardBridgeCommandAction: String, Codable, CaseIterable, Sendable {
+enum KeyboardBridgeCommandAction: String, Codable, Sendable {
     case start
     case stop
     case cancel
@@ -1634,13 +1234,6 @@ enum KeyboardBridgeProcessingStage: String, Codable, Equatable, Sendable {
 }
 
 struct KeyboardBridgeStatus: Codable, Equatable, Sendable {
-    /// Identifies one host-app process lifetime. Revisions are only comparable
-    /// within the same host instance.
-    let hostInstanceID: String
-    /// Strictly increasing sequence assigned by the host before a status frame
-    /// leaves the app. The keyboard uses it to reject delayed heartbeats and
-    /// queued frames from an earlier state transition.
-    let revision: UInt64
     let commandID: String?
     let state: KeyboardBridgeState
     let message: String
@@ -1672,8 +1265,6 @@ struct KeyboardBridgeStatus: Codable, Equatable, Sendable {
     let updatedAt: TimeInterval
 
     init(
-        hostInstanceID: String = "",
-        revision: UInt64 = 0,
         commandID: String? = nil,
         state: KeyboardBridgeState,
         message: String,
@@ -1689,8 +1280,6 @@ struct KeyboardBridgeStatus: Codable, Equatable, Sendable {
         correctionTimeoutMs: Int? = nil,
         updatedAt: TimeInterval = Date().timeIntervalSince1970
     ) {
-        self.hostInstanceID = hostInstanceID
-        self.revision = revision
         self.commandID = commandID
         self.state = state
         self.message = message
@@ -1709,8 +1298,6 @@ struct KeyboardBridgeStatus: Codable, Equatable, Sendable {
 
     func withAudioLevel(_ level: Float?) -> KeyboardBridgeStatus {
         KeyboardBridgeStatus(
-            hostInstanceID: hostInstanceID,
-            revision: revision,
             commandID: commandID,
             state: state,
             message: message,
@@ -1730,8 +1317,6 @@ struct KeyboardBridgeStatus: Codable, Equatable, Sendable {
 
     func withLivePartialTranscript(_ text: String?) -> KeyboardBridgeStatus {
         KeyboardBridgeStatus(
-            hostInstanceID: hostInstanceID,
-            revision: revision,
             commandID: commandID,
             state: state,
             message: message,
@@ -1751,8 +1336,6 @@ struct KeyboardBridgeStatus: Codable, Equatable, Sendable {
 
     func withBackendReachable(_ reachable: Bool?) -> KeyboardBridgeStatus {
         KeyboardBridgeStatus(
-            hostInstanceID: hostInstanceID,
-            revision: revision,
             commandID: commandID,
             state: state,
             message: message,
@@ -1770,37 +1353,10 @@ struct KeyboardBridgeStatus: Codable, Equatable, Sendable {
         )
     }
 
-    func withHostOrdering(
-        hostInstanceID: String,
-        revision: UInt64,
-        updatedAt: TimeInterval = Date().timeIntervalSince1970
-    ) -> KeyboardBridgeStatus {
-        KeyboardBridgeStatus(
-            hostInstanceID: hostInstanceID,
-            revision: revision,
-            commandID: commandID,
-            state: state,
-            message: message,
-            resultText: resultText,
-            audioDurationSeconds: audioDurationSeconds,
-            audioByteCount: audioByteCount,
-            rawTranscriptLength: rawTranscriptLength,
-            defaultCorrectionMode: defaultCorrectionMode,
-            audioLevel: audioLevel,
-            livePartialTranscript: livePartialTranscript,
-            backendReachable: backendReachable,
-            processingStage: processingStage,
-            correctionTimeoutMs: correctionTimeoutMs,
-            updatedAt: updatedAt
-        )
-    }
-
     static let idle = KeyboardBridgeStatus(state: .idle, message: "Keyboard standby is off")
 
     var redactedForSharedDefaults: KeyboardBridgeStatus {
         KeyboardBridgeStatus(
-            hostInstanceID: hostInstanceID,
-            revision: revision,
             commandID: commandID,
             state: state,
             message: message,

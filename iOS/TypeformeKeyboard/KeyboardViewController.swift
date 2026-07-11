@@ -326,21 +326,25 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     private struct PendingRecordingTextTarget {
         let commandID: String
-        let documentIdentifier: String
         let target: TextRewriteTarget
+    }
+
+    private struct PendingDictationInsertionAnchor {
+        let commandID: String
+        let contextBefore: String
+        let contextAfter: String
     }
 
     private struct LivePartialPreviewState {
         let commandID: String
-        let documentIdentifier: String
         var text: String
         var contextBefore: String
         var contextAfter: String
         var consumedByUser: Bool
+        var ownershipInvalidated: Bool
     }
 
     private struct LivePartialPreviewAnchor {
-        let documentIdentifier: String
         let contextBefore: String
         let contextAfter: String
     }
@@ -348,8 +352,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private enum LivePartialFinalCommitPlan {
         case consumed
         case ownedMarked
-        case visibleCommitted
-        case anchoredCommitted(AnchoredTextRange)
         case missingAnchor
 
         var logName: String {
@@ -358,18 +360,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 return "consumed"
             case .ownedMarked:
                 return "owned_marked"
-            case .visibleCommitted:
-                return "visible_committed"
-            case .anchoredCommitted:
-                return "anchored_committed"
             case .missingAnchor:
                 return "missing_anchor"
             }
         }
-    }
-
-    private struct AnchoredTextRange {
-        let upperOffset: Int
     }
 
     private enum RefineUndoScope: String, Codable {
@@ -439,7 +433,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private let touchLearningResetGenerationKey = "keyboard.touchLearningResetGeneration"
     private let rimeUserPhrasesRevisionKey = "keyboard.rimeUserPhrasesRevision"
     private let lastInsertedCommandIDKey = "keyboard.lastInsertedCommandID"
-    private let pendingStyleRewriteCommandIDKey = "keyboard.pendingStyleRewriteCommandID.v1"
     private let refineUndoStateKey = "keyboard.refineUndoState.v2"
     private let textTouchLearningStatsKey = "keyboard.textTouchGaussianStats.v1"
     private let keyboardTouchTraceEnabledKey = "keyboard.touchTraceEnabled"
@@ -471,7 +464,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private let chineseLearningRecorder = ChineseLearningRecorder()
     private var pendingRimeCharacters: [String] = []
     private var pendingRimeDirectTextKeys: [String] = []
-    private var pendingRimeDocumentIdentifier: String?
     private var activeMarkedText = ""
     private var activeMarkedTextOwner: MarkedTextOwner?
     private var heightConstraint: NSLayoutConstraint?
@@ -496,10 +488,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private var orbContainerHeightConstraint: NSLayoutConstraint?
     private var textKeyboardContainerHeightConstraint: NSLayoutConstraint?
     private var lastStatusSignature = ""
-    private var activeHostStatusInstanceID: String?
-    private var activeHostStatusRevision: UInt64 = 0
-    private var activeHostStatusUpdatedAt: TimeInterval = 0
-    private var retiredHostStatusInstanceIDs: Set<String> = []
     private var lastMissingAudioLevelLogAt: TimeInterval = 0
     private var isApplyingHostBridgeStatus = false
     private var lastReportedKeyboardIssueSignature = ""
@@ -569,15 +557,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private var isCommandPressActive = false
     private var activeRecordingCommandID: String?
     private var activeRecordingTextTarget: PendingRecordingTextTarget?
-    private var activeDictationDestination: KeyboardPendingDestination?
-    private var isRecoveringPendingFinalResult = false
     private var activeRecordingTextEditIntent: TextEditIntent?
+    private var activeDictationInsertionAnchor: PendingDictationInsertionAnchor?
     private var livePartialPreviewState: LivePartialPreviewState?
     private var suppressedRefineResultCommandIDs: [String: TimeInterval] = [:]
     private var pendingStopCommandID: String?
     private var pendingCancelCommandID: String?
     private var recentSelectionTarget: TextRewriteTarget?
-    private var recentSelectionDocumentIdentifier: String?
     private var recentSelectionCapturedAt: TimeInterval = 0
     private var refineUndoState: RefineUndoState?
     private var styleRewriteCommandID: String?
@@ -595,6 +581,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private var lastStatusStreamFrameAt: TimeInterval = 0
     private var statusStreamStopTask: Task<Void, Never>?
     private var activeStatusReconcileTask: Task<Void, Never>?
+    private var refineTimeoutTask: Task<Void, Never>?
+    private var refineTimeoutGeneration: UInt64 = 0
+    private var refineTimeoutKey: String?
+    private var sendingTimeoutTask: Task<Void, Never>?
+    private var sendingTimeoutGeneration: UInt64 = 0
+    private var sendingTimeoutKey: String?
     private var lastSlowUpdateUILogAt: TimeInterval = 0
     private var lastStatusStreamFailureLogAt: TimeInterval = 0
     private var lastActiveStatusReconcileLogAt: TimeInterval = 0
@@ -626,6 +618,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private static let textRewriteContextExpansionMaxSteps = 40
     private static let textTouchCorrectionWindow: TimeInterval = 2.25
     private static let textTouchPositiveTTL: TimeInterval = 12
+    private static let defaultCorrectionTimeoutMs = 1500
+    private static let refineTimeoutTransportGrace: TimeInterval = 0.65
     private static let sharedStatusSnapshotMaxAge: TimeInterval = 30
     private static let sharedActiveStatusSnapshotMaxAge: TimeInterval = 3
     private static let sharedStandbyLivenessSnapshotMaxAge: TimeInterval = 8
@@ -639,6 +633,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private static let darwinStartAckTimeout: TimeInterval = 0.45
     private static let startHandshakeCommandTTL: TimeInterval = 12
     private static let processedCommandReceiptTTL: TimeInterval = 30
+    private static let activeSendingTimeoutMinimum: TimeInterval = 30
+    private static let activeSendingTimeoutMaximum: TimeInterval = 90
     private static let textSpaceCursorPointsPerCharacter: CGFloat = 9
     private static let containingAppBundleIdentifier = TypeformeBundleConfiguration.hostBundleIdentifier
     private let deleteRepeatInitialDelay: UInt64 = 450_000_000
@@ -1873,10 +1869,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         configureSystemKeyboardAffordances()
         setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
         configureRimeStateCallback()
-        // Timer-based cleanup cannot run after iOS kills the extension. Prune
-        // expired one-shot handoffs and Darwin commands before restoring any
-        // keyboard state on the next process lifetime.
-        KeyboardSharedDefaults.pruneExpiredControlPlanePayloads()
         loadState()
         syncPrimaryLanguage()
         configureRoot()
@@ -1947,9 +1939,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         logKeyboardPresentationGateIfUnstable()
         logKeyboardStartupSnapshot("viewWillAppear", force: true)
         logKeyboardPresentationLayout("viewWillAppear", force: true)
-        DispatchQueue.main.async { [weak self] in
-            _ = self?.recoverPendingFinalResultIfPossible()
-        }
     }
 
     override func viewDidAppear(_ animated: Bool) {
@@ -2086,7 +2075,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         refreshInputModeSwitchKeyVisibility()
         refreshReturnKeyTitle()
         refreshEnglishLetterCasingIfNeeded()
-        _ = recoverPendingFinalResultIfPossible()
     }
 
     isolated deinit {
@@ -2101,6 +2089,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         chineseLearningRecorder.flush()
         rimeInput.onStateChange = nil
         keyboardDarwinObservers.forEach { $0.stopObserving() }
+        cancelRefineTimeoutWatchdog()
         cancelBridgeCommandTasks()
         styleRewriteTask?.cancel()
         styleConfigureTask?.cancel()
@@ -2110,7 +2099,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         super.viewWillDisappear(animated)
         resetAllPressedControlStates(animated: false)
         if keyboardFocus == .text {
-            commitPendingRimeInputForOwnershipBoundary()
+            pendingRimeCharacters.removeAll()
+            pendingRimeDirectTextKeys.removeAll()
+            commitDisplayedRimeCompositionIfNeeded()
         }
         textTouchLearner.flush()
         chineseLearningRecorder.flush()
@@ -2125,8 +2116,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         textToolbarStatusClearTask = nil
         textToolbarStatusText = nil
         stopBridgeStatusStream()
-        // Clear stale work before dispatching the dismissal cancel below. The
-        // newly created cancel task must not be swept up by this cleanup pass.
+        cancelRefineTimeoutWatchdog()
         cancelBridgeCommandTasks()
         cancelActiveRecordingForKeyboardDismissal()
         refineUndoState = nil
@@ -2263,22 +2253,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let previousRimeUserPhrasesRevision = rimeUserPhrasesRevision
         let previousTextInputLanguage = textInputLanguage
         let previousTouchLearningEnabled = isTouchLearningEnabled
-        let hostRimeUserPhrases = payload.rimeUserPhrases
-        let hostRimeUserPhrasesRevision = payload.rimeUserPhrasesRevision
-        let userPhrasesChanged = hostRimeUserPhrasesRevision != rimeUserPhrasesRevision
-        let rimeProfileWillChange = rimeProfile.dictionaryTier != payload.rimeDictionaryTier
-            || rimeProfile.learningEnabled != payload.rimeLearningEnabled
-            || rimeProfile.correctionEnabled != payload.rimeCorrectionEnabled
-        let rimeLearningWillReset = payload.rimeLearningResetGeneration
-            > defaults.integer(forKey: rimeLearningResetGenerationKey)
-        let rimeRuntimeWillChange = previousChineseInputEnabled != payload.chineseInputEnabled
-            || previousPunctuationStyle != payload.chinesePunctuationStyle
-            || rimeProfileWillChange
-            || userPhrasesChanged
-            || rimeLearningWillReset
-        if applyRimeChanges, rimeRuntimeWillChange {
-            commitPendingRimeInputForOwnershipBoundary()
-        }
 
         isAutoCapitalizationEnabled = payload.autoCapitalizationEnabled
         isCharacterPreviewEnabled = payload.characterPreviewEnabled
@@ -2295,6 +2269,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             pendingTextTouchSample = nil
             pendingTextTouchCorrection = nil
         }
+        let hostRimeUserPhrases = payload.rimeUserPhrases
+        let hostRimeUserPhrasesRevision = payload.rimeUserPhrasesRevision
+        let userPhrasesChanged = hostRimeUserPhrasesRevision != rimeUserPhrasesRevision
         let userPhraseState = rimeInput.setUserPhrases(
             hostRimeUserPhrases,
             revision: hostRimeUserPhrasesRevision,
@@ -2312,7 +2289,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
            shouldApplyDefault,
            let defaultLanguage = textInputLanguage(for: hostDefaultLanguage) {
             if textInputLanguage == .chinese, defaultLanguage == .english {
-                commitPendingRimeInputForOwnershipBoundary()
+                commitDisplayedRimeCompositionIfNeeded()
             }
             textInputLanguage = defaultLanguage
             defaults.set(defaultLanguage.rawValue, forKey: textInputLanguageKey)
@@ -2321,7 +2298,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
         if !isChineseInputEnabled, textInputLanguage != .english {
             if applyRimeChanges {
-                commitPendingRimeInputForOwnershipBoundary()
+                commitDisplayedRimeCompositionIfNeeded()
             }
             textInputLanguage = .english
             defaults.set(TextInputLanguage.english.rawValue, forKey: textInputLanguageKey)
@@ -2907,13 +2884,20 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                             "pending_stop": "\((self.pendingStopCommandID != nil))",
                         ]
                     )
-                    // This Darwin signal has no command payload. It may be a
-                    // delayed notification from the session that finished just
-                    // before a new start, so it must never clear new ownership.
-                    // Reconcile through authenticated channels instead.
-                    self.reconcileAfterPayloadlessHostLifecycleSignal(
-                        event: "darwin_session_ended_reconcile"
-                    )
+                    if self.currentBridgeStatus?.state == .sending || self.pendingStopCommandID != nil {
+                        self.lastDarwinAwakeAt = Date().timeIntervalSince1970
+                        self.updateUI()
+                        return
+                    }
+                    self.cancelScheduledHostOpen()
+                    self.cancelHostWakeResetTask()
+                    self.openingHostUntil = 0
+                    self.isStartRequestInFlight = false
+                    self.tapRecordingActive = false
+                    self.bridgeStatus = KeyboardBridgeStatus(state: .idle, message: self.inputMode.idleTitle)
+                    self.lastBridgeContactAt = 0
+                    self.lastDarwinAwakeAt = 0
+                    self.updateUI()
                 }
             },
             KeyboardDarwinBridge.observe(KeyboardDarwinNotificationName.dictationStarted) { [weak self] in
@@ -2953,33 +2937,50 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             KeyboardDarwinBridge.observe(KeyboardDarwinNotificationName.dictationStopped) { [weak self] in
                 DispatchQueue.main.async {
                     guard let self else { return }
-                    kbLog.notice("darwin dictationStopped received state=\(self.currentBridgeStatus?.state.rawValue ?? "nil", privacy: .public) was_starting=\(self.isStartRequestInFlight, privacy: .public) active_command=\(self.activeRecordingCommandID ?? "none", privacy: .public) pending_stop=\(self.pendingStopCommandID ?? "none", privacy: .public)")
+                    let wasStarting = self.isStartRequestInFlight
+                    kbLog.notice("darwin dictationStopped received state=\(self.currentBridgeStatus?.state.rawValue ?? "nil", privacy: .public) was_starting=\(wasStarting, privacy: .public) active_command=\(self.activeRecordingCommandID ?? "none", privacy: .public) pending_stop=\(self.pendingStopCommandID ?? "none", privacy: .public)")
                     KeyboardDiagnosticEventLog.record(
                         source: "keyboard-ui",
                         event: "darwin_dictation_stopped_received",
                         fields: [
                             "state": self.currentBridgeStatus?.state.rawValue ?? "nil",
-                            "was_starting": "\(self.isStartRequestInFlight)",
+                            "was_starting": "\(wasStarting)",
                             "active_command": self.activeRecordingCommandID ?? "none",
                             "pending_stop": self.pendingStopCommandID ?? "none",
                         ]
                     )
                     self.lastDarwinAwakeAt = Date().timeIntervalSince1970
-                    // Like sessionEnded, this signal is payloadless. A late
-                    // stop from command A must not cancel command B while B is
-                    // starting. Only authenticated status/result sources may
-                    // resolve the current command's ownership.
-                    self.reconcileAfterPayloadlessHostLifecycleSignal(
-                        event: "darwin_dictation_stopped_reconcile"
-                    )
+                    if wasStarting {
+                        // This notification has no command payload. It may be
+                        // A's delayed recording→processing edge after the same
+                        // press has already created B, so it must not clear B.
+                        _ = self.applySharedBridgeStatusSnapshot(allowActiveState: true)
+                        self.recoverBridgeStatusSnapshotForActiveCommand()
+                        self.refreshBridgeStatus(captureSelection: false, force: true)
+                        self.updateActiveStatusReconcileLoopForCurrentStatus()
+                        return
+                    }
+                    self.finishStoppedNotification()
+                    let appliedSnapshot = self.applySharedBridgeStatusSnapshot()
+                    let shouldReconcileStoppedStatus = self.currentBridgeStatus?.state == .sending
+                        || self.pendingStopCommandID != nil
+                    if self.currentBridgeStatus?.state != .result,
+                       self.currentBridgeStatus?.state != .sending {
+                        if !appliedSnapshot {
+                            self.bridgeStatus = KeyboardBridgeStatus(state: .standby, message: "Ready")
+                        }
+                        self.updateUI()
+                    }
+                    if shouldReconcileStoppedStatus {
+                        self.refreshBridgeStatus(captureSelection: false, force: true)
+                        self.recoverBridgeStatusSnapshotForActiveCommand()
+                        self.updateActiveStatusReconcileLoopForCurrentStatus()
+                    }
                 }
             },
             KeyboardDarwinBridge.observe(KeyboardDarwinNotificationName.transcriptionReady) { [weak self] in
                 DispatchQueue.main.async {
                     guard let self else { return }
-                    if self.recoverPendingFinalResultIfPossible() {
-                        return
-                    }
                     self.refreshBridgeStatus(force: true)
                     self.recoverBridgeStatusSnapshotForActiveCommand()
                 }
@@ -4038,7 +4039,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func clearNumericIncompatibleCompositionState() {
-        clearPendingRimeInputQueue()
+        pendingRimeCharacters.removeAll()
+        pendingRimeDirectTextKeys.removeAll()
         clearTextShiftState()
         applyRimeState(rimeInput.clearComposition())
     }
@@ -5588,7 +5590,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         kbLog.debug("voicePressDown fired (bounds=\(NSCoder.string(for: self.voiceButton.bounds), privacy: .public))")
         if stopActiveRefineFromUserAction() {
             lightHaptic()
-            return
         }
         guard !isVoicePressActive else { return }
         isVoicePressActive = true
@@ -5654,9 +5655,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             showTextKeyboardStatus(NSLocalizedString("Opening Typeforme…", comment: "Inline status while dictation handoff is starting"))
             return
         }
-        guard currentBridgeStatus?.state != .sending else {
-            showTextKeyboardStatus(sendingStatusTitle)
-            return
+        if currentBridgeStatus?.state == .sending {
+            guard stopActiveRefineFromUserAction() else {
+                showTextKeyboardStatus(sendingStatusTitle)
+                return
+            }
+            clearRefineUndoStateForManualEdit()
         }
 
         cancelScheduledStop()
@@ -5930,39 +5934,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         continuesAfterRelease _: Bool
     ) {
         guard !isStartRequestInFlight else { return }
-        commitPendingRimeInputForOwnershipBoundary()
         startDictationCommand(textEditContext: textEditContext, target: target)
-    }
-
-    private func commitPendingRimeInputForOwnershipBoundary() {
-        pendingTextTouchCorrection = nil
-        acceptPendingTextTouchIfSurvived()
-
-        let hasPendingInput = !pendingRimeCharacters.isEmpty || !pendingRimeDirectTextKeys.isEmpty
-        if hasPendingInput,
-           pendingRimeDocumentIdentifier != textDocumentProxy.documentIdentifier.uuidString {
-            KeyboardDiagnosticEventLog.record(
-                source: "keyboard-ui",
-                event: "pending_rime_ownership_boundary_discarded_document_changed"
-            )
-            clearPendingRimeInputQueue()
-            let clearedState = rimeInput.clearComposition()
-            clearLocalMarkedTextState()
-            renderRimeState(clearedState)
-            return
-        }
-
-        let pendingRawInput = pendingRimeCharacters.joined() + pendingRimeDirectTextKeys.joined()
-        clearPendingRimeInputQueue()
-        if !pendingRawInput.isEmpty {
-            commitRawRimeInput(pendingRawInput)
-            return
-        }
-
-        commitDisplayedRimeCompositionIfNeeded()
-        if activeMarkedTextOwner == .rimeComposition {
-            replaceMarkedText("")
-        }
     }
 
     private func openHostForDictation(reason: String = "bridge_unavailable", commandID: String? = nil) {
@@ -6060,9 +6032,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             updateUI()
             return
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + KeyboardHostHandoff.maxAge + 1) {
-            KeyboardSharedDefaults.clearHostHandoff(id: handoff.id)
-        }
 
         var components = URLComponents()
         components.scheme = "typeforme"
@@ -6082,7 +6051,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         openHostApp(url) { [weak self] success in
             kbLog.debug("openHostAppForKeyboardAction: open success=\(success, privacy: .public)")
             guard !success else { return }
-            KeyboardSharedDefaults.clearHostHandoff(id: handoff.id)
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 self.cancelHostWakeResetTask()
@@ -6181,48 +6149,17 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             correctionMode = recordingMode
             lastCorrectionModeButtonSignature = ""
         }
+        let dictationContext = textEditContext == nil ? currentDictationContext() : nil
         let command = KeyboardBridgeCommand(
             action: .start,
             correctionMode: recordingMode.rawValue,
             textEditContext: textEditContext,
-            dictationContext: textEditContext == nil ? currentDictationContext() : nil
+            dictationContext: dictationContext
         )
-        let durableDestination: KeyboardPendingDestination?
-        if textEditContext == nil {
-            let contextBefore = textDocumentProxy.documentContextBeforeInput
-            let contextAfter = textDocumentProxy.documentContextAfterInput
-            durableDestination = KeyboardPendingDestination(
-                commandID: command.id,
-                documentIdentifier: textDocumentProxy.documentIdentifier.uuidString,
-                contextBefore: contextBefore ?? "",
-                contextAfter: contextAfter ?? "",
-                contextBeforeAvailable: contextBefore != nil,
-                contextAfterAvailable: contextAfter != nil,
-                selectedText: textDocumentProxy.selectedText
-            )
-        } else if case .selection(let selectedText, let contextBefore, let contextAfter)? = target {
-            durableDestination = KeyboardPendingDestination(
-                commandID: command.id,
-                documentIdentifier: textDocumentProxy.documentIdentifier.uuidString,
-                contextBefore: contextBefore,
-                contextAfter: contextAfter,
-                selectedText: selectedText
-            )
-        } else {
-            durableDestination = nil
-        }
-        if let destination = durableDestination {
-            activeDictationDestination = destination
-            let saved = KeyboardSharedMailbox.savePendingDestination(destination)
-            KeyboardDiagnosticEventLog.record(
-                source: "keyboard-ui",
-                event: saved ? "pending_destination_saved" : "pending_destination_save_failed",
-                fields: ["command_id": command.id]
-            )
-        } else {
-            activeDictationDestination = nil
-            KeyboardSharedMailbox.clear()
-        }
+        clearLivePartialMarkedTextIfStillOwned(
+            commandID: livePartialPreviewState?.commandID,
+            reason: "new_command"
+        )
         livePartialPreviewState = nil
         activeRecordingCommandID = command.id
         pendingStartCommandID = command.id
@@ -6231,15 +6168,15 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         hostOpenAttemptedStartCommandIDs.removeAll(keepingCapacity: true)
         activeRecordingTextEditIntent = textEditContext?.intent
         activeRecordingTextTarget = target.map {
-            PendingRecordingTextTarget(
+            PendingRecordingTextTarget(commandID: command.id, target: $0)
+        }
+        activeDictationInsertionAnchor = textEditContext == nil
+            ? PendingDictationInsertionAnchor(
                 commandID: command.id,
-                documentIdentifier: textDocumentProxy.documentIdentifier.uuidString,
-                target: $0
+                contextBefore: limitedContextBefore(textDocumentProxy.documentContextBeforeInput ?? ""),
+                contextAfter: limitedContextAfter(textDocumentProxy.documentContextAfterInput ?? "")
             )
-        }
-        if activeMarkedTextOwner == .livePartial {
-            replaceMarkedText("")
-        }
+            : nil
         logKeyboardStartDiagnostics(commandID: command.id, event: "intent")
         scheduleStartConfirmationTimeout(commandID: command.id)
         sendBridgeCommand(command)
@@ -6346,14 +6283,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             updateUI()
         case .bridgeReady:
             lastDarwinAwakeAt = now
-            if isStartRequestInFlight,
-               pendingStartCommandID == receipt.commandID {
-                // Host may be waiting for the previous command's terminal
-                // cleanup before it can claim audio for this one. A fresh
-                // bridge-ready receipt is real forward progress, so give the
-                // recording confirmation its full bounded window.
-                scheduleStartConfirmationTimeout(commandID: receipt.commandID)
-            }
             refreshBridgeStatus(captureSelection: false, force: true)
         case .bridgeUnavailable:
             logKeyboardStartDiagnostics(commandID: receipt.commandID, event: "darwin_start_bridge_unavailable")
@@ -6640,7 +6569,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             || isCommandPressActive
             || activeRecordingCommandID != nil
             || activeRecordingTextTarget != nil
+            || pendingStopCommandID != nil
             || currentBridgeStatus?.state == .recording
+            || currentBridgeStatus?.state == .sending
         guard shouldCancel else { return }
 
         if isOpeningHostApp, isStartRequestInFlight {
@@ -6666,51 +6597,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         cancelDarwinStartAckTimeout()
         cancelScheduledHostOpen()
         shouldCancelWhenStartCompletes = isStartRequestInFlight
-        let commandID = activeRecordingCommandID
-            ?? activeRecordingTextTarget?.commandID
-            ?? UUID().uuidString
-        let command = KeyboardBridgeCommand(
-            id: commandID,
-            action: .cancel,
-            correctionMode: correctionMode.rawValue
-        )
-        sendBridgeCommand(command)
-
-        // Dismissal can deallocate the extension before the local request
-        // finishes. Post the authenticated Darwin command immediately as an
-        // independent path. Both deliveries carry the same command id, so a
-        // pending start is canceled consistently whichever arrives first.
-        guard KeyboardSharedDefaults.saveDarwinCommand(command) else {
-            kbLog.error("keyboard dismissal cancel backup save failed command_id=\(commandID, privacy: .public)")
-            KeyboardDiagnosticEventLog.record(
-                source: "keyboard-ui",
-                event: "dismissal_cancel_backup_save_failed",
-                fields: ["command_id": commandID]
-            )
-            return
-        }
-        scheduleDarwinCommandCleanup(command)
-        guard postAuthenticatedKeyboardRequest(
-            KeyboardDarwinNotificationName.requestCancelDictation
-        ) else {
-            KeyboardSharedDefaults.clearDarwinCommand(
-                action: command.action,
-                commandID: command.id
-            )
-            kbLog.error("keyboard dismissal cancel backup post failed command_id=\(commandID, privacy: .public)")
-            KeyboardDiagnosticEventLog.record(
-                source: "keyboard-ui",
-                event: "dismissal_cancel_backup_post_failed",
-                fields: ["command_id": commandID]
-            )
-            return
-        }
-        kbLog.notice("keyboard dismissal cancel backup posted command_id=\(commandID, privacy: .public)")
-        KeyboardDiagnosticEventLog.record(
-            source: "keyboard-ui",
-            event: "dismissal_cancel_backup_dispatched",
-            fields: ["command_id": commandID]
-        )
+        sendBridgeCommand(.cancel)
     }
 
     private func cancelActiveHoldRecording() {
@@ -7033,23 +6920,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             correctionMode: preset.rawValue,
             text: target.text
         )
-        let destination = pendingDestination(commandID: command.id, replacing: target)
-        activeDictationDestination = destination
-        let savedDestination = KeyboardSharedMailbox.savePendingDestination(destination)
-        defaults.set(command.id, forKey: pendingStyleRewriteCommandIDKey)
-        KeyboardDiagnosticEventLog.record(
-            source: "keyboard-ui",
-            event: savedDestination ? "style_rewrite_destination_saved" : "style_rewrite_destination_save_failed",
-            fields: ["command_id": command.id]
-        )
         styleRewriteCommandID = command.id
-        let sendingStatus = KeyboardBridgeStatus(
+        bridgeStatus = KeyboardBridgeStatus(
             commandID: command.id,
             state: .sending,
             message: "Refining",
             processingStage: .refining
         )
-        bridgeStatus = sendingStatus
         lastBridgeContactAt = Date().timeIntervalSince1970
         updateUI()
         showTextKeyboardStatus(NSLocalizedString("Refining", comment: "Inline status while refining recent text"))
@@ -7068,12 +6945,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 await MainActor.run {
                     guard !Task.isCancelled else { return }
                     self.styleRewriteTask = nil
-                    self.finishStyleRewrite(
-                        status: status,
-                        target: target,
-                        destination: destination,
-                        commandID: command.id
-                    )
+                    self.finishStyleRewrite(status: status, target: target, commandID: command.id)
                 }
             } catch {
                 guard !Task.isCancelled else { return }
@@ -7081,9 +6953,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                     guard !Task.isCancelled else { return }
                     self.styleRewriteTask = nil
                     guard self.styleRewriteCommandID == command.id else { return }
-                    // Keep the durable destination and command marker: the host
-                    // may have completed after the localhost response timed out,
-                    // in which case the Keychain mailbox remains recoverable.
                     self.styleRewriteCommandID = nil
                     self.bridgeStatus = KeyboardBridgeStatus(commandID: command.id, state: .error, message: "Open Typeforme once to prepare rewriting.")
                     self.lastBridgeContactAt = 0
@@ -7091,45 +6960,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 }
             }
         }
-    }
-
-    private func pendingDestination(
-        commandID: String,
-        replacing target: TextRewriteTarget
-    ) -> KeyboardPendingDestination {
-        let documentIdentifier = textDocumentProxy.documentIdentifier.uuidString
-        switch target {
-        case .selection(let text, let contextBefore, let contextAfter):
-            return KeyboardPendingDestination(
-                commandID: commandID,
-                documentIdentifier: documentIdentifier,
-                contextBefore: contextBefore,
-                contextAfter: contextAfter,
-                selectedText: text
-            )
-        case .context(let before, let after):
-            return KeyboardPendingDestination(
-                commandID: commandID,
-                documentIdentifier: documentIdentifier,
-                contextBefore: before,
-                contextAfter: after,
-                selectedText: nil
-            )
-        }
-    }
-
-    private func rewriteTarget(from destination: KeyboardPendingDestination) -> TextRewriteTarget {
-        if let selectedText = destination.selectedText {
-            return .selection(
-                text: selectedText,
-                contextBefore: destination.contextBefore,
-                contextAfter: destination.contextAfter
-            )
-        }
-        return .context(
-            before: destination.contextBefore,
-            after: destination.contextAfter
-        )
     }
 
     private func saveCorrectionModeForNextRecording(using preset: CorrectionMode) {
@@ -7339,14 +7169,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func captureSelectionTarget(_ selected: String) -> TextRewriteTarget {
-        let documentIdentifier = textDocumentProxy.documentIdentifier.uuidString
         let target = TextRewriteTarget.selection(
             text: selected,
             contextBefore: textDocumentProxy.documentContextBeforeInput ?? "",
             contextAfter: textDocumentProxy.documentContextAfterInput ?? ""
         )
         recentSelectionTarget = target
-        recentSelectionDocumentIdentifier = documentIdentifier
         recentSelectionCapturedAt = Date().timeIntervalSince1970
         return target
     }
@@ -7360,11 +7188,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     private func recentSelectionTargetIfFresh() -> TextRewriteTarget? {
         guard let recentSelectionTarget else { return nil }
-        guard recentSelectionDocumentIdentifier == textDocumentProxy.documentIdentifier.uuidString,
-              Date().timeIntervalSince1970 - recentSelectionCapturedAt <= selectionSnapshotTTL
-        else {
-            self.recentSelectionTarget = nil
-            recentSelectionDocumentIdentifier = nil
+        guard Date().timeIntervalSince1970 - recentSelectionCapturedAt <= selectionSnapshotTTL else {
             return nil
         }
         return recentSelectionTarget
@@ -7401,192 +7225,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         return KeyboardDictationContext(contextBefore: before, contextAfter: after)
     }
 
-    private func dictationDestinationIsCurrent(_ destination: KeyboardPendingDestination) -> Bool {
-        let currentBefore = textDocumentProxy.documentContextBeforeInput
-        let currentAfter = textDocumentProxy.documentContextAfterInput
-        let hasReliableAnchor = destination.contextBeforeAvailable
-            || destination.contextAfterAvailable
-            || destination.selectedText != nil
-        let hasLiveCommandOwnership = activeDictationDestination == destination
-        return (hasReliableAnchor || hasLiveCommandOwnership)
-            && textDocumentProxy.documentIdentifier.uuidString == destination.documentIdentifier
-            && (currentBefore != nil) == destination.contextBeforeAvailable
-            && (currentAfter != nil) == destination.contextAfterAvailable
-            && (currentBefore ?? "") == destination.contextBefore
-            && (currentAfter ?? "") == destination.contextAfter
-            && textDocumentProxy.selectedText == destination.selectedText
-    }
-
-    private func pendingDestination(matching commandID: String) -> KeyboardPendingDestination? {
-        if let activeDictationDestination,
-           activeDictationDestination.commandID == commandID {
-            return activeDictationDestination
-        }
-        guard let destination = KeyboardSharedMailbox.loadPendingDestination(),
-              destination.commandID == commandID
-        else { return nil }
-        return destination
-    }
-
-    private func clearDictationDestinationIfMatching(commandID: String?) {
-        if let commandID {
-            if activeDictationDestination?.commandID == commandID {
-                activeDictationDestination = nil
-            }
-            KeyboardSharedMailbox.clear(commandID: commandID)
-        } else {
-            activeDictationDestination = nil
-            KeyboardSharedMailbox.clear()
-        }
-    }
-
-    private func acknowledgePendingMailbox(commandID: String) {
-        if activeDictationDestination?.commandID == commandID {
-            activeDictationDestination = nil
-        }
-        let acknowledged = KeyboardSharedMailbox.clear(commandID: commandID)
-        KeyboardDiagnosticEventLog.record(
-            source: "keyboard-ui",
-            event: "pending_mailbox_acknowledged",
-            fields: [
-                "command_id": commandID,
-                "cleared": "\(acknowledged)",
-            ]
-        )
-    }
-
-    @discardableResult
-    private func recoverPendingFinalResultIfPossible() -> Bool {
-        guard !isRecoveringPendingFinalResult,
-              hasFullAccess,
-              let delivery = KeyboardSharedMailbox.loadPendingDelivery()
-        else { return false }
-        let result = delivery.result
-
-        // A result that was already inserted, copied, or explicitly
-        // suppressed may arrive after the first ACK attempt. Clear it even if
-        // its destination has already been removed so it cannot linger.
-        if defaults.string(forKey: lastInsertedCommandIDKey) == result.commandID {
-            KeyboardSharedMailbox.clear(commandID: result.commandID)
-            if activeDictationDestination?.commandID == result.commandID {
-                activeDictationDestination = nil
-            }
-            if defaults.string(forKey: pendingStyleRewriteCommandIDKey) == result.commandID {
-                defaults.removeObject(forKey: pendingStyleRewriteCommandIDKey)
-            }
-            return true
-        }
-
-        let destination = delivery.destination
-        isRecoveringPendingFinalResult = true
-        defer { isRecoveringPendingFinalResult = false }
-
-        if defaults.string(forKey: pendingStyleRewriteCommandIDKey) == result.commandID {
-            guard dictationDestinationIsCurrent(destination),
-                  activeMarkedText.isEmpty
-            else {
-                KeyboardDiagnosticEventLog.record(
-                    source: "keyboard-ui",
-                    event: "pending_final_result_destination_not_current",
-                    fields: ["command_id": result.commandID]
-                )
-                return false
-            }
-            let status = KeyboardBridgeStatus(
-                commandID: result.commandID,
-                state: .result,
-                message: result.message,
-                resultText: result.text,
-                audioDurationSeconds: result.audioDurationSeconds,
-                audioByteCount: result.audioByteCount,
-                rawTranscriptLength: result.rawTranscriptLength,
-                processingStage: .refining
-            )
-            finishStyleRewrite(
-                status: status,
-                target: rewriteTarget(from: destination),
-                destination: destination,
-                commandID: result.commandID
-            )
-            return true
-        }
-
-        if let preview = livePartialPreviewState,
-           preview.commandID == result.commandID {
-            guard activeMarkedText.isEmpty || activeMarkedTextOwner == .livePartial else {
-                KeyboardDiagnosticEventLog.record(
-                    source: "keyboard-ui",
-                    event: "pending_final_result_marked_text_not_owned",
-                    fields: ["command_id": result.commandID]
-                )
-                return false
-            }
-            let didApply = applyFinalResultForLivePartialPreview(
-                preview,
-                finalText: result.text
-            )
-            finishRecoveredPendingFinalResult(result, didApply: didApply)
-            return true
-        }
-
-        guard dictationDestinationIsCurrent(destination),
-              activeMarkedText.isEmpty
-        else {
-            KeyboardDiagnosticEventLog.record(
-                source: "keyboard-ui",
-                event: "pending_final_result_destination_not_current",
-                fields: ["command_id": result.commandID]
-            )
+    private func matchesCurrentInsertionAnchor(_ anchor: PendingDictationInsertionAnchor) -> Bool {
+        guard !anchor.contextBefore.isEmpty || !anchor.contextAfter.isEmpty else {
             return false
         }
-
-        commitTextReplacingMarkedText(result.text, reason: .bridgeResult)
-        clearLocalMarkedTextState()
-        finishRecoveredPendingFinalResult(result, didApply: true)
-        return true
-    }
-
-    private func finishRecoveredPendingFinalResult(
-        _ result: KeyboardPendingFinalResult,
-        didApply: Bool
-    ) {
-        defaults.set(result.commandID, forKey: lastInsertedCommandIDKey)
-        KeyboardSharedMailbox.clear(commandID: result.commandID)
-        if activeDictationDestination?.commandID == result.commandID {
-            activeDictationDestination = nil
-        }
-        activeRecordingCommandID = nil
-        pendingStartCommandID = nil
-        pendingStopCommandID = nil
-        pendingCancelCommandID = nil
-        if didApply {
-            bridgeStatus = KeyboardBridgeStatus(
-                commandID: result.commandID,
-                state: .result,
-                message: result.message.isEmpty ? "Inserted" : result.message,
-                resultText: result.text,
-                audioDurationSeconds: result.audioDurationSeconds,
-                audioByteCount: result.audioByteCount,
-                rawTranscriptLength: result.rawTranscriptLength
-            )
-            beginInsertedFlash()
-        } else {
-            copyFallbackText(result.text)
-            bridgeStatus = KeyboardBridgeStatus(
-                commandID: result.commandID,
-                state: .error,
-                message: "Input changed; result copied."
-            )
-        }
-        lastBridgeContactAt = Date().timeIntervalSince1970
-        KeyboardDiagnosticEventLog.record(
-            source: "keyboard-ui",
-            event: didApply
-                ? "pending_final_result_recovered"
-                : "pending_final_result_recovery_copied",
-            fields: ["command_id": result.commandID]
-        )
-        updateUI(animated: hasPresentedInitialFrame)
+        let before = limitedContextBefore(textDocumentProxy.documentContextBeforeInput ?? "")
+        let after = limitedContextAfter(textDocumentProxy.documentContextAfterInput ?? "")
+        return before == anchor.contextBefore && after == anchor.contextAfter
     }
 
     private func limitedContextBefore(_ text: String) -> String {
@@ -7599,24 +7244,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         return String(text.prefix(Self.dictationContextLimit))
     }
 
-    private func finishStyleRewrite(
-        status: KeyboardBridgeStatus,
-        target: TextRewriteTarget,
-        destination: KeyboardPendingDestination,
-        commandID: String
-    ) {
-        guard styleRewriteCommandID == commandID
-                || defaults.string(forKey: pendingStyleRewriteCommandIDKey) == commandID
-        else { return }
+    private func finishStyleRewrite(status: KeyboardBridgeStatus, target: TextRewriteTarget, commandID: String) {
+        guard styleRewriteCommandID == commandID else { return }
         styleRewriteCommandID = nil
         guard status.state == .result,
               let text = status.resultText?.trimmingCharacters(in: .whitespacesAndNewlines),
               !text.isEmpty
         else {
-            if defaults.string(forKey: pendingStyleRewriteCommandIDKey) == commandID {
-                defaults.removeObject(forKey: pendingStyleRewriteCommandIDKey)
-            }
-            acknowledgePendingMailbox(commandID: commandID)
             bridgeStatus = status.state == .error
                 ? status
                 : KeyboardBridgeStatus(commandID: commandID, state: .error, message: status.message)
@@ -7625,18 +7259,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             return
         }
 
-        let targetIsCurrent = activeMarkedText.isEmpty
-            && destination.commandID == commandID
-            && dictationDestinationIsCurrent(destination)
-        guard targetIsCurrent,
-              applyRewrittenText(text, replacing: target)
-        else {
-            defaults.set(commandID, forKey: lastInsertedCommandIDKey)
-            if defaults.string(forKey: pendingStyleRewriteCommandIDKey) == commandID {
-                defaults.removeObject(forKey: pendingStyleRewriteCommandIDKey)
-            }
+        guard applyRewrittenText(text, replacing: target) else {
             copyFallbackText(text)
-            acknowledgePendingMailbox(commandID: commandID)
             bridgeStatus = KeyboardBridgeStatus(commandID: commandID, state: .error, message: "Input changed; result copied.")
             lastBridgeContactAt = Date().timeIntervalSince1970
             updateUI()
@@ -7644,12 +7268,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
         recordRefineUndoState(originalTarget: target, rewrittenText: text)
         defaults.set(commandID, forKey: lastInsertedCommandIDKey)
-        if defaults.string(forKey: pendingStyleRewriteCommandIDKey) == commandID {
-            defaults.removeObject(forKey: pendingStyleRewriteCommandIDKey)
-        }
-        acknowledgePendingMailbox(commandID: commandID)
         recentSelectionTarget = nil
-        recentSelectionDocumentIdentifier = nil
         applyDefaultCorrectionModeFromHost(status.defaultCorrectionMode)
         let resultMessage = status.message
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -7855,7 +7474,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let expectedBefore = contextBefore + target
         guard currentBefore.count < expectedBefore.count,
               expectedBefore.hasSuffix(currentBefore),
-              currentBefore.hasSuffix(target)
+              target.hasSuffix(currentBefore) || currentBefore.hasSuffix(target)
         else { return false }
 
         let afterStillCompatible = contextAfter.isEmpty
@@ -8466,7 +8085,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         )
         switch processResult {
         case .notReady(let state) where state.errorMessage != nil:
-            clearPendingRimeInputQueue()
+            pendingRimeCharacters.removeAll()
+            pendingRimeDirectTextKeys.removeAll()
             applyRimeState(state)
             renderRefineSuggestionsIfIdle()
         case .notReady(let state):
@@ -8477,7 +8097,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func queuePendingRimeCharacter(_ character: String, state: RimeKeyboardState) {
-        preparePendingRimeInputQueueForCurrentDocument()
         guard pendingRimeDirectTextKeys.isEmpty else {
             pendingRimeDirectTextKeys.append(character)
             applyReadyRimeStateOrRender(state)
@@ -8488,28 +8107,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func queuePendingRimeDirectTextKey(_ text: String, state: RimeKeyboardState) {
-        preparePendingRimeInputQueueForCurrentDocument()
         pendingRimeDirectTextKeys.append(text)
         applyReadyRimeStateOrRender(state)
-    }
-
-    private func preparePendingRimeInputQueueForCurrentDocument() {
-        let currentDocumentID = textDocumentProxy.documentIdentifier.uuidString
-        if let pendingRimeDocumentIdentifier,
-           pendingRimeDocumentIdentifier != currentDocumentID {
-            KeyboardDiagnosticEventLog.record(
-                source: "keyboard-ui",
-                event: "pending_rime_input_discarded_document_changed"
-            )
-            clearPendingRimeInputQueue()
-        }
-        pendingRimeDocumentIdentifier = currentDocumentID
-    }
-
-    private func clearPendingRimeInputQueue() {
-        pendingRimeCharacters.removeAll()
-        pendingRimeDirectTextKeys.removeAll()
-        pendingRimeDocumentIdentifier = nil
     }
 
     private func applyReadyRimeStateOrRender(_ state: RimeKeyboardState) {
@@ -8517,24 +8116,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             applyRimeState(state)
             return
         }
-        let hasPendingInput = !pendingRimeCharacters.isEmpty || !pendingRimeDirectTextKeys.isEmpty
-        guard hasPendingInput else {
-            pendingRimeDocumentIdentifier = nil
-            applyRimeState(state)
-            return
-        }
-        guard pendingRimeDocumentIdentifier == textDocumentProxy.documentIdentifier.uuidString else {
-            KeyboardDiagnosticEventLog.record(
-                source: "keyboard-ui",
-                event: "pending_rime_replay_skipped_document_changed"
-            )
-            clearPendingRimeInputQueue()
-            applyRimeState(state)
-            return
-        }
         guard !pendingRimeCharacters.isEmpty else {
             let queuedDirectText = pendingRimeDirectTextKeys.joined()
-            clearPendingRimeInputQueue()
+            pendingRimeDirectTextKeys.removeAll()
             applyRimeState(state)
             guard !queuedDirectText.isEmpty else { return }
             clearRefineUndoStateForManualEdit()
@@ -8548,7 +8132,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
         let queuedCharacters = pendingRimeCharacters
         let queuedDirectText = pendingRimeDirectTextKeys.joined()
-        clearPendingRimeInputQueue()
+        pendingRimeCharacters.removeAll()
+        pendingRimeDirectTextKeys.removeAll()
         var replayState = state
         var replayFailed = false
         for character in queuedCharacters {
@@ -8603,9 +8188,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 pendingRimeDirectTextKeys.removeLast()
             } else {
                 pendingRimeCharacters.removeLast()
-            }
-            if pendingRimeCharacters.isEmpty, pendingRimeDirectTextKeys.isEmpty {
-                pendingRimeDocumentIdentifier = nil
             }
             applyRimeState(rimeInput.state())
             return
@@ -9920,24 +9502,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         activeMarkedTextOwner = nil
     }
 
-    private func discardOwnedLivePartialMarkedText(reason: String) {
-        guard activeMarkedTextOwner == .livePartial else { return }
-        let markedCount = activeMarkedText.count
-        if !activeMarkedText.isEmpty {
-            textDocumentProxy.setMarkedText("", selectedRange: NSRange(location: 0, length: 0))
-            textDocumentProxy.unmarkText()
-        }
-        clearLocalMarkedTextState()
-        KeyboardDiagnosticEventLog.record(
-            source: "keyboard-ui",
-            event: "live_preview_marked_text_discarded",
-            fields: [
-                "reason": reason,
-                "marked_chars": "\(markedCount)",
-            ]
-        )
-    }
-
     private func clearMarkedText(ifOwnedBy owner: MarkedTextOwner) {
         guard activeMarkedTextOwner == owner else { return }
         replaceMarkedText("")
@@ -10025,11 +9589,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
            contextBefore.hasSuffix(preview) {
             contextBefore = String(contextBefore.dropLast(preview.count))
         }
-        return LivePartialPreviewAnchor(
-            documentIdentifier: textDocumentProxy.documentIdentifier.uuidString,
-            contextBefore: contextBefore,
-            contextAfter: contextAfter
-        )
+        return LivePartialPreviewAnchor(contextBefore: contextBefore, contextAfter: contextAfter)
     }
 
     private func currentLivePartialPreviewAnchor() -> LivePartialPreviewAnchor {
@@ -10045,20 +9605,76 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let preview = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !preview.isEmpty else { return }
         if var state = livePartialPreviewState, state.commandID == commandID {
-            guard !state.consumedByUser else { return }
+            guard !state.consumedByUser, !state.ownershipInvalidated else { return }
             state.text = preview
             livePartialPreviewState = state
         } else {
             let anchor = explicitAnchor ?? livePartialPreviewAnchor(excludingVisiblePreview: preview)
             livePartialPreviewState = LivePartialPreviewState(
                 commandID: commandID,
-                documentIdentifier: anchor.documentIdentifier,
                 text: preview,
                 contextBefore: anchor.contextBefore,
                 contextAfter: anchor.contextAfter,
-                consumedByUser: false
+                consumedByUser: false,
+                ownershipInvalidated: false
             )
         }
+    }
+
+    private func canPresentLivePartialPreview(commandID: String, text: String) -> Bool {
+        if var state = livePartialPreviewState {
+            guard state.commandID == commandID else { return false }
+            guard !state.consumedByUser, !state.ownershipInvalidated else { return false }
+            let before = textDocumentProxy.documentContextBeforeInput ?? ""
+            let after = textDocumentProxy.documentContextAfterInput ?? ""
+            guard canCommitOwnedLivePartialMarkedText(state, before: before, after: after) else {
+                state.ownershipInvalidated = true
+                livePartialPreviewState = state
+                if activeMarkedTextOwner == .livePartial {
+                    clearLocalMarkedTextState()
+                }
+                return false
+            }
+            return true
+        }
+
+        guard activeMarkedTextOwner == nil, activeMarkedText.isEmpty else {
+            let anchor = currentLivePartialPreviewAnchor()
+            livePartialPreviewState = LivePartialPreviewState(
+                commandID: commandID,
+                text: text,
+                contextBefore: anchor.contextBefore,
+                contextAfter: anchor.contextAfter,
+                consumedByUser: false,
+                ownershipInvalidated: true
+            )
+            return false
+        }
+        return true
+    }
+
+    private func clearLivePartialMarkedTextIfStillOwned(commandID: String?, reason: String) {
+        guard activeMarkedTextOwner == .livePartial else { return }
+        if let commandID,
+           let state = livePartialPreviewState,
+           state.commandID != commandID {
+            return
+        }
+        let before = textDocumentProxy.documentContextBeforeInput ?? ""
+        let after = textDocumentProxy.documentContextAfterInput ?? ""
+        guard let state = livePartialPreviewState,
+              commandID == nil || state.commandID == commandID,
+              canCommitOwnedLivePartialMarkedText(state, before: before, after: after)
+        else {
+            if var state = livePartialPreviewState {
+                state.ownershipInvalidated = true
+                livePartialPreviewState = state
+            }
+            clearLocalMarkedTextState()
+            kbLog.notice("live partial clear skipped because ownership changed reason=\(reason, privacy: .public)")
+            return
+        }
+        replaceMarkedText("")
     }
 
     @discardableResult
@@ -10077,11 +9693,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let anchor = currentLivePartialPreviewAnchor()
         livePartialPreviewState = LivePartialPreviewState(
             commandID: commandID,
-            documentIdentifier: anchor.documentIdentifier,
             text: activeMarkedText.trimmingCharacters(in: .whitespacesAndNewlines),
             contextBefore: anchor.contextBefore,
             contextAfter: anchor.contextAfter,
-            consumedByUser: true
+            consumedByUser: true,
+            ownershipInvalidated: false
         )
         return true
     }
@@ -10131,8 +9747,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private func stopLivePartialRefineFromUserAction(commandID explicitCommandID: String? = nil) -> Bool {
         let commandID = effectiveLivePartialCommandID(explicitCommandID)
         let didCommit = commitLivePartialBeforeHostReturnIfNeeded(commandID: commandID)
-        let didMark = markLivePartialPreviewConsumed(commandID: commandID)
-        guard didCommit || didMark else { return false }
+        guard didCommit else { return false }
+        _ = markLivePartialPreviewConsumed(commandID: commandID)
 
         let consumedCommandID = commandID ?? currentBridgeStatus?.commandID ?? pendingStopCommandID
         if let consumedCommandID {
@@ -10145,7 +9761,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func finishStoppedLivePartialRefine(commandID: String?) {
-        stopBridgeStatusStream()
+        cancelRefineTimeoutWatchdog()
         clearLivePartialPreview(commandID: commandID)
         if let commandID {
             bridgeCommandTasks[commandID]?.cancel()
@@ -10173,12 +9789,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         guard let commandID = styleRewriteCommandID else { return false }
         suppressRefineResult(commandID: commandID, reason: "style_rewrite_stop")
         styleRewriteCommandID = nil
-        if defaults.string(forKey: pendingStyleRewriteCommandIDKey) == commandID {
-            defaults.removeObject(forKey: pendingStyleRewriteCommandIDKey)
-        }
-        acknowledgePendingMailbox(commandID: commandID)
         styleRewriteTask?.cancel()
         styleRewriteTask = nil
+        cancelRefineTimeoutWatchdog()
         bridgeStatus = KeyboardBridgeStatus(
             commandID: commandID,
             state: .standby,
@@ -10213,21 +9826,23 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         suppressedRefineResultCommandIDs = suppressedRefineResultCommandIDs.filter { $0.value >= cutoff }
     }
 
-    private func shouldIgnoreSuppressedRefineResult(_ status: KeyboardBridgeStatus) -> Bool {
-        guard status.state == .result,
-              let commandID = status.commandID
-        else { return false }
+    private func shouldIgnoreSuppressedRefineStatus(_ status: KeyboardBridgeStatus) -> Bool {
+        guard let commandID = status.commandID else { return false }
         let now = Date().timeIntervalSince1970
         pruneSuppressedRefineResultCommandIDs(now: now)
         guard suppressedRefineResultCommandIDs[commandID] != nil else { return false }
-        kbLog.notice("ignoring suppressed refine result command_id=\(commandID, privacy: .public)")
+        kbLog.notice("ignoring suppressed refine status command_id=\(commandID, privacy: .public) state=\(status.state.rawValue, privacy: .public)")
         return true
     }
 
     @discardableResult
     private func commitLivePartialBeforeHostReturnIfNeeded(commandID explicitCommandID: String? = nil) -> Bool {
-        guard activeMarkedTextOwner == .livePartial,
-              !activeMarkedText.isEmpty
+        let before = textDocumentProxy.documentContextBeforeInput ?? ""
+        let after = textDocumentProxy.documentContextAfterInput ?? ""
+        guard let commandID = effectiveLivePartialCommandID(explicitCommandID),
+              let previewState = livePartialPreviewState,
+              previewState.commandID == commandID,
+              canCommitOwnedLivePartialMarkedText(previewState, before: before, after: after)
         else { return false }
         let preview = activeMarkedText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !preview.isEmpty else {
@@ -10235,82 +9850,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             return false
         }
         let anchor = currentLivePartialPreviewAnchor()
-        commitLivePartialMarkedTextAsPreview(preview, commandID: effectiveLivePartialCommandID(explicitCommandID))
+        commitLivePartialMarkedTextAsPreview(preview, commandID: commandID)
         clearLocalMarkedTextState()
-        if let commandID = effectiveLivePartialCommandID(explicitCommandID) {
-            recordLivePartialPreview(commandID: commandID, text: preview, anchor: anchor)
-        }
+        recordLivePartialPreview(commandID: commandID, text: preview, anchor: anchor)
         return true
-    }
-
-    private func deleteVisibleCommittedLivePartial(_ text: String) -> Bool {
-        guard !text.isEmpty,
-              let before = textDocumentProxy.documentContextBeforeInput,
-              before.hasSuffix(text)
-        else { return false }
-        for _ in text {
-            textDocumentProxy.deleteBackward()
-        }
-        return true
-    }
-
-    private func replaceAnchoredLivePartialPreview(
-        _ preview: LivePartialPreviewState,
-        with finalText: String,
-        range: AnchoredTextRange
-    ) -> Bool {
-        let before = textDocumentProxy.documentContextBeforeInput ?? ""
-
-        let cursorOffset = before.count
-        let moveOffset = range.upperOffset - cursorOffset
-        if moveOffset != 0 {
-            textDocumentProxy.adjustTextPosition(byCharacterOffset: moveOffset)
-        }
-
-        let nextBefore = textDocumentProxy.documentContextBeforeInput ?? ""
-        let nextAfter = textDocumentProxy.documentContextAfterInput ?? ""
-        guard nextBefore.hasSuffix(preview.text),
-              livePartialContextAfterMatches(nextAfter, anchorAfter: preview.contextAfter)
-        else {
-            if moveOffset != 0 {
-                textDocumentProxy.adjustTextPosition(byCharacterOffset: -moveOffset)
-            }
-            return false
-        }
-
-        deleteBackward(characterCount: preview.text.count)
-        textDocumentProxy.insertText(finalText)
-        return true
-    }
-
-    private func uniqueLivePartialPreviewRange(
-        in currentText: String,
-        preview: LivePartialPreviewState
-    ) -> AnchoredTextRange? {
-        guard !preview.text.isEmpty else { return nil }
-        var matches: [AnchoredTextRange] = []
-        var searchStart = currentText.startIndex
-        while searchStart < currentText.endIndex,
-              let range = currentText.range(of: preview.text, range: searchStart..<currentText.endIndex) {
-            let candidateBefore = String(currentText[..<range.lowerBound])
-            let candidateAfter = String(currentText[range.upperBound...])
-            if livePartialContextBeforeMatches(candidateBefore, anchorBefore: preview.contextBefore),
-               livePartialContextAfterMatches(candidateAfter, anchorAfter: preview.contextAfter) {
-                matches.append(AnchoredTextRange(
-                    upperOffset: currentText.distance(from: currentText.startIndex, to: range.upperBound)
-                ))
-            }
-            searchStart = range.upperBound
-        }
-        guard matches.count == 1 else {
-            if matches.count > 1 {
-                kbLog.notice(
-                    "skipped live preview anchored replacement because anchor was ambiguous command_id=\(preview.commandID, privacy: .public) matches=\(matches.count, privacy: .public) preview_chars=\(preview.text.count, privacy: .public)"
-                )
-            }
-            return nil
-        }
-        return matches[0]
     }
 
     private func livePartialContextBeforeMatches(_ candidateBefore: String, anchorBefore: String) -> Bool {
@@ -10337,25 +9880,17 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func livePartialFinalCommitPlan(for preview: LivePartialPreviewState) -> LivePartialFinalCommitPlan {
-        guard textDocumentProxy.documentIdentifier.uuidString == preview.documentIdentifier else {
-            return .missingAnchor
-        }
         if preview.consumedByUser {
             return .consumed
+        }
+        if preview.ownershipInvalidated {
+            return .missingAnchor
         }
 
         let before = textDocumentProxy.documentContextBeforeInput ?? ""
         let after = textDocumentProxy.documentContextAfterInput ?? ""
         if canCommitOwnedLivePartialMarkedText(preview, before: before, after: after) {
             return .ownedMarked
-        }
-        if before.hasSuffix(preview.text) {
-            return .visibleCommitted
-        }
-
-        let currentText = before + after
-        if let range = uniqueLivePartialPreviewRange(in: currentText, preview: preview) {
-            return .anchoredCommitted(range)
         }
         return .missingAnchor
     }
@@ -10383,53 +9918,14 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         case .ownedMarked:
             return commitOwnedLivePartialMarkedTextAsFinal(finalText, preview: preview, plan: plan)
 
-        case .visibleCommitted:
-            if activeMarkedTextOwner == .livePartial {
-                discardOwnedLivePartialMarkedText(reason: "visible_committed")
-            }
-            guard deleteVisibleCommittedLivePartial(preview.text) else {
-                logLivePartialFinalCommitMiss(plan: plan, preview: preview, finalText: finalText)
-                return false
-            }
-            textDocumentProxy.insertText(finalText)
-            kbLog.notice(
-                "live preview final commit applied plan=\(plan.logName, privacy: .public) command_id=\(preview.commandID, privacy: .public) preview_chars=\(preview.text.count, privacy: .public) final_chars=\(finalText.count, privacy: .public)"
-            )
-            KeyboardDiagnosticEventLog.record(
-                source: "keyboard-ui",
-                event: "live_preview_final_commit_applied",
-                fields: livePreviewFinalCommitFields(plan: plan, preview: preview, finalText: finalText)
-            )
-            return true
-
-        case .anchoredCommitted(let range):
-            if activeMarkedTextOwner == .livePartial {
-                discardOwnedLivePartialMarkedText(reason: "anchored_committed")
-            }
-            guard replaceAnchoredLivePartialPreview(preview, with: finalText, range: range) else {
-                logLivePartialFinalCommitMiss(plan: plan, preview: preview, finalText: finalText)
-                return false
-            }
-            kbLog.notice(
-                "live preview final commit applied plan=\(plan.logName, privacy: .public) command_id=\(preview.commandID, privacy: .public) preview_chars=\(preview.text.count, privacy: .public) final_chars=\(finalText.count, privacy: .public)"
-            )
-            var fields = livePreviewFinalCommitFields(plan: plan, preview: preview, finalText: finalText)
-            fields["range_upper_offset"] = "\(range.upperOffset)"
-            KeyboardDiagnosticEventLog.record(
-                source: "keyboard-ui",
-                event: "live_preview_final_commit_applied",
-                fields: fields
-            )
-            return true
-
         case .missingAnchor:
             logLivePartialFinalCommitMiss(plan: plan, preview: preview, finalText: finalText)
-            // The locally tracked marked text can diverge from the anchored
-            // preview after the client changes selection or replaces input.
-            // Never promote that stale partial to a successful final commit;
-            // returning false sends the actual final result through the
-            // clipboard fallback in applyBridgeStatus.
-            discardOwnedLivePartialMarkedText(reason: "missing_anchor")
+            // The proxy target can no longer be proven. Forget only our local
+            // ownership; operating on the current marked text could corrupt a
+            // Rime composition in another target.
+            if activeMarkedTextOwner == .livePartial {
+                clearLocalMarkedTextState()
+            }
             return false
         }
     }
@@ -10500,27 +9996,18 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         after: String
     ) -> Bool {
         guard activeMarkedTextOwner == .livePartial,
-              !activeMarkedText.isEmpty
+              !activeMarkedText.isEmpty,
+              activeMarkedText == preview.text,
+              before.hasSuffix(activeMarkedText)
         else { return false }
-        let activeText = activeMarkedText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let previewText = preview.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !activeText.isEmpty, activeText == previewText {
-            return true
-        }
-        if before.hasSuffix(activeMarkedText) {
-            return true
-        }
-        if preview.contextBefore.isEmpty,
-           preview.contextAfter.isEmpty,
-           before.isEmpty,
-           after.isEmpty {
-            return true
-        }
-        guard !preview.contextBefore.isEmpty || !preview.contextAfter.isEmpty else {
-            return false
-        }
-        return livePartialContextBeforeMatches(before, anchorBefore: preview.contextBefore)
-            && livePartialContextAfterMatches(after, anchorAfter: preview.contextAfter)
+        let baseBefore = String(before.dropLast(activeMarkedText.count))
+        let beforeMatches = preview.contextBefore.isEmpty
+            ? baseBefore.isEmpty
+            : livePartialContextBeforeMatches(baseBefore, anchorBefore: preview.contextBefore)
+        let afterMatches = preview.contextAfter.isEmpty
+            ? after.isEmpty
+            : livePartialContextAfterMatches(after, anchorAfter: preview.contextAfter)
+        return beforeMatches && afterMatches
     }
 
     private func isAlphabeticTextKey(_ character: String) -> Bool {
@@ -11479,7 +10966,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private func sendBridgeCommand(_ action: KeyboardBridgeCommandAction) {
         let commandID: String
         if (action == .stop || action == .cancel),
-           let activeCommandID = activeRecordingCommandID ?? activeRecordingTextTarget?.commandID {
+           let activeCommandID = activeRecordingCommandID
+            ?? activeRecordingTextTarget?.commandID
+            ?? pendingStopCommandID {
             commandID = activeCommandID
         } else {
             commandID = UUID().uuidString
@@ -11527,6 +11016,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 activeRecordingCommandID = nil
                 activeRecordingTextEditIntent = nil
                 activeRecordingTextTarget = nil
+                activeDictationInsertionAnchor = nil
                 livePartialPreviewState = nil
                 cancelScheduledHostOpen()
             }
@@ -11668,7 +11158,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 openHostForDictation(reason: "darwin_start_save_failed", commandID: commandID)
                 return
             }
-            scheduleDarwinCommandCleanup(command)
             if postAuthenticatedKeyboardRequest(KeyboardDarwinNotificationName.requestStartDictation) {
                 scheduleDarwinStartAckTimeout(commandID: commandID)
                 kbLog.notice("darwin start posted command_id=\(commandID, privacy: .public)")
@@ -11678,7 +11167,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                     fields: ["command_id": commandID]
                 )
             } else {
-                KeyboardSharedDefaults.clearDarwinCommand(action: action, commandID: commandID)
                 kbLog.notice("darwin start post failed command_id=\(commandID, privacy: .public)")
                 KeyboardDiagnosticEventLog.record(
                     source: "keyboard-ui",
@@ -11700,15 +11188,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 event: "darwin_stop_dispatch",
                 fields: ["command_id": commandID]
             )
-            guard KeyboardSharedDefaults.saveDarwinCommand(command) else {
-                pendingStopCommandID = nil
-                bridgeStatus = KeyboardBridgeStatus(commandID: commandID, state: .error, message: "Could not send stop command.")
-                updateUI()
-                return
-            }
-            scheduleDarwinCommandCleanup(command)
+            _ = KeyboardSharedDefaults.saveDarwinCommand(command)
             if !postAuthenticatedKeyboardRequest(KeyboardDarwinNotificationName.requestStopDictation) {
-                KeyboardSharedDefaults.clearDarwinCommand(action: action, commandID: commandID)
                 pendingStopCommandID = nil
                 bridgeStatus = KeyboardBridgeStatus(commandID: commandID, state: .error, message: "Open Typeforme once to prepare dictation.")
                 lastBridgeContactAt = 0
@@ -11727,24 +11208,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             activeRecordingCommandID = nil
             activeRecordingTextEditIntent = nil
             activeRecordingTextTarget = nil
+            activeDictationInsertionAnchor = nil
             livePartialPreviewState = nil
             cancelScheduledHostOpen()
-            guard KeyboardSharedDefaults.saveDarwinCommand(command) else { return }
-            scheduleDarwinCommandCleanup(command)
-            if !postAuthenticatedKeyboardRequest(KeyboardDarwinNotificationName.requestCancelDictation) {
-                KeyboardSharedDefaults.clearDarwinCommand(action: action, commandID: commandID)
-            }
+            _ = KeyboardSharedDefaults.saveDarwinCommand(command)
+            _ = postAuthenticatedKeyboardRequest(KeyboardDarwinNotificationName.requestCancelDictation)
         case .configure, .refineText:
             break
-        }
-    }
-
-    private func scheduleDarwinCommandCleanup(_ command: KeyboardBridgeCommand) {
-        DispatchQueue.main.asyncAfter(deadline: .now() + KeyboardBridgeCommand.maxAge + 1) {
-            KeyboardSharedDefaults.clearDarwinCommand(
-                action: command.action,
-                commandID: command.id
-            )
         }
     }
 
@@ -11758,23 +11228,73 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         return true
     }
 
-    private func reconcileAfterPayloadlessHostLifecycleSignal(event: String) {
+    private func finishStoppedNotification() {
+        cancelScheduledHostOpen()
+        guard isStartRequestInFlight else { return }
+        let commandID = pendingStartCommandID ?? activeRecordingCommandID
+        isStartRequestInFlight = false
+        pendingStartCommandID = nil
+        confirmedRecordingCommandID = nil
+        forgetStartHandshakeCommand(commandID)
+        cancelStartConfirmationTimeout()
+        shouldStopWhenStartCompletes = false
+        shouldCancelWhenStartCompletes = false
+        isVoicePressActive = false
+        isCommandPressActive = false
+        tapRecordingActive = false
+        activeRecordingCommandID = nil
+        activeRecordingTextEditIntent = nil
+        activeRecordingTextTarget = nil
+        pendingStopCommandID = nil
+        pendingCancelCommandID = nil
+    }
+
+    private func recoverStoppedStartStatusOrOpenHost() {
+        let bridgeToken = hostKeyboardBridgeToken
+        kbLog.notice("recover stopped start status: probing bridge")
         KeyboardDiagnosticEventLog.record(
             source: "keyboard-ui",
-            event: event,
-            fields: [
-                "pending_start": pendingStartCommandID ?? "none",
-                "active_command": activeRecordingCommandID ?? "none",
-                "pending_stop": pendingStopCommandID ?? "none",
-            ]
+            event: "recover_stopped_start_probe"
         )
-        if recoverPendingFinalResultIfPossible() {
-            return
+        Task { [weak self] in
+            guard let self else { return }
+            let probe = await self.localClient.probeStatus(
+                bridgeToken: bridgeToken,
+                helloTimeout: Self.startProbeHelloTimeout,
+                statusTimeout: Self.startProbeStatusTimeout
+            )
+            await MainActor.run {
+                guard !self.isStartRequestInFlight else { return }
+                switch probe {
+                case .unreachable:
+                    kbLog.notice("recover stopped start status: probe unreachable; opening host")
+                    KeyboardDiagnosticEventLog.record(
+                        source: "keyboard-ui",
+                        event: "recover_stopped_start_probe_unreachable_open_host"
+                    )
+                    self.openHostForDictation(reason: "stopped_start_probe_unreachable")
+                case .reachable(let status):
+                    kbLog.notice("recover stopped start status: probe reachable state=\(status?.state.rawValue ?? "none", privacy: .public) command_id=\(status?.commandID ?? "none", privacy: .public)")
+                    KeyboardDiagnosticEventLog.record(
+                        source: "keyboard-ui",
+                        event: "recover_stopped_start_probe_reachable",
+                        fields: [
+                            "state": status?.state.rawValue ?? "none",
+                            "command_id": status?.commandID ?? "none",
+                        ]
+                    )
+                    if let status {
+                        self.applyBridgeStatus(status)
+                    } else if self.currentBridgeStatus?.state != .recording,
+                              self.currentBridgeStatus?.state != .sending,
+                              self.currentBridgeStatus?.state != .result {
+                        self.bridgeStatus = KeyboardBridgeStatus(state: .standby, message: "Ready")
+                        self.lastBridgeContactAt = Date().timeIntervalSince1970
+                    }
+                    self.updateUI()
+                }
+            }
         }
-        requestSessionStatusChallenge()
-        refreshBridgeStatus(captureSelection: false, force: true)
-        recoverBridgeStatusSnapshotForActiveCommand()
-        updateActiveStatusReconcileLoopForCurrentStatus()
     }
 
     private func scheduleHostOpenIfStartStalls(commandID: String) {
@@ -11907,6 +11427,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         guard currentBridgeStatus?.state == .sending || statusStreamIsStale else { return }
         let expectedCommandID = activeBridgeResultCommandID
         _ = await recoverBridgeStatusSnapshot(expectedCommandID: expectedCommandID)
+        if shouldRecoverActiveBridgeStatus, statusStreamIsStale {
+            refreshBridgeStatus(captureSelection: false, force: true)
+        }
     }
 
     private func logActiveStatusReconcileIfNeeded(statusStreamAge: TimeInterval) {
@@ -11915,6 +11438,171 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         lastActiveStatusReconcileLogAt = now
         let ageMs = statusStreamAge.isFinite ? Int(statusStreamAge * 1_000) : -1
         kbLog.notice("reconciling active keyboard status stream_age_ms=\(ageMs, privacy: .public)")
+    }
+
+    private func cancelRefineTimeoutWatchdog() {
+        refineTimeoutGeneration &+= 1
+        refineTimeoutTask?.cancel()
+        refineTimeoutTask = nil
+        refineTimeoutKey = nil
+    }
+
+    private func cancelSendingTimeoutWatchdog() {
+        sendingTimeoutGeneration &+= 1
+        sendingTimeoutTask?.cancel()
+        sendingTimeoutTask = nil
+        sendingTimeoutKey = nil
+    }
+
+    private func updateRefineTimeoutWatchdog(for status: KeyboardBridgeStatus) {
+        guard status.state == .sending,
+              status.processingStage == .refining,
+              let commandID = status.commandID,
+              status.correctionTimeoutMs != nil
+        else {
+            cancelRefineTimeoutWatchdog()
+            return
+        }
+
+        let key = "\(commandID):\(Int(status.updatedAt * 1000))"
+        guard refineTimeoutKey != key else { return }
+        cancelRefineTimeoutWatchdog()
+        refineTimeoutKey = key
+        refineTimeoutGeneration &+= 1
+        let generation = refineTimeoutGeneration
+        let delay = refineTimeoutDelay(for: status)
+        let statusUpdatedAt = status.updatedAt
+        refineTimeoutTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            await self?.reconcileRefineTimeout(
+                commandID: commandID,
+                statusUpdatedAt: statusUpdatedAt,
+                key: key,
+                generation: generation
+            )
+        }
+    }
+
+    private func refineTimeoutDelay(for status: KeyboardBridgeStatus) -> TimeInterval {
+        let timeoutMs = max(100, min(30_000, status.correctionTimeoutMs ?? Self.defaultCorrectionTimeoutMs))
+        return (Double(timeoutMs) / 1000.0) + Self.refineTimeoutTransportGrace
+    }
+
+    @MainActor
+    private func reconcileRefineTimeout(
+        commandID: String,
+        statusUpdatedAt: TimeInterval,
+        key: String,
+        generation: UInt64
+    ) async {
+        _ = await recoverBridgeStatusSnapshot(expectedCommandID: commandID)
+        guard isCurrentRefineTimeout(commandID: commandID, statusUpdatedAt: statusUpdatedAt, key: key, generation: generation),
+              let current = currentBridgeStatus
+        else { return }
+        applyBridgeStatus(
+            KeyboardBridgeStatus(
+                commandID: commandID,
+                state: .error,
+                message: NSLocalizedString("Refine timed out.", comment: "Keyboard bridge timeout while refining"),
+                audioDurationSeconds: current.audioDurationSeconds,
+                audioByteCount: current.audioByteCount,
+                rawTranscriptLength: current.rawTranscriptLength,
+                defaultCorrectionMode: current.defaultCorrectionMode,
+                backendReachable: current.backendReachable,
+                processingStage: current.processingStage,
+                correctionTimeoutMs: current.correctionTimeoutMs
+            ),
+            recordsLiveContact: false
+        )
+    }
+
+    private func isCurrentRefineTimeout(
+        commandID: String,
+        statusUpdatedAt: TimeInterval,
+        key: String,
+        generation: UInt64
+    ) -> Bool {
+        guard refineTimeoutGeneration == generation,
+              refineTimeoutKey == key,
+              let current = currentBridgeStatus,
+              current.state == .sending,
+              current.commandID == commandID,
+              current.processingStage == .refining
+        else { return false }
+        return abs(current.updatedAt - statusUpdatedAt) < 0.001
+    }
+
+    private func updateSendingTimeoutWatchdog(for status: KeyboardBridgeStatus) {
+        guard status.state == .sending,
+              let commandID = status.commandID
+        else {
+            cancelSendingTimeoutWatchdog()
+            return
+        }
+        let stage = status.processingStage?.rawValue ?? "unknown"
+        let key = "\(commandID):\(stage):\(Int(status.updatedAt * 1000))"
+        guard sendingTimeoutKey != key else { return }
+        cancelSendingTimeoutWatchdog()
+        sendingTimeoutKey = key
+        sendingTimeoutGeneration &+= 1
+        let generation = sendingTimeoutGeneration
+        let statusUpdatedAt = status.updatedAt
+        let delay = sendingTimeoutDelay(for: status)
+        sendingTimeoutTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            await self?.reconcileSendingTimeout(
+                commandID: commandID,
+                statusUpdatedAt: statusUpdatedAt,
+                key: key,
+                generation: generation
+            )
+        }
+    }
+
+    private func sendingTimeoutDelay(for status: KeyboardBridgeStatus) -> TimeInterval {
+        if status.processingStage == .refining {
+            return refineTimeoutDelay(for: status) + 3
+        }
+        let audioDuration = max(0, status.audioDurationSeconds ?? 0)
+        let dynamicDelay = audioDuration * 4 + 20
+        return min(Self.activeSendingTimeoutMaximum, max(Self.activeSendingTimeoutMinimum, dynamicDelay))
+    }
+
+    @MainActor
+    private func reconcileSendingTimeout(
+        commandID: String,
+        statusUpdatedAt: TimeInterval,
+        key: String,
+        generation: UInt64
+    ) async {
+        _ = await recoverBridgeStatusSnapshot(expectedCommandID: commandID)
+        guard sendingTimeoutGeneration == generation,
+              sendingTimeoutKey == key,
+              let current = currentBridgeStatus,
+              current.state == .sending,
+              current.commandID == commandID,
+              abs(current.updatedAt - statusUpdatedAt) < 0.001
+        else { return }
+        let message = current.processingStage == .refining
+            ? NSLocalizedString("Refine timed out.", comment: "Keyboard bridge timeout while refining")
+            : NSLocalizedString("Transcription timed out.", comment: "Keyboard bridge timeout while transcribing")
+        applyBridgeStatus(
+            KeyboardBridgeStatus(
+                commandID: commandID,
+                state: .error,
+                message: message,
+                audioDurationSeconds: current.audioDurationSeconds,
+                audioByteCount: current.audioByteCount,
+                rawTranscriptLength: current.rawTranscriptLength,
+                defaultCorrectionMode: current.defaultCorrectionMode,
+                backendReachable: current.backendReachable,
+                processingStage: current.processingStage,
+                correctionTimeoutMs: current.correctionTimeoutMs
+            ),
+            recordsLiveContact: false
+        )
     }
 
     private func scheduleSessionStatusChallengeTimeout(sentAt: TimeInterval) {
@@ -12058,9 +11746,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 expectedCommandID: expectedCommandID,
                 statusStreamGeneration: generation
             )
-            // A failed snapshot is retried by activeStatusReconcileTask at its
-            // bounded interval. Immediate recursive force-reconnects can spin
-            // thousands of localhost sockets while the host is unavailable.
+            await MainActor.run {
+                guard self.statusStreamGeneration == generation,
+                      self.shouldRecoverActiveBridgeStatus
+                else { return }
+                self.refreshBridgeStatus(captureSelection: false, force: true)
+            }
         }
     }
 
@@ -12114,7 +11805,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             ?? activeRecordingTextTarget?.commandID
             ?? currentBridgeStatus?.commandID
             ?? styleRewriteCommandID
-            ?? defaults.string(forKey: pendingStyleRewriteCommandIDKey)
     }
 
     private func logStatusStreamFailureIfNeeded(_ error: Error) {
@@ -12140,16 +11830,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func applyBridgeStatus(_ status: KeyboardBridgeStatus, recordsLiveContact: Bool = true) {
-        if shouldIgnoreOutOfOrderHostStatus(status) {
-            return
-        }
         if shouldIgnoreStatusDuringStartHandshake(status) {
             return
         }
         if shouldIgnoreStaleIdleStatus(status) {
             return
         }
-        if shouldIgnoreSuppressedRefineResult(status) {
+        if shouldIgnoreSuppressedRefineStatus(status) {
             return
         }
         if shouldIgnoreStaleResultStatus(status) {
@@ -12220,10 +11907,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             && (status.state == .recording || status.state == .sending)
             && !partial.isEmpty
         if suppressesPartialPreview, activeMarkedTextOwner == .livePartial {
-            replaceMarkedText("")
+            clearLivePartialMarkedTextIfStillOwned(commandID: status.commandID, reason: "status_suppressed")
         } else if showsPartial {
             if let commandID = effectiveLivePartialCommandID(status.commandID),
-               livePartialPreviewState?.commandID != commandID || livePartialPreviewState?.consumedByUser != true {
+               canPresentLivePartialPreview(commandID: commandID, text: partial) {
                 recordLivePartialPreview(commandID: commandID, text: partial, anchor: currentLivePartialPreviewAnchor())
                 replaceMarkedText(partial, owner: .livePartial)
             }
@@ -12234,13 +11921,15 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 if preservesLivePartialAfterRefineTimeout {
                     _ = commitLivePartialBeforeHostReturnIfNeeded(commandID: status.commandID)
                 } else {
-                    replaceMarkedText("")
+                    clearLivePartialMarkedTextIfStillOwned(commandID: status.commandID, reason: "status_terminal")
                 }
             }
         }
         isApplyingHostBridgeStatus = true
         bridgeStatus = status
         isApplyingHostBridgeStatus = false
+        updateRefineTimeoutWatchdog(for: status)
+        updateSendingTimeoutWatchdog(for: status)
         updateActiveStatusReconcileLoop(for: status)
         if recordsLiveContact {
             lastBridgeContactAt = Date().timeIntervalSince1970
@@ -12249,20 +11938,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             applyDefaultCorrectionModeFromHost(status.defaultCorrectionMode)
         }
         if status.state == .result,
-           let commandID = status.commandID,
-           defaults.string(forKey: pendingStyleRewriteCommandIDKey) == commandID,
-           let destination = pendingDestination(matching: commandID) {
-            finishStyleRewrite(
-                status: status,
-                target: rewriteTarget(from: destination),
-                destination: destination,
-                commandID: commandID
-            )
-            return
-        }
-        if status.state == .result,
            status.commandID != styleRewriteCommandID,
-           status.commandID != defaults.string(forKey: pendingStyleRewriteCommandIDKey),
            let commandID = status.commandID,
            defaults.string(forKey: lastInsertedCommandIDKey) != commandID,
            let text = status.resultText?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -12271,8 +11947,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             let appliedRewriteTarget: TextRewriteTarget?
             if let pendingTarget = activeRecordingTextTarget,
                pendingTarget.commandID == commandID {
-                didApply = pendingTarget.documentIdentifier == textDocumentProxy.documentIdentifier.uuidString
-                    && applyRewrittenText(text, replacing: pendingTarget.target)
+                didApply = applyRewrittenText(text, replacing: pendingTarget.target)
                 appliedRewriteTarget = pendingTarget.target
                 activeRecordingTextTarget = nil
                 activeRecordingTextEditIntent = nil
@@ -12283,18 +11958,20 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                       preview.commandID == commandID {
                 didApply = applyFinalResultForLivePartialPreview(preview, finalText: text)
                 appliedRewriteTarget = nil
-            } else if let destination = pendingDestination(matching: commandID),
-                      dictationDestinationIsCurrent(destination) {
+            } else if activeMarkedTextOwner != nil || !activeMarkedText.isEmpty {
+                // No command-scoped preview owns this marked text. In
+                // particular, never replace an active Rime composition with a
+                // delayed bridge result.
+                didApply = false
+                appliedRewriteTarget = nil
+            } else if let anchor = activeDictationInsertionAnchor,
+                      anchor.commandID == commandID,
+                      matchesCurrentInsertionAnchor(anchor) {
                 commitTextReplacingMarkedText(text, reason: .bridgeResult)
                 clearLocalMarkedTextState()
                 didApply = true
                 appliedRewriteTarget = nil
             } else {
-                KeyboardDiagnosticEventLog.record(
-                    source: "keyboard-ui",
-                    event: "dictation_destination_changed",
-                    fields: ["command_id": commandID]
-                )
                 didApply = false
                 appliedRewriteTarget = nil
             }
@@ -12306,7 +11983,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 }
                 defaults.set(commandID, forKey: lastInsertedCommandIDKey)
                 recentSelectionTarget = nil
-                recentSelectionDocumentIdentifier = nil
             } else {
                 defaults.set(commandID, forKey: lastInsertedCommandIDKey)
                 copyFallbackText(text)
@@ -12315,17 +11991,15 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             if activeRecordingTextTarget?.commandID == commandID {
                 activeRecordingTextTarget = nil
             }
-            acknowledgePendingMailbox(commandID: commandID)
+            if activeDictationInsertionAnchor?.commandID == commandID {
+                activeDictationInsertionAnchor = nil
+            }
             activeRecordingTextEditIntent = nil
         }
 
-        if status.state == .error || status.state == .idle || status.state == .standby {
+        if status.state == .error || status.state == .idle {
             activeRecordingTextTarget = nil
             activeRecordingTextEditIntent = nil
-            if !status.hostInstanceID.isEmpty,
-               let commandID = status.commandID {
-                clearDictationDestinationIfMatching(commandID: commandID)
-            }
             if !preservesLivePartialAfterRefineTimeout {
                 livePartialPreviewState = nil
             }
@@ -12352,95 +12026,22 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             }
         }
 
-        // Ordering revision/updatedAt and livePartialTranscript are
-        // intentionally absent. They are handled above and must not trigger a
-        // full updateUI pass for every heartbeat, audio level, or hypothesis.
+        // livePartialTranscript is intentionally absent: partial-only changes
+        // are already rendered above via marked text and the voiceprint level,
+        // so they must not trigger a full updateUI pass (which reconfigures
+        // every key button) several times a second while the user speaks.
         let signature = [
-            status.hostInstanceID,
             status.commandID ?? "",
             status.state.rawValue,
+            String(Int(status.updatedAt)),
             status.message,
-            status.processingStage?.rawValue ?? "",
             status.defaultCorrectionMode ?? "",
-            status.backendReachable.map(String.init) ?? "unknown",
-            recordsLiveContact ? "live" : "cached",
             status.audioDurationSeconds.map { String(format: "%.2f", $0) } ?? "",
             status.rawTranscriptLength.map(String.init) ?? "",
         ].joined(separator: ":")
         guard signature != lastStatusSignature else { return }
         lastStatusSignature = signature
         updateUI(animated: hasPresentedInitialFrame)
-    }
-
-    private func shouldIgnoreOutOfOrderHostStatus(_ status: KeyboardBridgeStatus) -> Bool {
-        let instanceID = status.hostInstanceID.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !instanceID.isEmpty, status.revision > 0 else { return false }
-
-        if retiredHostStatusInstanceIDs.contains(instanceID) {
-            kbLog.notice(
-                "ignoring status from retired host instance revision=\(status.revision, privacy: .public)"
-            )
-            return true
-        }
-
-        guard let activeInstanceID = activeHostStatusInstanceID else {
-            activeHostStatusInstanceID = instanceID
-            activeHostStatusRevision = status.revision
-            activeHostStatusUpdatedAt = status.updatedAt
-            return false
-        }
-
-        guard activeInstanceID == instanceID else {
-            // Revisions cannot be compared across process lifetimes. A delayed
-            // App Group snapshot or HTTP response from an older host can arrive
-            // after the new host's live stream, so only switch instances when
-            // the candidate was produced strictly after the newest accepted
-            // frame. Do not retire the current host when ordering is ambiguous.
-            guard status.updatedAt.isFinite,
-                  status.updatedAt > activeHostStatusUpdatedAt
-            else {
-                kbLog.notice(
-                    "ignoring older host instance frame revision=\(status.revision, privacy: .public) state=\(status.state.rawValue, privacy: .public)"
-                )
-                KeyboardDiagnosticEventLog.record(
-                    source: "keyboard-ui",
-                    event: "older_host_instance_ignored",
-                    fields: [
-                        "revision": "\(status.revision)",
-                        "state": status.state.rawValue,
-                        "command_id": status.commandID ?? "none",
-                    ]
-                )
-                return true
-            }
-            retiredHostStatusInstanceIDs.insert(activeInstanceID)
-            activeHostStatusInstanceID = instanceID
-            activeHostStatusRevision = status.revision
-            activeHostStatusUpdatedAt = status.updatedAt
-            return false
-        }
-
-        guard status.revision > activeHostStatusRevision else {
-            kbLog.notice(
-                "ignoring out-of-order host status revision=\(status.revision, privacy: .public) last=\(self.activeHostStatusRevision, privacy: .public) state=\(status.state.rawValue, privacy: .public)"
-            )
-            KeyboardDiagnosticEventLog.record(
-                source: "keyboard-ui",
-                event: "host_status_out_of_order_ignored",
-                fields: [
-                    "revision": "\(status.revision)",
-                    "last_revision": "\(activeHostStatusRevision)",
-                    "state": status.state.rawValue,
-                    "command_id": status.commandID ?? "none",
-                ]
-            )
-            return true
-        }
-        activeHostStatusRevision = status.revision
-        if status.updatedAt.isFinite {
-            activeHostStatusUpdatedAt = max(activeHostStatusUpdatedAt, status.updatedAt)
-        }
-        return false
     }
 
     private func suppressesLivePartialPreview(for status: KeyboardBridgeStatus) -> Bool {
@@ -12555,7 +12156,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             || activeRecordingCommandID == commandID
             || activeRecordingTextTarget?.commandID == commandID
             || styleRewriteCommandID == commandID
-            || defaults.string(forKey: pendingStyleRewriteCommandIDKey) == commandID
     }
 
     private func shouldIgnoreStaleIdleStatus(_ status: KeyboardBridgeStatus) -> Bool {
@@ -12575,9 +12175,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         guard status.state == .result,
               let commandID = status.commandID
         else { return false }
-        guard commandID != styleRewriteCommandID,
-              commandID != defaults.string(forKey: pendingStyleRewriteCommandIDKey)
-        else { return false }
+        guard commandID != styleRewriteCommandID else { return false }
 
         let expectedIDs = expectedRecordingResultCommandIDs()
         guard !expectedIDs.isEmpty else {
