@@ -261,6 +261,17 @@ for required in (
 if start_command.index("commitDisplayedRimeCompositionIfNeeded()") > start_command.index("currentDictationContext()"):
     raise AssertionError("voice input captures its anchor before committing Rime composition")
 
+send_command = block(keyboard, "private func sendBridgeCommand(_ command:")
+for required in (
+    "if action == .cancel",
+    "clearLivePartialMarkedTextIfStillOwned(",
+    "livePartialPreviewState = nil",
+):
+    if required not in send_command:
+        raise AssertionError(f"cancel lost immediate owned-preview cleanup: {required}")
+if send_command.index("clearLivePartialMarkedTextIfStillOwned(") > send_command.index("livePartialPreviewState = nil"):
+    raise AssertionError("cancel forgets preview ownership before clearing marked text")
+
 if "hasRecentProcessingTransportContact" not in keyboard or "processing_host_unavailable" not in keyboard:
     raise AssertionError("lost host transport can leave the keyboard stuck in Sending")
 

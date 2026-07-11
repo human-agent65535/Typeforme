@@ -65,7 +65,7 @@ final class QwenLlamaLivePreviewTaskRegistry: @unchecked Sendable {
 final class QwenLlamaLivePreviewSession: ASRLivePreviewSession, @unchecked Sendable {
     static let providerID = RecognitionSource.qwen.rawValue
     private static let outputSampleRate = 16_000.0
-    private static let minimumPreviewSamples = 19_200
+    private static let minimumPreviewSamples = 16_000
     private static let requestStrideSamples = 16_000
     private static let rollingWindowSamples = 8 * 16_000
     private static let minimumPreviewRMS: Float = 0.004
@@ -91,7 +91,8 @@ final class QwenLlamaLivePreviewSession: ASRLivePreviewSession, @unchecked Senda
     private var pcmWindow = Data()
     private var fullPCM = Data()
     private var totalSampleCount = 0
-    private var lastPreviewEvaluationSampleCount = 0
+    private var lastPreviewRequestSampleCount = 0
+    private var hasAudibleAudioSinceLastRequest = false
     private var inFlightTask: Task<Void, Never>?
     private var inFlightTaskID: UUID?
     private var lastTranscript: String?
@@ -228,10 +229,12 @@ final class QwenLlamaLivePreviewSession: ASRLivePreviewSession, @unchecked Senda
 
     static func shouldRequestPreview(
         totalSamples: Int,
-        lastRequestedSamples lastEvaluatedSamples: Int
+        lastRequestedSamples: Int,
+        hasAudibleAudio: Bool
     ) -> Bool {
+        guard hasAudibleAudio else { return false }
         guard totalSamples >= minimumPreviewSamples else { return false }
-        return totalSamples - lastEvaluatedSamples >= requestStrideSamples
+        return totalSamples - lastRequestedSamples >= requestStrideSamples
     }
 
     static func hasAudiblePreviewSignal(_ pcm16kMonoFloat32Data: Data) -> Bool {
@@ -263,6 +266,8 @@ final class QwenLlamaLivePreviewSession: ASRLivePreviewSession, @unchecked Senda
         fullPCM.append(data)
         pcmWindow.append(data)
         totalSampleCount += sampleCount
+        hasAudibleAudioSinceLastRequest = hasAudibleAudioSinceLastRequest
+            || Self.hasAudiblePreviewSignal(data)
         let maxWindowBytes = Self.rollingWindowSamples * MemoryLayout<Float>.size
         if pcmWindow.count > maxWindowBytes {
             pcmWindow.removeFirst(pcmWindow.count - maxWindowBytes)
@@ -279,7 +284,8 @@ final class QwenLlamaLivePreviewSession: ASRLivePreviewSession, @unchecked Senda
               !isClosedOnQueue,
               Self.shouldRequestPreview(
                   totalSamples: totalSampleCount,
-                  lastRequestedSamples: lastPreviewEvaluationSampleCount
+                  lastRequestedSamples: lastPreviewRequestSampleCount,
+                  hasAudibleAudio: hasAudibleAudioSinceLastRequest
               )
         else { return }
 
@@ -287,14 +293,8 @@ final class QwenLlamaLivePreviewSession: ASRLivePreviewSession, @unchecked Senda
         let audio = Data(pcmWindow)
         let totalSamples = totalSampleCount
         let windowStart = Self.rollingWindowStartSample(totalSamples: totalSamples)
-        lastPreviewEvaluationSampleCount = totalSamples
-        let rms = Self.previewRMS(audio)
-        guard rms >= Self.minimumPreviewRMS else {
-            Log.asr.debug(
-                "Qwen3-ASR live preview skipped low-energy window session=\(self.logID, privacy: .public) rms=\(rms, privacy: .public) input_audio_ms=\(totalSamples * 1_000 / 16_000, privacy: .public) elapsed_ms=\(Self.elapsedMS(since: self.startedAt), privacy: .public)"
-            )
-            return
-        }
+        lastPreviewRequestSampleCount = totalSamples
+        hasAudibleAudioSinceLastRequest = false
         let languageIDs = self.languageIDs
         let service = self.service
         let logID = self.logID

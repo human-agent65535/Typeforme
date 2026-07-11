@@ -6,20 +6,29 @@ import Testing
 struct QwenLivePreviewSessionTests {
     @Test func previewRequestWaitsForMinimumAudioAndStride() {
         #expect(!QwenLlamaLivePreviewSession.shouldRequestPreview(
-            totalSamples: 19_199,
-            lastRequestedSamples: 0
+            totalSamples: 15_999,
+            lastRequestedSamples: 0,
+            hasAudibleAudio: true
         ))
         #expect(QwenLlamaLivePreviewSession.shouldRequestPreview(
-            totalSamples: 19_200,
-            lastRequestedSamples: 0
+            totalSamples: 16_000,
+            lastRequestedSamples: 0,
+            hasAudibleAudio: true
         ))
         #expect(!QwenLlamaLivePreviewSession.shouldRequestPreview(
             totalSamples: 35_000,
-            lastRequestedSamples: 20_000
+            lastRequestedSamples: 20_000,
+            hasAudibleAudio: true
         ))
         #expect(QwenLlamaLivePreviewSession.shouldRequestPreview(
             totalSamples: 36_000,
-            lastRequestedSamples: 20_000
+            lastRequestedSamples: 20_000,
+            hasAudibleAudio: true
+        ))
+        #expect(!QwenLlamaLivePreviewSession.shouldRequestPreview(
+            totalSamples: 36_000,
+            lastRequestedSamples: 20_000,
+            hasAudibleAudio: false
         ))
     }
 

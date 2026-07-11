@@ -11127,6 +11127,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     private func sendBridgeCommand(_ command: KeyboardBridgeCommand) {
         let action = command.action
+        if action == .cancel {
+            clearLivePartialMarkedTextIfStillOwned(
+                commandID: effectiveLivePartialCommandID(command.id),
+                reason: "user_cancel"
+            )
+            livePartialPreviewState = nil
+        }
         if action != .configure {
             if action == .start {
                 sendDarwinBridgeCommand(command)
@@ -11161,7 +11168,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 activeRecordingTextEditIntent = nil
                 activeRecordingTextTarget = nil
                 activeDictationInsertionAnchor = nil
-                livePartialPreviewState = nil
                 cancelScheduledHostOpen()
             }
             let message: String
@@ -11353,7 +11359,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             activeRecordingTextEditIntent = nil
             activeRecordingTextTarget = nil
             activeDictationInsertionAnchor = nil
-            livePartialPreviewState = nil
             cancelScheduledHostOpen()
             _ = KeyboardSharedDefaults.saveDarwinCommand(command)
             _ = postAuthenticatedKeyboardRequest(KeyboardDarwinNotificationName.requestCancelDictation)

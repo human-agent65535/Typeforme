@@ -119,13 +119,13 @@ struct ASRAudioSupportTests {
     }
 
     @Test func qwenLivePreviewUsesEightSecondRollingWindow() {
-        #expect(QwenLlamaLivePreviewSession.rollingWindowStartSample(totalSamples: 19_200) == 0)
+        #expect(QwenLlamaLivePreviewSession.rollingWindowStartSample(totalSamples: 16_000) == 0)
         #expect(QwenLlamaLivePreviewSession.rollingWindowStartSample(totalSamples: 128_000) == 0)
         #expect(QwenLlamaLivePreviewSession.rollingWindowStartSample(totalSamples: 160_000) == 32_000)
-        #expect(!QwenLlamaLivePreviewSession.shouldRequestPreview(totalSamples: 19_199, lastRequestedSamples: 0))
-        #expect(QwenLlamaLivePreviewSession.shouldRequestPreview(totalSamples: 19_200, lastRequestedSamples: 0))
-        #expect(!QwenLlamaLivePreviewSession.shouldRequestPreview(totalSamples: 27_200, lastRequestedSamples: 19_200))
-        #expect(QwenLlamaLivePreviewSession.shouldRequestPreview(totalSamples: 35_200, lastRequestedSamples: 19_200))
+        #expect(!QwenLlamaLivePreviewSession.shouldRequestPreview(totalSamples: 15_999, lastRequestedSamples: 0, hasAudibleAudio: true))
+        #expect(QwenLlamaLivePreviewSession.shouldRequestPreview(totalSamples: 16_000, lastRequestedSamples: 0, hasAudibleAudio: true))
+        #expect(!QwenLlamaLivePreviewSession.shouldRequestPreview(totalSamples: 24_000, lastRequestedSamples: 16_000, hasAudibleAudio: true))
+        #expect(QwenLlamaLivePreviewSession.shouldRequestPreview(totalSamples: 32_000, lastRequestedSamples: 16_000, hasAudibleAudio: true))
     }
 
     @Test @MainActor func finalASRRequiresRecordedAudio() async {
