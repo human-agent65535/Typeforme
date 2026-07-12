@@ -3,6 +3,7 @@ import UIKit
 
 struct PairingView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(AppState.self) private var appState
     @State private var config: PairingConfig
     @State private var pairingJSON = ""
     @State private var parseError: String?
@@ -14,22 +15,12 @@ struct PairingView: View {
     @State private var showingQRScanner = false
     @State private var pairingParseTask: Task<Void, Never>?
 
-    let onSave: (PairingConfig) -> Bool
-    let onSaveConnection: (BridgeEndpoints) -> Bool
-    let onUnpair: () -> Void
-
     init(
         config: PairingConfig,
-        routeStatus: BridgeRouteResolutionStatus,
-        onSave: @escaping (PairingConfig) -> Bool,
-        onSaveConnection: @escaping (BridgeEndpoints) -> Bool,
-        onUnpair: @escaping () -> Void
+        routeStatus: BridgeRouteResolutionStatus
     ) {
         self._config = State(initialValue: config)
         self._routeStatus = State(initialValue: routeStatus)
-        self.onSave = onSave
-        self.onSaveConnection = onSaveConnection
-        self.onUnpair = onUnpair
     }
 
     var body: some View {
@@ -155,7 +146,9 @@ struct PairingView: View {
                             parseError = nil
                             parsedSuccessfully = false
                             routeStatus = BridgeRouteResolutionStatus()
-                            onUnpair()
+                            Task {
+                                await appState.unpair()
+                            }
                             dismiss()
                         } label: {
                             Label("Unpair This Device", systemImage: "link.badge.minus")
@@ -211,7 +204,7 @@ struct PairingView: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") {
-                        if onSave(config) {
+                        if appState.saveConfig(config) {
                             dismiss()
                         } else {
                             parseError = NSLocalizedString(
@@ -270,34 +263,11 @@ struct PairingView: View {
         guard !isPulling else { return }
         isPulling = true
         parseError = nil
-        Task {
-            let route = await BridgeRouteResolver().resolve(config: config, probeAllEndpoints: true)
-            let refreshedConfig: PairingConfig?
-            if let activeURL = route.activeURL {
-                refreshedConfig = try? await BridgeClient(baseURL: activeURL, token: config.token).pairing(timeout: 4)
-            } else {
-                refreshedConfig = nil
-            }
-            await MainActor.run {
-                routeStatus = route
-                let previousConfig = config
-                if let refreshedConfig {
-                    config.bridgeEndpoints = refreshedConfig.bridgeEndpoints
-                } else if route.activeKind == .local, let activeURL = route.activeURL?.absoluteString {
-                    config.promoteLocalBridgeURL(activeURL)
-                }
-                config.normalizeBridgeEndpoints()
-                if config.bridgeEndpoints != previousConfig.bridgeEndpoints {
-                    if !onSaveConnection(config.bridgeEndpoints) {
-                        config = previousConfig
-                        parseError = NSLocalizedString(
-                            "Couldn't save pairing securely. Your previous pairing is unchanged.",
-                            comment: "Pairing persistence failure"
-                        )
-                    }
-                }
-                isPulling = false
-            }
+        Task { @MainActor in
+            let result = await appState.checkPairingRoutes(config)
+            routeStatus = result.routeStatus
+            config.bridgeEndpoints = result.bridgeEndpoints
+            isPulling = false
         }
     }
 
@@ -364,47 +334,29 @@ struct PairingView: View {
     private func refreshFromMac(saveAfterRefresh: Bool) {
         guard !isPulling else { return }
         parseError = nil
-        let token = config.token
         isPulling = true
-        Task {
-            let route = await BridgeRouteResolver().resolve(config: config, probeAllEndpoints: true)
-            guard let activeURL = route.activeURL else {
-                await MainActor.run {
-                    routeStatus = route
-                    parseError = BridgeClientError.unauthorizedOrUnavailable.localizedDescription
-                    isPulling = false
-                }
-                return
-            }
-            let client = BridgeClient(baseURL: activeURL, token: token)
+        Task { @MainActor in
             do {
-                let refreshedConfig = try? await client.pairing(timeout: 4)
-                var settings = try await client.macSettings()
-                settings.normalize()
-                await MainActor.run {
-                    routeStatus = route
-                    if let refreshedConfig {
-                        config.bridgeEndpoints = refreshedConfig.bridgeEndpoints
-                    } else if route.activeKind == .local {
-                        config.promoteLocalBridgeURL(activeURL.absoluteString)
+                let result = try await appState.refreshPairingSettings(config)
+                routeStatus = result.routeStatus
+                config.bridgeEndpoints = result.bridgeEndpoints
+                applyMacSettings(result.macSettings)
+                parsedSuccessfully = true
+                if saveAfterRefresh {
+                    if !appState.saveConfig(config) {
+                        parseError = NSLocalizedString(
+                            "Couldn't save pairing securely. Your previous pairing is unchanged.",
+                            comment: "Pairing persistence failure"
+                        )
                     }
-                    applyMacSettings(settings)
-                    parsedSuccessfully = true
-                    if saveAfterRefresh {
-                        if !onSave(config) {
-                            parseError = NSLocalizedString(
-                                "Couldn't save pairing securely. Your previous pairing is unchanged.",
-                                comment: "Pairing persistence failure"
-                            )
-                        }
-                    }
-                    isPulling = false
                 }
+                isPulling = false
             } catch {
-                await MainActor.run {
-                    parseError = error.localizedDescription
-                    isPulling = false
+                if let unavailable = error as? PairingSettingsRefreshUnavailable {
+                    routeStatus = unavailable.routeStatus
                 }
+                parseError = error.localizedDescription
+                isPulling = false
             }
         }
     }

@@ -28,6 +28,8 @@ echo "==> Checking iOS URL handoff security invariants"
 "$ROOT/scripts/smoke-ios-url-handoff-security.sh"
 echo "==> Checking iOS keyboard command/status invariants"
 "$ROOT/scripts/smoke-ios-command-status-invariants.sh"
+echo "==> Checking iOS pairing ownership invariants"
+"$ROOT/scripts/smoke-ios-pairing-ownership.sh"
 
 simctl() {
     typeforme_xcrun simctl "$@"

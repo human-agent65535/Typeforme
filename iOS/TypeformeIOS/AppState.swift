@@ -882,21 +882,12 @@ final class AppState {
         return true
     }
 
-    @discardableResult
-    func saveBridgeEndpoints(_ bridgeEndpoints: BridgeEndpoints) -> Bool {
-        var normalized = config
-        normalized.bridgeEndpoints = bridgeEndpoints
-        normalized.normalizeBridgeEndpoints()
-        guard normalized.bridgeEndpoints != config.bridgeEndpoints else { return true }
-        guard persistPairingConfig(normalized) else { return false }
-        routeRefreshState.pairingDidChange()
-        config = normalized
-        publishKeyboardDefaults()
-        routeFetchedAt = nil
-        Task {
-            await refreshRoute(force: true, syncPairingEndpoints: true, reason: "save_bridge_endpoints")
-        }
-        return true
+    func checkPairingRoutes(_ draft: PairingConfig) async -> PairingRouteCheckResult {
+        await bridgeService.checkPairingRoutes(draft)
+    }
+
+    func refreshPairingSettings(_ draft: PairingConfig) async throws -> PairingSettingsRefreshResult {
+        try await bridgeService.refreshPairingSettings(draft)
     }
 
     @discardableResult

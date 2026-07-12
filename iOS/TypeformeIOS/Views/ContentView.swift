@@ -59,18 +59,7 @@ struct ContentView: View {
                 .sheet(isPresented: $showingPairing) {
                     PairingView(
                         config: state.config,
-                        routeStatus: state.routeStatus,
-                        onSave: { newConfig in
-                            state.saveConfig(newConfig)
-                        },
-                        onSaveConnection: { bridgeEndpoints in
-                            state.saveBridgeEndpoints(bridgeEndpoints)
-                        },
-                        onUnpair: {
-                            Task {
-                                await state.unpair()
-                            }
-                        }
+                        routeStatus: state.routeStatus
                     )
                     .environment(state)
                 }
