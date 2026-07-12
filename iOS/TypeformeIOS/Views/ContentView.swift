@@ -1328,18 +1328,6 @@ private struct ModeChipsRow: View {
             }
             .padding(.horizontal, 16)
         }
-        .scrollClipDisabled()
-        // The last chip clips at the screen edge with no scroll cue — the
-        // trailing fade signals "more to the right" instead of looking broken.
-        .overlay(alignment: .trailing) {
-            LinearGradient(
-                colors: [Color(.systemBackground).opacity(0), Color(.systemBackground)],
-                startPoint: .leading,
-                endPoint: .trailing
-            )
-            .frame(width: 28)
-            .allowsHitTesting(false)
-        }
     }
 }
 
