@@ -39,7 +39,6 @@ def block(source: str, marker: str) -> str:
 
 for forbidden in (
     "KeyboardSharedMailbox",
-    "documentIdentifier",
     "cancelledStartStopToken",
     "captureGeneration",
     "CaptureOwner",
@@ -208,7 +207,7 @@ if "anchoredCommitted" in final_plan or "visibleCommitted" in final_plan:
 ownership = block(keyboard, "private func canCommitOwnedLivePartialMarkedText(")
 for required in (
     "activeMarkedText == preview.text",
-    "capturedIdentity != currentTextInputIdentity",
+    "preview.documentIdentifier != textDocumentProxy.documentIdentifier",
     "KeyboardMarkedTextOwnershipPolicy.contextsMatch",
 ):
     if required not in ownership:
@@ -246,6 +245,50 @@ for required in (
 ):
     if required not in safe_clear:
         raise AssertionError(f"live partial clear lost command/anchor proof: {required}")
+
+rime_target = block(keyboard, "private func currentRimeInputTarget(")
+for required in (
+    "textDocumentProxy.documentIdentifier",
+    "textDocumentProxy.documentContextBeforeInput",
+    "textDocumentProxy.documentContextAfterInput",
+):
+    if required not in rime_target:
+        raise AssertionError(f"Rime target lost document source of truth: {required}")
+if "dropLast" in rime_target:
+    raise AssertionError("Rime target capture must not guess whether the host includes marked text")
+
+rime_target_match = block(keyboard, "private func rimeInputTargetIsCurrent(")
+for required in (
+    "current.documentIdentifier == rimeInputTarget.documentIdentifier",
+    "KeyboardMarkedTextOwnershipPolicy.rimeCompositionContextsMatch(",
+):
+    if required not in rime_target_match:
+        raise AssertionError(f"Rime target matching lost ownership proof: {required}")
+
+text_will_change = block(keyboard, "override func textWillChange(")
+if "discardRimeInput" in text_will_change:
+    raise AssertionError("keyboard-owned proxy writes can re-enter textWillChange; it must not discard Rime state")
+
+text_did_change = block(keyboard, "override func textDidChange(")
+if "discardRimeInputIfTargetChanged" in text_did_change:
+    raise AssertionError("keyboard-owned proxy writes must not be treated as external context changes")
+if "discardRimeInputIfDocumentChanged" not in text_did_change:
+    raise AssertionError("document switches must still clear stale Rime state")
+
+apply_rime = block(keyboard, "private func applyRimeState(")
+for required in (
+    "commitTextReplacingMarkedText(state.commitText",
+    "rimeInputTarget = currentRimeInputTarget()",
+    "replaceMarkedText(composingText, owner: .rimeComposition)",
+):
+    if required not in apply_rime:
+        raise AssertionError(f"Rime commit/composition transaction lost step: {required}")
+if not (
+    apply_rime.index("commitTextReplacingMarkedText(state.commitText")
+    < apply_rime.index("rimeInputTarget = currentRimeInputTarget()")
+    < apply_rime.index("replaceMarkedText(composingText, owner: .rimeComposition)")
+):
+    raise AssertionError("Rime commit + composition must rebase between commit and the new marked text")
 
 start_command = block(keyboard, "private func startDictationCommand(")
 if start_command.index("clearLivePartialMarkedTextIfStillOwned(") > start_command.index("livePartialPreviewState = nil"):

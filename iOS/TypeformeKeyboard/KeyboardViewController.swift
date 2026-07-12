@@ -340,7 +340,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         var text: String
         var contextBefore: String
         var contextAfter: String
-        let textInputIdentity: ObjectIdentifier?
+        let documentIdentifier: UUID
         var consumedByUser: Bool
         var ownershipInvalidated: Bool
     }
@@ -351,7 +351,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private struct RimeInputTarget {
-        let textInputIdentity: ObjectIdentifier?
+        let documentIdentifier: UUID
         let contextBefore: String?
         let contextAfter: String?
     }
@@ -472,7 +472,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private var pendingRimeCharacters: [String] = []
     private var pendingRimeDirectTextKeys: [String] = []
     private var rimeInputTarget: RimeInputTarget?
-    private var currentTextInputIdentity: ObjectIdentifier?
     private var isDiscardingStaleRimeInput = false
     private var activeMarkedText = ""
     private var activeMarkedTextOwner: MarkedTextOwner?
@@ -2066,15 +2065,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     override func textWillChange(_ textInput: UITextInput?) {
         super.textWillChange(textInput)
-        currentTextInputIdentity = textInput.map { ObjectIdentifier($0 as AnyObject) }
-        discardRimeInputIfTargetChanged()
         refreshInputModeSwitchKeyVisibility()
     }
 
     override func textDidChange(_ textInput: UITextInput?) {
         super.textDidChange(textInput)
-        currentTextInputIdentity = textInput.map { ObjectIdentifier($0 as AnyObject) }
-        discardRimeInputIfTargetChanged()
+        discardRimeInputIfDocumentChanged()
         refreshTextKeyboardLayoutForCurrentInputTraits()
         refreshInputModeSwitchKeyVisibility()
         refreshReturnKeyTitle()
@@ -8149,16 +8145,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func currentRimeInputTarget() -> RimeInputTarget {
-        var contextBefore = textDocumentProxy.documentContextBeforeInput
-        if activeMarkedTextOwner == .rimeComposition,
-           !activeMarkedText.isEmpty,
-           let currentBefore = contextBefore,
-           currentBefore.hasSuffix(activeMarkedText) {
-            contextBefore = String(currentBefore.dropLast(activeMarkedText.count))
-        }
         return RimeInputTarget(
-            textInputIdentity: currentTextInputIdentity,
-            contextBefore: contextBefore,
+            documentIdentifier: textDocumentProxy.documentIdentifier,
+            contextBefore: textDocumentProxy.documentContextBeforeInput,
             contextAfter: textDocumentProxy.documentContextAfterInput
         )
     }
@@ -8166,9 +8155,15 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private func rimeInputTargetIsCurrent() -> Bool {
         guard let rimeInputTarget else { return false }
         let current = currentRimeInputTarget()
-        return current.textInputIdentity == rimeInputTarget.textInputIdentity
-            && current.contextBefore == rimeInputTarget.contextBefore
-            && current.contextAfter == rimeInputTarget.contextAfter
+        guard current.documentIdentifier == rimeInputTarget.documentIdentifier else { return false }
+        let markedText = activeMarkedTextOwner == .rimeComposition ? activeMarkedText : ""
+        return KeyboardMarkedTextOwnershipPolicy.rimeCompositionContextsMatch(
+            before: current.contextBefore,
+            after: current.contextAfter,
+            markedText: markedText,
+            anchorBefore: rimeInputTarget.contextBefore,
+            anchorAfter: rimeInputTarget.contextAfter
+        )
     }
 
     private func prepareRimeInputTargetForCurrentDocument() {
@@ -8182,6 +8177,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     private func discardRimeInputIfTargetChanged() {
         guard rimeInputTarget != nil, !rimeInputTargetIsCurrent() else { return }
+        discardStaleRimeInput()
+    }
+
+    private func discardRimeInputIfDocumentChanged() {
+        guard let rimeInputTarget,
+              rimeInputTarget.documentIdentifier != textDocumentProxy.documentIdentifier
+        else { return }
         discardStaleRimeInput()
     }
 
@@ -8446,9 +8448,14 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             resetQuoteParity()
             clearRefineUndoStateForManualEdit()
             commitTextReplacingMarkedText(state.commitText, reason: .rimeCommit)
-            clearLocalMarkedTextState()
             if rimeProfile.learningEnabled {
                 chineseLearningRecorder.recordCommit(state.commitText)
+            }
+            if !composingText.isEmpty {
+                // One Rime key can commit the previous segment and begin the
+                // next. The remaining composition is anchored after that
+                // commit, not at the start of the old segment.
+                rimeInputTarget = currentRimeInputTarget()
             }
         }
 
@@ -9750,7 +9757,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 text: preview,
                 contextBefore: anchor.contextBefore,
                 contextAfter: anchor.contextAfter,
-                textInputIdentity: currentTextInputIdentity,
+                documentIdentifier: textDocumentProxy.documentIdentifier,
                 consumedByUser: false,
                 ownershipInvalidated: false
             )
@@ -9781,7 +9788,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 text: text,
                 contextBefore: anchor.contextBefore,
                 contextAfter: anchor.contextAfter,
-                textInputIdentity: currentTextInputIdentity,
+                documentIdentifier: textDocumentProxy.documentIdentifier,
                 consumedByUser: false,
                 ownershipInvalidated: true
             )
@@ -9833,7 +9840,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             text: activeMarkedText.trimmingCharacters(in: .whitespacesAndNewlines),
             contextBefore: anchor.contextBefore,
             contextAfter: anchor.contextAfter,
-            textInputIdentity: currentTextInputIdentity,
+            documentIdentifier: textDocumentProxy.documentIdentifier,
             consumedByUser: true,
             ownershipInvalidated: false
         )
@@ -10123,9 +10130,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
               !activeMarkedText.isEmpty,
               activeMarkedText == preview.text
         else { return false }
-        if let capturedIdentity = preview.textInputIdentity,
-           let currentTextInputIdentity,
-           capturedIdentity != currentTextInputIdentity {
+        if preview.documentIdentifier != textDocumentProxy.documentIdentifier {
             return false
         }
         return KeyboardMarkedTextOwnershipPolicy.contextsMatch(

@@ -3,6 +3,61 @@ import Testing
 
 @Suite("Keyboard marked-text ownership")
 struct KeyboardMarkedTextOwnershipPolicyTests {
+    @Test("Rime target accepts the first key before marked text exists")
+    func rimeTargetAcceptsInitialUnmarkedState() {
+        #expect(KeyboardMarkedTextOwnershipPolicy.rimeCompositionContextsMatch(
+            before: "committed",
+            after: "suffix",
+            markedText: "",
+            anchorBefore: "committed",
+            anchorAfter: "suffix"
+        ))
+    }
+
+    @Test("Rime target accepts a host that excludes marked text")
+    func rimeTargetAcceptsExcludedMarkedText() {
+        #expect(KeyboardMarkedTextOwnershipPolicy.rimeCompositionContextsMatch(
+            before: "committed-s",
+            after: "suffix",
+            markedText: "sh",
+            anchorBefore: "committed-s",
+            anchorAfter: "suffix"
+        ))
+    }
+
+    @Test("Rime target accepts a host that includes marked text")
+    func rimeTargetAcceptsIncludedMarkedText() {
+        #expect(KeyboardMarkedTextOwnershipPolicy.rimeCompositionContextsMatch(
+            before: "committed-ssh",
+            after: "suffix",
+            markedText: "sh",
+            anchorBefore: "committed-s",
+            anchorAfter: "suffix"
+        ))
+    }
+
+    @Test("Rime target does not strip a committed suffix collision")
+    func rimeTargetPreservesCommittedSuffixCollision() {
+        #expect(KeyboardMarkedTextOwnershipPolicy.rimeCompositionContextsMatch(
+            before: "fs",
+            after: "",
+            markedText: "s",
+            anchorBefore: "fs",
+            anchorAfter: ""
+        ))
+    }
+
+    @Test("Rime target rejects a moved insertion point")
+    func rimeTargetRejectsMovedInsertionPoint() {
+        #expect(!KeyboardMarkedTextOwnershipPolicy.rimeCompositionContextsMatch(
+            before: "other",
+            after: "",
+            markedText: "sh",
+            anchorBefore: "original",
+            anchorAfter: ""
+        ))
+    }
+
     @Test("Host may exclude marked text from an empty document context")
     func excludedMarkedTextMatchesEmptyAnchor() {
         #expect(KeyboardMarkedTextOwnershipPolicy.contextsMatch(

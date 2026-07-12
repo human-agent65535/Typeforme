@@ -1,6 +1,28 @@
 import Foundation
 
 enum KeyboardMarkedTextOwnershipPolicy {
+    static func rimeCompositionContextsMatch(
+        before: String?,
+        after: String?,
+        markedText: String,
+        anchorBefore: String?,
+        anchorAfter: String?
+    ) -> Bool {
+        guard let before, let after, let anchorBefore, let anchorAfter else {
+            return before == anchorBefore && after == anchorAfter
+        }
+        guard !markedText.isEmpty else {
+            return before == anchorBefore && after == anchorAfter
+        }
+        return contextsMatch(
+            before: before,
+            after: after,
+            markedText: markedText,
+            anchorBefore: anchorBefore,
+            anchorAfter: anchorAfter
+        )
+    }
+
     static func contextsMatch(
         before: String,
         after: String,
