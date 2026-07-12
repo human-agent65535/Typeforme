@@ -663,12 +663,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     /// Circular orb (`voiceButton`) sits centered in `orbContainer`. Pulse
     /// rings are rendered as direct sublayers kept behind the orb in z-order.
     private let orbContainer = UIView()
-    private let voiceButton = VoiceOrbButton(type: .custom)
-    private let voiceGradient = CAGradientLayer()
-    private let voiceHighlight = CAGradientLayer()
-    private var pulseRings: [CAShapeLayer] = []
-    private let voiceIconView = UIImageView()
-    private let voicePrint = VoicePrintView()
+    private let voiceButton = KeyboardVoiceOrbControl(type: .custom)
     /// Hold mode hides the in-orb voiceprint behind the user's finger, so we
     /// surface a second strip in the topRow while hold-recording. Tap mode
     /// keeps the original in-orb voiceprint since the orb stays visible.
@@ -685,8 +680,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     /// Smoothed audioLevel driving pulse-ring brightness — louder voice =
     /// brighter rings, visible at the orb's edges even when a finger covers
     /// the rest of the orb.
-    private var smoothedAudioLevel: Float = 0
-    private let voiceSpinner = UIActivityIndicatorView(style: .large)
     private let voiceTitleLabel = UILabel()
     private let inputModeSwitch = VoiceInputModeSwitch()
     /// Driving-safe "send" button on the voice keyboard's left column,
@@ -1911,17 +1904,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     /// view.backgroundColor with dynamic UIColor) repaint on their own.
     private func refreshDynamicAppearance() {
         applyKeyboardInterfaceStyle()
-        let traits = keyboardTraitCollection
         refreshKeyboardBackground()
-        voiceButton.layer.shadowColor = UIColor.systemBlue.resolvedColor(with: traits).cgColor
-        voiceButton.layer.shadowOpacity = isKeyboardDark ? 0.5 : 0.42
-        voiceButton.layer.borderColor = UIColor.white
-            .withAlphaComponent(isKeyboardDark ? 0.28 : 0.22)
-            .cgColor
-        // Pulse rings tint to the same system color family as the orb.
-        for ring in pulseRings {
-            ring.strokeColor = pulseRingColor.resolvedColor(with: traits).cgColor
-        }
+        voiceButton.refreshAppearance(style: keyboardInterfaceStyle)
         updateUI(animated: false)
     }
 
@@ -2135,10 +2119,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         cancelScheduledHostOpen()
         keyboardDarwinObservers.forEach { $0.stopObserving() }
         keyboardDarwinObservers = []
-        voicePrint.isActive = false
+        voiceButton.stopActivity()
         topRowVoicePrint.isActive = false
         textToolbarVoicePrint.isActive = false
-        stopPulseRings()
         voiceDragOutCancelArmed = false
         recordingElapsedTimer?.invalidate()
         recordingElapsedTimer = nil
@@ -2770,8 +2753,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             correctionPopover,
             orbContainer,
             voiceButton,
-            voiceIconView,
-            voicePrint,
             topRowVoicePrint,
             textToolbarVoicePrint,
             voiceTitleLabel,
@@ -2823,6 +2804,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         refreshCapsuleButtonConfigurations()
         refreshCorrectionPopoverAppearance()
         inputModeSwitch.refreshAppearance(style: style)
+        voiceButton.refreshAppearance(style: style)
         return true
     }
 
@@ -3106,27 +3088,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         orbContainer.isUserInteractionEnabled = true
         rootStack.addArrangedSubview(orbContainer)
 
-        // Pulse rings: three concentric circles that bloom outward during
-        // recording. Added FIRST so they sit below the orb in z-order.
-        for _ in 0..<3 {
-            let ring = CAShapeLayer()
-            ring.fillColor = UIColor.clear.cgColor
-            ring.strokeColor = UIColor.systemRed.withAlphaComponent(0.55).cgColor
-            ring.lineWidth = 1.5
-            ring.opacity = 0
-            orbContainer.layer.addSublayer(ring)
-            pulseRings.append(ring)
-        }
-
         let diameter = Self.orbDiameter
-        voiceButton.layer.cornerRadius = diameter / 2
-        voiceButton.layer.cornerCurve = .continuous
-        voiceButton.layer.shadowColor = UIColor.systemBlue.cgColor
-        voiceButton.layer.shadowOpacity = isKeyboardDark ? 0.5 : 0.42
-        voiceButton.layer.shadowRadius = 18
-        voiceButton.layer.shadowOffset = CGSize(width: 0, height: 9)
-        voiceButton.layer.borderWidth = 0.75
-        voiceButton.layer.borderColor = UIColor.white.withAlphaComponent(0.22).cgColor
         voiceButton.translatesAutoresizingMaskIntoConstraints = false
         voiceButton.accessibilityLabel = NSLocalizedString("Dictate", comment: "Accessibility label for the orb")
         voiceButton.accessibilityTraits = .button
@@ -3137,48 +3099,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         // Hold mode: release outside the orb still ends the dictation (no
         // drag-out cancel — recording can only be ended, not aborted).
         voiceButton.addTarget(self, action: #selector(voicePressCancelled), for: [.touchUpOutside, .touchCancel])
-
-        // Linear top-light → bottom-deep gradient. With a circular mask this
-        // reads as a sphere; the inner highlight below adds the specular spot.
-        voiceGradient.startPoint = CGPoint(x: 0.5, y: 0)
-        voiceGradient.endPoint = CGPoint(x: 0.5, y: 1)
-        voiceGradient.cornerRadius = diameter / 2
-        voiceGradient.cornerCurve = .continuous
-        voiceGradient.masksToBounds = true
-        voiceButton.layer.insertSublayer(voiceGradient, at: 0)
-
-        // Specular highlight as a radial gradient from white (center, 0.32
-        // alpha) to fully transparent (edge). `CAGradientLayer` with
-        // `.radial` type renders as a real soft blob on iOS — unlike a plain
-        // CALayer with `compositingFilter = "screenBlendMode"`, which is a
-        // macOS-only filter that on iOS just shows a hard-edged white patch.
-        voiceHighlight.type = .radial
-        voiceHighlight.colors = [
-            UIColor.white.withAlphaComponent(0.32).cgColor,
-            UIColor.white.withAlphaComponent(0).cgColor,
-        ]
-        voiceHighlight.locations = [0, 1]
-        voiceHighlight.startPoint = CGPoint(x: 0.5, y: 0.5)
-        voiceHighlight.endPoint = CGPoint(x: 1, y: 1)
-        voiceButton.layer.addSublayer(voiceHighlight)
-
-        voicePrint.translatesAutoresizingMaskIntoConstraints = false
-        voicePrint.isUserInteractionEnabled = false
-        voicePrint.tint = .white
-        voicePrint.alpha = 0
-        voiceButton.addSubview(voicePrint)
-
-        voiceIconView.contentMode = .scaleAspectFit
-        voiceIconView.tintColor = .white
-        voiceIconView.translatesAutoresizingMaskIntoConstraints = false
-        voiceIconView.preferredSymbolConfiguration = UIImage.SymbolConfiguration(pointSize: 52, weight: .medium)
-        voiceIconView.image = UIImage(systemName: "mic.fill")
-        voiceButton.addSubview(voiceIconView)
-
-        voiceSpinner.color = .white
-        voiceSpinner.hidesWhenStopped = true
-        voiceSpinner.translatesAutoresizingMaskIntoConstraints = false
-        voiceButton.addSubview(voiceSpinner)
 
         configureCorrectionModePanel()
         configureInputModeSwitch()
@@ -3223,19 +3143,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             voiceButton.centerYAnchor.constraint(equalTo: orbContainer.centerYAnchor),
             voiceButton.topAnchor.constraint(greaterThanOrEqualTo: orbContainer.topAnchor, constant: 2),
             voiceButton.bottomAnchor.constraint(lessThanOrEqualTo: orbContainer.bottomAnchor, constant: -2),
-
-            voicePrint.leadingAnchor.constraint(equalTo: voiceButton.leadingAnchor, constant: 26),
-            voicePrint.trailingAnchor.constraint(equalTo: voiceButton.trailingAnchor, constant: -26),
-            voicePrint.centerYAnchor.constraint(equalTo: voiceButton.centerYAnchor),
-            voicePrint.heightAnchor.constraint(equalToConstant: 50),
-
-            voiceIconView.centerXAnchor.constraint(equalTo: voiceButton.centerXAnchor),
-            voiceIconView.centerYAnchor.constraint(equalTo: voiceButton.centerYAnchor),
-            voiceIconView.widthAnchor.constraint(equalToConstant: 56),
-            voiceIconView.heightAnchor.constraint(equalToConstant: 56),
-
-            voiceSpinner.centerXAnchor.constraint(equalTo: voiceButton.centerXAnchor),
-            voiceSpinner.centerYAnchor.constraint(equalTo: voiceButton.centerYAnchor),
 
             // Left column: voiceSendButton on top, correctionModePanel
             // below. 8pt gap between them; whole column centered on the
@@ -3428,39 +3335,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         CATransaction.setDisableActions(true)
         layoutKeyboardContentViewForCurrentBounds()
         keyboardContentView.layoutIfNeeded()
-        voiceGradient.frame = voiceButton.bounds
-
-        // Position the specular ellipse upper-left, matching the host app's
-        // proportions (ellipse center at 0.34, 0.28 of orb diameter). Width
-        // 0.55x diameter, height 0.32x → soft horizontal sheen.
-        let diameter = Self.orbDiameter
-        let highlightWidth = diameter * 0.55
-        let highlightHeight = diameter * 0.32
-        voiceHighlight.frame = CGRect(
-            x: diameter * 0.34 - highlightWidth / 2,
-            y: diameter * 0.28 - highlightHeight / 2,
-            width: highlightWidth,
-            height: highlightHeight
-        )
-
-        // Pulse rings: same diameter as the orb, centered on the orb's center
-        // within `orbContainer`. They scale outward up to 1.7x during recording.
-        let center = voiceButton.center
-        for ring in pulseRings {
-            ring.frame = CGRect(
-                x: center.x - diameter / 2,
-                y: center.y - diameter / 2,
-                width: diameter,
-                height: diameter
-            )
-            // Path geometry depends only on the constant orb diameter; build
-            // it once instead of allocating a CGPath on every layout pass.
-            if ring.path == nil {
-                ring.path = UIBezierPath(
-                    ovalIn: CGRect(origin: .zero, size: CGSize(width: diameter, height: diameter))
-                ).cgPath
-            }
-        }
         updateCandidateScrollViewport()
         updateCandidateGridCollapseButtonFrame()
         updateKeyboardSurfaceMask()
@@ -5275,6 +5149,35 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let isHoldRecording = isRecordingState && inputMode == .hold
         let showsInOrbVoicePrint = isRecordingState && !isHoldRecording
         let showsTopRowVoicePrint = isHoldRecording
+        let canStopRefine = canStopActiveRefine
+        let showsSpinner = (isSendingState && !canStopRefine)
+            || (!isRecordingState && (isStartRequestInFlight || isOpeningHostApp))
+        let orbCenterContent: KeyboardVoiceOrbCenterContent
+        if showsSpinner {
+            orbCenterContent = .spinner
+        } else if showsInOrbVoicePrint {
+            orbCenterContent = .voiceprint
+        } else if isRecordingState {
+            orbCenterContent = .empty
+        } else {
+            let pointSizeRatio = canStopRefine
+                ? VoiceOrbVisualPolicy.processingActionIconPointSizeRatio
+                : VoiceOrbVisualPolicy.idleIconPointSizeRatio
+            orbCenterContent = .symbol(
+                name: voiceIconName,
+                pointSize: Self.orbDiameter * CGFloat(pointSizeRatio)
+            )
+        }
+        let orbPresentation = KeyboardVoiceOrbPresentation(
+            gradient: gradientPreset,
+            centerContent: orbCenterContent,
+            pulseTint: pulseRingColor,
+            pulsesActive: isRecordingState
+        )
+        let shouldAnimateOrb = keyboardFocus != .text
+            && animated
+            && !isVoicePressActive
+            && !isStartRequestInFlight
         let updates = {
             self.statusLabel.text = self.statusText
             self.statusDot.backgroundColor = self.statusDotColor
@@ -5291,18 +5194,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 self.voiceTitleLabel.textColor = self.voiceTitleColor
                 self.voiceTitleLabel.alpha = isHoldRecording ? 0 : 1
             }
-            let canStopRefine = self.canStopActiveRefine
-            self.voiceIconView.preferredSymbolConfiguration = UIImage.SymbolConfiguration(
-                pointSize: canStopRefine ? 42 : 52,
-                weight: .medium
-            )
-            self.voiceIconView.image = Self.cachedSymbolImage(named: self.voiceIconName)
-            let showsSpinner = (isSendingState && !canStopRefine) || (!isRecordingState && (self.isStartRequestInFlight || self.isOpeningHostApp))
-            self.voiceIconView.alpha = (isRecordingState || showsSpinner) ? 0 : 1
-            self.voicePrint.alpha = showsInOrbVoicePrint ? 1 : 0
             self.topRowVoicePrint.alpha = (self.keyboardFocus == .text ? false : showsTopRowVoicePrint) ? 1 : 0
             self.voiceButton.alpha = 1
-            self.voiceSpinner.alpha = showsSpinner ? 1 : 0
+            self.voiceButton.render(orbPresentation, animated: shouldAnimateOrb)
 
             let acceptsVoiceTouch = !isSendingState || self.isVoicePressActive || canStopRefine
             self.voiceButton.isEnabled = acceptsVoiceTouch
@@ -5360,32 +5254,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             // affordances during dictation.
             let voiceModeDim = (isRecordingState || isSendingState) && self.keyboardFocus == .voice
             self.correctionModePanel.alpha = voiceModeDim ? 0.48 : 1
-            self.voiceButton.layer.shadowColor = self.voiceShadowColor.cgColor
-
             self.textToolsReadyDot.alpha = 0
             self.textToolsReadyDot.isHidden = true
-
-            if showsSpinner {
-                self.voiceSpinner.startAnimating()
-            } else {
-                self.voiceSpinner.stopAnimating()
-            }
         }
-
-        let gradientColors = voiceGradientColors.map { $0.cgColor }
-        let shouldAnimate = keyboardFocus != .text && animated && !isVoicePressActive && !isStartRequestInFlight
-        if shouldAnimate {
-            UIView.transition(with: voiceButton, duration: 0.22, options: [.transitionCrossDissolve, .allowUserInteraction], animations: updates)
-            let anim = CABasicAnimation(keyPath: "colors")
-            anim.fromValue = voiceGradient.colors
-            anim.toValue = gradientColors
-            anim.duration = 0.22
-            voiceGradient.colors = gradientColors
-            voiceGradient.add(anim, forKey: "colors")
-        } else {
-            updates()
-            voiceGradient.colors = gradientColors
-        }
+        updates()
 
         let showsTextToolbarVoicePrint = isRecordingState && keyboardFocus == .text
         let isErrorState = state == .error
@@ -5401,7 +5273,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let showsTextToolbarStatus = keyboardFocus == .text
             && !suppressesInitialTextStatus
             && (showsTransientTextStatus || isSendingState || isErrorState || isInsertedFlash)
-        voicePrint.isActive = showsInOrbVoicePrint
         topRowVoicePrint.isActive = isHoldRecording
         textToolbarVoicePrint.isActive = showsTextToolbarVoicePrint
         textToolbarVoicePrint.alpha = showsTextToolbarVoicePrint ? 1 : 0
@@ -5430,13 +5301,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         updateCandidateTextOverlay()
         if isRecordingState {
             let audioLevel = currentBridgeStatus?.audioLevel
-            voicePrint.updateLevel(audioLevel)
+            voiceButton.updateAudioLevel(audioLevel)
             topRowVoicePrint.updateLevel(audioLevel)
             textToolbarVoicePrint.updateLevel(audioLevel)
-            updatePulseAudioLevel(audioLevel)
-            startPulseRings()
-        } else {
-            stopPulseRings()
         }
 
         if isRecordingState {
@@ -5462,18 +5329,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             recordingElapsedTimer = nil
         }
         updateTextRecordingStatus(isRecording: isRecordingState, isSending: isSendingState)
-    }
-
-    /// updateUI runs on every status transition; the orb icon cycles between
-    /// four SF Symbols, so resolve each name once instead of per pass.
-    /// Main-thread only.
-    private static var symbolImageCache: [String: UIImage] = [:]
-
-    private static func cachedSymbolImage(named name: String) -> UIImage? {
-        if let cached = symbolImageCache[name] { return cached }
-        guard let image = UIImage(systemName: name) else { return nil }
-        symbolImageCache[name] = image
-        return image
     }
 
     private func logSlowUpdateUI(startedAt: CFTimeInterval, animated: Bool, state: KeyboardBridgeState?) {
@@ -5582,60 +5437,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             isShowingTextRecordingStatus = false
             renderRimeState(rimeInput.state())
             keyboardHaptics.prepareForTextInput()
-        }
-    }
-
-    private func startPulseRings() {
-        let tint = pulseRingColor.cgColor
-        for (i, ring) in pulseRings.enumerated() where ring.animation(forKey: "pulse.scale") == nil {
-            ring.strokeColor = tint
-            ring.opacity = 0
-
-            let begin = CACurrentMediaTime() + Double(i) * 0.6
-
-            let scale = CABasicAnimation(keyPath: "transform.scale")
-            scale.fromValue = 1.0
-            scale.toValue = 1.7
-            scale.duration = 1.8
-            scale.beginTime = begin
-            scale.repeatCount = .infinity
-            scale.timingFunction = CAMediaTimingFunction(name: .easeOut)
-
-            let opacity = CAKeyframeAnimation(keyPath: "opacity")
-            opacity.values = [0.0, 0.55, 0.0]
-            opacity.keyTimes = [0.0, 0.15, 1.0]
-            opacity.duration = 1.8
-            opacity.beginTime = begin
-            opacity.repeatCount = .infinity
-
-            ring.add(scale, forKey: "pulse.scale")
-            ring.add(opacity, forKey: "pulse.opacity")
-        }
-    }
-
-    private func stopPulseRings() {
-        for ring in pulseRings {
-            ring.removeAllAnimations()
-            ring.opacity = 0
-        }
-        smoothedAudioLevel = 0
-    }
-
-    /// Modulates pulse-ring stroke alpha by a smoothed audio level so the
-    /// pulses visibly intensify when the user speaks. The scale-and-fade
-    /// CAAnimation in `startPulseRings` provides the rhythm; this provides
-    /// the dynamics — important in hold mode where the orb's bars are
-    /// hidden behind the finger.
-    private func updatePulseAudioLevel(_ newLevel: Float?) {
-        let level = max(0, min(1, newLevel ?? 0))
-        smoothedAudioLevel = 0.7 * smoothedAudioLevel + 0.3 * level
-        let base = pulseRingColor.resolvedColor(with: keyboardTraitCollection)
-        // Baseline of 0.30 keeps idle/silence pulses faintly visible — a
-        // "still listening" cue — and peaks near 0.95 when speech is loud.
-        let modulatedAlpha = min(0.95, 0.30 + CGFloat(smoothedAudioLevel) * 0.65)
-        let modulated = base.withAlphaComponent(modulatedAlpha).cgColor
-        for ring in pulseRings {
-            ring.strokeColor = modulated
         }
     }
 
@@ -5876,10 +5677,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         guard !isVoicePressActive else { return }
         isVoicePressActive = true
         voicePressBeganAt = Date().timeIntervalSince1970
-        UIView.animate(withDuration: 0.12, delay: 0, options: [.allowUserInteraction, .beginFromCurrentState]) {
-            self.voiceButton.transform = CGAffineTransform(scaleX: 0.92, y: 0.92)
-            self.voiceButton.alpha = 1
-        }
+        voiceButton.animatePressed()
         switch inputMode {
         case .hold:
             beginDictationPress()
@@ -5890,10 +5688,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     @objc private func voicePressUp() {
         kbLog.debug("voicePressUp fired")
-        UIView.animate(withDuration: 0.32, delay: 0, usingSpringWithDamping: 0.55, initialSpringVelocity: 0.5, options: [.allowUserInteraction, .beginFromCurrentState]) {
-            self.voiceButton.transform = .identity
-            self.voiceButton.alpha = 1
-        }
+        voiceButton.animateReleased(spring: true)
         switch inputMode {
         case .hold:
             endDictationPress()
@@ -5908,10 +5703,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         // hold mode (drag-out no longer cancels; recording always commits).
         kbLog.debug("voicePressCancelled fired")
         let wasActive = isVoicePressActive
-        UIView.animate(withDuration: 0.18, delay: 0, options: [.allowUserInteraction, .beginFromCurrentState]) {
-            self.voiceButton.transform = .identity
-            self.voiceButton.alpha = 1
-        }
+        voiceButton.animateReleased(spring: false)
         if wasActive, inputMode == .hold, hasFullAccess {
             endDictationPress()
         }
@@ -11133,25 +10925,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
     }
 
-    /// Vertical gradient: top color slightly lighter than bottom for soft
-    /// depth. Returned as `[UIColor]`; the layer converts to `CGColor`.
-    private var voiceGradientColors: [UIColor] {
-        let (top, bottom) = gradientStops
-        return [top, bottom]
-    }
-
-    private var voiceShadowColor: UIColor {
-        gradientStops.bottom
-    }
-
-    private var gradientStops: (top: UIColor, bottom: UIColor) {
-        let preset = gradientPreset
-        return (preset.top, preset.bottom)
-    }
-
-    /// Mirrors `gradientStops` selection but returns the semantic preset for
-    /// reuse — `DesignTokens.OrbGradient` is the single source of truth for
-    /// orb colors across iOS host and keyboard.
+    /// `DesignTokens.OrbGradient` is the single source of truth for orb colors
+    /// across the iOS host and keyboard; the control owns their rendering.
     private var gradientPreset: OrbGradient {
         guard hasFullAccess else { return .blocked }
         if isOpeningHostApp { return .sending }
@@ -12236,10 +12011,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             // changed (host's `withAudioLevel` preserves updatedAt), so the
             // visible meters in hold mode would stay stale if we only pushed
             // the level inside updateUI(). Drive them here for every sample.
-            voicePrint.updateLevel(status.audioLevel)
+            voiceButton.updateAudioLevel(status.audioLevel)
             topRowVoicePrint.updateLevel(status.audioLevel)
             textToolbarVoicePrint.updateLevel(status.audioLevel)
-            updatePulseAudioLevel(status.audioLevel)
             if status.audioLevel == nil {
                 let now = Date().timeIntervalSince1970
                 if now - lastMissingAudioLevelLogAt > 2 {
@@ -12438,199 +12212,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 }
 
 // MARK: - Voice Controls
-
-private final class VoiceOrbButton: UIButton {
-    private let hitOutset: CGFloat = 10
-
-    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
-        guard isUserInteractionEnabled, !isHidden, alpha > 0.01 else { return false }
-        return bounds.insetBy(dx: -hitOutset, dy: -hitOutset).contains(point)
-    }
-}
-
-/// Vertical-bars voiceprint driven by Core Animation. The keyboard extension
-/// can have an unreliable app run loop while hosted inside another app, so the
-/// recording affordance must not depend on per-frame `CADisplayLink` updates.
-/// Host audio levels only adjust animation intensity and speed.
-private final class VoicePrintView: UIView {
-    var level: Float = 0 {
-        didSet {
-            targetLevel = max(0, min(1, level))
-            applyLiveLevel()
-        }
-    }
-
-    var isActive: Bool = false {
-        didSet {
-            guard isActive != oldValue else { return }
-            isActive ? start() : stop()
-        }
-    }
-
-    var tint: UIColor = .white {
-        didSet { barLayers.forEach { $0.backgroundColor = tint.cgColor } }
-    }
-
-    func updateLevel(_ level: Float?) {
-        guard let level else { return }
-        self.level = level
-    }
-
-    private let barCount = 9
-    private var barLayers: [CALayer] = []
-    private var targetLevel: Float = 0
-    private var isAnimatingBars = false
-    private var animationLevelBucket = -1
-
-    override init(frame: CGRect) {
-        super.init(frame: frame)
-        backgroundColor = .clear
-        isUserInteractionEnabled = false
-        setupBars()
-    }
-
-    required init?(coder: NSCoder) { fatalError("init(coder:) not supported") }
-
-    isolated deinit {
-        stopBarAnimations()
-    }
-
-    private func setupBars() {
-        for _ in 0..<barCount {
-            let layer = CALayer()
-            layer.backgroundColor = tint.cgColor
-            layer.opacity = 1
-            layer.cornerRadius = 2.5
-            layer.cornerCurve = .continuous
-            self.layer.addSublayer(layer)
-            barLayers.append(layer)
-        }
-    }
-
-    override func layoutSubviews() {
-        super.layoutSubviews()
-        layoutBars()
-    }
-
-    private func layoutBars() {
-        let w = bounds.width
-        let h = bounds.height
-        guard w > 0, h > 0 else { return }
-        let barW: CGFloat = 5
-        let totalBars = CGFloat(barCount)
-        let gap = (w - totalBars * barW) / (totalBars + 1)
-        let centerY = h / 2
-        let baseHeight = max(6, h * 0.12)
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        for (i, layer) in barLayers.enumerated() {
-            let x = gap + CGFloat(i) * (barW + gap)
-            layer.anchorPoint = CGPoint(x: 0.5, y: 0.5)
-            layer.bounds = CGRect(x: 0, y: 0, width: barW, height: baseHeight)
-            layer.position = CGPoint(x: x + barW / 2, y: centerY)
-        }
-        CATransaction.commit()
-        if isActive {
-            restartBarAnimations()
-        }
-    }
-
-    private func start() {
-        animationLevelBucket = -1
-        setNeedsLayout()
-        layoutIfNeeded()
-        startBarAnimations()
-    }
-
-    private func stop() {
-        stopBarAnimations()
-        targetLevel = 0
-        animationLevelBucket = -1
-        layoutBars()
-    }
-
-    private func startBarAnimations() {
-        guard !isAnimatingBars else { return }
-        isAnimatingBars = true
-        installBarAnimations(level: targetLevel)
-    }
-
-    private func restartBarAnimations() {
-        guard isAnimatingBars else { return }
-        installBarAnimations(level: targetLevel)
-    }
-
-    private func installBarAnimations(level: Float) {
-        guard bounds.width > 0, bounds.height > 0 else { return }
-        let bucket = Int((max(0, min(1, level)) * 6).rounded())
-        guard bucket != animationLevelBucket || barLayers.contains(where: { $0.animation(forKey: "voiceprint.breathe") == nil }) else {
-            return
-        }
-        animationLevelBucket = bucket
-        let normalizedLevel = CGFloat(bucket) / 6.0
-        let now = CACurrentMediaTime()
-        for (i, layer) in barLayers.enumerated() {
-            layer.removeAnimation(forKey: "voiceprint.breathe")
-            layer.anchorPoint = CGPoint(x: 0.5, y: 0.5)
-            let animation = CAKeyframeAnimation(keyPath: "bounds.size.height")
-            let duration: CFTimeInterval = 1.08
-            let sampleCount = 18
-            animation.values = (0..<sampleCount).map { sample in
-                let t = Double(sample) / Double(sampleCount - 1)
-                return NSNumber(value: Double(Self.barHeight(
-                    index: i,
-                    barCount: barCount,
-                    containerHeight: bounds.height,
-                    level: normalizedLevel,
-                    phase: t * duration
-                )))
-            }
-            animation.keyTimes = (0..<sampleCount).map { sample in
-                NSNumber(value: Double(sample) / Double(sampleCount - 1))
-            }
-            animation.duration = duration
-            animation.beginTime = now
-            animation.repeatCount = .infinity
-            animation.isRemovedOnCompletion = false
-            animation.calculationMode = .linear
-            layer.add(animation, forKey: "voiceprint.breathe")
-        }
-    }
-
-    private func stopBarAnimations() {
-        guard isAnimatingBars else { return }
-        isAnimatingBars = false
-        for layer in barLayers {
-            layer.removeAnimation(forKey: "voiceprint.breathe")
-            layer.transform = CATransform3DIdentity
-            layer.speed = 1
-        }
-    }
-
-    private func applyLiveLevel() {
-        guard isActive else { return }
-        installBarAnimations(level: targetLevel)
-    }
-
-    private static func barHeight(
-        index: Int,
-        barCount: Int,
-        containerHeight: CGFloat,
-        level: CGFloat,
-        phase: CFTimeInterval
-    ) -> CGFloat {
-        let minH = max(6, containerHeight * 0.12)
-        let maxH = containerHeight * 0.95
-        let centerBias = abs(Double(index) - Double(barCount - 1) / 2.0) / (Double(barCount - 1) / 2.0)
-        let centerBoost = 1.0 - centerBias * 0.30
-        let bandPhase = Double(index) * 0.55
-        let s = sin(phase * 5.4 + bandPhase) * 0.55 + sin(phase * 11.1 + bandPhase * 2.3) * 0.45
-        let waveform = CGFloat((s + 1) / 2)
-        let envelope = min(1.0, 0.22 + level * 1.05)
-        let modulation = envelope * CGFloat(centerBoost) * (0.35 + 0.65 * waveform)
-        return max(minH, min(maxH, minH + (maxH - minH) * modulation))
-    }
-}
 
 private final class VoiceInputModeSwitch: UIControl {
     var onSelection: ((String) -> Void)?
