@@ -383,7 +383,9 @@ final class AppState {
     var phase: AppPhase = .idle
     var errorMessage: String?
     var routeStatus = BridgeRouteResolutionStatus()
-    private(set) var isRefreshingRoute = false
+    var isRefreshingRoute: Bool {
+        routeRefreshState.isRefreshing
+    }
     var keyboardStandbyEnabled = true
     var hostAudioSessionLength: HostAudioSessionLength
     var keyboardDictationCaptureMode: KeyboardDictationCaptureMode
@@ -443,6 +445,7 @@ final class AppState {
     @ObservationIgnored let pipDictationCoordinator = PiPDictationCoordinator()
 
     private let bridgeService = BridgeService()
+    private let routeValidationPolicy = BridgeRouteValidationPolicy.iOSClient
     private let keyboardCoordinator = KeyboardCoordinator()
     private let keyboardServer = KeyboardLocalServer()
     private let networkPathMonitor = NWPathMonitor()
@@ -487,12 +490,16 @@ final class AppState {
     @ObservationIgnored private var hostAudioSessionExpiryTask: Task<Void, Never>?
     @ObservationIgnored private var keyboardStandbyRefreshTask: Task<Void, Never>?
     private var routeFetchedAt: Date?
-    private var pairingRevision: UInt64 = 0
+    private var routeRefreshState = BridgeRouteRefreshState()
+    private var pairingRevision: UInt64 {
+        routeRefreshState.pairingRevision
+    }
+    private var routeRefreshGeneration: UInt64 {
+        routeRefreshState.generation
+    }
     private var networkPathSignature: String?
     private var lastNetworkPathRefreshAt: Date?
     private var lastForegroundRouteRefreshAt: Date?
-    private var routeRefreshGeneration: UInt64 = 0
-    private var routeStatusProbeInFlightCount = 0
     private var macSettingsFetchedAt: Date?
     private var macSettingsRevision: String?
     private var cachedServerRimeUserPhrases: [String]
@@ -522,8 +529,9 @@ final class AppState {
     private var livePreviewGeneration: UInt64 = 0
     @ObservationIgnored private var lifecycleObservers: [NSObjectProtocol] = []
     @ObservationIgnored private var keyboardDarwinObservers: [KeyboardDarwinNotificationObserver] = []
-    private var routeRefreshInFlightCount = 0
-    private(set) var isCheckingRouteStatus = false
+    var isCheckingRouteStatus: Bool {
+        routeRefreshState.isChecking
+    }
     private var idleTimerHolders = 0
     private var lastGeneratedResultText: String?
     private var activeKeyboardTextEditContext: KeyboardTextEditContext?
@@ -533,11 +541,8 @@ final class AppState {
     private var keyboardAudioUnavailableMessage: String?
     private var audioSessionInterruptionActive = false
 
-    /// Force-refresh cloud/unavailable routes if cached probe is older than
-    /// this. Local routes get a shorter TTL because stale LAN IPs hurt more
-    /// than the extra probe.
-    private static let routeCacheTTL: TimeInterval = 30
-    private static let localRouteCacheTTL: TimeInterval = 5
+    /// Bounds how often foreground transitions trigger a new route probe.
+    /// Request-time cache trust is owned by `BridgeRouteValidationPolicy`.
     private static let foregroundRouteRefreshTTL: TimeInterval = 20
     private static let networkPathSameSignatureRefreshInterval: TimeInterval = 15
     private static let canceledKeyboardCommandTTL: TimeInterval = KeyboardBridgeCommand.maxAge + 5
@@ -864,8 +869,7 @@ final class AppState {
         var normalized = newConfig
         normalized.normalize()
         guard persistPairingConfig(normalized) else { return false }
-        pairingRevision &+= 1
-        _ = nextRouteRefreshGeneration()
+        routeRefreshState.pairingDidChange()
         config = normalized
         correctionMode = normalized.correctionMode
         selectedLanguageIDs = Set(normalized.validatedLanguageIDs)
@@ -885,8 +889,7 @@ final class AppState {
         normalized.normalizeBridgeEndpoints()
         guard normalized.bridgeEndpoints != config.bridgeEndpoints else { return true }
         guard persistPairingConfig(normalized) else { return false }
-        pairingRevision &+= 1
-        _ = nextRouteRefreshGeneration()
+        routeRefreshState.pairingDidChange()
         config = normalized
         publishKeyboardDefaults()
         routeFetchedAt = nil
@@ -913,8 +916,7 @@ final class AppState {
     }
 
     func unpair() async {
-        pairingRevision &+= 1
-        _ = nextRouteRefreshGeneration()
+        routeRefreshState.pairingDidChange()
         let automaticPiPStartTask = autoStartPiPTask
         cancelAutomaticPiPStart()
         let startTask = keyboardStartTask
@@ -1210,19 +1212,17 @@ final class AppState {
         syncPairingEndpoints: Bool? = nil,
         reason: String = "unspecified"
     ) async {
-        let cacheTTL = routeStatus.activeKind == .local ? Self.localRouteCacheTTL : Self.routeCacheTTL
-        if !force, let routeFetchedAt,
-           Date().timeIntervalSince(routeFetchedAt) < cacheTTL,
-           routeStatus.activeURL != nil,
+        if !force,
+           routeValidationPolicy.isFresh(status: routeStatus, fetchedAt: routeFetchedAt),
            routeStatusSatisfiesProbeMode(probeAllEndpoints) {
             return
         }
         let configSnapshot = config
-        let pairingRevisionSnapshot = pairingRevision
-        let generation = nextRouteRefreshGeneration()
+        let refreshToken = routeRefreshState.begin(showIndicator: showIndicator)
+        let pairingRevisionSnapshot = refreshToken.pairingRevision
+        let generation = refreshToken.generation
         let startedAt = Date()
         let shouldSyncPairingEndpoints = syncPairingEndpoints ?? showIndicator
-        beginRouteRefresh(showIndicator: showIndicator)
         recordRouteRefreshBegin(
             generation: generation,
             reason: reason,
@@ -1231,7 +1231,7 @@ final class AppState {
             config: configSnapshot
         )
         defer {
-            endRouteRefresh(showIndicator: showIndicator)
+            routeRefreshState.end(showIndicator: showIndicator)
         }
 
         let resolved = await routeResolver.resolve(config: configSnapshot, probeAllEndpoints: probeAllEndpoints)
@@ -1307,43 +1307,15 @@ final class AppState {
         routeFetchedAt = Date()
     }
 
-    private func nextRouteRefreshGeneration() -> UInt64 {
-        routeRefreshGeneration += 1
-        return routeRefreshGeneration
-    }
-
-    private func beginRouteRefresh(showIndicator: Bool) {
-        routeStatusProbeInFlightCount += 1
-        isCheckingRouteStatus = true
-        if showIndicator {
-            beginRouteRefreshIndicator()
-        }
-    }
-
-    private func endRouteRefresh(showIndicator: Bool) {
-        routeStatusProbeInFlightCount = max(0, routeStatusProbeInFlightCount - 1)
-        isCheckingRouteStatus = routeStatusProbeInFlightCount > 0
-        if showIndicator {
-            endRouteRefreshIndicator()
-        }
-    }
-
-    private func beginRouteRefreshIndicator() {
-        routeRefreshInFlightCount += 1
-        isRefreshingRoute = true
-    }
-
-    private func endRouteRefreshIndicator() {
-        routeRefreshInFlightCount = max(0, routeRefreshInFlightCount - 1)
-        isRefreshingRoute = routeRefreshInFlightCount > 0
-    }
-
     private func routeStatusSatisfiesProbeMode(_ probeAllEndpoints: Bool) -> Bool {
-        guard probeAllEndpoints else { return true }
         let localConfigured = !config.localBridgeURLCandidates.isEmpty
         let cloudConfigured = !config.publicBridgeURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        return (!localConfigured || routeStatus.localChecked) &&
-            (!cloudConfigured || routeStatus.cloudChecked)
+        return routeValidationPolicy.cacheSatisfiesProbeMode(
+            status: routeStatus,
+            probeAllEndpoints: probeAllEndpoints,
+            localConfigured: localConfigured,
+            cloudConfigured: cloudConfigured
+        )
     }
 
     @discardableResult
@@ -1400,11 +1372,13 @@ final class AppState {
         _ status: BridgeRouteResolutionStatus,
         config: PairingConfig
     ) -> Bool {
-        guard status.activeKind == .unavailable else { return true }
         let localConfigured = !config.localBridgeURLCandidates.isEmpty
         let cloudConfigured = !config.publicBridgeURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        return (!localConfigured || status.localChecked) &&
-            (!cloudConfigured || status.cloudChecked)
+        return routeValidationPolicy.canCommit(
+            status: status,
+            localConfigured: localConfigured,
+            cloudConfigured: cloudConfigured
+        )
     }
 
     private func recordRouteRefreshBegin(
@@ -2388,15 +2362,18 @@ final class AppState {
     }
 
     private func shouldPreflightBridgeRouteBeforeRequest(routeIsFresh: Bool) -> Bool {
-        guard routeStatus.activeURL != nil else { return true }
-        guard routeIsFresh else { return true }
-        return routeStatus.activeKind == .local
+        routeValidationPolicy.shouldPreflight(
+            status: routeStatus,
+            routeIsFresh: routeIsFresh
+        )
     }
 
     private func currentBridgeRouteIsFresh(activeURL: URL? = nil) -> Bool {
-        guard let routeFetchedAt, (activeURL ?? routeStatus.activeURL) != nil else { return false }
-        let cacheTTL = routeStatus.activeKind == .local ? Self.localRouteCacheTTL : Self.routeCacheTTL
-        return Date().timeIntervalSince(routeFetchedAt) < cacheTTL
+        routeValidationPolicy.isFresh(
+            status: routeStatus,
+            fetchedAt: routeFetchedAt,
+            activeURL: activeURL
+        )
     }
 
     func applyCorrectionMode(_ newMode: CorrectionMode) async {
