@@ -810,18 +810,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         recognizer.delegate = self
         return recognizer
     }()
-    /// Hold a candidate to magnify it (20pt cells truncate long candidates),
-    /// slide to re-target, release to commit. Default non-simultaneous policy
-    /// makes the tap recognizer fail once this begins, so no double-commit;
-    /// cancelsTouchesInView (default true) freezes the strip's pan while
-    /// previewing.
-    private lazy var candidateLongPressRecognizer: UILongPressGestureRecognizer = {
-        let recognizer = UILongPressGestureRecognizer(target: self, action: #selector(handleCandidateLongPress(_:)))
-        recognizer.minimumPressDuration = 0.3
-        recognizer.delegate = self
-        return recognizer
-    }()
-    private weak var candidatePreviewTarget: UIButton?
     private lazy var candidateGridTapRecognizer: UITapGestureRecognizer = {
         let recognizer = UITapGestureRecognizer(target: self, action: #selector(handleCandidateGridTap(_:)))
         recognizer.cancelsTouchesInView = false
@@ -1872,7 +1860,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         configureVoiceButton()
         configureUtilityRow()
         configureTextKeyboard()
-        attachToolbarHints()
         configureKeyboardDarwinBridge()
         _ = applySharedStandbySnapshotForPresentation()
         applyKeyboardInterfaceStyle(force: true)
@@ -3671,7 +3658,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         // rendered edge appends the next chunk (scrollViewDidScroll).
         candidateScrollView.delegate = self
         candidateScrollView.addGestureRecognizer(candidateScrollTapRecognizer)
-        candidateScrollView.addGestureRecognizer(candidateLongPressRecognizer)
         // UIScrollView's clipsToBounds default is false — without this, the
         // last candidate near the right edge can render under the chevron.
         candidateScrollView.clipsToBounds = true
@@ -5333,8 +5319,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
         keyPreviewBubble.layer.removeAllAnimations()
         keyPreviewLabel.text = title
-        // Candidate previews refine the shared label; restore the key look.
-        keyPreviewLabel.font = .systemFont(ofSize: 30, weight: .semibold)
         let keyFrame = control.convert(control.bounds, to: view)
         let bubbleWidth = min(max(keyFrame.width + 18, 48), 76)
         let bubbleHeight: CGFloat = 58
@@ -8860,144 +8844,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
         guard let button = candidateScrollHitTarget(at: point) else { return }
         candidateButtonTapped(button)
-    }
-
-    @objc private func handleCandidateLongPress(_ recognizer: UILongPressGestureRecognizer) {
-        let point = recognizer.location(in: view)
-        switch recognizer.state {
-        case .began, .changed:
-            guard let button = candidateScrollHitTarget(at: point) else {
-                hideCandidatePreview()
-                return
-            }
-            if candidatePreviewTarget !== button {
-                if candidatePreviewTarget == nil {
-                    keyboardHaptics.playControlTap()
-                } else {
-                    keyboardHaptics.playSelectionChanged()
-                }
-                candidatePreviewTarget = button
-                showCandidatePreview(for: button)
-            }
-        case .ended:
-            let target = candidatePreviewTarget
-            hideCandidatePreview()
-            if let target {
-                candidateButtonTapped(target)
-            }
-        default:
-            hideCandidatePreview()
-        }
-    }
-
-    private func candidateText(of button: UIButton) -> String {
-        if let text = button.accessibilityLabel,
-           !text.isEmpty {
-            return text
-        }
-        if let attributed = button.configuration?.attributedTitle {
-            return String(attributed.characters)
-        }
-        return button.currentTitle ?? ""
-    }
-
-    /// Magnifier bubble for a held candidate. Keyboard extensions cannot draw
-    /// outside their own bounds, so the bubble sits BELOW the strip (over the
-    /// top key row) instead of above the finger like character previews.
-    private func showCandidatePreview(for button: UIButton) {
-        let text = candidateText(of: button)
-        guard !text.isEmpty else {
-            hideCandidatePreview()
-            return
-        }
-        keyPreviewBubble.layer.removeAllAnimations()
-        keyPreviewLabel.font = .systemFont(ofSize: 24, weight: .semibold)
-        keyPreviewLabel.text = text
-        let buttonFrame = button.convert(button.bounds, to: view)
-        let textWidth = ceil((text as NSString).size(withAttributes: [
-            .font: keyPreviewLabel.font as Any,
-        ]).width)
-        let bubbleWidth = min(max(textWidth + 24, 56), view.bounds.width - 8)
-        let bubbleHeight: CGFloat = 44
-        let x = min(
-            max(buttonFrame.midX - bubbleWidth / 2, 4),
-            max(4, view.bounds.width - bubbleWidth - 4)
-        )
-        let y = buttonFrame.maxY + 6
-        keyPreviewBubble.frame = CGRect(x: x, y: y, width: bubbleWidth, height: bubbleHeight)
-        view.bringSubviewToFront(keyPreviewBubble)
-        keyPreviewBubble.isHidden = false
-        keyPreviewBubble.alpha = 1
-        keyPreviewBubble.transform = .identity
-    }
-
-    private func hideCandidatePreview() {
-        candidatePreviewTarget = nil
-        hideKeyPreview()
-    }
-
-    // MARK: - Toolbar hints
-    //
-    // The toolbar icons (wand / style / undo / mic / keyboard-switch / gear)
-    // have no labels and `help()` does nothing inside a keyboard extension,
-    // so their meaning was only discoverable in the host app's Guide. Holding
-    // an icon now shows its accessibility label in the preview bubble without
-    // triggering the action (the recognizer cancels the button's touch).
-
-    private func attachToolbarHints() {
-        [
-            settingsButton,
-            keyboardFocusButton,
-            textWandButton,
-            textStylePickerButton,
-            textUndoButton,
-            textToolsButton,
-            textKeyboardSwitchButton,
-            textHostSettingsButton,
-        ].forEach(attachToolbarHint)
-    }
-
-    private func attachToolbarHint(_ button: UIButton) {
-        let recognizer = UILongPressGestureRecognizer(target: self, action: #selector(handleToolbarHintLongPress(_:)))
-        recognizer.minimumPressDuration = 0.45
-        recognizer.cancelsTouchesInView = true
-        button.addGestureRecognizer(recognizer)
-    }
-
-    @objc private func handleToolbarHintLongPress(_ recognizer: UILongPressGestureRecognizer) {
-        guard let button = recognizer.view as? UIButton else { return }
-        switch recognizer.state {
-        case .began:
-            let text = button.accessibilityLabel?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            guard !text.isEmpty else { return }
-            keyboardHaptics.playSelectionChanged()
-            presentToolbarHintBubble(text: text, below: button)
-        case .ended, .cancelled, .failed:
-            hideKeyPreview()
-        default:
-            break
-        }
-    }
-
-    private func presentToolbarHintBubble(text: String, below control: UIControl) {
-        keyPreviewBubble.layer.removeAllAnimations()
-        keyPreviewLabel.font = .systemFont(ofSize: 13, weight: .semibold)
-        keyPreviewLabel.text = text
-        let controlFrame = control.convert(control.bounds, to: view)
-        let textWidth = ceil((text as NSString).size(withAttributes: [
-            .font: keyPreviewLabel.font as Any,
-        ]).width)
-        let bubbleWidth = min(textWidth + 24, view.bounds.width - 8)
-        let bubbleHeight: CGFloat = 32
-        let x = min(
-            max(controlFrame.midX - bubbleWidth / 2, 4),
-            max(4, view.bounds.width - bubbleWidth - 4)
-        )
-        keyPreviewBubble.frame = CGRect(x: x, y: controlFrame.maxY + 6, width: bubbleWidth, height: bubbleHeight)
-        view.bringSubviewToFront(keyPreviewBubble)
-        keyPreviewBubble.isHidden = false
-        keyPreviewBubble.alpha = 1
-        keyPreviewBubble.transform = .identity
     }
 
     @objc private func handleCandidateGridTap(_ recognizer: UITapGestureRecognizer) {
