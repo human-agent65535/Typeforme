@@ -197,13 +197,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         static let bottomModeKeyWidth: CGFloat = 48
         static let bottomGlobeKeyWidth: CGFloat = 48
         static let bottomLanguageKeyWidth: CGFloat = 48
-        static let keyIconPointSize: CGFloat = 15
-        static let letterTitleFontSize: CGFloat = 25
-        static let uppercaseLetterTitleFontSize: CGFloat = 22
-        static let numericDigitTitleFontSize: CGFloat = 26
-        static let numericSecondaryTitleFontSize: CGFloat = 8.5
-        static let compactUtilityTitleFontSize: CGFloat = 18
-        static let utilityActionTitleFontSize: CGFloat = 17
         static var utilityLetterSpacerWidth: CGFloat {
             max(0, utilityLetterGap - keyHorizontalGap * 2)
         }
@@ -787,10 +780,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private let textHostSettingsButton = UIButton(type: .system)
     private let textCandidateGridButton = HitInsetButton(frame: .zero)
     private let candidateGridCollapseButton = HitInsetButton(frame: .zero)
-    private let textModeButton = UIButton(type: .system)
-    private let textAlternateSymbolButton = UIButton(type: .system)
-    private let textGlobeButton = UIButton(type: .system)
-    private let textLanguageButton = UIButton(type: .system)
+    private let textModeButton = KeyboardTextKeyControl(type: .system)
+    private let textAlternateSymbolButton = KeyboardTextKeyControl(type: .system)
+    private let textGlobeButton = KeyboardTextKeyControl(type: .system)
+    private let textLanguageButton = KeyboardTextKeyControl(type: .system)
     private let textLanguageLabel = UILabel()
     private let candidateScrollView = UIScrollView()
     private let candidateStack = UIStackView()
@@ -837,7 +830,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }()
     private var textKeyboardButtons: [UIButton] = []
     private var textKeyboardHitRows: [TextKeyboardHitRow] = []
-    private var letterButtonMap: [String: UIButton] = [:]
+    private var letterButtonMap: [String: KeyboardTextKeyControl] = [:]
     private var textKeyCommitCharacters: [ObjectIdentifier: String] = [:]
     private var reusableCandidateButtons: [UIButton] = []
     private var candidateButtonWidthConstraints: [NSLayoutConstraint] = []
@@ -856,12 +849,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private var textModeButtonWidthConstraint: NSLayoutConstraint?
     private var textGlobeButtonWidthConstraint: NSLayoutConstraint?
     private var textLanguageButtonWidthConstraint: NSLayoutConstraint?
-    private weak var textReturnKeyButton: UIButton?
-    private weak var textShiftButton: UIButton?
-    private weak var textSpaceKeyButton: UIButton?
+    private weak var textReturnKeyButton: KeyboardTextKeyControl?
+    private weak var textShiftButton: KeyboardTextKeyControl?
+    private weak var textSpaceKeyButton: KeyboardTextKeyControl?
     private var lastReturnKeyTitle = ""
     private var lastReturnKeyImageName: String?
-    private var lastReturnKeyWeight: TextKeyWeight = .utility
+    private var lastReturnKeyWeight: KeyboardTextKeyRole = .utility
     private var lastReturnKeyEnabled = true
     private var textBottomShortcutText: [ObjectIdentifier: String] = [:]
     private var lastLetterCasingSnapshot: LetterCasingSnapshot?
@@ -2790,9 +2783,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         keyPreviewBubble.backgroundColor = UIColor.secondarySystemBackground
         keyPreviewBubble.layer.borderColor = UIColor.separator
             .resolvedColor(with: keyboardTraitCollection).cgColor
-        textKeyboardButtons.forEach {
-            $0.overrideUserInterfaceStyle = style
-            $0.setNeedsUpdateConfiguration()
+        textKeyboardButtons.forEach { button in
+            if let key = button as? KeyboardTextKeyControl {
+                key.refreshAppearance(style: style)
+            } else {
+                button.overrideUserInterfaceStyle = style
+                button.setNeedsUpdateConfiguration()
+            }
         }
         correctionModeButtons.forEach {
             $0.button.overrideUserInterfaceStyle = style
@@ -4236,7 +4233,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         digitLabel.text = digit
         digitLabel.textColor = .label
         digitLabel.textAlignment = .center
-        digitLabel.font = .systemFont(ofSize: TextKeyboardLayoutModel.numericDigitTitleFontSize, weight: .regular)
+        digitLabel.font = .systemFont(
+            ofSize: CGFloat(KeyboardTextKeyVisualPolicy.numericDigitPointSize),
+            weight: .regular
+        )
         digitLabel.adjustsFontSizeToFitWidth = true
         digitLabel.minimumScaleFactor = 0.9
         stack.addArrangedSubview(digitLabel)
@@ -4246,7 +4246,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             secondaryLabel.text = secondary
             secondaryLabel.textColor = .label
             secondaryLabel.textAlignment = .center
-            secondaryLabel.font = .systemFont(ofSize: TextKeyboardLayoutModel.numericSecondaryTitleFontSize, weight: .semibold)
+            secondaryLabel.font = .systemFont(
+                ofSize: CGFloat(KeyboardTextKeyVisualPolicy.numericSecondaryPointSize),
+                weight: .semibold
+            )
             secondaryLabel.adjustsFontSizeToFitWidth = true
             secondaryLabel.minimumScaleFactor = 0.85
             stack.addArrangedSubview(secondaryLabel)
@@ -4718,7 +4721,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
     }
 
-    private var returnKeyWeight: TextKeyWeight {
+    private var returnKeyWeight: KeyboardTextKeyRole {
         KeyboardReturnKeyPolicy.presentation(for: returnKeyKind).isAction ? .action : .utility
     }
 
@@ -4774,15 +4777,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         return row
     }
 
-    private enum TextKeyWeight: Equatable {
-        case normal
-        case primary
-        case utility
-        case action
-    }
-
-    private func makeTextKeyButton(title: String, image: String? = nil, weight: TextKeyWeight = .normal) -> UIButton {
-        let button = UIButton(type: .system)
+    private func makeTextKeyButton(
+        title: String,
+        image: String? = nil,
+        weight: KeyboardTextKeyRole = .normal
+    ) -> KeyboardTextKeyControl {
+        let button = KeyboardTextKeyControl(type: .system)
         configureTextKeyButton(button, title: title, image: image, weight: weight)
         button.titleLabel?.adjustsFontSizeToFitWidth = true
         button.titleLabel?.minimumScaleFactor = 0.7
@@ -4792,7 +4792,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         return button
     }
 
-    private func configureTextControlButton(_ button: UIButton, title: String, image: String?) {
+    private func configureTextControlButton(
+        _ button: KeyboardTextKeyControl,
+        title: String,
+        image: String?
+    ) {
         configureTextKeyButton(button, title: title, image: image, weight: .utility)
         button.titleLabel?.adjustsFontSizeToFitWidth = true
         button.titleLabel?.minimumScaleFactor = 0.72
@@ -4897,165 +4901,18 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         )
     }
 
-    private func configureTextKeyButton(_ button: UIButton, title: String, image: String?, weight: TextKeyWeight) {
-        button.configurationUpdateHandler = nil
-        let configuration = textKeyConfiguration(
-            title: title,
-            image: image,
-            weight: weight,
-            isPressed: false,
-            isEnabled: button.isEnabled
-        )
-        button.configuration = configuration
-        button.configurationUpdateHandler = { [weak self, weak button] control in
-            guard let self, let button else { return }
-            let isPressed = control.isHighlighted
-            button.configuration = self.textKeyConfiguration(
-                title: title,
-                image: image,
-                weight: weight,
-                isPressed: isPressed,
-                isEnabled: control.isEnabled
-            )
-            self.applyTextKeyLayerStyle(
-                to: button,
-                weight: weight,
-                isPressed: isPressed,
-                isEnabled: control.isEnabled
-            )
-        }
-        applyTextKeyLayerStyle(
-            to: button,
-            weight: weight,
-            isPressed: false,
-            isEnabled: button.isEnabled
-        )
-        button.accessibilityLabel = title.isEmpty ? image : title
-    }
-
-    private func textKeyConfiguration(
+    private func configureTextKeyButton(
+        _ button: KeyboardTextKeyControl,
         title: String,
         image: String?,
-        weight: TextKeyWeight,
-        isPressed: Bool,
-        isEnabled: Bool = true
-    ) -> UIButton.Configuration {
-        var configuration = UIButton.Configuration.filled()
-        let usesSystemLetterTypography = weight == .normal && image == nil && title.range(
-            of: #"^[A-Za-z]$"#,
-            options: .regularExpression
-        ) != nil
-        let usesUppercaseLetterTypography = usesSystemLetterTypography && title == title.uppercased()
-        let isCompactUtilityTitle = weight == .utility
-            && image == nil
-            && (title == "123" || title == "ABC" || title == "#+=")
-        let usesUtilityActionTypography = (weight == .utility || weight == .action)
-            && image == nil
-            && !isCompactUtilityTitle
-        configuration.title = title
-        configuration.image = image.flatMap { UIImage(systemName: $0) }
-        if image != nil {
-            configuration.preferredSymbolConfigurationForImage = UIImage.SymbolConfiguration(
-                pointSize: TextKeyboardLayoutModel.keyIconPointSize,
-                weight: .regular
-            )
-        }
-        configuration.titleLineBreakMode = .byClipping
-        configuration.cornerStyle = .fixed
-        configuration.background.cornerRadius = 6
-        configuration.contentInsets = usesSystemLetterTypography
-            ? NSDirectionalEdgeInsets(top: 3, leading: 4, bottom: 7, trailing: 4)
-            : NSDirectionalEdgeInsets(top: 5, leading: 4, bottom: 5, trailing: 4)
-        configuration.baseForegroundColor = systemKeyboardKeyForeground(
-            for: weight,
-            isEnabled: isEnabled
-        )
-        configuration.baseBackgroundColor = systemKeyboardKeyBackground(
-            for: weight,
-            isPressed: isPressed,
-            isEnabled: isEnabled
-        )
-        configuration.background.strokeWidth = isPressed ? 0 : 0.35
-        configuration.background.strokeColor = UIColor.separator.withAlphaComponent(isKeyboardDark ? 0.18 : 0.10)
-        configuration.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
-            var outgoing = incoming
-            let isShortGlyph = title.count <= 2
-            outgoing.font = usesSystemLetterTypography
-                ? .systemFont(
-                    ofSize: usesUppercaseLetterTypography
-                        ? TextKeyboardLayoutModel.uppercaseLetterTitleFontSize
-                        : TextKeyboardLayoutModel.letterTitleFontSize,
-                    weight: .regular
-                )
-                : (isCompactUtilityTitle
-                    ? .systemFont(ofSize: TextKeyboardLayoutModel.compactUtilityTitleFontSize, weight: .regular)
-                    : (usesUtilityActionTypography
-                        ? .systemFont(ofSize: isShortGlyph ? TextKeyboardLayoutModel.utilityActionTitleFontSize : 14, weight: .medium)
-                        : .systemFont(ofSize: isShortGlyph ? 22 : 15, weight: isShortGlyph ? .regular : .medium)))
-            return outgoing
-        }
-        return configuration
-    }
-
-    private func applyTextKeyLayerStyle(
-        to button: UIButton,
-        weight: TextKeyWeight,
-        isPressed: Bool,
-        isEnabled: Bool = true
+        weight: KeyboardTextKeyRole
     ) {
-        button.layer.cornerRadius = 6
-        button.layer.cornerCurve = .continuous
-        button.layer.masksToBounds = false
-        button.layer.shadowColor = UIColor.black.cgColor
-        button.layer.shadowOffset = CGSize(width: 0, height: isPressed ? 0 : 0.3)
-        button.layer.shadowRadius = 0
-        let baseOpacity: Float = {
-            switch weight {
-            case .normal, .primary:
-                return isKeyboardDark ? 0.22 : 0.12
-            case .utility, .action:
-                return isKeyboardDark ? 0.24 : 0.14
-            }
-        }()
-        let enabledOpacity = isEnabled ? baseOpacity : baseOpacity * 0.45
-        button.layer.shadowOpacity = isPressed ? enabledOpacity * 0.4 : enabledOpacity
-        button.layer.borderWidth = isPressed ? 0.5 : 0
-        button.layer.borderColor = UIColor.label.withAlphaComponent(isKeyboardDark ? 0.08 : 0.05).cgColor
-    }
-
-    private func systemKeyboardKeyForeground(
-        for weight: TextKeyWeight,
-        isEnabled: Bool
-    ) -> UIColor {
-        UIColor { traits in
-            guard isEnabled else {
-                return traits.userInterfaceStyle == .dark
-                    ? UIColor.white.withAlphaComponent(0.35)
-                    : UIColor.black.withAlphaComponent(0.28)
-            }
-            if weight == .action {
-                return .white
-            }
-            return .label
-        }
-    }
-
-    private func systemKeyboardKeyBackground(
-        for weight: TextKeyWeight,
-        isPressed: Bool = false,
-        isEnabled: Bool = true
-    ) -> UIColor {
-        UIColor { traits in
-            if weight == .action, isEnabled {
-                return isPressed
-                    ? UIColor.systemBlue.withAlphaComponent(0.76)
-                    : UIColor.systemBlue
-            }
-            if traits.userInterfaceStyle == .dark {
-                return UIColor(white: isPressed && isEnabled ? 0.42 : 68.0 / 255.0, alpha: 1.0)
-            }
-            return UIColor(white: isPressed && isEnabled ? 0.78 : 1.0, alpha: 1.0)
-        }
+        button.render(
+            title: title,
+            imageName: image,
+            role: weight,
+            style: keyboardInterfaceStyle
+        )
     }
 
     private func configureCapsuleButton(_ button: UIButton, title: String, image: String?, style: CapsuleStyle) {
@@ -8082,15 +7939,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         // Apply the standard utility key chrome so the button is visible
         // (solid background + 1pt shadow) like other bottom-row keys. Then
         // overlay textLanguageLabel on top with the attributed "中/英" text.
-        textLanguageButton.configurationUpdateHandler = { [weak self] button in
-            guard let self else { return }
-            let control = button
-            let isPressed = control.isHighlighted
-            button.configuration = self.textKeyConfiguration(title: "", image: nil, weight: .utility, isPressed: isPressed)
-            self.applyTextKeyLayerStyle(to: button, weight: .utility, isPressed: isPressed)
-        }
-        textLanguageButton.configuration = textKeyConfiguration(title: "", image: nil, weight: .utility, isPressed: false)
-        applyTextKeyLayerStyle(to: textLanguageButton, weight: .utility, isPressed: false)
+        textLanguageButton.render(
+            title: "",
+            imageName: nil,
+            role: .utility,
+            style: keyboardInterfaceStyle
+        )
 
         let activeTitle = textInputLanguage == .chinese ? "中" : "英"
         let inactiveTitle = textInputLanguage == .chinese ? "英" : "中"
