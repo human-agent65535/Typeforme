@@ -52,6 +52,10 @@
 		B10000000000000000000001 /* KeyboardViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000001 /* KeyboardViewController.swift */; };
 		B10000000000000000000007 /* KeyboardVoiceOrbControl.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000007 /* KeyboardVoiceOrbControl.swift */; };
 		B10000000000000000000009 /* KeyboardTextKeyControl.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000009 /* KeyboardTextKeyControl.swift */; };
+		B1000000000000000000000A /* KeyboardHaptics.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000000A /* KeyboardHaptics.swift */; };
+		B1000000000000000000000B /* VoiceInputModeSwitch.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000000B /* VoiceInputModeSwitch.swift */; };
+		B1000000000000000000000C /* ChineseLearningRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000000C /* ChineseLearningRecorder.swift */; };
+		B1000000000000000000000D /* KeyboardUIKitPrimitives.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000000000000000000000D /* KeyboardUIKitPrimitives.swift */; };
 		B10000000000000000000002 /* TypeformeKeyboard.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = B20000000000000000000003 /* TypeformeKeyboard.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		B10000000000000000000003 /* Shared/KeyboardBridgeModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000010 /* Shared/KeyboardBridgeModels.swift */; };
 		B10000000000000000000004 /* KeyboardLocalClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000004 /* KeyboardLocalClient.swift */; };
@@ -151,6 +155,10 @@
 		B20000000000000000000001 /* KeyboardViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardViewController.swift; sourceTree = "<group>"; };
 		B20000000000000000000007 /* KeyboardVoiceOrbControl.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardVoiceOrbControl.swift; sourceTree = "<group>"; };
 		B20000000000000000000009 /* KeyboardTextKeyControl.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardTextKeyControl.swift; sourceTree = "<group>"; };
+		B2000000000000000000000A /* KeyboardHaptics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardHaptics.swift; sourceTree = "<group>"; };
+		B2000000000000000000000B /* VoiceInputModeSwitch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceInputModeSwitch.swift; sourceTree = "<group>"; };
+		B2000000000000000000000C /* ChineseLearningRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChineseLearningRecorder.swift; sourceTree = "<group>"; };
+		B2000000000000000000000D /* KeyboardUIKitPrimitives.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardUIKitPrimitives.swift; sourceTree = "<group>"; };
 		B20000000000000000000002 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		B20000000000000000000003 /* TypeformeKeyboard.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = TypeformeKeyboard.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		B20000000000000000000004 /* KeyboardLocalClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardLocalClient.swift; sourceTree = "<group>"; };
@@ -303,6 +311,10 @@
 				B20000000000000000000001 /* KeyboardViewController.swift */,
 				B20000000000000000000007 /* KeyboardVoiceOrbControl.swift */,
 				B20000000000000000000009 /* KeyboardTextKeyControl.swift */,
+				B2000000000000000000000A /* KeyboardHaptics.swift */,
+				B2000000000000000000000B /* VoiceInputModeSwitch.swift */,
+				B2000000000000000000000C /* ChineseLearningRecorder.swift */,
+				B2000000000000000000000D /* KeyboardUIKitPrimitives.swift */,
 				B20000000000000000000005 /* RimeInputController.swift */,
 				B20000000000000000000004 /* KeyboardLocalClient.swift */,
 				B20000000000000000000006 /* RimeSharedSupport */,
@@ -534,6 +546,10 @@
 				B10000000000000000000001 /* KeyboardViewController.swift in Sources */,
 				B10000000000000000000007 /* KeyboardVoiceOrbControl.swift in Sources */,
 				B10000000000000000000009 /* KeyboardTextKeyControl.swift in Sources */,
+				B1000000000000000000000A /* KeyboardHaptics.swift in Sources */,
+				B1000000000000000000000B /* VoiceInputModeSwitch.swift in Sources */,
+				B1000000000000000000000C /* ChineseLearningRecorder.swift in Sources */,
+				B1000000000000000000000D /* KeyboardUIKitPrimitives.swift in Sources */,
 				B10000000000000000000006 /* RimeInputController.swift in Sources */,
 				B10000000000000000000004 /* KeyboardLocalClient.swift in Sources */,
 				B10000000000000000000005 /* ../Sources/Typeforme/Models/CorrectionMode.swift in Sources */,
@@ -710,7 +726,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = TypeformeIOS/TypeformeIOS.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 592;
+				CURRENT_PROJECT_VERSION = 593;
 				DEVELOPMENT_ASSET_PATHS = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = TypeformeIOS/Info.plist;
@@ -739,7 +755,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = TypeformeIOS/TypeformeIOS.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 592;
+				CURRENT_PROJECT_VERSION = 593;
 				DEVELOPMENT_ASSET_PATHS = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = TypeformeIOS/Info.plist;
@@ -767,7 +783,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = TypeformeKeyboard/TypeformeKeyboard.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 592;
+				CURRENT_PROJECT_VERSION = 593;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = TypeformeKeyboard/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
@@ -796,7 +812,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = TypeformeKeyboard/TypeformeKeyboard.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 592;
+				CURRENT_PROJECT_VERSION = 593;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = TypeformeKeyboard/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
