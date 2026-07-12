@@ -11,6 +11,50 @@
 "Ready" = "Ready";
 "Discard" = "Discard";
 
+// Unified host settings and home
+"Settings" = "Settings";
+"Close" = "Close";
+"Preferences" = "Preferences";
+"Voice Dictation" = "Voice Dictation";
+"Default mode and live preview" = "Default mode and live preview";
+"Text Keyboard" = "Text Keyboard";
+"Chinese input, typing, feedback, and learning" = "Chinese input, typing, feedback, and learning";
+"System" = "System";
+"Connected Mac" = "Connected Mac";
+"Setup & Access" = "Setup & Access";
+"Capture method and permissions" = "Capture method and permissions";
+"Help & About" = "Help & About";
+"Connect a Mac" = "Connect a Mac";
+"Pair this iPhone before dictating" = "Pair this iPhone before dictating";
+"Review permissions and keyboard access" = "Review permissions and keyboard access";
+"Mac is offline" = "Mac is offline";
+"Check the bridge connection" = "Check the bridge connection";
+"Connected via Local" = "Connected via Local";
+"Connected via Cloud" = "Connected via Cloud";
+"Not paired" = "Not paired";
+"Local route" = "Local route";
+"Cloud route" = "Cloud route";
+"Offline route" = "Offline route";
+"Connection" = "Connection";
+"Active Route" = "Active Route";
+"Latency" = "Latency";
+"Check Connection" = "Check Connection";
+"Mac Processing" = "Mac Processing";
+"Recognition, refine, languages, vocabulary, and models" = "Recognition, refine, languages, vocabulary, and models";
+"Change or Repair Pairing" = "Change or Repair Pairing";
+"Pair a Mac" = "Pair a Mac";
+"Applies to this iPhone and the Typeforme keyboard. Fast skips refine." = "Applies to this iPhone and the Typeforme keyboard. Fast skips refine.";
+"Mac Default Languages" = "Mac Default Languages";
+"Checking" = "Checking";
+"Offline" = "Offline";
+"Bridge route: %@" = "Bridge route: %@";
+"Refresh Bridge" = "Refresh Bridge";
+"Repair pairing" = "Repair pairing";
+"Recording Control" = "Recording Control";
+"Dictation result" = "Dictation result";
+"Dictation result appears here after you speak." = "Dictation result appears here after you speak.";
+"Dismiss error" = "Dismiss error";
+
 // Setup status card
 "Paired with Mac" = "Paired with Mac";
 "Keyboard ready" = "Keyboard ready";

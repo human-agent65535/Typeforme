@@ -901,11 +901,3 @@ private struct ServerVocabularyEntryEditorView: View {
     }
 
 }
-
-// MARK: - Chinese learning inspector
-
-/// Read-only view of the phrases rime's self-learning has been fed. The
-/// keyboard mirrors every committed multi-character Chinese phrase into the
-/// App Group; the librime user dictionary itself lives in the extension
-/// sandbox and cannot be read from the host.
-

@@ -131,18 +131,22 @@ private struct HostSettingsOverview: View {
         return .connectedMac
     }
 
-    private var primaryStatusTitle: String {
+    private var primaryStatusTitle: LocalizedStringKey {
         if !state.isConfigured { return "Connect a Mac" }
         if state.setupReadinessNeedsAttention { return "Setup needs attention" }
         if state.routeStatus.activeKind == .unavailable { return "Mac is offline" }
         return "Ready"
     }
 
-    private var primaryStatusDetail: String {
+    private var primaryStatusDetail: LocalizedStringKey {
         if !state.isConfigured { return "Pair this iPhone before dictating" }
         if state.setupReadinessNeedsAttention { return "Review permissions and keyboard access" }
         if state.routeStatus.activeKind == .unavailable { return "Check the bridge connection" }
-        return "Connected via \(state.routeStatus.activeKind.rawValue)"
+        switch state.routeStatus.activeKind {
+        case .local: return "Connected via Local"
+        case .cloud: return "Connected via Cloud"
+        case .unavailable: return "Check the bridge connection"
+        }
     }
 
     private var primaryStatusIcon: String {
@@ -160,16 +164,20 @@ private struct HostSettingsOverview: View {
         return .green
     }
 
-    private var connectedMacDetail: String {
+    private var connectedMacDetail: LocalizedStringKey {
         guard state.isConfigured else { return "Not paired" }
-        return "\(state.routeStatus.activeKind.rawValue) route"
+        switch state.routeStatus.activeKind {
+        case .local: return "Local route"
+        case .cloud: return "Cloud route"
+        case .unavailable: return "Offline route"
+        }
     }
 }
 
 struct SettingsRowLabel: View {
     let icon: String
-    let title: String
-    let detail: String
+    let title: LocalizedStringKey
+    let detail: LocalizedStringKey
 
     var body: some View {
         Label {
@@ -228,7 +236,7 @@ private struct ConnectedMacSettingsView: View {
                         Circle()
                             .fill(routeColor)
                             .frame(width: 8, height: 8)
-                        Text(state.isCheckingRouteStatus ? "Checking" : state.routeStatus.activeKind.rawValue)
+                        Text(activeRouteTitle)
                     }
                 }
                 if let latencyDetail {
@@ -275,6 +283,15 @@ private struct ConnectedMacSettingsView: View {
         }
     }
 
+    private var activeRouteTitle: LocalizedStringKey {
+        if state.isCheckingRouteStatus { return "Checking" }
+        switch state.routeStatus.activeKind {
+        case .local: return "Local"
+        case .cloud: return "Cloud"
+        case .unavailable: return "Offline"
+        }
+    }
+
     private var routeColor: Color {
         if state.isCheckingRouteStatus { return .secondary }
         switch state.routeStatus.activeKind {
@@ -296,5 +313,4 @@ private struct ConnectedMacSettingsView: View {
         }
     }
 }
-
 

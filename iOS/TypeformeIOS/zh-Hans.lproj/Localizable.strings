@@ -11,6 +11,50 @@
 "Ready" = "就绪";
 "Discard" = "放弃";
 
+// 统一的宿主设置与主页面
+"Settings" = "设置";
+"Close" = "关闭";
+"Preferences" = "偏好设置";
+"Voice Dictation" = "语音听写";
+"Default mode and live preview" = "默认模式与实时预览";
+"Text Keyboard" = "文本键盘";
+"Chinese input, typing, feedback, and learning" = "中文输入、键入、反馈与学习";
+"System" = "系统";
+"Connected Mac" = "已连接的 Mac";
+"Setup & Access" = "设置与访问权限";
+"Capture method and permissions" = "捕获方式与权限";
+"Help & About" = "帮助与关于";
+"Connect a Mac" = "连接 Mac";
+"Pair this iPhone before dictating" = "听写前请先配对此 iPhone";
+"Review permissions and keyboard access" = "检查权限与键盘访问";
+"Mac is offline" = "Mac 已离线";
+"Check the bridge connection" = "检查 Bridge 连接";
+"Connected via Local" = "已通过本地连接";
+"Connected via Cloud" = "已通过云端连接";
+"Not paired" = "未配对";
+"Local route" = "本地路由";
+"Cloud route" = "云端路由";
+"Offline route" = "离线路由";
+"Connection" = "连接";
+"Active Route" = "当前路由";
+"Latency" = "延迟";
+"Check Connection" = "检查连接";
+"Mac Processing" = "Mac 处理";
+"Recognition, refine, languages, vocabulary, and models" = "识别、优化、语言、词汇与模型";
+"Change or Repair Pairing" = "更改或修复配对";
+"Pair a Mac" = "配对 Mac";
+"Applies to this iPhone and the Typeforme keyboard. Fast skips refine." = "应用于此 iPhone 和 Typeforme 键盘。Fast 会跳过优化。";
+"Mac Default Languages" = "Mac 默认语言";
+"Checking" = "检查中";
+"Offline" = "离线";
+"Bridge route: %@" = "Bridge 路由：%@";
+"Refresh Bridge" = "刷新 Bridge";
+"Repair pairing" = "修复配对";
+"Recording Control" = "录音控制";
+"Dictation result" = "听写结果";
+"Dictation result appears here after you speak." = "说话后，听写结果会显示在这里。";
+"Dismiss error" = "关闭错误提示";
+
 // 设置状态卡片
 "Paired with Mac" = "已与 Mac 配对";
 "Keyboard ready" = "键盘已就绪";

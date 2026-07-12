@@ -174,7 +174,10 @@ private struct RouteStatusBar: View {
             }
             .buttonStyle(.plain)
             .disabled(!canRefresh)
-            .accessibilityLabel("Bridge route: \(routeStatusTitle)")
+            .accessibilityLabel(Text(String(
+                format: NSLocalizedString("Bridge route: %@", comment: "Current bridge route accessibility label"),
+                routeStatusTitle
+            )))
             .accessibilityHint("Double tap to re-check the connection")
 
             Button {
@@ -213,7 +216,17 @@ private struct RouteStatusBar: View {
     }
 
     private var routeStatusTitle: String {
-        state.isCheckingRouteStatus ? "Checking" : state.routeStatus.activeKind.rawValue
+        if state.isCheckingRouteStatus {
+            return NSLocalizedString("Checking", comment: "Bridge route check in progress")
+        }
+        switch state.routeStatus.activeKind {
+        case .local:
+            return NSLocalizedString("Local", comment: "Local bridge route")
+        case .cloud:
+            return NSLocalizedString("Cloud", comment: "Cloud bridge route")
+        case .unavailable:
+            return NSLocalizedString("Offline", comment: "No bridge route available")
+        }
     }
 
     private var dotColor: Color {
