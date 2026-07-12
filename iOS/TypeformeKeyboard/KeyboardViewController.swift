@@ -542,7 +542,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private var isVoicePressActive = false
     private var voiceDragOutCancelArmed = false
     private var voiceUndoShowsCancel = false
-    private var textUndoShowsCancel = false
     private var keyboardRecordingStartedAt: TimeInterval = 0
     private var recordingElapsedTimer: Timer?
     /// Hold-mode "release-to-cancel" zone: set when the user drags the
@@ -711,7 +710,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     /// the host app even when `point(inside:)` returns true.
     private static let keyboardTouchableBackgroundColor = UIColor.white.withAlphaComponent(0.01)
     private static let candidateExpandButtonWidth: CGFloat = 45
-    private static let candidateChevronSymbolPointSize: CGFloat = 21
     private static let candidateExpandActionHeight: CGFloat = 58
     /// 34pt (was 25): 20pt candidate text on a 25pt-tall strip was the single
     /// most-missed target on the keyboard. The extra 9pt comes out of total
@@ -721,7 +719,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     /// the composing-time hand-off in `textCharacterTouchBandFrame`, the
     /// effective candidate target is ~48pt tall while candidates are showing.
     private static let candidateStripTouchOverflowY: CGFloat = 8
-    private static let toolbarIconVerticalOffset: CGFloat = -2
     private static let textKeyboardTopProtectionInset: CGFloat = 2
     /// The key block is bottom-anchored independently of the extension's
     /// system-drawn top chrome. Moving 3pt of empty space from above the keys
@@ -896,6 +893,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private var didLogReadyKeyboardSnapshot = false
     private let activePressedControls = NSHashTable<UIControl>.weakObjects()
     private var pressCleanupWorkItems: [ObjectIdentifier: DispatchWorkItem] = [:]
+    /// Presentation-only registry. Toolbar icons use UIButton highlighted
+    /// rendering directly; they must not receive the generic overlay/scale
+    /// used by non-toolbar controls.
+    private var toolbarIconButtonIDs: Set<ObjectIdentifier> = []
 
     private struct TextKeyboardHitRow {
         weak var row: UIStackView?
@@ -3042,7 +3043,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         // language across both keyboards: outlined SF Symbol, label tint,
         // no background, no shadow. Settings is also at the very top-right
         // in both modes, so users don't have to relocate it on focus switch.
-        configureToolbarIconButton(settingsButton, image: "gearshape")
+        renderToolbarIcon(settingsButton, role: .host, image: "gearshape")
         settingsButton.accessibilityLabel = NSLocalizedString("Open Typeforme", comment: "Accessibility label for settings/host launcher button")
         settingsButton.translatesAutoresizingMaskIntoConstraints = false
         settingsButton.widthAnchor.constraint(equalToConstant: 32).isActive = true
@@ -3050,7 +3051,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         settingsButton.addTarget(self, action: #selector(openHostFromSettingsButton), for: .touchUpInside)
         attachPressAnimation(settingsButton)
 
-        configureToolbarIconButton(keyboardFocusButton, image: "keyboard")
+        renderToolbarIcon(keyboardFocusButton, role: .keyboardMode, image: "keyboard")
         keyboardFocusButton.accessibilityLabel = NSLocalizedString("Show keyboard", comment: "Accessibility label for showing the screen keyboard")
         keyboardFocusButton.translatesAutoresizingMaskIntoConstraints = false
         keyboardFocusButton.widthAnchor.constraint(equalToConstant: 32).isActive = true
@@ -3464,7 +3465,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         updateCandidateGridCollapseButtonFrame()
         updateKeyboardSurfaceMask()
         updateCandidateTextOverlay()
-        applyToolbarIconLayoutTweaks()
         updateKeyboardOverlayOrdering()
         setKeyboardContentVisible(true)
         logKeyboardPresentationGateIfUnstable()
@@ -3472,27 +3472,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         logKeyboardPresentationLayout("layout")
         logKeyboardTouchSurfaceLayoutIfNeeded()
         CATransaction.commit()
-    }
-
-    private func applyToolbarIconLayoutTweaks() {
-        let toolbarIconTransform = CGAffineTransform(
-            translationX: 0,
-            y: Self.toolbarIconVerticalOffset
-        )
-        [
-            settingsButton,
-            keyboardFocusButton,
-            textWandButton,
-            textStylePickerButton,
-            textUndoButton,
-            textToolsButton,
-            textKeyboardSwitchButton,
-            textHostSettingsButton,
-        ].forEach { button in
-            button.imageView?.transform = toolbarIconTransform
-        }
-        textCandidateGridButton.imageView?.transform = .identity
-        candidateGridCollapseButton.imageView?.transform = .identity
     }
 
     private func logKeyboardTouchSurfaceLayoutIfNeeded() {
@@ -3729,7 +3708,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         // already have fingers on keys, so press-and-hold is awkward. Use
         // tap-toggle instead: first tap starts the command recording, second
         // tap ends it. The voice-mode commandButton keeps its hold contract.
-        configureToolbarIconButton(textWandButton, image: "wand.and.stars")
+        renderToolbarIcon(textWandButton, role: .command, image: "wand.and.stars")
         textWandButton.widthAnchor.constraint(equalToConstant: 32).isActive = true
         textWandButton.accessibilityLabel = NSLocalizedString("Command input", comment: "Accessibility label for command/edit-input button")
         textWandButton.addTarget(self, action: #selector(textWandTapped), for: .touchUpInside)
@@ -3740,19 +3719,19 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         // the 4 style chips (Clean / Polish+ / Structure+ / Formal+)
         // without having to dictate first. Paint-brush icon distinguishes it
         // from the wand (wand = free-form voice command, picker = preset).
-        configureToolbarIconButton(textStylePickerButton, image: "paintbrush")
+        renderToolbarIcon(textStylePickerButton, role: .refineStyle, image: "paintbrush")
         textStylePickerButton.widthAnchor.constraint(equalToConstant: 32).isActive = true
         textStylePickerButton.accessibilityLabel = NSLocalizedString("Pick refine style", comment: "Accessibility label for text-mode style preset picker")
         textStylePickerButton.addTarget(self, action: #selector(toggleCorrectionPopover), for: .touchUpInside)
         attachPressAnimation(textStylePickerButton)
 
-        configureToolbarIconButton(textUndoButton, image: "arrow.uturn.backward")
+        renderToolbarIcon(textUndoButton, role: .undo, image: "arrow.uturn.backward")
         textUndoButton.widthAnchor.constraint(equalToConstant: 32).isActive = true
         textUndoButton.accessibilityLabel = NSLocalizedString("Undo refine", comment: "Accessibility label for undoing the latest refine")
         textUndoButton.addTarget(self, action: #selector(undoRefineTapped), for: .touchUpInside)
         attachPressAnimation(textUndoButton)
 
-        configureToolbarIconButton(textToolsButton, image: "mic.fill")
+        renderToolbarIcon(textToolsButton, role: .dictation, image: "mic.fill")
         textToolsButton.widthAnchor.constraint(equalToConstant: 32).isActive = true
         textToolsButton.accessibilityLabel = NSLocalizedString("Dictate", comment: "Accessibility label for keyboard dictation button")
         textToolsButton.addTarget(self, action: #selector(textVoiceTapped), for: .touchUpInside)
@@ -3771,13 +3750,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             textToolsReadyDot.topAnchor.constraint(equalTo: textToolsButton.topAnchor, constant: 1),
         ])
 
-        configureToolbarIconButton(textKeyboardSwitchButton, image: "waveform")
+        renderToolbarIcon(textKeyboardSwitchButton, role: .voiceMode, image: "waveform")
         textKeyboardSwitchButton.widthAnchor.constraint(equalToConstant: 32).isActive = true
         textKeyboardSwitchButton.accessibilityLabel = NSLocalizedString("Show voice input", comment: "Accessibility label for switching to voice input")
         textKeyboardSwitchButton.addTarget(self, action: #selector(showVoiceFocus), for: .touchUpInside)
         attachPressAnimation(textKeyboardSwitchButton)
 
-        configureToolbarIconButton(textHostSettingsButton, image: "gearshape")
+        renderToolbarIcon(textHostSettingsButton, role: .host, image: "gearshape")
         textHostSettingsButton.widthAnchor.constraint(equalToConstant: 32).isActive = true
         textHostSettingsButton.accessibilityLabel = NSLocalizedString("Open Typeforme", comment: "Accessibility label for opening host settings")
         textHostSettingsButton.addTarget(self, action: #selector(openHostFromSettingsButton), for: .touchUpInside)
@@ -4945,25 +4924,82 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         button.titleLabel?.minimumScaleFactor = 0.72
     }
 
-    /// Toolbar icons (mic / waveform / gear / candidate expand chevron) want
-    /// a different look from the keyboard's keys: transparent background, no
-    /// shadow, just a tinted SF Symbol — matching how iOS draws the
-    /// predictive-bar's right-hand dictation indicator. Sharing the key
-    /// chrome on these makes the toolbar look like a row of stubby buttons.
-    private func configureToolbarIconButton(_ button: UIButton, image: String) {
-        var configuration = UIButton.Configuration.plain()
-        configuration.image = UIImage(systemName: image)
-        configuration.cornerStyle = .fixed
-        configuration.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 4, bottom: 0, trailing: 4)
-        configuration.baseForegroundColor = .label
-        configuration.background.backgroundColor = .clear
-        configuration.background.strokeWidth = 0
-        configuration.preferredSymbolConfigurationForImage = UIImage.SymbolConfiguration(pointSize: 16, weight: .regular)
-        button.configuration = configuration
+    private enum ToolbarIconTone: Equatable {
+        case normal
+        case destructive
+    }
+
+    private func renderToolbarIcon(
+        _ button: UIButton,
+        role: KeyboardToolbarIconRole,
+        image: String,
+        tone: ToolbarIconTone = .normal,
+        showsRestingFill: Bool = false
+    ) {
+        toolbarIconButtonIDs.insert(ObjectIdentifier(button))
+        button.configurationUpdateHandler = nil
+        button.configuration = toolbarIconConfiguration(
+            role: role,
+            image: image,
+            tone: tone,
+            isPressed: false,
+            showsRestingFill: showsRestingFill
+        )
+        button.configurationUpdateHandler = { [weak self, weak button] control in
+            guard let self, let button else { return }
+            button.configuration = self.toolbarIconConfiguration(
+                role: role,
+                image: image,
+                tone: tone,
+                isPressed: control.isHighlighted,
+                showsRestingFill: showsRestingFill
+            )
+        }
         button.clipsToBounds = false
         button.imageView?.clipsToBounds = false
         button.layer.shadowOpacity = 0
         button.layer.borderWidth = 0
+    }
+
+    private func toolbarIconConfiguration(
+        role: KeyboardToolbarIconRole,
+        image: String,
+        tone: ToolbarIconTone,
+        isPressed: Bool,
+        showsRestingFill: Bool
+    ) -> UIButton.Configuration {
+        let metrics = KeyboardToolbarIconPolicy.metrics(for: role)
+        let verticalOffset = CGFloat(metrics.verticalOffset)
+        let topInset = max(0, verticalOffset * 2)
+        let bottomInset = max(0, -verticalOffset * 2)
+        let horizontalInset = CGFloat(metrics.horizontalInset)
+        var configuration = UIButton.Configuration.plain()
+        configuration.image = UIImage(systemName: image)
+        configuration.cornerStyle = .fixed
+        configuration.contentInsets = NSDirectionalEdgeInsets(
+            top: topInset,
+            leading: horizontalInset,
+            bottom: bottomInset,
+            trailing: horizontalInset
+        )
+        configuration.baseForegroundColor = tone == .destructive ? .systemRed : .label
+        configuration.background.backgroundColor = UIColor { traits in
+            if isPressed {
+                return UIColor.label.withAlphaComponent(traits.userInterfaceStyle == .dark ? 0.18 : 0.10)
+            }
+            if showsRestingFill {
+                return UIColor.label.withAlphaComponent(traits.userInterfaceStyle == .dark ? 0.18 : 0.08)
+            }
+            return .clear
+        }
+        configuration.background.cornerRadius = CGFloat(metrics.cornerRadius)
+        configuration.background.strokeWidth = 0
+        let symbolWeight: UIImage.SymbolWeight = metrics.weight == .medium ? .medium : .regular
+        configuration.preferredSymbolConfigurationForImage = UIImage.SymbolConfiguration(
+            pointSize: CGFloat(metrics.pointSize),
+            weight: symbolWeight
+        )
+        return configuration
     }
 
     private func configureCandidateExpandButton(isExpanded: Bool) {
@@ -4975,29 +5011,16 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func configureCandidateChevronButton(_ button: UIButton, isExpanded: Bool) {
-        var configuration = UIButton.Configuration.plain()
-        configuration.image = UIImage(systemName: isExpanded ? "chevron.up" : "chevron.down")
-        configuration.cornerStyle = .fixed
-        configuration.contentInsets = isExpanded
-            ? NSDirectionalEdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0)
-            : NSDirectionalEdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0)
-        configuration.baseForegroundColor = .label
         // The expanded-grid collapse chevron floats alone at top-right with no
         // toolbar context, so it gets a faint pill background to read as a
         // tappable affordance. The collapsed-state expand chevron lives next
         // to the candidate strip and stays bare to match iOS native.
-        if isExpanded {
-            configuration.background.backgroundColor = UIColor.label.withAlphaComponent(isKeyboardDark ? 0.18 : 0.08)
-            configuration.background.cornerRadius = 10
-        } else {
-            configuration.background.backgroundColor = .clear
-            configuration.background.cornerRadius = 0
-        }
-        configuration.preferredSymbolConfigurationForImage = UIImage.SymbolConfiguration(
-            pointSize: Self.candidateChevronSymbolPointSize,
-            weight: .medium
+        renderToolbarIcon(
+            button,
+            role: .candidateChevron,
+            image: isExpanded ? "chevron.up" : "chevron.down",
+            showsRestingFill: isExpanded
         )
-        button.configuration = configuration
     }
 
     private func configureTextKeyButton(_ button: UIButton, title: String, image: String?, weight: TextKeyWeight) {
@@ -5510,25 +5533,33 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         guard signature != lastTextRecordingButtonsSignature else { return }
         lastTextRecordingButtonsSignature = signature
 
-        configureToolbarIconButton(textWandButton, image: wandShowsStop ? "stop.fill" : "wand.and.stars")
-        if wandShowsStop {
-            textWandButton.configuration?.baseForegroundColor = UIColor.systemRed
-        }
+        renderToolbarIcon(
+            textWandButton,
+            role: .command,
+            image: wandShowsStop ? "stop.fill" : "wand.and.stars",
+            tone: wandShowsStop ? .destructive : .normal
+        )
         textWandButton.accessibilityLabel = wandShowsStop
             ? NSLocalizedString("Stop command", comment: "Accessibility label for stopping text command dictation")
             : NSLocalizedString("Command input", comment: "Accessibility label for command/edit-input button")
         textWandButton.isEnabled = wandShowsStop || (!isRecording && !isSending)
-        textWandButton.alpha = textWandButton.isEnabled ? 1 : 0.45
+        textWandButton.alpha = textWandButton.isEnabled
+            ? 1
+            : CGFloat(KeyboardToolbarIconPolicy.disabledOpacity)
 
-        configureToolbarIconButton(textToolsButton, image: toolsShowsStop ? "stop.fill" : "mic.fill")
-        if toolsShowsStop {
-            textToolsButton.configuration?.baseForegroundColor = UIColor.systemRed
-        }
+        renderToolbarIcon(
+            textToolsButton,
+            role: .dictation,
+            image: toolsShowsStop ? "stop.fill" : "mic.fill",
+            tone: toolsShowsStop ? .destructive : .normal
+        )
         textToolsButton.accessibilityLabel = toolsShowsStop
             ? NSLocalizedString("Stop dictation", comment: "Accessibility label for stopping keyboard dictation")
             : NSLocalizedString("Dictate", comment: "Accessibility label for keyboard dictation button")
         textToolsButton.isEnabled = toolsShowsStop || (!isRecording && !isSending)
-        textToolsButton.alpha = textToolsButton.isEnabled ? 1 : 0.45
+        textToolsButton.alpha = textToolsButton.isEnabled
+            ? 1
+            : CGFloat(KeyboardToolbarIconPolicy.disabledOpacity)
     }
 
     private func updateTextRecordingStatus(isRecording: Bool, isSending: Bool) {
@@ -5677,6 +5708,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             button.setNeedsUpdateConfiguration()
             return
         }
+        if let button = sender as? UIButton,
+           toolbarIconButtonIDs.contains(ObjectIdentifier(button)) {
+            button.isHighlighted = true
+            button.setNeedsUpdateConfiguration()
+            return
+        }
         schedulePressedControlCleanup(for: sender)
         showKeyPressOverlay(on: sender)
         sender.layer.removeAllAnimations()
@@ -5705,6 +5742,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         activePressedControls.remove(control)
         hideKeyPreview()
         if control.isDescendant(of: keyRowsStack), let button = control as? UIButton {
+            button.isHighlighted = false
+            button.setNeedsUpdateConfiguration()
+            return
+        }
+        if let button = control as? UIButton,
+           toolbarIconButtonIDs.contains(ObjectIdentifier(button)) {
             button.isHighlighted = false
             button.setNeedsUpdateConfiguration()
             return
@@ -7104,23 +7147,27 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             voiceUndoButton.alpha = canUndo ? 1 : 0.45
         }
         let textShowsCancel = isRecordingNow && keyboardFocus == .text
-        if textShowsCancel != textUndoShowsCancel {
-            textUndoShowsCancel = textShowsCancel
-            configureToolbarIconButton(textUndoButton, image: textShowsCancel ? "xmark" : "arrow.uturn.backward")
-            if textShowsCancel {
-                textUndoButton.configuration?.baseForegroundColor = .systemRed
-            }
-            textUndoButton.accessibilityLabel = textShowsCancel
-                ? NSLocalizedString("Cancel dictation", comment: "Accessibility label for cancelling the active recording")
-                : NSLocalizedString("Undo refine", comment: "Accessibility label for undoing the latest refine")
-        }
+        // Undo is the sole owner of this slot. Render it idempotently from the
+        // current semantic state so another appearance refresh cannot leave a
+        // stale arrow or stale cancel glyph behind a state-cache guard.
+        renderToolbarIcon(
+            textUndoButton,
+            role: .undo,
+            image: textShowsCancel ? "xmark" : "arrow.uturn.backward",
+            tone: textShowsCancel ? .destructive : .normal
+        )
+        textUndoButton.accessibilityLabel = textShowsCancel
+            ? NSLocalizedString("Cancel dictation", comment: "Accessibility label for cancelling the active recording")
+            : NSLocalizedString("Undo refine", comment: "Accessibility label for undoing the latest refine")
         if textShowsCancel {
             textUndoButton.isHidden = false
             textUndoButton.isEnabled = true
             textUndoButton.alpha = 1
         } else {
             textUndoButton.isEnabled = canUndo
-            textUndoButton.alpha = isBlocked ? 0 : (canUndo ? 1 : 0.35)
+            textUndoButton.alpha = isBlocked
+                ? 0
+                : (canUndo ? 1 : CGFloat(KeyboardToolbarIconPolicy.disabledOpacity))
         }
     }
 
