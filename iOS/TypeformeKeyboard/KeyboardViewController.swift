@@ -191,12 +191,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private struct TextKeyboardLayoutModel {
         static let keyHorizontalGap: CGFloat = 6
         static let keyVerticalGap: CGFloat = 11
-        static let utilityKeyWidthMultiplier: CGFloat = 1.22
-        static let utilityLetterGap: CGFloat = 44.0 / 3.0
-        static let bottomModeKeyWidth: CGFloat = 50
-        static let bottomGlobeKeyWidth: CGFloat = 50
-        static let bottomLanguageKeyWidth: CGFloat = 52
-        static let bottomReturnKeyWidth: CGFloat = 92
+        static let numericKeyVerticalGap: CGFloat = 6
+        static let utilityKeyWidth: CGFloat = 51
+        static let utilityLetterGap: CGFloat = 13
+        static let bottomModeKeyWidth: CGFloat = 48
+        static let bottomGlobeKeyWidth: CGFloat = 48
+        static let bottomLanguageKeyWidth: CGFloat = 48
         static let keyIconPointSize: CGFloat = 15
         static let letterTitleFontSize: CGFloat = 25
         static let uppercaseLetterTitleFontSize: CGFloat = 22
@@ -487,12 +487,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private static let inputModeCarryoverBeganGrace: CFTimeInterval = 0.12
     private static let inputModeCarryoverNoTouchGrace: CFTimeInterval = 0.25
     private var pendingTextKeyboardTraitRefresh: DispatchWorkItem?
-    /// Last time a routed character key committed (on touch-down). A shift
-    /// toggle (touch-up) arriving within `adjacentKeyGuardWindow` is treated as
-    /// a stray second contact from the same fat press on the a↔shift seam and
-    /// ignored, so "a + shift" can't both fire from one press.
-    private var lastTextKeyCommitAt: CFTimeInterval = 0
-    private static let adjacentKeyGuardWindow: CFTimeInterval = 0.12
     private var lastPresentationGateLogKey = ""
     private var orbContainerHeightConstraint: NSLayoutConstraint?
     private var textKeyboardContainerHeightConstraint: NSLayoutConstraint?
@@ -729,7 +723,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private static let candidateStripTouchOverflowY: CGFloat = 8
     private static let toolbarIconVerticalOffset: CGFloat = -2
     private static let textKeyboardTopProtectionInset: CGFloat = 2
-    private static let textKeyboardToolbarKeyGap: CGFloat = 10
+    /// The key block is bottom-anchored independently of the extension's
+    /// system-drawn top chrome. Moving 3pt of empty space from above the keys
+    /// to below them aligns the first and last key rows with the native key
+    /// block without changing any row height or inter-row gap.
+    private static let textKeyboardBottomProtectionInset: CGFloat = 3
+    private static let textKeyboardToolbarKeyGap: CGFloat = 7
+    private static let numericKeyboardToolbarKeyGap: CGFloat = 6
     /// Text mode has a 2pt protection inset above its toolbar; voice mode needs
     /// the same content offset so the two top bars share the same visual center.
     private static let voiceTopRowContentVerticalOffset: CGFloat = 2
@@ -863,11 +863,17 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private var activeCandidateSeparatorIndex = 0
     private var activeCandidateStatusLabelIndex = 0
     private var keyboardRowConstraints: [NSLayoutConstraint] = []
+    private var textModeButtonWidthConstraint: NSLayoutConstraint?
+    private var textGlobeButtonWidthConstraint: NSLayoutConstraint?
+    private var textLanguageButtonWidthConstraint: NSLayoutConstraint?
     private weak var textReturnKeyButton: UIButton?
     private weak var textShiftButton: UIButton?
     private weak var textSpaceKeyButton: UIButton?
     private var lastReturnKeyTitle = ""
     private var lastReturnKeyImageName: String?
+    private var lastReturnKeyWeight: TextKeyWeight = .utility
+    private var lastReturnKeyEnabled = true
+    private var textBottomShortcutText: [ObjectIdentifier: String] = [:]
     private var lastLetterCasingSnapshot: LetterCasingSnapshot?
     private var isTextShiftEnabled = false
     private var isTextShiftLocked = false
@@ -918,8 +924,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private enum TextKeyboardLayoutKind: Equatable {
-        case standard
+        case text(bottom: KeyboardTextBottomLayoutKind, prefersSymbols: Bool)
         case numeric(decimalSeparator: String?, phoneSymbols: Bool)
+
+        var isText: Bool {
+            if case .text = self { return true }
+            return false
+        }
     }
 
     private struct TextKeyTouchSample {
@@ -1114,9 +1125,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             let title = button.accessibilityValue ?? button.currentTitle ?? ""
             showKeyPreview(for: button, title: title)
             let didCommit = commitTextKey(button, point: point)
-            if didCommit {
-                lastTextKeyCommitAt = CACurrentMediaTime()
-            }
             return didCommit
         case .candidateAction(let button):
             controlPressDown(button)
@@ -3703,7 +3711,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         textKeyboardContainer.directionalLayoutMargins = NSDirectionalEdgeInsets(
             top: Self.textKeyboardTopProtectionInset,
             leading: 0,
-            bottom: 0,
+            bottom: Self.textKeyboardBottomProtectionInset,
             trailing: 0
         )
         textKeyboardContainerHeightConstraint = textKeyboardContainer.heightAnchor.constraint(
@@ -3873,7 +3881,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         textKeyboardContainer.addGestureRecognizer(textTrackpadPanRecognizer)
 
         configureTextControlButton(textModeButton, title: "123", image: nil)
-        textModeButton.widthAnchor.constraint(equalToConstant: TextKeyboardLayoutModel.bottomModeKeyWidth).isActive = true
+        textModeButtonWidthConstraint = textModeButton.widthAnchor.constraint(
+            equalToConstant: TextKeyboardLayoutModel.bottomModeKeyWidth
+        )
+        textModeButtonWidthConstraint?.isActive = true
         textModeButton.addTarget(self, action: #selector(toggleSymbolKeyboard), for: .touchUpInside)
         attachPressAnimation(textModeButton)
 
@@ -3882,13 +3893,19 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         attachPressAnimation(textAlternateSymbolButton)
 
         configureTextControlButton(textGlobeButton, title: "", image: "globe")
-        textGlobeButton.widthAnchor.constraint(equalToConstant: TextKeyboardLayoutModel.bottomGlobeKeyWidth).isActive = true
+        textGlobeButtonWidthConstraint = textGlobeButton.widthAnchor.constraint(
+            equalToConstant: TextKeyboardLayoutModel.bottomGlobeKeyWidth
+        )
+        textGlobeButtonWidthConstraint?.isActive = true
         textGlobeButton.accessibilityLabel = NSLocalizedString("Next keyboard", comment: "Accessibility label for switching to the next keyboard")
         textGlobeButton.addTarget(self, action: #selector(handleInputModeList(from:with:)), for: .allTouchEvents)
         attachPressAnimation(textGlobeButton)
 
         configureTextLanguageButton()
-        textLanguageButton.widthAnchor.constraint(equalToConstant: TextKeyboardLayoutModel.bottomLanguageKeyWidth).isActive = true
+        textLanguageButtonWidthConstraint = textLanguageButton.widthAnchor.constraint(
+            equalToConstant: TextKeyboardLayoutModel.bottomLanguageKeyWidth
+        )
+        textLanguageButtonWidthConstraint?.isActive = true
         textLanguageButton.addTarget(self, action: #selector(toggleTextInputLanguage), for: .touchUpInside)
         attachPressAnimation(textLanguageButton)
 
@@ -3979,7 +3996,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let traitLayoutKind = textKeyboardTraitLayoutKind
         if showsStandardLayoutForNumericTraits,
            case .numeric = traitLayoutKind {
-            return .standard
+            return .text(bottom: .standard, prefersSymbols: false)
         }
         return traitLayoutKind
     }
@@ -3992,8 +4009,20 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             return .numeric(decimalSeparator: Locale.current.decimalSeparator ?? ".", phoneSymbols: false)
         case .phonePad, .namePhonePad:
             return .numeric(decimalSeparator: nil, phoneSymbols: true)
+        case .asciiCapable:
+            return .text(bottom: .ascii, prefersSymbols: false)
+        case .numbersAndPunctuation:
+            return .text(bottom: .ascii, prefersSymbols: true)
+        case .URL:
+            return .text(bottom: .url, prefersSymbols: false)
+        case .emailAddress:
+            return .text(bottom: .email, prefersSymbols: false)
+        case .twitter:
+            return .text(bottom: .social, prefersSymbols: false)
+        case .webSearch:
+            return .text(bottom: .webSearch, prefersSymbols: false)
         default:
-            return .standard
+            return .text(bottom: .standard, prefersSymbols: false)
         }
     }
 
@@ -4020,6 +4049,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         guard renderedTextKeyboardLayoutKind != next else { return }
         if case .numeric = next {
             clearNumericIncompatibleCompositionState()
+        } else if case .text(_, let prefersSymbols) = next {
+            isSymbolKeyboard = prefersSymbols
+            isAlternateSymbolKeyboard = false
         }
         rebuildTextKeyboardRows(layoutKind: next)
         applyKeyboardHeightForCurrentTraits()
@@ -4047,9 +4079,16 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private func rebuildTextKeyboardRows(layoutKind explicitLayoutKind: TextKeyboardLayoutKind? = nil) {
         resetAllPressedControlStates(animated: false)
         let layoutKind = explicitLayoutKind ?? renderedTextKeyboardLayoutKind ?? textKeyboardLayoutKindForCurrentTraits
+        let layoutKindChanged = renderedTextKeyboardLayoutKind != layoutKind
         renderedTextKeyboardLayoutKind = layoutKind
+        if layoutKindChanged,
+           case .text(_, let prefersSymbols) = layoutKind {
+            isSymbolKeyboard = prefersSymbols
+            isAlternateSymbolKeyboard = false
+        }
+        applyTextKeyBlockMetrics(for: layoutKind)
         isCandidateGridExpanded = false
-        textToolbar.isHidden = layoutKind != .standard
+        textToolbar.isHidden = !layoutKind.isText
         keyRowsStack.isHidden = false
         candidateGridScrollView.isHidden = true
         candidateGridCollapseButton.isHidden = true
@@ -4064,6 +4103,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         textKeyboardHitRows.removeAll()
         letterButtonMap.removeAll()
         textKeyCommitCharacters.removeAll()
+        textBottomShortcutText.removeAll()
         lastLetterCasingSnapshot = nil
         textShiftButton = nil
         textSpaceKeyButton = nil
@@ -4088,11 +4128,32 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             addTextKeyRow(["a", "s", "d", "f", "g", "h", "j", "k", "l"], usesHalfKeyHorizontalOffset: true)
             addTextKeyRow(["z", "x", "c", "v", "b", "n", "m"], includeShift: true, includeDelete: true)
         }
-        if layoutKind == .standard {
-            addTextBottomRow()
+        if case .text(let bottom, _) = layoutKind {
+            addTextBottomRow(layout: isSymbolKeyboard ? .symbols : bottom)
         }
         refreshTextControlTitles()
         refreshTextToolbarControlsForCurrentLayout()
+    }
+
+    private func applyTextKeyBlockMetrics(for layoutKind: TextKeyboardLayoutKind) {
+        let isNumeric: Bool
+        if case .numeric = layoutKind {
+            isNumeric = true
+        } else {
+            isNumeric = false
+        }
+        textKeyboardContainer.spacing = isNumeric
+            ? Self.numericKeyboardToolbarKeyGap
+            : Self.textKeyboardToolbarKeyGap
+        textKeyboardContainer.directionalLayoutMargins = NSDirectionalEdgeInsets(
+            top: Self.textKeyboardTopProtectionInset,
+            leading: 0,
+            bottom: isNumeric ? 0 : Self.textKeyboardBottomProtectionInset,
+            trailing: 0
+        )
+        keyRowsStack.spacing = isNumeric
+            ? TextKeyboardLayoutModel.numericKeyVerticalGap
+            : TextKeyboardLayoutModel.keyVerticalGap
     }
 
     private func detachReusableTextControlButtons() {
@@ -4114,6 +4175,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     private func attachNumericTextToolbarControls() {
         textToolbar.isHidden = false
+        textModeButtonWidthConstraint?.constant = TextKeyboardLayoutModel.bottomModeKeyWidth
+        textGlobeButtonWidthConstraint?.constant = TextKeyboardLayoutModel.bottomGlobeKeyWidth
         if textModeButton.superview !== textToolbar {
             textToolbar.insertArrangedSubview(textModeButton, at: 0)
         }
@@ -4161,7 +4224,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 [".", ",", "?", "!", "'"],
             ]
         }
-        if textInputLanguage == .chinese,
+        if !usesEnglishTextInputForCurrentTraits,
            chinesePunctuationStyle == .chinese {
             return chinesePunctuationPage
         }
@@ -4244,6 +4307,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         boundaryButtons.append(zeroButton)
 
         let deleteKey = makeTextKeyButton(title: "", image: "delete.left", weight: .utility)
+        deleteKey.accessibilityLabel = NSLocalizedString("Delete", comment: "Accessibility label for Delete key")
         deleteKey.addTarget(self, action: #selector(deletePressDown), for: [.touchDown, .touchDragEnter])
         deleteKey.addTarget(self, action: #selector(deletePressUp), for: [.touchUpInside, .touchUpOutside, .touchCancel, .touchDragExit])
         row.addArrangedSubview(deleteKey)
@@ -4282,6 +4346,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         boundaryButtons.append(zeroButton)
 
         let deleteKey = makeTextKeyButton(title: "", image: "delete.left", weight: .utility)
+        deleteKey.accessibilityLabel = NSLocalizedString("Delete", comment: "Accessibility label for Delete key")
         deleteKey.addTarget(self, action: #selector(deletePressDown), for: [.touchDown, .touchDragEnter])
         deleteKey.addTarget(self, action: #selector(deletePressUp), for: [.touchUpInside, .touchUpOutside, .touchCancel, .touchDragExit])
         row.addArrangedSubview(deleteKey)
@@ -4434,6 +4499,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 addFixedTextRowSpacer(to: row, width: TextKeyboardLayoutModel.utilityLetterSpacerWidth)
             }
             let deleteKey = makeTextKeyButton(title: "", image: "delete.left", weight: .utility)
+            deleteKey.accessibilityLabel = NSLocalizedString("Delete", comment: "Accessibility label for Delete key")
             deleteKey.addTarget(self, action: #selector(deletePressDown), for: [.touchDown, .touchDragEnter])
             deleteKey.addTarget(self, action: #selector(deletePressUp), for: [.touchUpInside, .touchUpOutside, .touchCancel, .touchDragExit])
             row.addArrangedSubview(deleteKey)
@@ -4511,14 +4577,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         })
         if let leadingUtilityButton {
             constraints.append(leadingUtilityButton.widthAnchor.constraint(
-                equalTo: referenceButton.widthAnchor,
-                multiplier: TextKeyboardLayoutModel.utilityKeyWidthMultiplier
+                equalToConstant: TextKeyboardLayoutModel.utilityKeyWidth
             ))
         }
         if let trailingUtilityButton {
             constraints.append(trailingUtilityButton.widthAnchor.constraint(
-                equalTo: referenceButton.widthAnchor,
-                multiplier: TextKeyboardLayoutModel.utilityKeyWidthMultiplier
+                equalToConstant: TextKeyboardLayoutModel.utilityKeyWidth
             ))
         }
         if let leadingHalfKeySpacer {
@@ -4557,6 +4621,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         )
         button.isSelected = isShiftActive || isTextShiftLocked
         button.setNeedsUpdateConfiguration()
+        button.accessibilityTraits = button.isSelected ? [.button, .selected] : .button
         button.accessibilityLabel = isTextShiftLocked
             ? NSLocalizedString("Caps Lock on", comment: "Accessibility label for active Caps Lock key")
             : (isShiftActive
@@ -4582,42 +4647,101 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         return key
     }
 
-    private func addTextBottomRow() {
+    private func addTextBottomRow(layout kind: KeyboardTextBottomLayoutKind) {
+        let layout = KeyboardTextLayoutPolicy.bottomRow(for: kind)
         let row = makeTextKeyRow()
         row.distribution = .fill
+        var directButtons: [UIButton] = []
 
+        let showsGlobe = needsInputModeSwitchKey
+        let showsLanguage = layout.showsLanguageKey && isChineseInputEnabled
+        var preferredFixedWidths = [layout.modeKeyWidth]
+        if showsGlobe {
+            preferredFixedWidths.append(Double(TextKeyboardLayoutModel.bottomGlobeKeyWidth))
+        }
+        if showsLanguage {
+            preferredFixedWidths.append(Double(TextKeyboardLayoutModel.bottomLanguageKeyWidth))
+        }
+        preferredFixedWidths.append(contentsOf: layout.shortcuts.map(\.width))
+        if let returnKeyWidth = layout.returnKeyWidth {
+            preferredFixedWidths.append(returnKeyWidth)
+        }
+        let visibleKeyCount = preferredFixedWidths.count + (layout.includesSpaceKey ? 1 : 0)
+        var fittedFixedWidths = KeyboardTextLayoutPolicy.fittedFixedWidths(
+            preferredFixedWidths,
+            availableWidth: Double(max(keyRowsStack.bounds.width, view.bounds.width)),
+            gapCount: max(0, visibleKeyCount - 1),
+            includesFlexibleKey: layout.includesSpaceKey,
+            gap: Double(TextKeyboardLayoutModel.keyHorizontalGap)
+        ).makeIterator()
+
+        textModeButtonWidthConstraint?.constant = CGFloat(fittedFixedWidths.next() ?? layout.modeKeyWidth)
         row.addArrangedSubview(textModeButton)
         textKeyboardButtons.append(textModeButton)
+        directButtons.append(textModeButton)
 
-        textGlobeButton.isHidden = !needsInputModeSwitchKey
+        textGlobeButton.isHidden = !showsGlobe
+        if showsGlobe {
+            textGlobeButtonWidthConstraint?.constant = CGFloat(
+                fittedFixedWidths.next() ?? Double(TextKeyboardLayoutModel.bottomGlobeKeyWidth)
+            )
+        }
         row.addArrangedSubview(textGlobeButton)
         textKeyboardButtons.append(textGlobeButton)
+        directButtons.append(textGlobeButton)
 
-        if isChineseInputEnabled {
+        if showsLanguage {
+            textLanguageButtonWidthConstraint?.constant = CGFloat(
+                fittedFixedWidths.next() ?? Double(TextKeyboardLayoutModel.bottomLanguageKeyWidth)
+            )
             row.addArrangedSubview(textLanguageButton)
             textKeyboardButtons.append(textLanguageButton)
+            directButtons.append(textLanguageButton)
         }
 
-        let spaceKey = makeTextKeyButton(title: spaceKeyTitle, weight: .primary)
-        spaceKey.addTarget(self, action: #selector(textSpaceTapped), for: .touchUpInside)
-        attachSpaceCursorGesture(to: spaceKey)
-        row.addArrangedSubview(spaceKey)
-        textKeyboardButtons.append(spaceKey)
-        textSpaceKeyButton = spaceKey
+        if layout.includesSpaceKey {
+            let spaceKey = makeTextKeyButton(title: spaceKeyTitle, weight: .primary)
+            spaceKey.accessibilityLabel = NSLocalizedString("Space", comment: "Accessibility label for Space key")
+            spaceKey.addTarget(self, action: #selector(textSpaceTapped), for: .touchUpInside)
+            attachSpaceCursorGesture(to: spaceKey)
+            row.addArrangedSubview(spaceKey)
+            textKeyboardButtons.append(spaceKey)
+            directButtons.append(spaceKey)
+            textSpaceKeyButton = spaceKey
+        }
 
-        let returnKey = makeTextKeyButton(title: returnKeyTitle, image: returnKeyImageName, weight: .utility)
-        returnKey.widthAnchor.constraint(equalToConstant: TextKeyboardLayoutModel.bottomReturnKeyWidth).isActive = true
-        returnKey.addTarget(self, action: #selector(insertReturn), for: .touchUpInside)
-        row.addArrangedSubview(returnKey)
-        textKeyboardButtons.append(returnKey)
-        textReturnKeyButton = returnKey
-        lastReturnKeyTitle = returnKeyTitle
-        lastReturnKeyImageName = returnKeyImageName
+        for shortcut in layout.shortcuts {
+            let button = makeTextKeyButton(title: shortcut.text, weight: .primary)
+            button.widthAnchor.constraint(
+                equalToConstant: CGFloat(fittedFixedWidths.next() ?? shortcut.width)
+            ).isActive = true
+            button.addTarget(self, action: #selector(textBottomShortcutTapped(_:)), for: .touchUpInside)
+            row.addArrangedSubview(button)
+            textKeyboardButtons.append(button)
+            directButtons.append(button)
+            textBottomShortcutText[ObjectIdentifier(button)] = shortcut.text
+        }
+
+        if let returnKeyWidth = layout.returnKeyWidth {
+            let weight = returnKeyWeight
+            let returnKey = makeTextKeyButton(title: returnKeyTitle, image: returnKeyImageName, weight: weight)
+            returnKey.widthAnchor.constraint(
+                equalToConstant: CGFloat(fittedFixedWidths.next() ?? returnKeyWidth)
+            ).isActive = true
+            returnKey.addTarget(self, action: #selector(insertReturn), for: .touchUpInside)
+            returnKey.accessibilityLabel = returnKeyAccessibilityLabel
+            returnKey.isEnabled = isReturnKeyEnabled
+            row.addArrangedSubview(returnKey)
+            textKeyboardButtons.append(returnKey)
+            directButtons.append(returnKey)
+            textReturnKeyButton = returnKey
+            lastReturnKeyTitle = returnKeyTitle
+            lastReturnKeyImageName = returnKeyImageName
+            lastReturnKeyWeight = weight
+            lastReturnKeyEnabled = returnKey.isEnabled
+        }
 
         keyRowsStack.addArrangedSubview(row)
-        let directButtons = isChineseInputEnabled
-            ? [textModeButton, textGlobeButton, textLanguageButton, spaceKey, returnKey]
-            : [textModeButton, textGlobeButton, spaceKey, returnKey]
         registerTextKeyboardHitRow(
             row,
             routedButtons: [],
@@ -4632,16 +4756,24 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         guard let textReturnKeyButton else { return }
         let next = returnKeyTitle
         let nextImage = returnKeyImageName
-        guard next != lastReturnKeyTitle || nextImage != lastReturnKeyImageName else { return }
+        let nextWeight = returnKeyWeight
+        let nextEnabled = isReturnKeyEnabled
+        guard next != lastReturnKeyTitle
+                || nextImage != lastReturnKeyImageName
+                || nextWeight != lastReturnKeyWeight
+                || nextEnabled != lastReturnKeyEnabled
+        else { return }
         lastReturnKeyTitle = next
         lastReturnKeyImageName = nextImage
-        configureTextKeyButton(textReturnKeyButton, title: next, image: nextImage, weight: .utility)
+        lastReturnKeyWeight = nextWeight
+        lastReturnKeyEnabled = nextEnabled
+        textReturnKeyButton.isEnabled = nextEnabled
+        configureTextKeyButton(textReturnKeyButton, title: next, image: nextImage, weight: nextWeight)
+        textReturnKeyButton.accessibilityLabel = returnKeyAccessibilityLabel
     }
 
     private var spaceKeyTitle: String {
-        textInputLanguage == .chinese
-            ? NSLocalizedString("空格", comment: "Space key title in Chinese input mode")
-            : NSLocalizedString("space", comment: "Space key title in English input mode")
+        ""
     }
 
     /// Swaps the space key label to the recording-stop hint and back. Driven
@@ -4655,6 +4787,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 image: nil,
                 weight: .primary
             )
+            spaceKey.accessibilityLabel = NSLocalizedString("Send dictation", comment: "Accessibility label for sending active dictation")
         } else if stopsRefine {
             configureTextKeyButton(
                 spaceKey,
@@ -4662,56 +4795,44 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 image: nil,
                 weight: .primary
             )
+            spaceKey.accessibilityLabel = NSLocalizedString("Send", comment: "Accessibility label for accepting active refine")
         } else {
             configureTextKeyButton(spaceKey, title: spaceKeyTitle, image: nil, weight: .primary)
+            spaceKey.accessibilityLabel = NSLocalizedString("Space", comment: "Accessibility label for Space key")
         }
     }
 
     private var stopRefineSpaceKeyTitle: String {
-        textInputLanguage == .chinese
+        !usesEnglishTextInputForCurrentTraits
             ? NSLocalizedString("发送", comment: "Space key label while accepting active refine")
             : NSLocalizedString("send", comment: "Space key label while accepting active refine")
     }
 
     private var returnKeyTitle: String {
-        let isChinese = textInputLanguage == .chinese
+        let isChinese = !usesEnglishTextInputForCurrentTraits
         switch textDocumentProxy.returnKeyType {
         case .go:
-            return isChinese
-                ? NSLocalizedString("前往", comment: "Go return key title in Chinese input mode")
-                : NSLocalizedString("go", comment: "Go return key title in English input mode")
+            return ""
         case .google:
-            return isChinese
-                ? NSLocalizedString("搜索", comment: "Google return key title in Chinese input mode")
-                : NSLocalizedString("google", comment: "Google return key title in English input mode")
+            return ""
         case .join:
             return isChinese
                 ? NSLocalizedString("加入", comment: "Join return key title in Chinese input mode")
                 : NSLocalizedString("join", comment: "Join return key title in English input mode")
         case .next:
-            return isChinese
-                ? NSLocalizedString("下一项", comment: "Next return key title in Chinese input mode")
-                : NSLocalizedString("next", comment: "Next return key title in English input mode")
+            return ""
         case .route:
             return isChinese
                 ? NSLocalizedString("路线", comment: "Route return key title in Chinese input mode")
                 : NSLocalizedString("route", comment: "Route return key title in English input mode")
         case .search:
-            return isChinese
-                ? NSLocalizedString("搜索", comment: "Search return key title in Chinese input mode")
-                : NSLocalizedString("search", comment: "Search return key title in English input mode")
+            return ""
         case .send:
-            return isChinese
-                ? NSLocalizedString("发送", comment: "Send return key title in Chinese input mode")
-                : NSLocalizedString("send", comment: "Send return key title in English input mode")
+            return ""
         case .yahoo:
-            return isChinese
-                ? NSLocalizedString("搜索", comment: "Yahoo return key title in Chinese input mode")
-                : NSLocalizedString("yahoo", comment: "Yahoo return key title in English input mode")
+            return ""
         case .done:
-            return isChinese
-                ? NSLocalizedString("完成", comment: "Done return key title in Chinese input mode")
-                : NSLocalizedString("done", comment: "Done return key title in English input mode")
+            return ""
         case .emergencyCall:
             return isChinese
                 ? NSLocalizedString("紧急呼叫", comment: "Emergency call return key title in Chinese input mode")
@@ -4726,11 +4847,68 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private var returnKeyImageName: String? {
-        switch textDocumentProxy.returnKeyType {
-        case .default:
+        switch KeyboardReturnKeyPolicy.presentation(for: returnKeyKind).symbol {
+        case .returnArrow:
             return "return"
-        default:
+        case .forwardArrow:
+            return "arrow.right"
+        case .search:
+            return "magnifyingglass"
+        case .send:
+            return "arrow.up"
+        case .done:
+            return "checkmark"
+        case .nextChevron:
+            return "chevron.right"
+        case .none:
             return nil
+        }
+    }
+
+    private var returnKeyWeight: TextKeyWeight {
+        KeyboardReturnKeyPolicy.presentation(for: returnKeyKind).isAction ? .action : .utility
+    }
+
+    private var isReturnKeyEnabled: Bool {
+        KeyboardReturnKeyPolicy.isEnabled(
+            enablesAutomatically: textDocumentProxy.enablesReturnKeyAutomatically ?? false,
+            hasText: textDocumentProxy.hasText
+        )
+    }
+
+    private var returnKeyKind: KeyboardReturnKeyKind {
+        switch textDocumentProxy.returnKeyType {
+        case .go: return .go
+        case .google: return .google
+        case .join: return .join
+        case .next: return .next
+        case .route: return .route
+        case .search: return .search
+        case .send: return .send
+        case .yahoo: return .yahoo
+        case .done: return .done
+        case .emergencyCall: return .emergencyCall
+        case .continue: return .continue
+        default: return .default
+        }
+    }
+
+    private var returnKeyAccessibilityLabel: String {
+        switch textDocumentProxy.returnKeyType {
+        case .go:
+            return NSLocalizedString("Go", comment: "Accessibility label for Go return key")
+        case .google, .search, .yahoo:
+            return NSLocalizedString("Search", comment: "Accessibility label for Search return key")
+        case .send:
+            return NSLocalizedString("Send", comment: "Accessibility label for Send return key")
+        case .done:
+            return NSLocalizedString("Done", comment: "Accessibility label for Done return key")
+        case .next:
+            return NSLocalizedString("Next", comment: "Accessibility label for Next return key")
+        case .default:
+            return NSLocalizedString("Return", comment: "Accessibility label for Return key")
+        default:
+            return returnKeyTitle
         }
     }
 
@@ -4743,10 +4921,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         return row
     }
 
-    private enum TextKeyWeight {
+    private enum TextKeyWeight: Equatable {
         case normal
         case primary
         case utility
+        case action
     }
 
     private func makeTextKeyButton(title: String, image: String? = nil, weight: TextKeyWeight = .normal) -> UIButton {
@@ -4823,16 +5002,37 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     private func configureTextKeyButton(_ button: UIButton, title: String, image: String?, weight: TextKeyWeight) {
         button.configurationUpdateHandler = nil
-        let configuration = textKeyConfiguration(title: title, image: image, weight: weight, isPressed: false, isSelected: button.isSelected)
+        let configuration = textKeyConfiguration(
+            title: title,
+            image: image,
+            weight: weight,
+            isPressed: false,
+            isEnabled: button.isEnabled
+        )
         button.configuration = configuration
         button.configurationUpdateHandler = { [weak self, weak button] control in
             guard let self, let button else { return }
             let isPressed = control.isHighlighted
-            let isSelected = control.isSelected
-            button.configuration = self.textKeyConfiguration(title: title, image: image, weight: weight, isPressed: isPressed, isSelected: isSelected)
-            self.applyTextKeyLayerStyle(to: button, weight: weight, isPressed: isPressed, isSelected: isSelected)
+            button.configuration = self.textKeyConfiguration(
+                title: title,
+                image: image,
+                weight: weight,
+                isPressed: isPressed,
+                isEnabled: control.isEnabled
+            )
+            self.applyTextKeyLayerStyle(
+                to: button,
+                weight: weight,
+                isPressed: isPressed,
+                isEnabled: control.isEnabled
+            )
         }
-        applyTextKeyLayerStyle(to: button, weight: weight, isPressed: false, isSelected: button.isSelected)
+        applyTextKeyLayerStyle(
+            to: button,
+            weight: weight,
+            isPressed: false,
+            isEnabled: button.isEnabled
+        )
         button.accessibilityLabel = title.isEmpty ? image : title
     }
 
@@ -4841,7 +5041,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         image: String?,
         weight: TextKeyWeight,
         isPressed: Bool,
-        isSelected: Bool
+        isEnabled: Bool = true
     ) -> UIButton.Configuration {
         var configuration = UIButton.Configuration.filled()
         let usesSystemLetterTypography = weight == .normal && image == nil && title.range(
@@ -4852,7 +5052,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let isCompactUtilityTitle = weight == .utility
             && image == nil
             && (title == "123" || title == "ABC" || title == "#+=")
-        let usesUtilityActionTypography = weight == .utility
+        let usesUtilityActionTypography = (weight == .utility || weight == .action)
             && image == nil
             && !isCompactUtilityTitle
         configuration.title = title
@@ -4869,8 +5069,15 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         configuration.contentInsets = usesSystemLetterTypography
             ? NSDirectionalEdgeInsets(top: 3, leading: 4, bottom: 7, trailing: 4)
             : NSDirectionalEdgeInsets(top: 5, leading: 4, bottom: 5, trailing: 4)
-        configuration.baseForegroundColor = systemKeyboardKeyForeground(for: weight, isSelected: isSelected)
-        configuration.baseBackgroundColor = systemKeyboardKeyBackground(for: weight, isPressed: isPressed, isSelected: isSelected)
+        configuration.baseForegroundColor = systemKeyboardKeyForeground(
+            for: weight,
+            isEnabled: isEnabled
+        )
+        configuration.baseBackgroundColor = systemKeyboardKeyBackground(
+            for: weight,
+            isPressed: isPressed,
+            isEnabled: isEnabled
+        )
         configuration.background.strokeWidth = isPressed ? 0 : 0.35
         configuration.background.strokeColor = UIColor.separator.withAlphaComponent(isKeyboardDark ? 0.18 : 0.10)
         configuration.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
@@ -4893,7 +5100,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         return configuration
     }
 
-    private func applyTextKeyLayerStyle(to button: UIButton, weight: TextKeyWeight, isPressed: Bool, isSelected: Bool) {
+    private func applyTextKeyLayerStyle(
+        to button: UIButton,
+        weight: TextKeyWeight,
+        isPressed: Bool,
+        isEnabled: Bool = true
+    ) {
         button.layer.cornerRadius = 6
         button.layer.cornerCurve = .continuous
         button.layer.masksToBounds = false
@@ -4904,46 +5116,48 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             switch weight {
             case .normal, .primary:
                 return isKeyboardDark ? 0.22 : 0.12
-            case .utility:
+            case .utility, .action:
                 return isKeyboardDark ? 0.24 : 0.14
             }
         }()
-        button.layer.shadowOpacity = isPressed ? baseOpacity * 0.4 : baseOpacity
+        let enabledOpacity = isEnabled ? baseOpacity : baseOpacity * 0.45
+        button.layer.shadowOpacity = isPressed ? enabledOpacity * 0.4 : enabledOpacity
         button.layer.borderWidth = isPressed ? 0.5 : 0
         button.layer.borderColor = UIColor.label.withAlphaComponent(isKeyboardDark ? 0.08 : 0.05).cgColor
     }
 
-    private func systemKeyboardKeyForeground(for weight: TextKeyWeight, isSelected: Bool) -> UIColor {
+    private func systemKeyboardKeyForeground(
+        for weight: TextKeyWeight,
+        isEnabled: Bool
+    ) -> UIColor {
         UIColor { traits in
-            if isSelected {
-                return traits.userInterfaceStyle == .dark ? .black : .label
+            guard isEnabled else {
+                return traits.userInterfaceStyle == .dark
+                    ? UIColor.white.withAlphaComponent(0.35)
+                    : UIColor.black.withAlphaComponent(0.28)
+            }
+            if weight == .action {
+                return .white
             }
             return .label
         }
     }
 
-    private func systemKeyboardKeyBackground(for weight: TextKeyWeight, isPressed: Bool = false, isSelected: Bool = false) -> UIColor {
+    private func systemKeyboardKeyBackground(
+        for weight: TextKeyWeight,
+        isPressed: Bool = false,
+        isEnabled: Bool = true
+    ) -> UIColor {
         UIColor { traits in
+            if weight == .action, isEnabled {
+                return isPressed
+                    ? UIColor.systemBlue.withAlphaComponent(0.76)
+                    : UIColor.systemBlue
+            }
             if traits.userInterfaceStyle == .dark {
-                if isSelected {
-                    return UIColor(white: 0.86, alpha: 1.0)
-                }
-                switch weight {
-                case .normal, .primary:
-                    return UIColor(white: isPressed ? 0.42 : 0.33, alpha: 1.0)
-                case .utility:
-                    return UIColor(white: isPressed ? 0.36 : 0.25, alpha: 1.0)
-                }
+                return UIColor(white: isPressed && isEnabled ? 0.42 : 68.0 / 255.0, alpha: 1.0)
             }
-            if isSelected {
-                return UIColor(white: 0.98, alpha: 1.0)
-            }
-            switch weight {
-            case .normal, .primary:
-                return UIColor(white: isPressed ? 0.78 : 0.99, alpha: 1.0)
-            case .utility:
-                return UIColor(white: isPressed ? 0.56 : 0.68, alpha: 1.0)
-            }
+            return UIColor(white: isPressed && isEnabled ? 0.78 : 1.0, alpha: 1.0)
         }
     }
 
@@ -5458,6 +5672,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     @objc private func controlPressDown(_ sender: UIControl) {
         playKeyboardPressFeedbackIfNeeded(for: sender)
         activePressedControls.add(sender)
+        if sender.isDescendant(of: keyRowsStack), let button = sender as? UIButton {
+            button.isHighlighted = true
+            button.setNeedsUpdateConfiguration()
+            return
+        }
         schedulePressedControlCleanup(for: sender)
         showKeyPressOverlay(on: sender)
         sender.layer.removeAllAnimations()
@@ -5485,6 +5704,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         pressCleanupWorkItems[id] = nil
         activePressedControls.remove(control)
         hideKeyPreview()
+        if control.isDescendant(of: keyRowsStack), let button = control as? UIButton {
+            button.isHighlighted = false
+            button.setNeedsUpdateConfiguration()
+            return
+        }
         hideKeyPressOverlay(on: control)
         control.layer.removeAllAnimations()
         control.transform = .identity
@@ -7825,7 +8049,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         clearTransientKeyboardErrorIfShowing()
         if isRenderedNumericTextKeyboard {
             showsStandardLayoutForNumericTraits = true
-            rebuildTextKeyboardRows(layoutKind: .standard)
+            rebuildTextKeyboardRows(layoutKind: .text(bottom: .standard, prefersSymbols: false))
             updateKeyboardSurfaceMask()
             return
         }
@@ -7864,14 +8088,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     @objc private func toggleTextShift() {
         guard !isSymbolKeyboard, !isRenderedNumericTextKeyboard else { return }
         clearTransientKeyboardErrorIfShowing()
-        // Stray second contact from a fat press on the a↔shift seam: the routed
-        // character already committed on touch-down, so this shift touch-up is
-        // the same press's other contact. Ignore it so "a + shift" can't both
-        // fire. A deliberate shift tap comes well after the last commit.
-        if CACurrentMediaTime() - lastTextKeyCommitAt < Self.adjacentKeyGuardWindow {
-            kbLog.debug("ignored shift toggle adjacent to recent text-key commit")
-            return
-        }
         let now = CACurrentMediaTime()
         let autoCap = shouldAutoCapitalizeNextEnglishLetter()
         let isDoubleTap = now - lastShiftTapTime <= 0.42
@@ -7932,6 +8148,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             textModeButton.accessibilityLabel = NSLocalizedString("Show text keyboard", comment: "Accessibility label for switching from numeric keypad to text keyboard")
         } else if showsStandardLayoutForNumericTraits, isCurrentTextInputNumericTrait {
             textModeButton.accessibilityLabel = NSLocalizedString("Show numeric keypad", comment: "Accessibility label for returning to numeric keypad")
+        } else if isSymbolKeyboard {
+            textModeButton.accessibilityLabel = NSLocalizedString("Show letters", comment: "Accessibility label for switching from symbols to letters")
         } else {
             textModeButton.accessibilityLabel = NSLocalizedString("Show numbers and symbols", comment: "Accessibility label for switching to numbers and symbols")
         }
@@ -7972,12 +8190,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             : (isShiftActive
                 ? NSLocalizedString("Shift on", comment: "Accessibility label for active Shift key")
                 : NSLocalizedString("Shift", comment: "Accessibility label for Shift key"))
+        textShiftButton.accessibilityTraits = textShiftButton.isSelected ? [.button, .selected] : .button
     }
 
     private func effectiveTextShiftActive(autoCap: Bool) -> Bool {
         isTextShiftLocked
             || isTextShiftEnabled
-            || (textInputLanguage == .english && autoCap && !isTextAutoCapitalizationSuppressed)
+            || (usesEnglishTextInputForCurrentTraits && autoCap && !isTextAutoCapitalizationSuppressed)
     }
 
     private func refreshLetterCasing() {
@@ -8028,11 +8247,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             guard let self else { return }
             let control = button
             let isPressed = control.isHighlighted
-            button.configuration = self.textKeyConfiguration(title: "", image: nil, weight: .utility, isPressed: isPressed, isSelected: false)
-            self.applyTextKeyLayerStyle(to: button, weight: .utility, isPressed: isPressed, isSelected: false)
+            button.configuration = self.textKeyConfiguration(title: "", image: nil, weight: .utility, isPressed: isPressed)
+            self.applyTextKeyLayerStyle(to: button, weight: .utility, isPressed: isPressed)
         }
-        textLanguageButton.configuration = textKeyConfiguration(title: "", image: nil, weight: .utility, isPressed: false, isSelected: false)
-        applyTextKeyLayerStyle(to: textLanguageButton, weight: .utility, isPressed: false, isSelected: false)
+        textLanguageButton.configuration = textKeyConfiguration(title: "", image: nil, weight: .utility, isPressed: false)
+        applyTextKeyLayerStyle(to: textLanguageButton, weight: .utility, isPressed: false)
 
         let activeTitle = textInputLanguage == .chinese ? "中" : "英"
         let inactiveTitle = textInputLanguage == .chinese ? "英" : "中"
@@ -8085,7 +8304,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             return true
         }
 
-        if textInputLanguage == .english {
+        if usesEnglishTextInputForCurrentTraits {
             commitDisplayedRimeCompositionIfNeeded()
             let isAlphabetic = isAlphabeticTextKey(character)
             let shouldCapitalize = isAlphabetic
@@ -8364,7 +8583,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         pendingTextTouchCorrection = nil
         acceptPendingTextTouchIfSurvived()
 
-        if textInputLanguage == .english {
+        if usesEnglishTextInputForCurrentTraits {
             commitDisplayedRimeCompositionIfNeeded()
             clearRefineUndoStateForManualEdit()
             textDocumentProxy.insertText(" ")
@@ -8413,7 +8632,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let currentState = rimeInput.state()
         pendingTextTouchCorrection = nil
         acceptPendingTextTouchIfSurvived()
-        if textInputLanguage == .english {
+        if usesEnglishTextInputForCurrentTraits {
             if currentState.isComposing {
                 applyRimeState(rimeInput.clearComposition())
             }
@@ -8570,7 +8789,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private var allowsRimeMarkedText: Bool {
-        textInputLanguage == .chinese
+        !usesEnglishTextInputForCurrentTraits
             && !isRenderedNumericTextKeyboard
     }
 
@@ -10162,7 +10381,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         guard isAutoCapitalizationEnabled else {
             return AutocapDecision(outcome: false, reason: "disabled")
         }
-        guard textInputLanguage == .english else {
+        guard usesEnglishTextInputForCurrentTraits else {
             return AutocapDecision(outcome: false, reason: "not-english")
         }
 
@@ -10235,7 +10454,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func refreshEnglishLetterCasingIfNeeded() {
-        guard textInputLanguage == .english,
+        guard usesEnglishTextInputForCurrentTraits,
               !isSymbolKeyboard,
               keyboardFocus == .text
         else { return }
@@ -10308,6 +10527,16 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             return false
         default:
             return true
+        }
+    }
+
+    private var usesEnglishTextInputForCurrentTraits: Bool {
+        if textInputLanguage == .english { return true }
+        switch textDocumentProxy.keyboardType {
+        case .asciiCapable, .numbersAndPunctuation:
+            return true
+        default:
+            return false
         }
     }
 
@@ -10530,25 +10759,15 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     @objc private func deletePressDown() {
         guard deleteRepeatTask == nil else { return }
         handleTextBackspace()
-        let startedAt = Date()
         deleteRepeatTask = Task { [weak self] in
             guard let self else { return }
             try? await Task.sleep(nanoseconds: self.deleteRepeatInitialDelay)
             while !Task.isCancelled {
-                let elapsed = Date().timeIntervalSince(startedAt)
                 await MainActor.run {
-                    if self.rimeInput.state().isComposing {
-                        self.handleTextBackspace()
-                    } else if elapsed >= 1.5 {
-                        self.deleteBackwardToLineBoundary()
-                    } else if elapsed >= 0.5 {
-                        self.deleteBackwardToWordBoundary()
-                    } else {
-                        self.handleTextBackspace()
-                    }
+                    self.keyboardHaptics.playTextKeyPress()
+                    self.handleTextBackspace()
                 }
-                let interval: UInt64 = elapsed >= 1.5 ? 150_000_000 : (elapsed >= 0.5 ? 120_000_000 : self.deleteRepeatInterval)
-                try? await Task.sleep(nanoseconds: interval)
+                try? await Task.sleep(nanoseconds: self.deleteRepeatInterval)
             }
         }
     }
@@ -10562,56 +10781,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         deleteRepeatTask = nil
     }
 
-    private func deleteBackwardToWordBoundary() {
-        let context = textDocumentProxy.documentContextBeforeInput ?? ""
-        let count = deletionCountToWordBoundary(in: context)
-        guard count > 0 else {
-            clearRefineUndoStateForManualEdit()
-            textDocumentProxy.deleteBackward()
-            return
-        }
-        clearRefineUndoStateForManualEdit()
-        deleteBackward(characterCount: count)
-    }
-
-    private func deleteBackwardToLineBoundary() {
-        let context = textDocumentProxy.documentContextBeforeInput ?? ""
-        let count = deletionCountToLineBoundary(in: context)
-        guard count > 0 else {
-            clearRefineUndoStateForManualEdit()
-            textDocumentProxy.deleteBackward()
-            return
-        }
-        clearRefineUndoStateForManualEdit()
-        deleteBackward(characterCount: count)
-    }
-
-    private func deletionCountToWordBoundary(in context: String) -> Int {
-        guard !context.isEmpty else { return 0 }
-        var count = 0
-        var consumedNonWhitespace = false
-        for character in context.reversed() {
-            if character.isWhitespace {
-                if consumedNonWhitespace { break }
-                count += 1
-            } else {
-                consumedNonWhitespace = true
-                count += 1
-            }
-        }
-        return count
-    }
-
-    private func deletionCountToLineBoundary(in context: String) -> Int {
-        guard !context.isEmpty else { return 0 }
-        var count = 0
-        for character in context.reversed() {
-            count += 1
-            if character.isNewline { break }
-        }
-        return count
-    }
-
     @objc private func insertSpace() {
         handleTextSpace()
     }
@@ -10619,6 +10788,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     @objc private func textSpaceTapped() {
         guard Date().timeIntervalSince1970 >= suppressTextSpaceTapUntil else { return }
         handleTextSpace()
+    }
+
+    @objc private func textBottomShortcutTapped(_ sender: UIButton) {
+        guard let text = textBottomShortcutText[ObjectIdentifier(sender)] else { return }
+        for character in text {
+            guard handleTextCharacter(String(character)) else { break }
+        }
     }
 
     @objc private func handleTextSpaceCursorGesture(_ recognizer: UILongPressGestureRecognizer) {
