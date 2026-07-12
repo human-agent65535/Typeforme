@@ -3,13 +3,20 @@ import UIKit
 
 private let typeformePrivacyPolicyURL = URL(string: "https://github.com/human-agent65535/Typeforme/blob/main/docs/app-store/privacy-policy.md")!
 
+private enum HostSettingsRoute: Hashable {
+    case voiceDictation
+    case textKeyboard
+    case connectedMac
+    case setupAccess
+    case keyboardGuide
+    case pairing
+    case macProcessing
+}
+
 struct ContentView: View {
     @Environment(AppState.self) private var state
-    @State private var showingPairing = false
-    @State private var showingDictationSettings = false
-    @State private var showingKeyboardSettings = false
-    @State private var showingSetupReadiness = false
-    @State private var showingKeyboardGuide = false
+    @State private var showingSettings = false
+    @State private var settingsInitialRoute: HostSettingsRoute?
     @State private var rawTranscriptExpanded = false
 
     var body: some View {
@@ -19,89 +26,19 @@ struct ContentView: View {
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .topBarTrailing) {
-                        Menu {
-                            Button {
-                                showingPairing = true
-                            } label: {
-                                Label("Pairing", systemImage: "qrcode.viewfinder")
-                            }
-                            Button {
-                                showingSetupReadiness = true
-                            } label: {
-                                Label("Capture Mode & Permissions", systemImage: "checklist")
-                            }
-                            Button {
-                                showingDictationSettings = true
-                            } label: {
-                                Label("Dictation Settings", systemImage: "slider.horizontal.3")
-                            }
-                            .disabled(!state.isConfigured)
-                            Button {
-                                showingKeyboardSettings = true
-                            } label: {
-                                Label("Keyboard Settings", systemImage: "keyboard")
-                            }
-                            Button {
-                                showingKeyboardGuide = true
-                            } label: {
-                                Label("Keyboard Guide", systemImage: "questionmark.circle")
-                            }
-                            Button {
-                                UIApplication.shared.open(typeformePrivacyPolicyURL)
-                            } label: {
-                                Label("Privacy Policy", systemImage: "hand.raised")
-                            }
+                        Button {
+                            presentSettings()
                         } label: {
                             Image(systemName: "gearshape")
                         }
+                        .accessibilityLabel("Settings")
                     }
                 }
-                .sheet(isPresented: $showingPairing) {
-                    PairingView(
-                        config: state.config,
-                        routeStatus: state.routeStatus
-                    )
-                    .environment(state)
-                }
-                .sheet(isPresented: $showingDictationSettings) {
-                    NavigationStack {
-                        MacSettingsView {
-                            showingPairing = true
-                        }
-                            .environment(state)
-                    }
-                    .environment(state)
-                }
-                .sheet(isPresented: $showingKeyboardSettings, onDismiss: {
+                .sheet(isPresented: $showingSettings, onDismiss: {
+                    settingsInitialRoute = nil
                     activateHostCaptureAfterReturningToMain()
                 }) {
-                    NavigationStack {
-                        KeyboardSettingsView()
-                            .environment(state)
-                    }
-                    .environment(state)
-                }
-                .sheet(isPresented: $showingSetupReadiness, onDismiss: {
-                    state.dismissSetupReadiness()
-                    activateHostCaptureAfterReturningToMain()
-                }) {
-                    NavigationStack {
-                        SetupReadinessView(
-                            onShowGuide: openGuideFromSetup
-                        )
-                        .environment(state)
-                    }
-                    .environment(state)
-                }
-                .sheet(isPresented: $showingKeyboardGuide) {
-                    NavigationStack {
-                        KeyboardGuideView()
-                            .toolbar {
-                                ToolbarItem(placement: .confirmationAction) {
-                                    Button("Done") { showingKeyboardGuide = false }
-                                }
-                            }
-                    }
+                    HostSettingsView(initialRoute: settingsInitialRoute)
                     .environment(state)
                 }
                 .overlay(alignment: .top) {
@@ -129,15 +66,13 @@ struct ContentView: View {
 
     private func presentFirstRunReadinessIfNeeded() {
         state.refreshSetupReadinessStatuses()
-        guard state.shouldPresentSetupReadiness, !showingSetupReadiness else { return }
-        showingSetupReadiness = true
+        guard state.shouldPresentSetupReadiness, !showingSettings else { return }
+        presentSettings(.setupAccess)
     }
 
-    private func openGuideFromSetup() {
-        showingSetupReadiness = false
-        DispatchQueue.main.async {
-            showingKeyboardGuide = true
-        }
+    private func presentSettings(_ route: HostSettingsRoute? = nil) {
+        settingsInitialRoute = route
+        showingSettings = true
     }
 
     private func activateHostCaptureAfterReturningToMain() {
@@ -147,15 +82,11 @@ struct ContentView: View {
     @ViewBuilder
     private var content: some View {
         if !state.isConfigured {
-            UnpairedHero { showingPairing = true }
+            UnpairedHero { presentSettings(.pairing) }
         } else {
             VStack(spacing: 12) {
                 RouteStatusBar()
                 ScrollView {
-                    // High-frequency surfaces at the top: orb, mode chips,
-                    // language / session settings, then any active result.
-                    // The setup guidance card is a once-per-install thing,
-                    // so it sits at the bottom and can be dismissed.
                     VStack(spacing: 16) {
                         HeroRecordCard(audio: state.audioCoordinator)
                         // Errors sit directly under the orb — at the old
@@ -163,24 +94,20 @@ struct ContentView: View {
                         // whenever the page had content.
                         if let error = state.errorMessage, !error.isEmpty {
                             ErrorBanner(message: error, canRepair: state.isConfigured) {
-                                showingPairing = true
+                                presentSettings(.pairing)
                             } onDismiss: {
                                 state.errorMessage = nil
                             }
                         }
                         if state.setupReadinessNeedsAttention {
                             SetupReadinessBanner {
-                                showingSetupReadiness = true
+                                presentSettings(.setupAccess)
                             }
                         }
                         ModeChipsRow()
                         LanguagesRow()
                         ResultCard()
                         RawTranscriptCard(expanded: $rawTranscriptExpanded)
-                        SetupStatusCard(
-                            onShowSetup: { showingSetupReadiness = true },
-                            onShowGuide: { showingKeyboardGuide = true }
-                        )
                     }
                     .padding(.horizontal, 16)
                     .padding(.bottom, 32)
@@ -191,110 +118,288 @@ struct ContentView: View {
     }
 }
 
-// MARK: - Setup guidance
-
-/// Persistent onboarding card. Always present at the bottom of the scroll;
-/// the chevron toggles between a one-line header and the full setup
-/// guidance. We default to expanded until the keyboard extension has been
-/// observed reaching the host (which implies both "keyboard enabled" and
-/// "Full Access granted" — see AppState.keyboardEverContacted) and to
-/// collapsed afterwards, while still letting the user re-expand any time.
-private struct SetupStatusCard: View {
+private struct HostSettingsView: View {
+    @Environment(\.dismiss) private var dismiss
     @Environment(AppState.self) private var state
-    let onShowSetup: () -> Void
-    let onShowGuide: () -> Void
+    @State private var path: [HostSettingsRoute]
 
-    @State private var isExpanded: Bool = true
-    @State private var didApplyInitialExpansion = false
+    init(initialRoute: HostSettingsRoute?) {
+        _path = State(initialValue: initialRoute.map { [$0] } ?? [])
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Button {
-                withAnimation(.snappy(duration: 0.2)) { isExpanded.toggle() }
-            } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: state.setupReadinessNeedsAttention ? "exclamationmark.triangle.fill" : "checkmark.seal.fill")
-                        .foregroundStyle(state.setupReadinessNeedsAttention ? Color.orange : Color.green)
-                    Text(state.setupReadinessNeedsAttention ? "Setup needs attention" : "Setup ready")
-                        .font(.subheadline.weight(.semibold))
-                    Spacer()
-                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.tertiary)
+        NavigationStack(path: $path) {
+            HostSettingsOverview()
+                .navigationTitle("Settings")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Close") { dismiss() }
+                    }
                 }
-                .frame(maxWidth: .infinity, minHeight: 44, alignment: .center)
-                .contentShape(Rectangle())
+                .navigationDestination(for: HostSettingsRoute.self) { route in
+                    destination(for: route)
+                }
+        }
+    }
+
+    @ViewBuilder
+    private func destination(for route: HostSettingsRoute) -> some View {
+        switch route {
+        case .voiceDictation:
+            VoiceDictationSettingsView()
+        case .textKeyboard:
+            KeyboardSettingsView()
+        case .connectedMac:
+            ConnectedMacSettingsView()
+        case .setupAccess:
+            SetupReadinessView()
+        case .keyboardGuide:
+            KeyboardGuideView()
+        case .pairing:
+            PairingView(config: state.config, routeStatus: state.routeStatus)
+        case .macProcessing:
+            MacSettingsView {
+                path = [.connectedMac, .pairing]
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel(isExpanded ? "Hide setup steps" : "Show setup steps")
-            .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
+        }
+    }
+}
 
-            if isExpanded {
-                Divider()
+private struct HostSettingsOverview: View {
+    @Environment(AppState.self) private var state
 
-                Text(state.setupReadinessNeedsAttention ? "Review microphone and keyboard access before using Typeforme from the keyboard." : "Typeforme is ready to dictate in any text field via its keyboard.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+    var body: some View {
+        List {
+            Section {
+                NavigationLink(value: primaryStatusRoute) {
+                    Label {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(primaryStatusTitle)
+                            Text(primaryStatusDetail)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    } icon: {
+                        Image(systemName: primaryStatusIcon)
+                            .foregroundStyle(primaryStatusColor)
+                    }
+                }
+            }
 
-                VStack(alignment: .leading, spacing: 10) {
-                    SetupStepRow(
+            Section("Preferences") {
+                NavigationLink(value: HostSettingsRoute.voiceDictation) {
+                    SettingsRowLabel(
+                        icon: "waveform",
+                        title: "Voice Dictation",
+                        detail: "Default mode and live preview"
+                    )
+                }
+                NavigationLink(value: HostSettingsRoute.textKeyboard) {
+                    SettingsRowLabel(
                         icon: "keyboard",
-                        title: "Enable Typeforme keyboard",
-                        subtitle: "Settings → General → Keyboard → Add New Keyboard"
-                    )
-                    SetupStepRow(
-                        icon: "mic",
-                        title: "Allow Microphone",
-                        subtitle: "Required for host-owned keyboard dictation"
-                    )
-                    SetupStepRow(
-                        icon: "lock.shield",
-                        title: "Allow Full Access",
-                        subtitle: "Needed for local bridge, dictation, settings, and learning sync"
+                        title: "Text Keyboard",
+                        detail: "Chinese input, typing, feedback, and learning"
                     )
                 }
+            }
 
-                HStack(spacing: 10) {
-                    Button {
-                        onShowSetup()
-                    } label: {
-                        Label("Setup", systemImage: "checklist")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
+            Section("System") {
+                NavigationLink(value: HostSettingsRoute.connectedMac) {
+                    SettingsRowLabel(
+                        icon: "desktopcomputer",
+                        title: "Connected Mac",
+                        detail: connectedMacDetail
+                    )
+                }
+                NavigationLink(value: HostSettingsRoute.setupAccess) {
+                    SettingsRowLabel(
+                        icon: "checklist",
+                        title: "Setup & Access",
+                        detail: "Capture method and permissions"
+                    )
+                }
+            }
 
-                    Button {
-                        onShowGuide()
-                    } label: {
-                        Label("Guide", systemImage: "questionmark.circle")
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
+            Section("Help & About") {
+                NavigationLink(value: HostSettingsRoute.keyboardGuide) {
+                    Label("Keyboard Guide", systemImage: "questionmark.circle")
+                }
+                Link(destination: typeformePrivacyPolicyURL) {
+                    Label("Privacy Policy", systemImage: "hand.raised")
                 }
             }
         }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(Color(uiColor: .secondarySystemGroupedBackground))
-        )
-        .onAppear {
-            guard !didApplyInitialExpansion else { return }
-            didApplyInitialExpansion = true
-            isExpanded = state.setupReadinessNeedsAttention
+    }
+
+    private var primaryStatusRoute: HostSettingsRoute {
+        if !state.isConfigured { return .connectedMac }
+        if state.setupReadinessNeedsAttention { return .setupAccess }
+        return .connectedMac
+    }
+
+    private var primaryStatusTitle: String {
+        if !state.isConfigured { return "Connect a Mac" }
+        if state.setupReadinessNeedsAttention { return "Setup needs attention" }
+        if state.routeStatus.activeKind == .unavailable { return "Mac is offline" }
+        return "Ready"
+    }
+
+    private var primaryStatusDetail: String {
+        if !state.isConfigured { return "Pair this iPhone before dictating" }
+        if state.setupReadinessNeedsAttention { return "Review permissions and keyboard access" }
+        if state.routeStatus.activeKind == .unavailable { return "Check the bridge connection" }
+        return "Connected via \(state.routeStatus.activeKind.rawValue)"
+    }
+
+    private var primaryStatusIcon: String {
+        if !state.isConfigured { return "link.badge.plus" }
+        if state.setupReadinessNeedsAttention || state.routeStatus.activeKind == .unavailable {
+            return "exclamationmark.triangle.fill"
         }
-        .onChange(of: state.setupReadinessNeedsAttention) { _, needsSetup in
-            guard !needsSetup else {
-                withAnimation(.snappy(duration: 0.2)) {
-                    isExpanded = true
+        return "checkmark.circle.fill"
+    }
+
+    private var primaryStatusColor: Color {
+        if !state.isConfigured || state.setupReadinessNeedsAttention || state.routeStatus.activeKind == .unavailable {
+            return .orange
+        }
+        return .green
+    }
+
+    private var connectedMacDetail: String {
+        guard state.isConfigured else { return "Not paired" }
+        return "\(state.routeStatus.activeKind.rawValue) route"
+    }
+}
+
+private struct SettingsRowLabel: View {
+    let icon: String
+    let title: String
+    let detail: String
+
+    var body: some View {
+        Label {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        } icon: {
+            Image(systemName: icon)
+        }
+    }
+}
+
+private struct VoiceDictationSettingsView: View {
+    @Environment(AppState.self) private var state
+
+    var body: some View {
+        List {
+            Section {
+                Picker("Default Mode", selection: defaultCorrectionModeBinding) {
+                    ForEach(CorrectionMode.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                            .disabled(!state.isCorrectionModeAvailable(mode))
+                    }
                 }
-                return
+                .pickerStyle(.menu)
+            } footer: {
+                Text("Applies to this iPhone and the Typeforme keyboard. Fast skips refine.")
             }
-            withAnimation(.snappy(duration: 0.2)) {
-                isExpanded = false
+
+            LivePreviewSettingsSection()
+        }
+        .navigationTitle("Voice Dictation")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private var defaultCorrectionModeBinding: Binding<CorrectionMode> {
+        Binding {
+            state.config.correctionMode
+        } set: { mode in
+            state.setDefaultCorrectionMode(mode)
+        }
+    }
+}
+
+private struct ConnectedMacSettingsView: View {
+    @Environment(AppState.self) private var state
+
+    var body: some View {
+        List {
+            Section("Connection") {
+                LabeledContent("Active Route") {
+                    HStack(spacing: 6) {
+                        Circle()
+                            .fill(routeColor)
+                            .frame(width: 8, height: 8)
+                        Text(state.isCheckingRouteStatus ? "Checking" : state.routeStatus.activeKind.rawValue)
+                    }
+                }
+                if let latencyDetail {
+                    LabeledContent("Latency", value: latencyDetail)
+                }
+                Button {
+                    refreshRoute()
+                } label: {
+                    Label(
+                        state.isRefreshingRoute ? "Checking…" : "Check Connection",
+                        systemImage: "arrow.clockwise"
+                    )
+                }
+                .disabled(!state.isConfigured || state.isRefreshingRoute || state.isBusy)
             }
+
+            Section {
+                NavigationLink(value: HostSettingsRoute.macProcessing) {
+                    SettingsRowLabel(
+                        icon: "slider.horizontal.3",
+                        title: "Mac Processing",
+                        detail: "Recognition, refine, languages, vocabulary, and models"
+                    )
+                }
+                .disabled(!state.isConfigured)
+
+                NavigationLink(value: HostSettingsRoute.pairing) {
+                    Label(state.isConfigured ? "Change or Repair Pairing" : "Pair a Mac", systemImage: "qrcode.viewfinder")
+                }
+            }
+        }
+        .navigationTitle("Connected Mac")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private var latencyDetail: String? {
+        switch state.routeStatus.activeKind {
+        case .local:
+            return state.routeStatus.localLatencyMs.map { "\($0) ms" }
+        case .cloud:
+            return state.routeStatus.cloudLatencyMs.map { "\($0) ms" }
+        case .unavailable:
+            return nil
+        }
+    }
+
+    private var routeColor: Color {
+        if state.isCheckingRouteStatus { return .secondary }
+        switch state.routeStatus.activeKind {
+        case .local: return .green
+        case .cloud: return .blue
+        case .unavailable: return .orange
+        }
+    }
+
+    private func refreshRoute() {
+        Task {
+            await state.refreshRoute(
+                force: true,
+                probeAllEndpoints: true,
+                showIndicator: true,
+                syncPairingEndpoints: true,
+                reason: "connected_mac_settings"
+            )
         }
     }
 }
@@ -349,50 +454,22 @@ private struct SetupReadinessBanner: View {
     }
 }
 
-private struct SetupStepRow: View {
-    let icon: String
-    let title: String
-    let subtitle: String
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            Image(systemName: icon)
-                .font(.callout)
-                .foregroundStyle(Color.accentColor)
-                .frame(width: 20)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.callout)
-                Text(subtitle)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            Spacer()
-        }
-    }
-}
-
 // MARK: - Setup readiness
 
 private struct SetupReadinessView: View {
-    @Environment(\.dismiss) private var dismiss
     @Environment(AppState.self) private var state
     @State private var isRequestingMicrophone = false
     @State private var isRequestingSpeech = false
 
-    let onShowGuide: () -> Void
-
     var body: some View {
         readinessList
-            .navigationTitle("Capture Mode & Permissions")
+            .navigationTitle("Setup & Access")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
-                }
-            }
             .onAppear {
                 state.refreshSetupReadinessStatuses()
+            }
+            .onDisappear {
+                state.dismissSetupReadiness()
             }
     }
 
@@ -404,7 +481,6 @@ private struct SetupReadinessView: View {
             if showsSpeechPreviewPermission {
                 optionalSection
             }
-            helpSection
         }
     }
 
@@ -467,24 +543,6 @@ private struct SetupReadinessView: View {
                 isWorking: isRequestingSpeech,
                 action: speechAction
             )
-        }
-    }
-
-    @ViewBuilder
-    private var helpSection: some View {
-        Section {
-            Button {
-                onShowGuide()
-            } label: {
-                Label("Keyboard Guide", systemImage: "questionmark.circle")
-            }
-            Link(destination: typeformePrivacyPolicyURL) {
-                Label("Privacy Policy", systemImage: "hand.raised")
-            }
-        } header: {
-            Text("Help")
-        } footer: {
-            Text("Camera access is requested only when you open the QR scanner.")
         }
     }
 
@@ -1407,7 +1465,6 @@ private struct LanguagesRow: View {
 
 private struct KeyboardSettingsView: View {
     @Environment(AppState.self) private var state
-    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         List {
@@ -1460,48 +1517,19 @@ private struct KeyboardSettingsView: View {
                 Text("Only active when the keyboard is in English mode.")
             }
             Section {
-                Toggle("Chinese self-learning", isOn: rimeLearningBinding)
-                    .disabled(!state.keyboardChineseInputEnabled)
                 NavigationLink {
-                    ChineseLearningStatsView()
+                    KeyboardLearningSettingsView()
                 } label: {
-                    HStack {
-                        Text("Chinese Learning Data")
-                        Spacer()
-                        Text(state.keyboardChineseInputEnabled ? "On" : "Off")
-                            .foregroundStyle(.secondary)
-                    }
+                    SettingsRowLabel(
+                        icon: "chart.line.uptrend.xyaxis",
+                        title: "Learning",
+                        detail: "Chinese dictionary and touch adaptation"
+                    )
                 }
-                Button(role: .destructive) {
-                    state.resetKeyboardRimeLearning()
-                } label: {
-                    Text("Reset Chinese Learning")
-                }
-                .disabled(!state.keyboardChineseInputEnabled)
-                Toggle("Touch learning", isOn: touchLearningBinding)
-                NavigationLink {
-                    TouchLearningStatsView()
-                } label: {
-                    Text("Touch Learning Data")
-                }
-                Button(role: .destructive) {
-                    state.resetKeyboardTouchLearning()
-                } label: {
-                    Text("Reset Touch Learning")
-                }
-            } header: {
-                Text("Learning")
-            } footer: {
-                Text("Chinese self-learning controls Rime's user dictionary. Touch learning adapts per-key tap offsets when on; when off, text keys use fixed midpoint hit routing.")
             }
         }
-        .navigationTitle("Keyboard Settings")
+        .navigationTitle("Text Keyboard")
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .confirmationAction) {
-                Button("Done") { dismiss() }
-            }
-        }
     }
 
     private var autoCapitalizationBinding: Binding<Bool> {
@@ -1560,22 +1588,6 @@ private struct KeyboardSettingsView: View {
         }
     }
 
-    private var rimeLearningBinding: Binding<Bool> {
-        Binding {
-            state.keyboardRimeLearningEnabled
-        } set: { enabled in
-            state.setKeyboardRimeLearningEnabled(enabled)
-        }
-    }
-
-    private var touchLearningBinding: Binding<Bool> {
-        Binding {
-            state.keyboardTouchLearningEnabled
-        } set: { enabled in
-            state.setKeyboardTouchLearningEnabled(enabled)
-        }
-    }
-
     private var defaultTextInputLanguageBinding: Binding<KeyboardDefaultTextInputLanguage> {
         Binding {
             state.keyboardDefaultTextInputLanguage
@@ -1592,6 +1604,70 @@ private struct KeyboardSettingsView: View {
         }
     }
 
+}
+
+private struct KeyboardLearningSettingsView: View {
+    @Environment(AppState.self) private var state
+
+    var body: some View {
+        List {
+            Section {
+                Toggle("Chinese self-learning", isOn: rimeLearningBinding)
+                    .disabled(!state.keyboardChineseInputEnabled)
+                NavigationLink {
+                    ChineseLearningStatsView()
+                } label: {
+                    Text("Chinese Learning Data")
+                }
+                Button(role: .destructive) {
+                    state.resetKeyboardRimeLearning()
+                } label: {
+                    Text("Reset Chinese Learning")
+                }
+                .disabled(!state.keyboardChineseInputEnabled)
+            } header: {
+                Text("Chinese")
+            } footer: {
+                Text("Self-learning controls Rime's user dictionary.")
+            }
+
+            Section {
+                Toggle("Touch learning", isOn: touchLearningBinding)
+                NavigationLink {
+                    TouchLearningStatsView()
+                } label: {
+                    Text("Touch Learning Data")
+                }
+                Button(role: .destructive) {
+                    state.resetKeyboardTouchLearning()
+                } label: {
+                    Text("Reset Touch Learning")
+                }
+            } header: {
+                Text("Touch")
+            } footer: {
+                Text("Touch learning adapts per-key tap offsets. When off, text keys use fixed midpoint hit routing.")
+            }
+        }
+        .navigationTitle("Learning")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private var rimeLearningBinding: Binding<Bool> {
+        Binding {
+            state.keyboardRimeLearningEnabled
+        } set: { enabled in
+            state.setKeyboardRimeLearningEnabled(enabled)
+        }
+    }
+
+    private var touchLearningBinding: Binding<Bool> {
+        Binding {
+            state.keyboardTouchLearningEnabled
+        } set: { enabled in
+            state.setKeyboardTouchLearningEnabled(enabled)
+        }
+    }
 }
 
 private struct LivePreviewSettingsSection: View {
@@ -1929,19 +2005,6 @@ private struct ErrorBanner: View {
 private struct KeyboardGuideView: View {
     var body: some View {
         List {
-            Section("Setup") {
-                GuideStepRow(
-                    icon: "desktopcomputer",
-                    title: "Pair Typeforme on Mac",
-                    detail: "Paste the pairing JSON from the Mac app, then refresh Dictation Settings so iOS has current Mac capabilities and languages."
-                )
-                GuideStepRow(
-                    icon: "keyboard",
-                    title: "Enable the keyboard",
-                    detail: "In iOS Settings, add Typeforme and allow Full Access. The keyboard needs that to talk to the host app."
-                )
-            }
-
             Section("Write Anywhere") {
                 GuideStepRow(
                     icon: "mic.fill",
@@ -2017,12 +2080,12 @@ private struct KeyboardGuideView: View {
                 GuideStepRow(
                     icon: "waveform",
                     title: "Live Preview",
-                    detail: "Preview can show partial text while you speak. Choose its source in Dictation Settings."
+                    detail: "Preview can show partial text while you speak. Choose its source in Voice Dictation settings."
                 )
                 GuideStepRow(
                     icon: "slider.horizontal.3",
                     title: "More settings",
-                    detail: "ASR sources, languages, preview, Chinese input, sound, haptics, and learning live in Settings."
+                    detail: "iPhone preferences live under Voice Dictation and Text Keyboard. Mac recognition and refine options live under Connected Mac."
                 )
                 GuideStepRow(
                     icon: "exclamationmark.bubble",
@@ -2088,7 +2151,7 @@ private struct ToastView: View {
     }
 }
 
-// MARK: - Dictation Settings
+// MARK: - Mac processing settings
 
 private struct TimeoutSecondsRow: View {
     let title: String
@@ -2188,11 +2251,11 @@ private struct MacSettingsView: View {
         return !draft.hasSameEditableSettings(as: initialDraft)
     }
 
-    private var macSettingsDoneButtonTitle: String {
-        if hasUnsavedChanges, selectedMacModelsNeedDownload {
+    private var macSettingsSaveButtonTitle: String {
+        if selectedMacModelsNeedDownload {
             return NSLocalizedString("Save & Download", comment: "Save Mac settings and start model downloads on the Mac")
         }
-        return NSLocalizedString("Done", comment: "Close or save Mac settings button")
+        return NSLocalizedString("Save", comment: "Save Mac settings button")
     }
 
     private var visibleRecognitionSourceOptions: [BridgeSettingOption] {
@@ -2251,20 +2314,6 @@ private struct MacSettingsView: View {
         List {
             if let draft {
                 Section {
-                    Picker("Default Mode", selection: defaultCorrectionModeBinding) {
-                        ForEach(CorrectionMode.allCases) { mode in
-                            Text(correctionModeTitle(mode)).tag(mode)
-                                .disabled(!state.isCorrectionModeAvailable(mode))
-                        }
-                    }
-                    .pickerStyle(.menu)
-                } header: {
-                    Text("Default Mode")
-                } footer: {
-                    Text("Applies to this iPhone and the Typeforme keyboard. Fast skips refine and uses the selected Fast ASR source only.")
-                }
-
-                Section {
                     Picker("Fast ASR Source", selection: fastASRSourceBinding) {
                         ForEach(visibleRecognitionSourceOptions) { option in
                             if let source = RecognitionSource(rawValue: option.id) {
@@ -2282,8 +2331,6 @@ private struct MacSettingsView: View {
                 } header: {
                     Text("Fast ASR")
                 }
-
-                LivePreviewSettingsSection()
 
                 Section {
                     ForEach(visibleRecognitionSourceOptions) { option in
@@ -2326,7 +2373,7 @@ private struct MacSettingsView: View {
                         )
                     } label: {
                         HStack {
-                            Text("Languages")
+                            Text("Mac Default Languages")
                             Spacer()
                             Text(LanguageDisplay.summary(
                                 for: Set(draft.languageIDs),
@@ -2465,8 +2512,9 @@ private struct MacSettingsView: View {
                 }
             }
         }
-        .navigationTitle("Dictation Settings")
+        .navigationTitle("Mac Processing")
         .navigationBarTitleDisplayMode(.inline)
+        .navigationBarBackButtonHidden(hasUnsavedChanges)
         .toolbar {
             // Decimal pads have no return key; without this the only way to
             // dismiss the keyboard is tapping a blank spot in the form.
@@ -2483,7 +2531,7 @@ private struct MacSettingsView: View {
             }
             ToolbarItem(placement: .cancellationAction) {
                 if hasUnsavedChanges {
-                    Button("Discard") { showingDiscardConfirmation = true }
+                    Button("Cancel") { showingDiscardConfirmation = true }
                         .disabled(isSaving)
                 }
             }
@@ -2497,11 +2545,11 @@ private struct MacSettingsView: View {
                                 .scaleEffect(0.72)
                         }
                         Text(isSaving
-                            ? NSLocalizedString("Saving…", comment: "Dictation settings save in progress")
-                            : macSettingsDoneButtonTitle)
+                            ? NSLocalizedString("Saving…", comment: "Mac settings save in progress")
+                            : macSettingsSaveButtonTitle)
                     }
                 }
-                .disabled(isSaving || (draft == nil && isLoading))
+                .disabled(isSaving || !hasUnsavedChanges)
             }
         }
         .interactiveDismissDisabled(hasUnsavedChanges)
@@ -2601,18 +2649,6 @@ private struct MacSettingsView: View {
               draft.sourceAvailability(for: .appleSpeech)?.canEnable != true
         else { return nil }
         return draft.sourceAvailability(for: .appleSpeech)?.reason
-    }
-
-    private var defaultCorrectionModeBinding: Binding<CorrectionMode> {
-        Binding {
-            state.config.correctionMode
-        } set: { mode in
-            state.setDefaultCorrectionMode(mode)
-        }
-    }
-
-    private func correctionModeTitle(_ mode: CorrectionMode) -> String {
-        mode.title
     }
 
     private func asrModelDisplayName(for source: RecognitionSource, in draft: BridgeMacSettingsPayload) -> String {

@@ -24,208 +24,208 @@ struct PairingView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            List {
-                Section {
-                    Text("Open the Mac app, copy the pairing JSON, then paste it here. Pairing stores connection details. Languages and the default dictation mode are iPhone settings.")
+        List {
+            Section {
+                Text("Open the Mac app, copy the pairing JSON, then paste it here. Pairing stores connection details. Languages and the default dictation mode are iPhone settings.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Paste Pairing JSON") {
+                Button {
+                    pastePairingJSON()
+                } label: {
+                    Label("Paste from Clipboard", systemImage: "doc.on.clipboard")
+                }
+                Button {
+                    showingQRScanner = true
+                } label: {
+                    Label("Scan QR from Mac", systemImage: "qrcode.viewfinder")
+                }
+                if !pairingJSON.isEmpty {
+                    TextEditor(text: $pairingJSON)
+                        .frame(minHeight: 100)
+                        .font(.system(.caption, design: .monospaced))
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                        .onChange(of: pairingJSON) { _, _ in
+                            schedulePairingParse(pairingJSON)
+                        }
+                }
+                if parsedSuccessfully {
+                    Label("Pairing JSON parsed. Tap Save to apply.", systemImage: "checkmark.circle.fill")
                         .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.green)
                 }
-
-                Section("Paste Pairing JSON") {
-                    Button {
-                        pastePairingJSON()
-                    } label: {
-                        Label("Paste from Clipboard", systemImage: "doc.on.clipboard")
-                    }
-                    Button {
-                        showingQRScanner = true
-                    } label: {
-                        Label("Scan QR from Mac", systemImage: "qrcode.viewfinder")
-                    }
-                    if !pairingJSON.isEmpty {
-                        TextEditor(text: $pairingJSON)
-                            .frame(minHeight: 100)
-                            .font(.system(.caption, design: .monospaced))
-                            .autocorrectionDisabled()
-                            .textInputAutocapitalization(.never)
-                            .onChange(of: pairingJSON) { _, _ in
-                                schedulePairingParse(pairingJSON)
-                            }
-                    }
-                    if parsedSuccessfully {
-                        Label("Pairing JSON parsed. Tap Save to apply.", systemImage: "checkmark.circle.fill")
-                            .font(.footnote)
-                            .foregroundStyle(.green)
-                    }
-                    if let parseError {
-                        Label(parseError, systemImage: "exclamationmark.triangle")
-                            .font(.footnote)
-                            .foregroundStyle(.orange)
-                    }
+                if let parseError {
+                    Label(parseError, systemImage: "exclamationmark.triangle")
+                        .font(.footnote)
+                        .foregroundStyle(.orange)
                 }
+            }
 
-                Section("Bridge") {
-                    LabeledContent("Local URL") {
-                        TextField("http://192.168.…", text: localURLBinding)
-                            .textInputAutocapitalization(.never)
-                            .keyboardType(.URL)
-                            .autocorrectionDisabled()
-                            .multilineTextAlignment(.trailing)
-                    }
-                    if config.localBridgeURLCandidates.count > 1 {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(String(
-                                format: NSLocalizedString("%d local candidates from the Mac", comment: "Local bridge URL candidate count"),
-                                config.localBridgeURLCandidates.count
-                            ))
-                                .font(.footnote.weight(.medium))
-                            ForEach(config.localBridgeURLCandidates, id: \.self) { url in
-                                Text(url)
-                                    .font(.caption.monospaced())
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
-                            }
+            Section("Bridge") {
+                LabeledContent("Local URL") {
+                    TextField("http://192.168.…", text: localURLBinding)
+                        .textInputAutocapitalization(.never)
+                        .keyboardType(.URL)
+                        .autocorrectionDisabled()
+                        .multilineTextAlignment(.trailing)
+                }
+                if config.localBridgeURLCandidates.count > 1 {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(String(
+                            format: NSLocalizedString("%d local candidates from the Mac", comment: "Local bridge URL candidate count"),
+                            config.localBridgeURLCandidates.count
+                        ))
+                            .font(.footnote.weight(.medium))
+                        ForEach(config.localBridgeURLCandidates, id: \.self) { url in
+                            Text(url)
+                                .font(.caption.monospaced())
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
                         }
                     }
-                    LabeledContent("Cloud URL") {
-                        TextField("https://…", text: $config.publicBridgeURL)
-                            .textInputAutocapitalization(.never)
-                            .keyboardType(.URL)
-                            .autocorrectionDisabled()
-                            .multilineTextAlignment(.trailing)
-                    }
-                    LabeledContent("Token") {
-                        HStack(spacing: 6) {
-                            // Mirror the SecureField/TextField pair Apple uses
-                            // for password fields with a "reveal" eye icon —
-                            // pasted tokens are easy to misread without it.
-                            Group {
-                                if tokenVisible {
-                                    TextField("paste token", text: $config.token)
-                                } else {
-                                    SecureField("paste token", text: $config.token)
-                                }
-                            }
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
-                            .multilineTextAlignment(.trailing)
-
-                            Button {
-                                tokenVisible.toggle()
-                            } label: {
-                                Image(systemName: tokenVisible ? "eye.slash" : "eye")
-                                    .font(.callout)
-                                    .foregroundStyle(.secondary)
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel(tokenVisible ? "Hide token" : "Show token")
-                        }
-                    }
-                    Button {
-                        refreshFromMac(saveAfterRefresh: true)
-                    } label: {
-                        Label(
-                            isPulling
-                                ? NSLocalizedString("Pulling…", comment: "Pairing settings pull in progress")
-                                : NSLocalizedString("Refresh Dictation Settings", comment: "Pull dictation settings button"),
-                            systemImage: "arrow.down.doc"
-                        )
-                    }
-                    .disabled(isPulling || !config.hasAnyBridgeURL || config.token.isEmpty)
                 }
-
-                if isPaired {
-                    Section("Repair") {
-                        Button(role: .destructive) {
-                            pairingParseTask?.cancel()
-                            pairingParseTask = nil
-                            config = .empty
-                            pairingJSON = ""
-                            parseError = nil
-                            parsedSuccessfully = false
-                            routeStatus = BridgeRouteResolutionStatus()
-                            Task {
-                                await appState.unpair()
+                LabeledContent("Cloud URL") {
+                    TextField("https://…", text: $config.publicBridgeURL)
+                        .textInputAutocapitalization(.never)
+                        .keyboardType(.URL)
+                        .autocorrectionDisabled()
+                        .multilineTextAlignment(.trailing)
+                }
+                LabeledContent("Token") {
+                    HStack(spacing: 6) {
+                        // Mirror the SecureField/TextField pair Apple uses
+                        // for password fields with a "reveal" eye icon —
+                        // pasted tokens are easy to misread without it.
+                        Group {
+                            if tokenVisible {
+                                TextField("paste token", text: $config.token)
+                            } else {
+                                SecureField("paste token", text: $config.token)
                             }
-                            dismiss()
+                        }
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .multilineTextAlignment(.trailing)
+
+                        Button {
+                            tokenVisible.toggle()
                         } label: {
-                            Label("Unpair This Device", systemImage: "link.badge.minus")
+                            Image(systemName: tokenVisible ? "eye.slash" : "eye")
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
                         }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(tokenVisible ? "Hide token" : "Show token")
                     }
                 }
+                Button {
+                    refreshFromMac(saveAfterRefresh: true)
+                } label: {
+                    Label(
+                        isPulling
+                            ? NSLocalizedString("Pulling…", comment: "Pairing settings pull in progress")
+                            : NSLocalizedString("Refresh Dictation Settings", comment: "Pull dictation settings button"),
+                        systemImage: "arrow.down.doc"
+                    )
+                }
+                .disabled(isPulling || !config.hasAnyBridgeURL || config.token.isEmpty)
+            }
 
-                Section("Routing") {
-                    PairingRouteRow(
-                        title: "Local",
-                        endpoint: primaryLocalEndpoint,
-                        state: endpointState(
-                            isConfigured: !config.localBridgeURLCandidates.isEmpty,
-                            isChecked: routeStatus.localChecked,
-                            isOK: routeStatus.localOK
-                        ),
-                        latencyMs: routeStatus.localLatencyMs,
-                        isActive: routeStatus.activeKind == .local,
-                        tint: .green
-                    )
-                    PairingRouteRow(
-                        title: "Cloud",
-                        endpoint: serverEndpoint,
-                        state: endpointState(
-                            isConfigured: !config.publicBridgeURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                            isChecked: routeStatus.cloudChecked,
-                            isOK: routeStatus.cloudOK
-                        ),
-                        latencyMs: routeStatus.cloudLatencyMs,
-                        isActive: routeStatus.activeKind == .cloud,
-                        tint: .blue
-                    )
-                    Button {
-                        refreshRouteStatus()
+            if isPaired {
+                Section("Repair") {
+                    Button(role: .destructive) {
+                        pairingParseTask?.cancel()
+                        pairingParseTask = nil
+                        config = .empty
+                        pairingJSON = ""
+                        parseError = nil
+                        parsedSuccessfully = false
+                        routeStatus = BridgeRouteResolutionStatus()
+                        Task {
+                            await appState.unpair()
+                        }
+                        dismiss()
                     } label: {
-                        Label(
-                            isPulling
-                                ? NSLocalizedString("Checking…", comment: "Route check in progress")
-                                : NSLocalizedString("Check Routes", comment: "Check routes button"),
-                            systemImage: "arrow.clockwise"
+                        Label("Unpair This Device", systemImage: "link.badge.minus")
+                    }
+                }
+            }
+
+            Section("Routing") {
+                PairingRouteRow(
+                    title: "Local",
+                    endpoint: primaryLocalEndpoint,
+                    state: endpointState(
+                        isConfigured: !config.localBridgeURLCandidates.isEmpty,
+                        isChecked: routeStatus.localChecked,
+                        isOK: routeStatus.localOK
+                    ),
+                    latencyMs: routeStatus.localLatencyMs,
+                    isActive: routeStatus.activeKind == .local,
+                    tint: .green
+                )
+                PairingRouteRow(
+                    title: "Cloud",
+                    endpoint: serverEndpoint,
+                    state: endpointState(
+                        isConfigured: !config.publicBridgeURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                        isChecked: routeStatus.cloudChecked,
+                        isOK: routeStatus.cloudOK
+                    ),
+                    latencyMs: routeStatus.cloudLatencyMs,
+                    isActive: routeStatus.activeKind == .cloud,
+                    tint: .blue
+                )
+                Button {
+                    refreshRouteStatus()
+                } label: {
+                    Label(
+                        isPulling
+                            ? NSLocalizedString("Checking…", comment: "Route check in progress")
+                            : NSLocalizedString("Check Routes", comment: "Check routes button"),
+                        systemImage: "arrow.clockwise"
+                    )
+                }
+                .disabled(isPulling || !config.hasAnyBridgeURL || config.token.isEmpty)
+                Text("When Wi-Fi is active, Typeforme tries Local first. If Local is unavailable, it falls back to Cloud.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .navigationTitle("Pairing")
+        .navigationBarTitleDisplayMode(.inline)
+        .navigationBarBackButtonHidden(true)
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) {
+                Button("Cancel") { dismiss() }
+            }
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Save") {
+                    if appState.saveConfig(config) {
+                        dismiss()
+                    } else {
+                        parseError = NSLocalizedString(
+                            "Couldn't save pairing securely. Your previous pairing is unchanged.",
+                            comment: "Pairing persistence failure"
                         )
                     }
-                    .disabled(isPulling || !config.hasAnyBridgeURL || config.token.isEmpty)
-                    Text("When Wi-Fi is active, Typeforme tries Local first. If Local is unavailable, it falls back to Cloud.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
                 }
+                .disabled(!config.hasAnyBridgeURL || config.token.isEmpty)
             }
-            .navigationTitle("Pairing")
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") {
-                        if appState.saveConfig(config) {
-                            dismiss()
-                        } else {
-                            parseError = NSLocalizedString(
-                                "Couldn't save pairing securely. Your previous pairing is unchanged.",
-                                comment: "Pairing persistence failure"
-                            )
-                        }
-                    }
-                    .disabled(!config.hasAnyBridgeURL || config.token.isEmpty)
-                }
+        }
+        .sheet(isPresented: $showingQRScanner) {
+            PairingQRScannerView { payload in
+                pairingJSON = payload
+                schedulePairingParse(payload)
             }
-            .sheet(isPresented: $showingQRScanner) {
-                PairingQRScannerView { payload in
-                    pairingJSON = payload
-                    schedulePairingParse(payload)
-                }
-            }
-            .onDisappear {
-                pairingParseTask?.cancel()
-                pairingParseTask = nil
-            }
+        }
+        .onDisappear {
+            pairingParseTask?.cancel()
+            pairingParseTask = nil
         }
     }
 

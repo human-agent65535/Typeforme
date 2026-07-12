@@ -30,6 +30,8 @@ echo "==> Checking iOS keyboard command/status invariants"
 "$ROOT/scripts/smoke-ios-command-status-invariants.sh"
 echo "==> Checking iOS pairing ownership invariants"
 "$ROOT/scripts/smoke-ios-pairing-ownership.sh"
+echo "==> Checking iOS settings ownership invariants"
+"$ROOT/scripts/smoke-ios-settings-ownership.sh"
 
 simctl() {
     typeforme_xcrun simctl "$@"
