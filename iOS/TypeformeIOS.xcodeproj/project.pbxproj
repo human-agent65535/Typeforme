@@ -20,6 +20,9 @@
 		A10000000000000000000061 /* SetupAccessView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000061 /* SetupAccessView.swift */; };
 		A10000000000000000000062 /* KeyboardSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000062 /* KeyboardSettingsView.swift */; };
 		A10000000000000000000063 /* MacProcessingSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000063 /* MacProcessingSettingsView.swift */; };
+		A10000000000000000000064 /* HostHomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000064 /* HostHomeView.swift */; };
+		A10000000000000000000065 /* HostRecordingCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000065 /* HostRecordingCard.swift */; };
+		A10000000000000000000066 /* HostResultViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000066 /* HostResultViews.swift */; };
 		A1000000000000000000000A /* LanguageSelectionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000A /* LanguageSelectionView.swift */; };
 		A1000000000000000000000B /* PairingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000B /* PairingView.swift */; };
 		A1000000000000000000000C /* ../Sources/Typeforme/Models/ASRLanguageSelection.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000E /* ../Sources/Typeforme/Models/ASRLanguageSelection.swift */; };
@@ -120,6 +123,9 @@
 		A20000000000000000000061 /* SetupAccessView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetupAccessView.swift; sourceTree = "<group>"; };
 		A20000000000000000000062 /* KeyboardSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardSettingsView.swift; sourceTree = "<group>"; };
 		A20000000000000000000063 /* MacProcessingSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacProcessingSettingsView.swift; sourceTree = "<group>"; };
+		A20000000000000000000064 /* HostHomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostHomeView.swift; sourceTree = "<group>"; };
+		A20000000000000000000065 /* HostRecordingCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostRecordingCard.swift; sourceTree = "<group>"; };
+		A20000000000000000000066 /* HostResultViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostResultViews.swift; sourceTree = "<group>"; };
 		A2000000000000000000000A /* LanguageSelectionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LanguageSelectionView.swift; sourceTree = "<group>"; };
 		A2000000000000000000000B /* PairingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingView.swift; sourceTree = "<group>"; };
 		A2000000000000000000000C /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
@@ -271,6 +277,9 @@
 				A20000000000000000000061 /* SetupAccessView.swift */,
 				A20000000000000000000062 /* KeyboardSettingsView.swift */,
 				A20000000000000000000063 /* MacProcessingSettingsView.swift */,
+				A20000000000000000000064 /* HostHomeView.swift */,
+				A20000000000000000000065 /* HostRecordingCard.swift */,
+				A20000000000000000000066 /* HostResultViews.swift */,
 				A2000000000000000000000A /* LanguageSelectionView.swift */,
 				A2000000000000000000000B /* PairingView.swift */,
 				A20000000000000000000040 /* PairingQRScannerView.swift */,
@@ -531,6 +540,9 @@
 				A10000000000000000000061 /* SetupAccessView.swift in Sources */,
 				A10000000000000000000062 /* KeyboardSettingsView.swift in Sources */,
 				A10000000000000000000063 /* MacProcessingSettingsView.swift in Sources */,
+				A10000000000000000000064 /* HostHomeView.swift in Sources */,
+				A10000000000000000000065 /* HostRecordingCard.swift in Sources */,
+				A10000000000000000000066 /* HostResultViews.swift in Sources */,
 				A1000000000000000000000A /* LanguageSelectionView.swift in Sources */,
 				A1000000000000000000000B /* PairingView.swift in Sources */,
 				A10000000000000000000040 /* PairingQRScannerView.swift in Sources */,
@@ -750,7 +762,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = TypeformeIOS/TypeformeIOS.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 597;
+				CURRENT_PROJECT_VERSION = 598;
 				DEVELOPMENT_ASSET_PATHS = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = TypeformeIOS/Info.plist;
@@ -779,7 +791,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = TypeformeIOS/TypeformeIOS.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 597;
+				CURRENT_PROJECT_VERSION = 598;
 				DEVELOPMENT_ASSET_PATHS = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = TypeformeIOS/Info.plist;
@@ -807,7 +819,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = TypeformeKeyboard/TypeformeKeyboard.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 597;
+				CURRENT_PROJECT_VERSION = 598;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = TypeformeKeyboard/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
@@ -836,7 +848,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = TypeformeKeyboard/TypeformeKeyboard.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 597;
+				CURRENT_PROJECT_VERSION = 598;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = TypeformeKeyboard/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;

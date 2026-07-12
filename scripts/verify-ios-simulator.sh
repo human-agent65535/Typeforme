@@ -32,6 +32,8 @@ echo "==> Checking iOS pairing ownership invariants"
 "$ROOT/scripts/smoke-ios-pairing-ownership.sh"
 echo "==> Checking iOS settings ownership invariants"
 "$ROOT/scripts/smoke-ios-settings-ownership.sh"
+echo "==> Checking iOS host view ownership invariants"
+"$ROOT/scripts/smoke-ios-host-view-ownership.sh"
 
 simctl() {
     typeforme_xcrun simctl "$@"
