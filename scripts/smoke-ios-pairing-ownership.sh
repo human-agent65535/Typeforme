@@ -17,8 +17,10 @@ for forbidden in ("BridgeRouteResolver(", "BridgeClient("):
         raise AssertionError(f"PairingView regained network ownership: {forbidden}")
 
 for required in (
-    "appState.checkPairingRoutes(config)",
-    "appState.refreshPairingSettings(config)",
+    "appState.checkPairingRoutes(snapshot)",
+    "appState.refreshPairingSettings(snapshot)",
+    "LatestDraftOperationState<PairingConfig>",
+    "pairingOperationCanApply(token, snapshot: snapshot)",
 ):
     if required not in view:
         raise AssertionError(f"PairingView no longer delegates through AppState: {required}")

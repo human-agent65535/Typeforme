@@ -909,29 +909,16 @@ final class AppState {
     func unpair() async {
         routeRefreshState.pairingDidChange()
         let automaticPiPStartTask = autoStartPiPTask
-        cancelAutomaticPiPStart()
         let startTask = keyboardStartTask
         let processingTask = keyboardProcessingTask
+        let keyboardCommandID = activeKeyboardRecordingCommandID ?? keyboardBridgeStatus.commandID
+        cancelAutomaticPiPStart()
         startTask?.cancel()
         processingTask?.cancel()
-        await automaticPiPStartTask?.value
-        await startTask?.value
-        await processingTask?.value
-        await cancelActiveRecordingWithoutSending(
-            hostFailureMessage: nil,
-            keyboardCommandID: activeKeyboardRecordingCommandID ?? keyboardBridgeStatus.commandID,
-            keyboardMessage: "Ready",
-            resumeKeyboardStandby: false
-        )
-        clearKeyboardHostSessionTimers()
-        recorderPreWarmTask?.cancel()
-        recorderPreWarmTask = nil
-        recorder.discardPreWarm()
-        pipDictationCoordinator.stop()
-        standbyKeeper.stop()
-        keyboardAudioSession.stop(discardInputEngine: true)
-        keyboardServer.stop()
 
+        // Pairing ownership ends synchronously. Cleanup below may await active
+        // capture work, but no request started during that interval may observe
+        // the old configuration under the new pairing revision.
         let empty = PairingConfig.empty
         config = empty
         correctionMode = empty.correctionMode
@@ -945,8 +932,26 @@ final class AppState {
         cachedServerRimeUserPhrases = []
         UserDefaults.standard.removeObject(forKey: Self.serverRimeUserPhrasesKey)
         errorMessage = nil
-        setPhase(.idle)
         publishKeyboardDefaults(force: true)
+
+        await automaticPiPStartTask?.value
+        await startTask?.value
+        await processingTask?.value
+        await cancelActiveRecordingWithoutSending(
+            hostFailureMessage: nil,
+            keyboardCommandID: keyboardCommandID,
+            keyboardMessage: "Ready",
+            resumeKeyboardStandby: false
+        )
+        clearKeyboardHostSessionTimers()
+        recorderPreWarmTask?.cancel()
+        recorderPreWarmTask = nil
+        recorder.discardPreWarm()
+        pipDictationCoordinator.stop()
+        standbyKeeper.stop()
+        keyboardAudioSession.stop(discardInputEngine: true)
+        keyboardServer.stop()
+        setPhase(.idle)
         KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.sessionEnded)
     }
 

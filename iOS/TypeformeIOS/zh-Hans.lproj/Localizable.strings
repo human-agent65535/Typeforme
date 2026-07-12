@@ -21,8 +21,8 @@
 "Chinese input, typing, feedback, and learning" = "中文输入、键入、反馈与学习";
 "System" = "系统";
 "Connected Mac" = "已连接的 Mac";
-"Setup & Access" = "设置与访问权限";
-"Capture method and permissions" = "捕获方式与权限";
+"Capture Mode & Permissions" = "采集模式与权限";
+"Capture mode and permissions" = "采集模式与系统权限";
 "Help & About" = "帮助与关于";
 "Connect a Mac" = "连接 Mac";
 "Pair this iPhone before dictating" = "听写前请先配对此 iPhone";
@@ -84,7 +84,7 @@
 
 // 设置就绪检查
 "Check the required host app setup before using Typeforme from the keyboard." = "用键盘里的 Typeforme 前,请先检查宿主 app 必要设置。";
-"Capture Method" = "捕获方式";
+"Capture Mode" = "采集模式";
 "Background Mic" = "后台麦克风";
 "PiP" = "画中画";
 "When Typeforme is opened, the host app keeps a background microphone session ready for keyboard dictation." = "打开 Typeforme 时,宿主 app 会保持后台麦克风会话,让键盘听写就绪。";
@@ -224,6 +224,13 @@
 "Transcribing…" = "转写中…";
 "Transcript ready. Refining…" = "转写完成，正在优化…";
 "Result ready." = "结果已就绪。";
+"Pair the Mac Bridge first." = "请先配对 Mac Bridge。";
+"Tap again when you're done." = "说完后再点一次。";
+"Keep holding while you speak." = "说话时请继续按住。";
+"Result copied to the clipboard." = "结果已复制到剪贴板。";
+"Result inserted." = "结果已插入。";
+"Recording is local. Bridge will be resolved when you send." = "录音保存在本机，发送时再连接 Bridge。";
+"Unpairing…" = "正在解除配对…";
 
 /* Bridge job stage strings — host orb + keyboard top label share these. */
 "Sending" = "发送中";

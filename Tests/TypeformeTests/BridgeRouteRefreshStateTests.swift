@@ -54,3 +54,36 @@ struct BridgeRouteRefreshStateTests {
         #expect(state.begin(showIndicator: true).generation == 1)
     }
 }
+
+@Suite("Latest draft operation ownership")
+struct LatestDraftOperationStateTests {
+    @Test func newerOperationInvalidatesOlderResult() {
+        var state = LatestDraftOperationState<String>()
+        let first = state.begin(snapshot: "pairing-a")
+        let second = state.begin(snapshot: "pairing-b")
+
+        #expect(!state.canApply(first, to: "pairing-a"))
+        #expect(state.canApply(second, to: "pairing-b"))
+    }
+
+    @Test func editingDraftInvalidatesInFlightResult() {
+        var state = LatestDraftOperationState<String>()
+        let operation = state.begin(snapshot: "pairing-a")
+
+        state.draftDidChange(to: "pairing-b")
+
+        #expect(!state.isActive)
+        #expect(!state.canApply(operation, to: "pairing-b"))
+    }
+
+    @Test func staleCompletionCannotClearReplacement() {
+        var state = LatestDraftOperationState<String>()
+        let first = state.begin(snapshot: "pairing-a")
+        let second = state.begin(snapshot: "pairing-b")
+
+        state.finish(first)
+
+        #expect(state.isActive)
+        #expect(state.canApply(second, to: "pairing-b"))
+    }
+}

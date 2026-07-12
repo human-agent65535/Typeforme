@@ -21,8 +21,8 @@
 "Chinese input, typing, feedback, and learning" = "Chinese input, typing, feedback, and learning";
 "System" = "System";
 "Connected Mac" = "Connected Mac";
-"Setup & Access" = "Setup & Access";
-"Capture method and permissions" = "Capture method and permissions";
+"Capture Mode & Permissions" = "Capture Mode & Permissions";
+"Capture mode and permissions" = "Capture mode and permissions";
 "Help & About" = "Help & About";
 "Connect a Mac" = "Connect a Mac";
 "Pair this iPhone before dictating" = "Pair this iPhone before dictating";
@@ -84,7 +84,7 @@
 
 // Setup readiness
 "Check the required host app setup before using Typeforme from the keyboard." = "Check the required host app setup before using Typeforme from the keyboard.";
-"Capture Method" = "Capture Method";
+"Capture Mode" = "Capture Mode";
 "Background Mic" = "Background Mic";
 "PiP" = "PiP";
 "When Typeforme is opened, the host app keeps a background microphone session ready for keyboard dictation." = "When Typeforme is opened, the host app keeps a background microphone session ready for keyboard dictation.";
@@ -224,6 +224,13 @@
 "Transcribing…" = "Transcribing…";
 "Transcript ready. Refining…" = "Transcript ready. Refining…";
 "Result ready." = "Result ready.";
+"Pair the Mac Bridge first." = "Pair the Mac Bridge first.";
+"Tap again when you're done." = "Tap again when you're done.";
+"Keep holding while you speak." = "Keep holding while you speak.";
+"Result copied to the clipboard." = "Result copied to the clipboard.";
+"Result inserted." = "Result inserted.";
+"Recording is local. Bridge will be resolved when you send." = "Recording is local. Bridge will be resolved when you send.";
+"Unpairing…" = "Unpairing…";
 
 /* Bridge job stage strings — host orb + keyboard top label share these. */
 "Sending" = "Sending";

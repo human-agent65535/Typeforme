@@ -62,7 +62,7 @@ for required in (
         raise AssertionError(f"Learning feature left its keyboard ownership boundary: {required}")
 
 for required in (
-    '.accessibilityLabel("Capture Method")',
+    '.accessibilityLabel("Capture Mode")',
     ".accessibilityValue(state.keyboardDictationCaptureMode.title)",
 ):
     if required not in setup:

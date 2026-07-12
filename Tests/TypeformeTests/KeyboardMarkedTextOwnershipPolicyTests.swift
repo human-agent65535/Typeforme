@@ -1,111 +1,115 @@
+import Foundation
 import Testing
 @testable import Typeforme
 
 @Suite("Keyboard marked-text ownership")
 struct KeyboardMarkedTextOwnershipPolicyTests {
-    @Test("Rime target accepts the first key before marked text exists")
-    func rimeTargetAcceptsInitialUnmarkedState() {
-        #expect(KeyboardMarkedTextOwnershipPolicy.rimeCompositionContextsMatch(
-            before: "committed",
-            after: "suffix",
-            markedText: "",
-            anchorBefore: "committed",
-            anchorAfter: "suffix"
+    @Test("Inline editing is limited to unconverted ASCII Rime input")
+    func inlineEditingRequiresRawComposition() {
+        #expect(KeyboardRimeInlineEditPolicy.supports(rawInput: "niho", preedit: "ni ho"))
+        #expect(!KeyboardRimeInlineEditPolicy.supports(rawInput: "niho", preedit: "你ho"))
+        #expect(!KeyboardRimeInlineEditPolicy.supports(rawInput: "", preedit: ""))
+    }
+
+    @Test("Inline editing modifies the whole raw input without moving Rime's candidate caret")
+    func editsWholeInlineInput() {
+        #expect(KeyboardRimeInlineEditPolicy.clampedCaretOffset(-1, in: "niho") == 0)
+        #expect(KeyboardRimeInlineEditPolicy.clampedCaretOffset(2, in: "niho") == 2)
+        #expect(KeyboardRimeInlineEditPolicy.clampedCaretOffset(99, in: "niho") == 4)
+        #expect(KeyboardRimeInlineEditPolicy.inserting("a", in: "niho", at: 3) == "nihao")
+        #expect(KeyboardRimeInlineEditPolicy.deletingCharacter(before: 3, in: "nihao") == "niao")
+        #expect(KeyboardRimeInlineEditPolicy.deletingCharacter(before: 0, in: "nihao") == nil)
+    }
+
+    @Test("Rime composition remains current only in its captured document")
+    func rimeCompositionUsesDocumentIdentity() {
+        let captured = UUID()
+        #expect(KeyboardRimeCompositionPolicy.targetIsCurrent(
+            capturedDocumentIdentifier: captured,
+            currentDocumentIdentifier: captured
+        ))
+        #expect(!KeyboardRimeCompositionPolicy.targetIsCurrent(
+            capturedDocumentIdentifier: captured,
+            currentDocumentIdentifier: UUID()
         ))
     }
 
-    @Test("Rime target accepts a host that excludes marked text")
-    func rimeTargetAcceptsExcludedMarkedText() {
-        #expect(KeyboardMarkedTextOwnershipPolicy.rimeCompositionContextsMatch(
-            before: "committed-s",
-            after: "suffix",
-            markedText: "sh",
-            anchorBefore: "committed-s",
-            anchorAfter: "suffix"
+    @Test("Voice partial ownership is command and document scoped")
+    func voicePartialOwnershipIsIndependentFromRime() {
+        let document = UUID()
+        #expect(KeyboardLivePartialOwnershipPolicy.ownsMarkedText(
+            expectedCommandID: "command",
+            commandID: "command",
+            expectedDocumentIdentifier: document,
+            documentIdentifier: document,
+            expectedText: "语音预览",
+            activeMarkedText: "语音预览",
+            hasLivePartialOwner: true
+        ))
+        #expect(!KeyboardLivePartialOwnershipPolicy.ownsMarkedText(
+            expectedCommandID: "command",
+            commandID: "other",
+            expectedDocumentIdentifier: document,
+            documentIdentifier: document,
+            expectedText: "语音预览",
+            activeMarkedText: "语音预览",
+            hasLivePartialOwner: true
+        ))
+        #expect(!KeyboardLivePartialOwnershipPolicy.ownsMarkedText(
+            expectedCommandID: "command",
+            commandID: "command",
+            expectedDocumentIdentifier: document,
+            documentIdentifier: UUID(),
+            expectedText: "语音预览",
+            activeMarkedText: "语音预览",
+            hasLivePartialOwner: true
+        ))
+        #expect(!KeyboardLivePartialOwnershipPolicy.ownsMarkedText(
+            expectedCommandID: "command",
+            commandID: "command",
+            expectedDocumentIdentifier: document,
+            documentIdentifier: document,
+            expectedText: "语音预览",
+            activeMarkedText: "拼音",
+            hasLivePartialOwner: true
         ))
     }
 
-    @Test("Rime target accepts a host that includes marked text")
-    func rimeTargetAcceptsIncludedMarkedText() {
-        #expect(KeyboardMarkedTextOwnershipPolicy.rimeCompositionContextsMatch(
-            before: "committed-ssh",
-            after: "suffix",
-            markedText: "sh",
-            anchorBefore: "committed-s",
-            anchorAfter: "suffix"
-        ))
-    }
+    @Test("Voice establishes its initial marked text only at the captured insertion target")
+    func voiceInitialInsertionTargetIsStable() {
+        let document = UUID()
 
-    @Test("Rime target does not strip a committed suffix collision")
-    func rimeTargetPreservesCommittedSuffixCollision() {
-        #expect(KeyboardMarkedTextOwnershipPolicy.rimeCompositionContextsMatch(
-            before: "fs",
-            after: "",
-            markedText: "s",
-            anchorBefore: "fs",
-            anchorAfter: ""
+        #expect(KeyboardLivePartialOwnershipPolicy.insertionTargetIsCurrent(
+            capturedDocumentIdentifier: document,
+            currentDocumentIdentifier: document,
+            capturedContextBefore: "",
+            capturedContextAfter: "",
+            currentContextBefore: "",
+            currentContextAfter: ""
         ))
-    }
-
-    @Test("Rime target rejects a moved insertion point")
-    func rimeTargetRejectsMovedInsertionPoint() {
-        #expect(!KeyboardMarkedTextOwnershipPolicy.rimeCompositionContextsMatch(
-            before: "other",
-            after: "",
-            markedText: "sh",
-            anchorBefore: "original",
-            anchorAfter: ""
+        #expect(KeyboardLivePartialOwnershipPolicy.insertionTargetIsCurrent(
+            capturedDocumentIdentifier: document,
+            currentDocumentIdentifier: document,
+            capturedContextBefore: "before",
+            capturedContextAfter: "after",
+            currentContextBefore: "before",
+            currentContextAfter: "after"
         ))
-    }
-
-    @Test("Host may exclude marked text from an empty document context")
-    func excludedMarkedTextMatchesEmptyAnchor() {
-        #expect(KeyboardMarkedTextOwnershipPolicy.contextsMatch(
-            before: "",
-            after: "",
-            markedText: "试试到底好不好用啊",
-            anchorBefore: "",
-            anchorAfter: ""
+        #expect(!KeyboardLivePartialOwnershipPolicy.insertionTargetIsCurrent(
+            capturedDocumentIdentifier: document,
+            currentDocumentIdentifier: document,
+            capturedContextBefore: "before",
+            capturedContextAfter: "after",
+            currentContextBefore: "changed",
+            currentContextAfter: "after"
         ))
-    }
-
-    @Test("Host may include marked text in documentContextBeforeInput")
-    func includedMarkedTextMatchesAnchor() {
-        #expect(KeyboardMarkedTextOwnershipPolicy.contextsMatch(
-            before: "prefix预览",
-            after: "suffix",
-            markedText: "预览",
-            anchorBefore: "prefix",
-            anchorAfter: "suffix"
-        ))
-    }
-
-    @Test("Committed context ending in the same text is not mistaken for included marked text")
-    func excludedMarkedTextSuffixCollisionMatchesUnstrippedCandidate() {
-        #expect(KeyboardMarkedTextOwnershipPolicy.contextsMatch(
-            before: "prefix预览",
-            after: "",
-            markedText: "预览",
-            anchorBefore: "prefix预览",
-            anchorAfter: ""
-        ))
-    }
-
-    @Test("Changed surrounding context invalidates ownership")
-    func changedContextFailsClosed() {
-        #expect(!KeyboardMarkedTextOwnershipPolicy.contextsMatch(
-            before: "other预览",
-            after: "suffix",
-            markedText: "预览",
-            anchorBefore: "prefix",
-            anchorAfter: "suffix"
-        ))
-        #expect(!KeyboardMarkedTextOwnershipPolicy.contextsMatch(
-            before: "prefix预览",
-            after: "other",
-            markedText: "预览",
-            anchorBefore: "prefix",
-            anchorAfter: "suffix"
+        #expect(!KeyboardLivePartialOwnershipPolicy.insertionTargetIsCurrent(
+            capturedDocumentIdentifier: document,
+            currentDocumentIdentifier: UUID(),
+            capturedContextBefore: "before",
+            capturedContextAfter: "after",
+            currentContextBefore: "before",
+            currentContextAfter: "after"
         ))
     }
 }

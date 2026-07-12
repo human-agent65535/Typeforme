@@ -8,7 +8,7 @@ struct SetupReadinessView: View {
 
     var body: some View {
         readinessList
-            .navigationTitle("Setup & Access")
+            .navigationTitle("Capture Mode & Permissions")
             .navigationBarTitleDisplayMode(.inline)
             .onAppear {
                 state.refreshSetupReadinessStatuses()
@@ -34,7 +34,7 @@ struct SetupReadinessView: View {
         Section {
             DictationCaptureModeToggle()
         } header: {
-            Text("Capture Method")
+            Text("Capture Mode")
         } footer: {
             Text("Background Mic uses the host audio session duration below. PiP uses a visible session and opens the microphone only while recording.")
         }
@@ -217,14 +217,14 @@ private struct DictationCaptureModeToggle: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Picker("Capture Method", selection: captureModeBinding) {
+            Picker("Capture Mode", selection: captureModeBinding) {
                 ForEach(KeyboardDictationCaptureMode.allCases) { mode in
                     Text(mode.title).tag(mode)
                 }
             }
             .pickerStyle(.segmented)
             .labelsHidden()
-            .accessibilityLabel("Capture Method")
+            .accessibilityLabel("Capture Mode")
             .accessibilityValue(state.keyboardDictationCaptureMode.title)
             .disabled(state.isBusy)
 
@@ -368,4 +368,3 @@ private struct ReadinessActionRow: View {
 }
 
 // MARK: - Unpaired empty state
-

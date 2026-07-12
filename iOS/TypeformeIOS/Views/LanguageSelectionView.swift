@@ -2,10 +2,19 @@ import SwiftUI
 
 enum LanguageDisplay {
     static func summary(for ids: Set<String>, options: [ASRLanguageOption] = ASRLanguageSelection.all) -> String {
-        let names = ASRLanguageSelection.displayNames(for: Array(ids), supportedOptions: options)
+        let selected = Set(ids)
+        let names = options
+            .filter { selected.contains($0.id) }
+            .map(localizedName)
         if names.isEmpty { return NSLocalizedString("None", comment: "No languages selected") }
         if names.count <= 2 { return names.joined(separator: ", ") }
         return names.prefix(2).joined(separator: ", ") + " +\(names.count - 2)"
+    }
+
+    static func localizedName(_ option: ASRLanguageOption) -> String {
+        let localeID = Locale.preferredLanguages.first ?? Locale.current.identifier
+        return Locale(identifier: localeID).localizedString(forIdentifier: option.id)
+            ?? NSLocalizedString(option.displayName, comment: "Recognition language name")
     }
 }
 
@@ -87,8 +96,10 @@ struct LanguageSelectionView: View {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !query.isEmpty else { return options }
         return options.filter { option in
-            option.id.lowercased().contains(query)
+            let localizedName = LanguageDisplay.localizedName(option).lowercased()
+            return option.id.lowercased().contains(query)
                 || option.displayName.lowercased().contains(query)
+                || localizedName.contains(query)
                 || option.languageCode.lowercased().contains(query)
         }
     }
@@ -107,7 +118,7 @@ struct LanguageSelectionView: View {
         } label: {
             HStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(option.displayName)
+                    Text(LanguageDisplay.localizedName(option))
                     Text(option.id)
                         .font(.caption)
                         .foregroundStyle(.secondary)

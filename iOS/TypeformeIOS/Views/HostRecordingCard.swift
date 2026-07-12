@@ -197,10 +197,12 @@ struct HeroRecordCard: View {
 
     private var detail: String {
         if !state.isConfigured {
-            return "Pair the Mac Bridge first."
+            return NSLocalizedString("Pair the Mac Bridge first.", comment: "Host recording requires pairing")
         }
         if isRecording {
-            return state.inputMode == .tap ? "Tap again when you're done." : "Keep holding while you speak."
+            return state.inputMode == .tap
+                ? NSLocalizedString("Tap again when you're done.", comment: "Tap recording help")
+                : NSLocalizedString("Keep holding while you speak.", comment: "Hold recording help")
         }
         if let installing = state.activeModelInstallText,
            state.phase == .sending || state.phase == .refining {
@@ -211,12 +213,15 @@ struct HeroRecordCard: View {
             // Title carries the live stage label; keep detail empty so the
             // hero does not repeat "Transcribing" / "Refining" on two lines.
             return ""
-        case .success(.ready): return "Result ready."
-        case .success(.copied): return "Result copied to the clipboard."
-        case .success(.inserted): return "Result inserted."
+        case .success(.ready):
+            return NSLocalizedString("Result ready.", comment: "Host result ready status")
+        case .success(.copied):
+            return NSLocalizedString("Result copied to the clipboard.", comment: "Host result copied status")
+        case .success(.inserted):
+            return NSLocalizedString("Result inserted.", comment: "Host result inserted status")
         case .failure, .idle, .preparing, .recording:
             if state.routeStatus.activeURL == nil {
-                return "Recording is local. Bridge will be resolved when you send."
+                return NSLocalizedString("Recording is local. Bridge will be resolved when you send.", comment: "Host can record before resolving a bridge route")
             }
             return state.inputMode.idleDetail
         }

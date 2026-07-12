@@ -60,6 +60,31 @@ final class KeyboardTextLayoutPolicyTests: XCTestCase {
         XCTAssertTrue(widths.allSatisfy { $0 >= 44 })
     }
 
+    func testBottomRowWidthsReturnToPortraitValuesAfterRotation() {
+        let preferred = [48.0, 48, 48, 66, 66, 66, 103]
+        let portrait = KeyboardTextLayoutPolicy.fittedFixedWidths(
+            preferred,
+            availableWidth: 375,
+            gapCount: 6,
+            includesFlexibleKey: false
+        )
+        let landscape = KeyboardTextLayoutPolicy.fittedFixedWidths(
+            preferred,
+            availableWidth: 812,
+            gapCount: 6,
+            includesFlexibleKey: false
+        )
+        let portraitAgain = KeyboardTextLayoutPolicy.fittedFixedWidths(
+            preferred,
+            availableWidth: 375,
+            gapCount: 6,
+            includesFlexibleKey: false
+        )
+
+        XCTAssertEqual(landscape, preferred)
+        XCTAssertEqual(portraitAgain, portrait)
+    }
+
     func testFlexibleSpaceKeepsMinimumTapTargetOnCompactScreens() {
         let widths = KeyboardTextLayoutPolicy.fittedFixedWidths(
             [48, 48, 48, 48, 103],

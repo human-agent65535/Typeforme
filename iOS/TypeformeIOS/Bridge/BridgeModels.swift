@@ -2,7 +2,7 @@ import Foundation
 
 extension CorrectionMode {
     var title: String {
-        displayName
+        NSLocalizedString(displayName, comment: "Correction mode title")
     }
 }
 

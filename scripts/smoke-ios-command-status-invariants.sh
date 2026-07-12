@@ -11,6 +11,7 @@ import sys
 root = Path(sys.argv[1])
 app = (root / "iOS/TypeformeIOS/AppState.swift").read_text()
 keyboard = (root / "iOS/TypeformeKeyboard/KeyboardViewController.swift").read_text()
+rime_controller = (root / "iOS/TypeformeKeyboard/RimeInputController.swift").read_text()
 shared = (root / "iOS/Shared/KeyboardBridgeModels.swift").read_text()
 pip = (root / "iOS/TypeformeIOS/PiP/PiPDictationCoordinator.swift").read_text()
 local_server = (root / "iOS/TypeformeIOS/Bridge/KeyboardLocalServer.swift").read_text()
@@ -165,8 +166,8 @@ if "stopActiveRefineFromUserAction()" not in space_sending or "return" not in sp
     raise AssertionError("text-keyboard Send Without Refine must commit A without starting B")
 
 rime_mutation = block(keyboard, "private func applyRimeState(")
-if "validateRimeInputTargetForMutation()" not in rime_mutation:
-    raise AssertionError("Rime proxy mutation is not target scoped")
+if "validateRimeDocumentForMutation()" not in rime_mutation:
+    raise AssertionError("Rime proxy mutation is not document scoped")
 rime_discard = block(keyboard, "private func discardStaleRimeInput(")
 for forbidden in ("textDocumentProxy", "replaceMarkedText", "unmarkText"):
     if forbidden in rime_discard:
@@ -204,14 +205,18 @@ final_plan = block(keyboard, "private func livePartialFinalCommitPlan(")
 if "anchoredCommitted" in final_plan or "visibleCommitted" in final_plan:
     raise AssertionError("live partial final must not search or move the cursor")
 
-ownership = block(keyboard, "private func canCommitOwnedLivePartialMarkedText(")
+ownership = block(keyboard, "private func ownsActiveLivePartialMarkedText(")
 for required in (
-    "activeMarkedText == preview.text",
-    "preview.documentIdentifier != textDocumentProxy.documentIdentifier",
-    "KeyboardMarkedTextOwnershipPolicy.contextsMatch",
+    "KeyboardLivePartialOwnershipPolicy.ownsMarkedText",
+    "expectedCommandID: preview.commandID",
+    "documentIdentifier: textDocumentProxy.documentIdentifier",
+    "hasLivePartialOwner: activeMarkedTextOwner == .livePartial",
 ):
     if required not in ownership:
-        raise AssertionError(f"marked text proof lost invariant: {required}")
+        raise AssertionError(f"voice partial ownership lost invariant: {required}")
+for forbidden in ("documentContextBeforeInput", "documentContextAfterInput"):
+    if forbidden in ownership:
+        raise AssertionError(f"voice partial ownership regained host-context inference: {forbidden}")
 
 for forbidden in (
     "refineTimeoutTask",
@@ -224,15 +229,24 @@ for forbidden in (
 if "correctionTimeoutMs" in shared or "correctionTimeoutMs" in keyboard:
     raise AssertionError("keyboard status still carries a duplicate refine timeout contract")
 
-for required in ("beforeCandidates = [before]", "before.hasSuffix(markedText)", "beforeCandidates.append"):
+for required in ("KeyboardLivePartialOwnershipPolicy", "KeyboardRimeInlineEditPolicy"):
     if required not in marked_policy:
-        raise AssertionError(f"marked-text host representation regression: {required}")
+        raise AssertionError(f"separate marked-text ownership policy missing: {required}")
+for forbidden in ("observedContextMode", "contextsMatch", "beforeCandidates"):
+    if forbidden in marked_policy:
+        raise AssertionError(f"marked-text ownership regained context inference: {forbidden}")
+if "rimeCompositionContextsMatch" in marked_policy:
+    raise AssertionError("Rime composition returned to per-key context ownership checks")
 
 partial_update = block(keyboard, "private func canPresentLivePartialPreview(")
 for required in (
     "guard state.commandID == commandID else { return false }",
     "state.ownershipInvalidated = true",
     "activeMarkedTextOwner == .livePartial",
+    "activeDictationInsertionAnchor",
+    "insertionAnchor.commandID == commandID",
+    "matchesCurrentInsertionAnchor(insertionAnchor)",
+    'event: "live_preview_initial_target_changed"',
 ):
     if required not in partial_update:
         raise AssertionError(f"live partial ownership loss is not fail-closed: {required}")
@@ -240,34 +254,76 @@ for required in (
 safe_clear = block(keyboard, "private func clearLivePartialMarkedTextIfStillOwned(")
 for required in (
     "state.commandID != commandID",
-    "canCommitOwnedLivePartialMarkedText",
+    "ownsActiveLivePartialMarkedText",
     "clearLocalMarkedTextState()",
 ):
     if required not in safe_clear:
         raise AssertionError(f"live partial clear lost command/anchor proof: {required}")
 
-rime_target = block(keyboard, "private func currentRimeInputTarget(")
-for required in (
-    "textDocumentProxy.documentIdentifier",
-    "textDocumentProxy.documentContextBeforeInput",
-    "textDocumentProxy.documentContextAfterInput",
-):
-    if required not in rime_target:
-        raise AssertionError(f"Rime target lost document source of truth: {required}")
-if "dropLast" in rime_target:
-    raise AssertionError("Rime target capture must not guess whether the host includes marked text")
+rime_session = block(keyboard, "private func currentRimeCompositionSession(")
+if "textDocumentProxy.documentIdentifier" not in rime_session:
+    raise AssertionError("Rime session lost its document identity")
+for forbidden in ("documentContextBeforeInput", "documentContextAfterInput", "markedTextContextMode"):
+    if forbidden in rime_session:
+        raise AssertionError(f"Rime session regained context ownership: {forbidden}")
 
-rime_target_match = block(keyboard, "private func rimeInputTargetIsCurrent(")
+rime_target_match = block(keyboard, "private func rimeCompositionSessionIsCurrent(")
 for required in (
-    "current.documentIdentifier == rimeInputTarget.documentIdentifier",
-    "KeyboardMarkedTextOwnershipPolicy.rimeCompositionContextsMatch(",
+    "KeyboardRimeCompositionPolicy.targetIsCurrent(",
+    "rimeCompositionSession.documentIdentifier",
+    "textDocumentProxy.documentIdentifier",
 ):
     if required not in rime_target_match:
-        raise AssertionError(f"Rime target matching lost ownership proof: {required}")
+        raise AssertionError(f"Rime document matching lost ownership proof: {required}")
 
 text_will_change = block(keyboard, "override func textWillChange(")
-if "discardRimeInput" in text_will_change:
-    raise AssertionError("keyboard-owned proxy writes can re-enter textWillChange; it must not discard Rime state")
+for forbidden in ("discardStaleRimeInput", "clearComposition", "replaceMarkedText"):
+    if forbidden in text_will_change:
+        raise AssertionError(f"selection changes must not clear marked Rime text: {forbidden}")
+
+if "finishRimeInputBeforeExternalProxyChange" in keyboard:
+    raise AssertionError("cursor movement must not finish marked Rime text")
+
+space_cursor = block(keyboard, "@objc private func handleTextSpaceCursorGesture(")
+for forbidden in ("commitComposition", "commitDisplayedRimeCompositionIfNeeded", "clearComposition"):
+    if forbidden in space_cursor:
+        raise AssertionError(f"space trackpad must preserve marked Rime text: {forbidden}")
+if "setTextTrackpadMode(true)" not in space_cursor:
+    raise AssertionError("space trackpad no longer enters cursor mode")
+
+trackpad_end = block(keyboard, "private func endTextSpaceCursorTracking(")
+for required in ("state.isComposing", "renderRimeState(state)", "renderRefineSuggestionsIfIdle()"):
+    if required not in trackpad_end:
+        raise AssertionError(f"space trackpad end lost composition-aware candidate rendering: {required}")
+
+trackpad_cursor = block(keyboard, "private func updateTrackpadCursorPosition(")
+for required in (
+    "activeMarkedTextOwner == .rimeComposition",
+    "rimeInlineEditCaretOffset = nextOffset",
+    "replaceMarkedText(",
+    "textDocumentProxy.adjustTextPosition(byCharacterOffset: deltaStepX)",
+):
+    if required not in trackpad_cursor:
+        raise AssertionError(f"space trackpad lost cursor routing: {required}")
+for forbidden in ("rimeInput.moveCaret", "applyRimeState"):
+    if forbidden in trackpad_cursor:
+        raise AssertionError(f"moving the display caret must not change Rime candidates: {forbidden}")
+
+inline_character = block(rime_controller, "func replaceCompositionInput(")
+for required in (
+    "api.cleanComposition(session)",
+    "for scalar in input.unicodeScalars",
+    "committedText += drainCommit()",
+):
+    if required not in inline_character:
+        raise AssertionError(f"inline Rime edit lost whole-input replay: {required}")
+for forbidden in ("0xFF51", "0xFF53", "0xFF57"):
+    if forbidden in inline_character:
+        raise AssertionError(f"inline Rime edit must not navigate candidate segments: {forbidden}")
+
+replace_marked = block(keyboard, "private func replaceMarkedText(")
+if "selectedRange: NSRange(location: nextSelectionLocation" not in replace_marked:
+    raise AssertionError("marked-text writes do not preserve the Rime caret")
 
 text_did_change = block(keyboard, "override func textDidChange(")
 if "discardRimeInputIfTargetChanged" in text_did_change:
@@ -278,15 +334,15 @@ if "discardRimeInputIfDocumentChanged" not in text_did_change:
 apply_rime = block(keyboard, "private func applyRimeState(")
 for required in (
     "commitTextReplacingMarkedText(state.commitText",
-    "rimeInputTarget = currentRimeInputTarget()",
-    "replaceMarkedText(composingText, owner: .rimeComposition)",
+    "rimeCompositionSession = currentRimeCompositionSession()",
+    "selectionLocation: rimeMarkedTextSelectionLocation(for: state)",
 ):
     if required not in apply_rime:
         raise AssertionError(f"Rime commit/composition transaction lost step: {required}")
 if not (
     apply_rime.index("commitTextReplacingMarkedText(state.commitText")
-    < apply_rime.index("rimeInputTarget = currentRimeInputTarget()")
-    < apply_rime.index("replaceMarkedText(composingText, owner: .rimeComposition)")
+    < apply_rime.index("rimeCompositionSession = currentRimeCompositionSession()")
+    < apply_rime.index("selectionLocation: rimeMarkedTextSelectionLocation(for: state)")
 ):
     raise AssertionError("Rime commit + composition must rebase between commit and the new marked text")
 
@@ -327,8 +383,15 @@ for required in (
         raise AssertionError(f"unanchored final can insert at the current cursor: {required}")
 
 anchor_match = block(keyboard, "private func matchesCurrentInsertionAnchor(")
-if "!anchor.contextBefore.isEmpty || !anchor.contextAfter.isEmpty" not in anchor_match:
-    raise AssertionError("two unrelated empty inputs can share a plain-result anchor")
+for required in (
+    "KeyboardLivePartialOwnershipPolicy.insertionTargetIsCurrent(",
+    "anchor.documentIdentifier",
+    "textDocumentProxy.documentIdentifier",
+    "capturedContextBefore: anchor.contextBefore",
+    "capturedContextAfter: anchor.contextAfter",
+):
+    if required not in anchor_match:
+        raise AssertionError(f"dictation insertion anchor lost target proof: {required}")
 
 if "case .recording, .sending, .result, .error:" not in handshake:
     raise AssertionError("start handshake accepts an unscoped or mismatched active status")

@@ -558,6 +558,26 @@ final class RimeInputController: @unchecked Sendable {
         }
     }
 
+    func replaceCompositionInput(
+        _ input: String,
+        asciiPunctuation: Bool,
+        asciiMode: Bool
+    ) -> RimeKeyboardState {
+        setDesiredOptions(asciiPunctuation: asciiPunctuation, asciiMode: asciiMode)
+        guard startIfNeeded() else { return notReadyState() }
+        return rimeQueue.sync {
+            guard isReadyOnQueue else { return notReadyState() }
+            applyOptionsOnQueue(asciiMode: asciiMode, asciiPunctuation: asciiPunctuation)
+            api.cleanComposition(session)
+            var committedText = ""
+            for scalar in input.unicodeScalars {
+                _ = api.processKeyCode(Int32(scalar.value), modifier: 0, andSession: session)
+                committedText += drainCommit()
+            }
+            return stateOnQueue(commitText: committedText)
+        }
+    }
+
     func processKeyCode(
         _ code: Int32,
         asciiPunctuation: Bool,
@@ -664,7 +684,8 @@ final class RimeInputController: @unchecked Sendable {
         }
 
         let input = api.getInput(session) ?? ""
-        let preedit = context.composition?.preedit ?? input
+        let composition = context.composition
+        let preedit = composition?.preedit ?? input
         let pageSize = max(Int(context.menu?.pageSize ?? 0), 1)
         let pageNo = max(Int(context.menu?.pageNo ?? 0), 0)
         let candidateOffset = pageSize * pageNo

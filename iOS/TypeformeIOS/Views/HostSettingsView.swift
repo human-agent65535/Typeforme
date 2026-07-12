@@ -108,8 +108,8 @@ private struct HostSettingsOverview: View {
                 NavigationLink(value: HostSettingsRoute.setupAccess) {
                     SettingsRowLabel(
                         icon: "checklist",
-                        title: "Setup & Access",
-                        detail: "Capture method and permissions"
+                        title: "Capture Mode & Permissions",
+                        detail: "Capture mode and permissions"
                     )
                 }
             }
@@ -313,4 +313,3 @@ private struct ConnectedMacSettingsView: View {
         }
     }
 }
-

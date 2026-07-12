@@ -9,11 +9,13 @@ struct PairingView: View {
     @State private var parseError: String?
     @State private var parsedSuccessfully = false
     @State private var parsedSource = ""
-    @State private var isPulling = false
     @State private var routeStatus: BridgeRouteResolutionStatus
     @State private var tokenVisible = false
     @State private var showingQRScanner = false
     @State private var pairingParseTask: Task<Void, Never>?
+    @State private var pairingOperationTask: Task<Void, Never>?
+    @State private var pairingOperationState = LatestDraftOperationState<PairingConfig>()
+    @State private var unpairTask: Task<Void, Never>?
 
     init(
         config: PairingConfig,
@@ -138,20 +140,18 @@ struct PairingView: View {
             if isPaired {
                 Section("Repair") {
                     Button(role: .destructive) {
-                        pairingParseTask?.cancel()
-                        pairingParseTask = nil
-                        config = .empty
-                        pairingJSON = ""
-                        parseError = nil
-                        parsedSuccessfully = false
-                        routeStatus = BridgeRouteResolutionStatus()
-                        Task {
-                            await appState.unpair()
-                        }
-                        dismiss()
+                        beginUnpair()
                     } label: {
-                        Label("Unpair This Device", systemImage: "link.badge.minus")
+                        if isUnpairing {
+                            HStack {
+                                ProgressView()
+                                Text("Unpairing…")
+                            }
+                        } else {
+                            Label("Unpair This Device", systemImage: "link.badge.minus")
+                        }
                     }
+                    .disabled(isUnpairing)
                 }
             }
 
@@ -196,12 +196,14 @@ struct PairingView: View {
                     .foregroundStyle(.secondary)
             }
         }
+        .disabled(isUnpairing)
         .navigationTitle("Pairing")
         .navigationBarTitleDisplayMode(.inline)
         .navigationBarBackButtonHidden(true)
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
                 Button("Cancel") { dismiss() }
+                    .disabled(isUnpairing)
             }
             ToolbarItem(placement: .confirmationAction) {
                 Button("Save") {
@@ -214,7 +216,7 @@ struct PairingView: View {
                         )
                     }
                 }
-                .disabled(!config.hasAnyBridgeURL || config.token.isEmpty)
+                .disabled(isPulling || isUnpairing || !config.hasAnyBridgeURL || config.token.isEmpty)
             }
         }
         .sheet(isPresented: $showingQRScanner) {
@@ -226,7 +228,24 @@ struct PairingView: View {
         .onDisappear {
             pairingParseTask?.cancel()
             pairingParseTask = nil
+            invalidatePairingOperation()
         }
+        .onChange(of: config) { _, newConfig in
+            let wasActive = pairingOperationState.isActive
+            pairingOperationState.draftDidChange(to: newConfig)
+            if wasActive, !pairingOperationState.isActive {
+                pairingOperationTask?.cancel()
+                pairingOperationTask = nil
+            }
+        }
+    }
+
+    private var isPulling: Bool {
+        pairingOperationState.isActive
+    }
+
+    private var isUnpairing: Bool {
+        unpairTask != nil
     }
 
     private var primaryLocalEndpoint: String {
@@ -260,14 +279,12 @@ struct PairingView: View {
     }
 
     private func refreshRouteStatus() {
-        guard !isPulling else { return }
-        isPulling = true
         parseError = nil
-        Task { @MainActor in
-            let result = await appState.checkPairingRoutes(config)
+        replacePairingOperation { token, snapshot in
+            let result = await appState.checkPairingRoutes(snapshot)
+            guard pairingOperationCanApply(token, snapshot: snapshot) else { return }
             routeStatus = result.routeStatus
             config.bridgeEndpoints = result.bridgeEndpoints
-            isPulling = false
         }
     }
 
@@ -332,42 +349,90 @@ struct PairingView: View {
     }
 
     private func refreshFromMac(saveAfterRefresh: Bool) {
-        guard !isPulling else { return }
         parseError = nil
-        isPulling = true
-        Task { @MainActor in
+        replacePairingOperation { token, snapshot in
             do {
-                let result = try await appState.refreshPairingSettings(config)
+                let result = try await appState.refreshPairingSettings(snapshot)
+                guard pairingOperationCanApply(token, snapshot: snapshot) else { return }
+                var updatedConfig = snapshot
+                updatedConfig.bridgeEndpoints = result.bridgeEndpoints
+                updatedConfig = applyingMacSettings(result.macSettings, to: updatedConfig)
                 routeStatus = result.routeStatus
-                config.bridgeEndpoints = result.bridgeEndpoints
-                applyMacSettings(result.macSettings)
+                config = updatedConfig
                 parsedSuccessfully = true
                 if saveAfterRefresh {
-                    if !appState.saveConfig(config) {
+                    if !appState.saveConfig(updatedConfig) {
                         parseError = NSLocalizedString(
                             "Couldn't save pairing securely. Your previous pairing is unchanged.",
                             comment: "Pairing persistence failure"
                         )
                     }
                 }
-                isPulling = false
             } catch {
+                guard pairingOperationCanApply(token, snapshot: snapshot) else { return }
                 if let unavailable = error as? PairingSettingsRefreshUnavailable {
                     routeStatus = unavailable.routeStatus
                 }
                 parseError = error.localizedDescription
-                isPulling = false
             }
         }
     }
 
-    private func applyMacSettings(_ settings: BridgeMacSettingsPayload) {
-        config.supportedLanguages = settings.supportedLanguages
-        config.languageIDs = ASRLanguageSelection.validatedIDs(
-            config.languageIDs,
-            supportedOptions: config.supportedLanguageOptions
+    private func applyingMacSettings(
+        _ settings: BridgeMacSettingsPayload,
+        to config: PairingConfig
+    ) -> PairingConfig {
+        var updated = config
+        updated.supportedLanguages = settings.supportedLanguages
+        updated.languageIDs = ASRLanguageSelection.validatedIDs(
+            updated.languageIDs,
+            supportedOptions: updated.supportedLanguageOptions
         )
-        config.normalize()
+        updated.normalize()
+        return updated
+    }
+
+    private func replacePairingOperation(
+        _ operation: @escaping @MainActor (
+            LatestDraftOperationState<PairingConfig>.Token,
+            PairingConfig
+        ) async -> Void
+    ) {
+        pairingOperationTask?.cancel()
+        let snapshot = config
+        let token = pairingOperationState.begin(snapshot: snapshot)
+        pairingOperationTask = Task { @MainActor in
+            await operation(token, snapshot)
+            pairingOperationState.finish(token)
+            if !pairingOperationState.isActive {
+                pairingOperationTask = nil
+            }
+        }
+    }
+
+    private func pairingOperationCanApply(
+        _ token: LatestDraftOperationState<PairingConfig>.Token,
+        snapshot: PairingConfig
+    ) -> Bool {
+        !Task.isCancelled && pairingOperationState.canApply(token, to: config) && config == snapshot
+    }
+
+    private func invalidatePairingOperation() {
+        pairingOperationTask?.cancel()
+        pairingOperationTask = nil
+        pairingOperationState.invalidate()
+    }
+
+    private func beginUnpair() {
+        guard unpairTask == nil else { return }
+        pairingParseTask?.cancel()
+        pairingParseTask = nil
+        invalidatePairingOperation()
+        unpairTask = Task { @MainActor in
+            await appState.unpair()
+            unpairTask = nil
+            dismiss()
+        }
     }
 
 }

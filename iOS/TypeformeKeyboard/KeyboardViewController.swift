@@ -269,29 +269,32 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     private struct PendingDictationInsertionAnchor {
         let commandID: String
+        let documentIdentifier: UUID
         let contextBefore: String
         let contextAfter: String
     }
 
     private struct LivePartialPreviewState {
+        // Voice preview ownership is command/document scoped. It intentionally
+        // does not infer UIKit's marked-text representation from document
+        // context; Rime composition has a separate session and edit caret.
         let commandID: String
         var text: String
-        var contextBefore: String
-        var contextAfter: String
         let documentIdentifier: UUID
         var consumedByUser: Bool
         var ownershipInvalidated: Bool
     }
 
-    private struct LivePartialPreviewAnchor {
-        let contextBefore: String
-        let contextAfter: String
+    private struct RimeCompositionSession {
+        let documentIdentifier: UUID
     }
 
-    private struct RimeInputTarget {
-        let documentIdentifier: UUID
-        let contextBefore: String?
-        let contextAfter: String?
+    private struct TextBottomRowWidthBinding {
+        let preferredWidths: [Double]
+        let constraints: [NSLayoutConstraint]
+        let gapCount: Int
+        let includesFlexibleKey: Bool
+        var lastAvailableWidth: CGFloat
     }
 
     private enum LivePartialFinalCommitPlan {
@@ -409,10 +412,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private let chineseLearningRecorder = ChineseLearningRecorder()
     private var pendingRimeCharacters: [String] = []
     private var pendingRimeDirectTextKeys: [String] = []
-    private var rimeInputTarget: RimeInputTarget?
+    private var rimeCompositionSession: RimeCompositionSession?
     private var isDiscardingStaleRimeInput = false
+    private var rimeInlineEditCaretOffset: Int?
     private var activeMarkedText = ""
     private var activeMarkedTextOwner: MarkedTextOwner?
+    private var activeMarkedTextSelectionLocation = 0
     private var heightConstraint: NSLayoutConstraint?
     /// While entering Typeforme from the system globe menu, UIKit may retarget
     /// the original selection touch to our globe key. Suppress that activation
@@ -782,6 +787,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private var textModeButtonWidthConstraint: NSLayoutConstraint?
     private var textGlobeButtonWidthConstraint: NSLayoutConstraint?
     private var textLanguageButtonWidthConstraint: NSLayoutConstraint?
+    private var textBottomRowWidthBinding: TextBottomRowWidthBinding?
     private weak var textReturnKeyButton: KeyboardTextKeyControl?
     private weak var textShiftButton: KeyboardTextKeyControl?
     private weak var textSpaceKeyButton: KeyboardTextKeyControl?
@@ -2019,7 +2025,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             pendingRimeCharacters.removeAll()
             pendingRimeDirectTextKeys.removeAll()
             commitDisplayedRimeCompositionIfNeeded()
-            rimeInputTarget = nil
+            rimeCompositionSession = nil
         }
         textTouchLearner.flush()
         chineseLearningRecorder.flush()
@@ -3264,6 +3270,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         CATransaction.setDisableActions(true)
         layoutKeyboardContentViewForCurrentBounds()
         keyboardContentView.layoutIfNeeded()
+        updateTextBottomRowWidthsForCurrentBounds()
         updateCandidateScrollViewport()
         updateCandidateGridCollapseButtonFrame()
         updateKeyboardSurfaceMask()
@@ -3875,6 +3882,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         candidateGridCollapseButton.isHidden = true
         NSLayoutConstraint.deactivate(keyboardRowConstraints)
         keyboardRowConstraints.removeAll()
+        textBottomRowWidthBinding = nil
         keyRowsStack.arrangedSubviews.forEach { row in
             keyRowsStack.removeArrangedSubview(row)
             row.removeFromSuperview()
@@ -4439,6 +4447,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let row = makeTextKeyRow()
         row.distribution = .fill
         var directButtons: [UIButton] = []
+        var fixedWidthConstraints: [NSLayoutConstraint] = []
 
         let showsGlobe = needsInputModeSwitchKey
         let showsLanguage = layout.showsLanguageKey && isChineseInputEnabled
@@ -4454,15 +4463,19 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             preferredFixedWidths.append(returnKeyWidth)
         }
         let visibleKeyCount = preferredFixedWidths.count + (layout.includesSpaceKey ? 1 : 0)
+        let availableWidth = textBottomRowAvailableWidth
         var fittedFixedWidths = KeyboardTextLayoutPolicy.fittedFixedWidths(
             preferredFixedWidths,
-            availableWidth: Double(max(keyRowsStack.bounds.width, view.bounds.width)),
+            availableWidth: Double(availableWidth),
             gapCount: max(0, visibleKeyCount - 1),
             includesFlexibleKey: layout.includesSpaceKey,
             gap: Double(TextKeyboardLayoutModel.keyHorizontalGap)
         ).makeIterator()
 
         textModeButtonWidthConstraint?.constant = CGFloat(fittedFixedWidths.next() ?? layout.modeKeyWidth)
+        if let textModeButtonWidthConstraint {
+            fixedWidthConstraints.append(textModeButtonWidthConstraint)
+        }
         row.addArrangedSubview(textModeButton)
         textKeyboardButtons.append(textModeButton)
         directButtons.append(textModeButton)
@@ -4472,6 +4485,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             textGlobeButtonWidthConstraint?.constant = CGFloat(
                 fittedFixedWidths.next() ?? Double(TextKeyboardLayoutModel.bottomGlobeKeyWidth)
             )
+            if let textGlobeButtonWidthConstraint {
+                fixedWidthConstraints.append(textGlobeButtonWidthConstraint)
+            }
         }
         row.addArrangedSubview(textGlobeButton)
         textKeyboardButtons.append(textGlobeButton)
@@ -4481,6 +4497,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             textLanguageButtonWidthConstraint?.constant = CGFloat(
                 fittedFixedWidths.next() ?? Double(TextKeyboardLayoutModel.bottomLanguageKeyWidth)
             )
+            if let textLanguageButtonWidthConstraint {
+                fixedWidthConstraints.append(textLanguageButtonWidthConstraint)
+            }
             row.addArrangedSubview(textLanguageButton)
             textKeyboardButtons.append(textLanguageButton)
             directButtons.append(textLanguageButton)
@@ -4499,9 +4518,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
         for shortcut in layout.shortcuts {
             let button = makeTextKeyButton(title: shortcut.text, weight: .primary)
-            button.widthAnchor.constraint(
+            let widthConstraint = button.widthAnchor.constraint(
                 equalToConstant: CGFloat(fittedFixedWidths.next() ?? shortcut.width)
-            ).isActive = true
+            )
+            widthConstraint.isActive = true
+            fixedWidthConstraints.append(widthConstraint)
             button.addTarget(self, action: #selector(textBottomShortcutTapped(_:)), for: .touchUpInside)
             row.addArrangedSubview(button)
             textKeyboardButtons.append(button)
@@ -4512,9 +4533,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         if let returnKeyWidth = layout.returnKeyWidth {
             let weight = returnKeyWeight
             let returnKey = makeTextKeyButton(title: returnKeyTitle, image: returnKeyImageName, weight: weight)
-            returnKey.widthAnchor.constraint(
+            let widthConstraint = returnKey.widthAnchor.constraint(
                 equalToConstant: CGFloat(fittedFixedWidths.next() ?? returnKeyWidth)
-            ).isActive = true
+            )
+            widthConstraint.isActive = true
+            fixedWidthConstraints.append(widthConstraint)
             returnKey.addTarget(self, action: #selector(insertReturn), for: .touchUpInside)
             returnKey.accessibilityLabel = returnKeyAccessibilityLabel
             returnKey.isEnabled = isReturnKeyEnabled
@@ -4529,6 +4552,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
 
         keyRowsStack.addArrangedSubview(row)
+        textBottomRowWidthBinding = TextBottomRowWidthBinding(
+            preferredWidths: preferredFixedWidths,
+            constraints: fixedWidthConstraints,
+            gapCount: max(0, visibleKeyCount - 1),
+            includesFlexibleKey: layout.includesSpaceKey,
+            lastAvailableWidth: availableWidth
+        )
         registerTextKeyboardHitRow(
             row,
             routedButtons: [],
@@ -4536,6 +4566,35 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             boundaryButtons: directButtons,
             kind: .bottom
         )
+    }
+
+    private var textBottomRowAvailableWidth: CGFloat {
+        if keyRowsStack.bounds.width > 1 {
+            return keyRowsStack.bounds.width
+        }
+        return max(0, view.bounds.width - (2 * Self.rootHorizontalInset))
+    }
+
+    private func updateTextBottomRowWidthsForCurrentBounds() {
+        guard var binding = textBottomRowWidthBinding else { return }
+        let availableWidth = textBottomRowAvailableWidth
+        guard availableWidth > 1,
+              abs(binding.lastAvailableWidth - availableWidth) > 0.5
+        else { return }
+
+        let widths = KeyboardTextLayoutPolicy.fittedFixedWidths(
+            binding.preferredWidths,
+            availableWidth: Double(availableWidth),
+            gapCount: binding.gapCount,
+            includesFlexibleKey: binding.includesFlexibleKey,
+            gap: Double(TextKeyboardLayoutModel.keyHorizontalGap)
+        )
+        guard widths.count == binding.constraints.count else { return }
+        for (constraint, width) in zip(binding.constraints, widths) {
+            constraint.constant = CGFloat(width)
+        }
+        binding.lastAvailableWidth = availableWidth
+        textBottomRowWidthBinding = binding
     }
 
     private func refreshReturnKeyTitle() {
@@ -6048,6 +6107,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         activeDictationInsertionAnchor = textEditContext == nil
             ? PendingDictationInsertionAnchor(
                 commandID: command.id,
+                documentIdentifier: textDocumentProxy.documentIdentifier,
                 contextBefore: limitedContextBefore(textDocumentProxy.documentContextBeforeInput ?? ""),
                 contextAfter: limitedContextAfter(textDocumentProxy.documentContextAfterInput ?? "")
             )
@@ -7122,12 +7182,16 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func matchesCurrentInsertionAnchor(_ anchor: PendingDictationInsertionAnchor) -> Bool {
-        guard !anchor.contextBefore.isEmpty || !anchor.contextAfter.isEmpty else {
-            return false
-        }
         let before = limitedContextBefore(textDocumentProxy.documentContextBeforeInput ?? "")
         let after = limitedContextAfter(textDocumentProxy.documentContextAfterInput ?? "")
-        return before == anchor.contextBefore && after == anchor.contextAfter
+        return KeyboardLivePartialOwnershipPolicy.insertionTargetIsCurrent(
+            capturedDocumentIdentifier: anchor.documentIdentifier,
+            currentDocumentIdentifier: textDocumentProxy.documentIdentifier,
+            capturedContextBefore: anchor.contextBefore,
+            capturedContextAfter: anchor.contextAfter,
+            currentContextBefore: before,
+            currentContextAfter: after
+        )
     }
 
     private func limitedContextBefore(_ text: String) -> String {
@@ -7966,7 +8030,35 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 resetShiftIfSticky()
             }
         }
-        prepareRimeInputTargetForCurrentDocument()
+        prepareRimeCompositionSessionForCurrentDocument()
+        if let caretOffset = rimeInlineEditCaretOffset {
+            let currentState = rimeInput.state()
+            guard let editedInput = KeyboardRimeInlineEditPolicy.inserting(
+                character,
+                in: currentState.input,
+                at: caretOffset
+            ) else {
+                rimeInlineEditCaretOffset = nil
+                applyRimeState(currentState)
+                return
+            }
+            let state = rimeInput.replaceCompositionInput(
+                editedInput,
+                asciiPunctuation: chinesePunctuationStyle == .english,
+                asciiMode: false
+            )
+            if state.commitText.isEmpty,
+               KeyboardRimeInlineEditPolicy.supports(rawInput: state.input, preedit: state.preedit) {
+                rimeInlineEditCaretOffset = KeyboardRimeInlineEditPolicy.clampedCaretOffset(
+                    caretOffset + character.utf8.count,
+                    in: state.input
+                )
+            } else {
+                rimeInlineEditCaretOffset = nil
+            }
+            applyRimeState(state)
+            return
+        }
         let processResult = rimeInput.processCharacterIfReady(
             character,
             asciiPunctuation: chinesePunctuationStyle == .english,
@@ -7985,68 +8077,57 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
     }
 
-    private func currentRimeInputTarget() -> RimeInputTarget {
-        return RimeInputTarget(
-            documentIdentifier: textDocumentProxy.documentIdentifier,
-            contextBefore: textDocumentProxy.documentContextBeforeInput,
-            contextAfter: textDocumentProxy.documentContextAfterInput
+    private func currentRimeCompositionSession() -> RimeCompositionSession {
+        return RimeCompositionSession(
+            documentIdentifier: textDocumentProxy.documentIdentifier
         )
     }
 
-    private func rimeInputTargetIsCurrent() -> Bool {
-        guard let rimeInputTarget else { return false }
-        let current = currentRimeInputTarget()
-        guard current.documentIdentifier == rimeInputTarget.documentIdentifier else { return false }
-        let markedText = activeMarkedTextOwner == .rimeComposition ? activeMarkedText : ""
-        return KeyboardMarkedTextOwnershipPolicy.rimeCompositionContextsMatch(
-            before: current.contextBefore,
-            after: current.contextAfter,
-            markedText: markedText,
-            anchorBefore: rimeInputTarget.contextBefore,
-            anchorAfter: rimeInputTarget.contextAfter
+    private func rimeCompositionSessionIsCurrent() -> Bool {
+        guard let rimeCompositionSession else { return false }
+        return KeyboardRimeCompositionPolicy.targetIsCurrent(
+            capturedDocumentIdentifier: rimeCompositionSession.documentIdentifier,
+            currentDocumentIdentifier: textDocumentProxy.documentIdentifier
         )
     }
 
-    private func prepareRimeInputTargetForCurrentDocument() {
-        if rimeInputTarget != nil, !rimeInputTargetIsCurrent() {
-            discardStaleRimeInput()
+    private func prepareRimeCompositionSessionForCurrentDocument() {
+        if rimeCompositionSession != nil, !rimeCompositionSessionIsCurrent() {
+            discardStaleRimeInput(reason: "document_changed_before_key")
         }
-        if rimeInputTarget == nil {
-            rimeInputTarget = currentRimeInputTarget()
+        if rimeCompositionSession == nil {
+            rimeCompositionSession = currentRimeCompositionSession()
         }
-    }
-
-    private func discardRimeInputIfTargetChanged() {
-        guard rimeInputTarget != nil, !rimeInputTargetIsCurrent() else { return }
-        discardStaleRimeInput()
     }
 
     private func discardRimeInputIfDocumentChanged() {
-        guard let rimeInputTarget,
-              rimeInputTarget.documentIdentifier != textDocumentProxy.documentIdentifier
+        guard let rimeCompositionSession,
+              rimeCompositionSession.documentIdentifier != textDocumentProxy.documentIdentifier
         else { return }
-        discardStaleRimeInput()
+        discardStaleRimeInput(reason: "document_changed")
     }
 
-    private func discardStaleRimeInput() {
+    private func discardStaleRimeInput(reason: String = "target_changed") {
         guard !isDiscardingStaleRimeInput else { return }
         isDiscardingStaleRimeInput = true
         defer { isDiscardingStaleRimeInput = false }
         pendingRimeCharacters.removeAll()
         pendingRimeDirectTextKeys.removeAll()
-        rimeInputTarget = nil
+        rimeCompositionSession = nil
+        rimeInlineEditCaretOffset = nil
         let clearedState = rimeInput.clearComposition()
         clearLocalMarkedTextState()
         renderRimeState(clearedState)
         KeyboardDiagnosticEventLog.record(
             source: "keyboard-ui",
-            event: "rime_input_discarded_target_changed"
+            event: "rime_input_discarded_external_change",
+            fields: ["reason": reason]
         )
     }
 
-    private func validateRimeInputTargetForMutation() -> Bool {
-        guard rimeInputTarget != nil, rimeInputTargetIsCurrent() else {
-            discardStaleRimeInput()
+    private func validateRimeDocumentForMutation() -> Bool {
+        guard rimeCompositionSession != nil, rimeCompositionSessionIsCurrent() else {
+            discardStaleRimeInput(reason: "document_changed_before_mutation")
             return false
         }
         return true
@@ -8073,7 +8154,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             || state.isComposing
             || !state.commitText.isEmpty
             || activeMarkedTextOwner == .rimeComposition
-        if hasOwnedInput, !validateRimeInputTargetForMutation() {
+        if hasOwnedInput, !validateRimeDocumentForMutation() {
             return
         }
         guard state.isReady else {
@@ -8145,7 +8226,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         if currentBridgeStatus?.state == .recording || currentBridgeStatus?.state == .sending { return }
 
         clearTransientKeyboardErrorIfShowing()
-        discardRimeInputIfTargetChanged()
+        discardRimeInputIfDocumentChanged()
 
         if !pendingRimeCharacters.isEmpty || !pendingRimeDirectTextKeys.isEmpty {
             beginTextTouchCorrectionFromBackspace(compositionActive: true)
@@ -8161,7 +8242,29 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let currentState = rimeInput.state()
         if currentState.isComposing {
             beginTextTouchCorrectionFromBackspace(compositionActive: true)
-            applyRimeState(rimeInput.processKeyCode(0xFF08))
+            if let caretOffset = rimeInlineEditCaretOffset {
+                guard let editedInput = KeyboardRimeInlineEditPolicy.deletingCharacter(
+                    before: caretOffset,
+                    in: currentState.input
+                ) else { return }
+                let state = rimeInput.replaceCompositionInput(
+                    editedInput,
+                    asciiPunctuation: chinesePunctuationStyle == .english,
+                    asciiMode: false
+                )
+                if state.commitText.isEmpty,
+                   KeyboardRimeInlineEditPolicy.supports(rawInput: state.input, preedit: state.preedit) {
+                    rimeInlineEditCaretOffset = KeyboardRimeInlineEditPolicy.clampedCaretOffset(
+                        caretOffset - 1,
+                        in: state.input
+                    )
+                } else {
+                    rimeInlineEditCaretOffset = nil
+                }
+                applyRimeState(state)
+            } else {
+                applyRimeState(rimeInput.processKeyCode(0xFF08))
+            }
             resetShiftIfSticky()
         } else {
             beginTextTouchCorrectionFromBackspace(compositionActive: false)
@@ -8200,7 +8303,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
 
         clearTransientKeyboardErrorIfShowing()
-        discardRimeInputIfTargetChanged()
+        discardRimeInputIfDocumentChanged()
 
         pendingTextTouchCorrection = nil
         acceptPendingTextTouchIfSurvived()
@@ -8249,7 +8352,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         if currentBridgeStatus?.state == .sending { return }
 
         clearTransientKeyboardErrorIfShowing()
-        discardRimeInputIfTargetChanged()
+        discardRimeInputIfDocumentChanged()
 
         let currentState = rimeInput.state()
         pendingTextTouchCorrection = nil
@@ -8277,11 +8380,15 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func applyRimeState(_ state: RimeKeyboardState) {
+        if !state.commitText.isEmpty
+            || !KeyboardRimeInlineEditPolicy.supports(rawInput: state.input, preedit: state.preedit) {
+            rimeInlineEditCaretOffset = nil
+        }
         let composingText = rimeMarkedText(for: state)
         let mutatesProxy = !state.commitText.isEmpty
             || !composingText.isEmpty
             || activeMarkedTextOwner == .rimeComposition
-        if mutatesProxy, !validateRimeInputTargetForMutation() {
+        if mutatesProxy, !validateRimeDocumentForMutation() {
             return
         }
         if !state.commitText.isEmpty {
@@ -8296,21 +8403,25 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 // One Rime key can commit the previous segment and begin the
                 // next. The remaining composition is anchored after that
                 // commit, not at the start of the old segment.
-                rimeInputTarget = currentRimeInputTarget()
+                rimeCompositionSession = currentRimeCompositionSession()
             }
         }
 
         if composingText.isEmpty {
             clearMarkedText(ifOwnedBy: .rimeComposition)
         } else {
-            replaceMarkedText(composingText, owner: .rimeComposition)
+            replaceMarkedText(
+                composingText,
+                owner: .rimeComposition,
+                selectionLocation: rimeMarkedTextSelectionLocation(for: state)
+            )
         }
 
         renderRimeState(state)
         if composingText.isEmpty,
            pendingRimeCharacters.isEmpty,
            pendingRimeDirectTextKeys.isEmpty {
-            rimeInputTarget = nil
+            rimeCompositionSession = nil
         }
     }
 
@@ -8407,7 +8518,16 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     private func rimeMarkedText(for state: RimeKeyboardState) -> String {
         guard allowsRimeMarkedText else { return "" }
+        if rimeInlineEditCaretOffset != nil {
+            return state.input
+        }
         return state.visibleCompositionText(preferRawInput: shouldUseRawRimeInputAsMarkedText(state.input))
+    }
+
+    private func rimeMarkedTextSelectionLocation(for state: RimeKeyboardState) -> Int {
+        let markedText = rimeMarkedText(for: state)
+        let markedTextLength = (markedText as NSString).length
+        return min(max(rimeInlineEditCaretOffset ?? markedTextLength, 0), markedTextLength)
     }
 
     private var allowsRimeMarkedText: Bool {
@@ -9328,23 +9448,41 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         DispatchQueue.main.asyncAfter(deadline: .now() + statusDuration, execute: workItem)
     }
 
-    private func replaceMarkedText(_ text: String, owner: MarkedTextOwner? = nil) {
+    private func replaceMarkedText(
+        _ text: String,
+        owner: MarkedTextOwner? = nil,
+        selectionLocation: Int? = nil
+    ) {
         let nextOwner = text.isEmpty ? nil : owner
-        guard activeMarkedText != text || activeMarkedTextOwner != nextOwner else { return }
+        let textLength = (text as NSString).length
+        let nextSelectionLocation = text.isEmpty
+            ? 0
+            : min(max(selectionLocation ?? textLength, 0), textLength)
+        guard activeMarkedText != text
+                || activeMarkedTextOwner != nextOwner
+                || activeMarkedTextSelectionLocation != nextSelectionLocation
+        else { return }
         if !text.isEmpty {
-            let cursor = (text as NSString).length
-            textDocumentProxy.setMarkedText(text, selectedRange: NSRange(location: cursor, length: 0))
+            textDocumentProxy.setMarkedText(
+                text,
+                selectedRange: NSRange(location: nextSelectionLocation, length: 0)
+            )
         } else if !activeMarkedText.isEmpty {
             textDocumentProxy.setMarkedText("", selectedRange: NSRange(location: 0, length: 0))
             textDocumentProxy.unmarkText()
         }
         activeMarkedText = text
         activeMarkedTextOwner = nextOwner
+        activeMarkedTextSelectionLocation = nextSelectionLocation
     }
 
     private func clearLocalMarkedTextState() {
+        if activeMarkedTextOwner == .rimeComposition {
+            rimeInlineEditCaretOffset = nil
+        }
         activeMarkedText = ""
         activeMarkedTextOwner = nil
+        activeMarkedTextSelectionLocation = 0
     }
 
     private func clearMarkedText(ifOwnedBy owner: MarkedTextOwner) {
@@ -9426,26 +9564,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             ?? livePartialPreviewState?.commandID
     }
 
-    private func livePartialPreviewAnchor(excludingVisiblePreview preview: String? = nil) -> LivePartialPreviewAnchor {
-        var contextBefore = textDocumentProxy.documentContextBeforeInput ?? ""
-        let contextAfter = textDocumentProxy.documentContextAfterInput ?? ""
-        if let preview,
-           !preview.isEmpty,
-           contextBefore.hasSuffix(preview) {
-            contextBefore = String(contextBefore.dropLast(preview.count))
-        }
-        return LivePartialPreviewAnchor(contextBefore: contextBefore, contextAfter: contextAfter)
-    }
-
-    private func currentLivePartialPreviewAnchor() -> LivePartialPreviewAnchor {
-        let visiblePreview = activeMarkedTextOwner == .livePartial ? activeMarkedText : nil
-        return livePartialPreviewAnchor(excludingVisiblePreview: visiblePreview)
-    }
-
     private func recordLivePartialPreview(
         commandID: String,
-        text: String,
-        anchor explicitAnchor: LivePartialPreviewAnchor? = nil
+        text: String
     ) {
         let preview = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !preview.isEmpty else { return }
@@ -9454,12 +9575,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             state.text = preview
             livePartialPreviewState = state
         } else {
-            let anchor = explicitAnchor ?? livePartialPreviewAnchor(excludingVisiblePreview: preview)
             livePartialPreviewState = LivePartialPreviewState(
                 commandID: commandID,
                 text: preview,
-                contextBefore: anchor.contextBefore,
-                contextAfter: anchor.contextAfter,
                 documentIdentifier: textDocumentProxy.documentIdentifier,
                 consumedByUser: false,
                 ownershipInvalidated: false
@@ -9471,9 +9589,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         if var state = livePartialPreviewState {
             guard state.commandID == commandID else { return false }
             guard !state.consumedByUser, !state.ownershipInvalidated else { return false }
-            let before = textDocumentProxy.documentContextBeforeInput ?? ""
-            let after = textDocumentProxy.documentContextAfterInput ?? ""
-            guard canCommitOwnedLivePartialMarkedText(state, before: before, after: after) else {
+            guard ownsActiveLivePartialMarkedText(state) else {
                 state.ownershipInvalidated = true
                 livePartialPreviewState = state
                 if activeMarkedTextOwner == .livePartial {
@@ -9484,13 +9600,29 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             return true
         }
 
-        guard activeMarkedTextOwner == nil, activeMarkedText.isEmpty else {
-            let anchor = currentLivePartialPreviewAnchor()
+        guard let insertionAnchor = activeDictationInsertionAnchor,
+              insertionAnchor.commandID == commandID,
+              matchesCurrentInsertionAnchor(insertionAnchor)
+        else {
             livePartialPreviewState = LivePartialPreviewState(
                 commandID: commandID,
                 text: text,
-                contextBefore: anchor.contextBefore,
-                contextAfter: anchor.contextAfter,
+                documentIdentifier: textDocumentProxy.documentIdentifier,
+                consumedByUser: false,
+                ownershipInvalidated: true
+            )
+            KeyboardDiagnosticEventLog.record(
+                source: "keyboard-ui",
+                event: "live_preview_initial_target_changed",
+                fields: ["command_id": commandID]
+            )
+            return false
+        }
+
+        guard activeMarkedTextOwner == nil, activeMarkedText.isEmpty else {
+            livePartialPreviewState = LivePartialPreviewState(
+                commandID: commandID,
+                text: text,
                 documentIdentifier: textDocumentProxy.documentIdentifier,
                 consumedByUser: false,
                 ownershipInvalidated: true
@@ -9507,11 +9639,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
            state.commandID != commandID {
             return
         }
-        let before = textDocumentProxy.documentContextBeforeInput ?? ""
-        let after = textDocumentProxy.documentContextAfterInput ?? ""
         guard let state = livePartialPreviewState,
               commandID == nil || state.commandID == commandID,
-              canCommitOwnedLivePartialMarkedText(state, before: before, after: after)
+              ownsActiveLivePartialMarkedText(state)
         else {
             if var state = livePartialPreviewState {
                 state.ownershipInvalidated = true
@@ -9537,12 +9667,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
               activeMarkedTextOwner == .livePartial,
               !activeMarkedText.isEmpty
         else { return false }
-        let anchor = currentLivePartialPreviewAnchor()
         livePartialPreviewState = LivePartialPreviewState(
             commandID: commandID,
             text: activeMarkedText.trimmingCharacters(in: .whitespacesAndNewlines),
-            contextBefore: anchor.contextBefore,
-            contextAfter: anchor.contextAfter,
             documentIdentifier: textDocumentProxy.documentIdentifier,
             consumedByUser: true,
             ownershipInvalidated: false
@@ -9683,22 +9810,19 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     @discardableResult
     private func commitLivePartialBeforeHostReturnIfNeeded(commandID explicitCommandID: String? = nil) -> Bool {
-        let before = textDocumentProxy.documentContextBeforeInput ?? ""
-        let after = textDocumentProxy.documentContextAfterInput ?? ""
         guard let commandID = effectiveLivePartialCommandID(explicitCommandID),
               let previewState = livePartialPreviewState,
               previewState.commandID == commandID,
-              canCommitOwnedLivePartialMarkedText(previewState, before: before, after: after)
+              ownsActiveLivePartialMarkedText(previewState)
         else { return false }
         let preview = activeMarkedText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !preview.isEmpty else {
             replaceMarkedText("")
             return false
         }
-        let anchor = currentLivePartialPreviewAnchor()
         commitLivePartialMarkedTextAsPreview(preview, commandID: commandID)
         clearLocalMarkedTextState()
-        recordLivePartialPreview(commandID: commandID, text: preview, anchor: anchor)
+        recordLivePartialPreview(commandID: commandID, text: preview)
         return true
     }
 
@@ -9721,9 +9845,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             return .missingAnchor
         }
 
-        let before = textDocumentProxy.documentContextBeforeInput ?? ""
-        let after = textDocumentProxy.documentContextAfterInput ?? ""
-        if canCommitOwnedLivePartialMarkedText(preview, before: before, after: after) {
+        if ownsActiveLivePartialMarkedText(preview) {
             return .ownedMarked
         }
         return .missingAnchor
@@ -9819,29 +9941,18 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             "plan": plan.logName,
             "preview_chars": "\(preview.text.count)",
             "final_chars": "\(finalText.count)",
-            "anchor_before_chars": "\(preview.contextBefore.count)",
-            "anchor_after_chars": "\(preview.contextAfter.count)",
         ]
     }
 
-    private func canCommitOwnedLivePartialMarkedText(
-        _ preview: LivePartialPreviewState,
-        before: String,
-        after: String
-    ) -> Bool {
-        guard activeMarkedTextOwner == .livePartial,
-              !activeMarkedText.isEmpty,
-              activeMarkedText == preview.text
-        else { return false }
-        if preview.documentIdentifier != textDocumentProxy.documentIdentifier {
-            return false
-        }
-        return KeyboardMarkedTextOwnershipPolicy.contextsMatch(
-            before: before,
-            after: after,
-            markedText: activeMarkedText,
-            anchorBefore: preview.contextBefore,
-            anchorAfter: preview.contextAfter
+    private func ownsActiveLivePartialMarkedText(_ preview: LivePartialPreviewState) -> Bool {
+        KeyboardLivePartialOwnershipPolicy.ownsMarkedText(
+            expectedCommandID: preview.commandID,
+            commandID: effectiveLivePartialCommandID() ?? "",
+            expectedDocumentIdentifier: preview.documentIdentifier,
+            documentIdentifier: textDocumentProxy.documentIdentifier,
+            expectedText: preview.text,
+            activeMarkedText: activeMarkedText,
+            hasLivePartialOwner: activeMarkedTextOwner == .livePartial
         )
     }
 
@@ -10040,7 +10151,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func insertChineseDirectTextKey(_ character: String) {
-        discardRimeInputIfTargetChanged()
+        discardRimeInputIfDocumentChanged()
         let currentState = rimeInput.state()
         if shouldProcessChineseDirectTextKeyInRime(character, state: currentState) {
             processChineseRimeTextKey(character)
@@ -10276,9 +10387,38 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     @objc private func textBottomShortcutTapped(_ sender: UIButton) {
         guard let text = textBottomShortcutText[ObjectIdentifier(sender)] else { return }
-        for character in text {
-            guard handleTextCharacter(String(character)) else { break }
+        insertLiteralTextShortcut(text)
+    }
+
+    private func insertLiteralTextShortcut(_ text: String) {
+        guard !text.isEmpty,
+              keyboardFocus == .text,
+              CACurrentMediaTime() >= suppressTextKeyCommitUntil,
+              currentBridgeStatus?.state != .recording,
+              currentBridgeStatus?.state != .sending
+        else { return }
+
+        clearTransientKeyboardErrorIfShowing()
+        discardRimeInputIfDocumentChanged()
+        pendingTextTouchCorrection = nil
+        acceptPendingTextTouchIfSurvived()
+
+        let currentState = rimeInput.state()
+        if !pendingRimeCharacters.isEmpty || !pendingRimeDirectTextKeys.isEmpty {
+            queuePendingRimeDirectTextKey(text, state: currentState)
+            resetShiftIfSticky()
+            renderRefineSuggestionsIfIdle()
+            return
         }
+        if currentState.isComposing {
+            applyRimeState(rimeInput.commitComposition())
+        }
+        clearRefineUndoStateForManualEdit()
+        textDocumentProxy.insertText(text)
+        if !resetShiftIfSticky() {
+            refreshEnglishLetterCasingIfNeeded()
+        }
+        renderRefineSuggestionsIfIdle()
     }
 
     @objc private func handleTextSpaceCursorGesture(_ recognizer: UILongPressGestureRecognizer) {
@@ -10294,11 +10434,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             activeTrackpadSourceView = keyView
             textSpaceCursorStartX = location.x
             textTrackpadLastStepX = 0
-            if rimeInput.state().isComposing {
-                commitDisplayedRimeCompositionIfNeeded()
-            }
-            keyboardHaptics.playSelectionChanged()
             setTextTrackpadMode(true)
+            keyboardHaptics.playSelectionChanged()
             keyView.layer.removeAllAnimations()
             keyView.alpha = 0.72
             keyView.transform = CGAffineTransform(scaleX: 0.98, y: 0.98)
@@ -10321,7 +10458,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         keyView.alpha = 1
         keyView.transform = .identity
         setTextTrackpadMode(false)
-        renderRefineSuggestionsIfIdle()
+        let state = rimeInput.state()
+        if state.isComposing {
+            renderRimeState(state)
+        } else {
+            renderRefineSuggestionsIfIdle()
+        }
     }
 
     private func setTextTrackpadMode(_ enabled: Bool) {
@@ -10359,7 +10501,26 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let stepX = Int(deltaX / 8)
         let deltaStepX = stepX - textTrackpadLastStepX
         if deltaStepX != 0 {
-            textDocumentProxy.adjustTextPosition(byCharacterOffset: deltaStepX)
+            let state = rimeInput.state()
+            if state.isComposing,
+               activeMarkedTextOwner == .rimeComposition,
+               KeyboardRimeInlineEditPolicy.supports(rawInput: state.input, preedit: state.preedit) {
+                let currentOffset = rimeInlineEditCaretOffset ?? state.input.utf8.count
+                let nextOffset = KeyboardRimeInlineEditPolicy.clampedCaretOffset(
+                    currentOffset + deltaStepX,
+                    in: state.input
+                )
+                if nextOffset != currentOffset {
+                    rimeInlineEditCaretOffset = nextOffset
+                    replaceMarkedText(
+                        state.input,
+                        owner: .rimeComposition,
+                        selectionLocation: nextOffset
+                    )
+                }
+            } else {
+                textDocumentProxy.adjustTextPosition(byCharacterOffset: deltaStepX)
+            }
             textTrackpadLastStepX = stepX
         }
     }
@@ -11558,7 +11719,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         } else if showsPartial {
             if let commandID = effectiveLivePartialCommandID(status.commandID),
                canPresentLivePartialPreview(commandID: commandID, text: partial) {
-                recordLivePartialPreview(commandID: commandID, text: partial, anchor: currentLivePartialPreviewAnchor())
+                recordLivePartialPreview(commandID: commandID, text: partial)
                 replaceMarkedText(partial, owner: .livePartial)
             }
         } else if status.state != .result, activeMarkedTextOwner == .livePartial {
