@@ -3771,6 +3771,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             isComposing: false,
             input: "",
             preedit: "",
+            preeditSelectionStart: 0,
+            preeditSelectionEnd: 0,
             candidates: [],
             candidateOffset: 0,
             hasPreviousPage: false,
@@ -9289,6 +9291,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             isComposing: false,
             input: "",
             preedit: "",
+            preeditSelectionStart: 0,
+            preeditSelectionEnd: 0,
             candidates: [],
             candidateOffset: 0,
             hasPreviousPage: false,
@@ -10504,6 +10508,28 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             let state = rimeInput.state()
             if state.isComposing,
                activeMarkedTextOwner == .rimeComposition,
+               let split = KeyboardRimeInlineEditPolicy.partialCompositionSplit(
+                   rawInput: state.input,
+                   preedit: state.preedit,
+                   preeditSelectionStart: state.preeditSelectionStart,
+                   preeditSelectionEnd: state.preeditSelectionEnd
+               ) {
+                let endOffset = split.remainingRawInput.utf8.count
+                let targetOffset = KeyboardRimeInlineEditPolicy.clampedCaretOffset(
+                    endOffset + deltaStepX,
+                    in: split.remainingRawInput
+                )
+                if targetOffset != endOffset {
+                    rebasePartialRimeCompositionForInlineEdit(
+                        split,
+                        caretOffset: targetOffset
+                    )
+                }
+                textTrackpadLastStepX = stepX
+                return
+            }
+            if state.isComposing,
+               activeMarkedTextOwner == .rimeComposition,
                KeyboardRimeInlineEditPolicy.supports(rawInput: state.input, preedit: state.preedit) {
                 let currentOffset = rimeInlineEditCaretOffset ?? state.input.utf8.count
                 let nextOffset = KeyboardRimeInlineEditPolicy.clampedCaretOffset(
@@ -10518,11 +10544,32 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                         selectionLocation: nextOffset
                     )
                 }
-            } else {
+            } else if !state.isComposing {
                 textDocumentProxy.adjustTextPosition(byCharacterOffset: deltaStepX)
             }
             textTrackpadLastStepX = stepX
         }
+    }
+
+    private func rebasePartialRimeCompositionForInlineEdit(
+        _ split: KeyboardRimeInlineEditPolicy.PartialCompositionSplit,
+        caretOffset: Int
+    ) {
+        let remainingState = rimeInput.replaceCompositionInput(
+            split.remainingRawInput,
+            asciiPunctuation: chinesePunctuationStyle == .english,
+            asciiMode: false
+        )
+        commitTextReplacingMarkedText(split.committedPrefix, reason: .rimeCommit)
+        if rimeProfile.learningEnabled {
+            chineseLearningRecorder.recordCommit(split.committedPrefix)
+        }
+        rimeCompositionSession = currentRimeCompositionSession()
+        rimeInlineEditCaretOffset = KeyboardRimeInlineEditPolicy.clampedCaretOffset(
+            caretOffset,
+            in: remainingState.input
+        )
+        applyRimeState(remainingState)
     }
 
     @objc private func insertReturn() {

@@ -10,10 +10,53 @@ enum KeyboardRimeCompositionPolicy {
 }
 
 enum KeyboardRimeInlineEditPolicy {
+    struct PartialCompositionSplit: Equatable {
+        let committedPrefix: String
+        let remainingRawInput: String
+    }
+
     static func supports(rawInput: String, preedit: String) -> Bool {
         !rawInput.isEmpty
             && rawInput.unicodeScalars.allSatisfy(\.isASCII)
             && preedit.unicodeScalars.allSatisfy(\.isASCII)
+    }
+
+    static func partialCompositionSplit(
+        rawInput: String,
+        preedit: String,
+        preeditSelectionStart: Int,
+        preeditSelectionEnd: Int
+    ) -> PartialCompositionSplit? {
+        let rawBytes = Array(rawInput.utf8)
+        let preeditBytes = Array(preedit.utf8)
+        guard !rawBytes.isEmpty,
+              rawBytes.allSatisfy({ $0 < 0x80 }),
+              preeditBytes.contains(where: { $0 >= 0x80 }),
+              preeditSelectionStart > 0,
+              preeditSelectionStart <= preeditSelectionEnd,
+              preeditSelectionEnd <= preeditBytes.count
+        else { return nil }
+
+        let activeDisplayBytes = Array(preeditBytes[preeditSelectionStart..<preeditSelectionEnd])
+        guard !activeDisplayBytes.isEmpty,
+              activeDisplayBytes.allSatisfy({ $0 < 0x80 })
+        else { return nil }
+
+        // Rime adds spaces to preedit to show syllable boundaries; those
+        // separators are not present in its raw input buffer.
+        let activeRawBytes = activeDisplayBytes.filter { $0 != 0x20 }
+        guard !activeRawBytes.isEmpty,
+              rawBytes.count >= activeRawBytes.count,
+              rawBytes.suffix(activeRawBytes.count).elementsEqual(activeRawBytes)
+        else { return nil }
+
+        let prefix = String(decoding: preeditBytes[..<preeditSelectionStart], as: UTF8.self)
+            .trimmingCharacters(in: .whitespaces)
+        guard !prefix.isEmpty else { return nil }
+        return PartialCompositionSplit(
+            committedPrefix: prefix,
+            remainingRawInput: String(decoding: activeRawBytes, as: UTF8.self)
+        )
     }
 
     static func clampedCaretOffset(_ offset: Int, in rawInput: String) -> Int {

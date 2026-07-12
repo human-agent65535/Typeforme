@@ -26,6 +26,8 @@ struct RimeKeyboardState {
     let isComposing: Bool
     let input: String
     let preedit: String
+    let preeditSelectionStart: Int
+    let preeditSelectionEnd: Int
     let candidates: [RimeKeyboardCandidate]
     let candidateOffset: Int
     let hasPreviousPage: Bool
@@ -686,6 +688,8 @@ final class RimeInputController: @unchecked Sendable {
         let input = api.getInput(session) ?? ""
         let composition = context.composition
         let preedit = composition?.preedit ?? input
+        let preeditSelectionStart = Int(composition?.selStart ?? 0)
+        let preeditSelectionEnd = Int(composition?.selEnd ?? 0)
         let pageSize = max(Int(context.menu?.pageSize ?? 0), 1)
         let pageNo = max(Int(context.menu?.pageNo ?? 0), 0)
         let candidateOffset = pageSize * pageNo
@@ -727,6 +731,8 @@ final class RimeInputController: @unchecked Sendable {
             isComposing: status.isComposing || !input.isEmpty,
             input: input,
             preedit: preedit,
+            preeditSelectionStart: preeditSelectionStart,
+            preeditSelectionEnd: preeditSelectionEnd,
             candidates: displayCandidates,
             candidateOffset: effectiveCandidateOffset,
             hasPreviousPage: pageNo > 0,
@@ -863,6 +869,8 @@ final class RimeInputController: @unchecked Sendable {
             isComposing: false,
             input: "",
             preedit: "",
+            preeditSelectionStart: 0,
+            preeditSelectionEnd: 0,
             candidates: [],
             candidateOffset: 0,
             hasPreviousPage: false,

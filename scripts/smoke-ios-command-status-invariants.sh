@@ -299,15 +299,32 @@ for required in ("state.isComposing", "renderRimeState(state)", "renderRefineSug
 trackpad_cursor = block(keyboard, "private func updateTrackpadCursorPosition(")
 for required in (
     "activeMarkedTextOwner == .rimeComposition",
+    "KeyboardRimeInlineEditPolicy.partialCompositionSplit(",
+    "targetOffset != endOffset",
+    "caretOffset: targetOffset",
     "rimeInlineEditCaretOffset = nextOffset",
     "replaceMarkedText(",
     "textDocumentProxy.adjustTextPosition(byCharacterOffset: deltaStepX)",
 ):
     if required not in trackpad_cursor:
         raise AssertionError(f"space trackpad lost cursor routing: {required}")
-for forbidden in ("rimeInput.moveCaret", "applyRimeState"):
+for forbidden in ("rimeInput.moveCaret",):
     if forbidden in trackpad_cursor:
         raise AssertionError(f"moving the display caret must not change Rime candidates: {forbidden}")
+if "else if !state.isComposing" not in trackpad_cursor:
+    raise AssertionError("active Rime composition must never fall through to the host document cursor")
+
+partial_rebase = block(keyboard, "private func rebasePartialRimeCompositionForInlineEdit(")
+for required in (
+    "rimeInput.replaceCompositionInput(",
+    "commitTextReplacingMarkedText(split.committedPrefix",
+    "rimeCompositionSession = currentRimeCompositionSession()",
+    "caretOffset,",
+    "in: remainingState.input",
+    "applyRimeState(remainingState)",
+):
+    if required not in partial_rebase:
+        raise AssertionError(f"partial Rime rebase lost stack boundary: {required}")
 
 inline_character = block(rime_controller, "func replaceCompositionInput(")
 for required in (

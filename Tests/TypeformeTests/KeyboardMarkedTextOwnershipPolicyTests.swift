@@ -21,6 +21,46 @@ struct KeyboardMarkedTextOwnershipPolicyTests {
         #expect(KeyboardRimeInlineEditPolicy.deletingCharacter(before: 0, in: "nihao") == nil)
     }
 
+    @Test("Moving after a partial candidate commits its confirmed prefix and keeps the raw suffix editable")
+    func partialCandidateRebasesBeforeInlineEditing() {
+        #expect(KeyboardRimeInlineEditPolicy.partialCompositionSplit(
+            rawInput: "niao",
+            preedit: "你ao",
+            preeditSelectionStart: 3,
+            preeditSelectionEnd: 5
+        ) == KeyboardRimeInlineEditPolicy.PartialCompositionSplit(
+            committedPrefix: "你",
+            remainingRawInput: "ao"
+        ))
+        #expect(KeyboardRimeInlineEditPolicy.partialCompositionSplit(
+            rawInput: "nihaoma",
+            preedit: "你hao ma",
+            preeditSelectionStart: 3,
+            preeditSelectionEnd: 9
+        ) == KeyboardRimeInlineEditPolicy.PartialCompositionSplit(
+            committedPrefix: "你",
+            remainingRawInput: "haoma"
+        ))
+        #expect(KeyboardRimeInlineEditPolicy.partialCompositionSplit(
+            rawInput: "niao",
+            preedit: "niao",
+            preeditSelectionStart: 0,
+            preeditSelectionEnd: 4
+        ) == nil)
+        #expect(KeyboardRimeInlineEditPolicy.partialCompositionSplit(
+            rawInput: "nihao",
+            preedit: "ni hao",
+            preeditSelectionStart: 0,
+            preeditSelectionEnd: 6
+        ) == nil)
+        #expect(KeyboardRimeInlineEditPolicy.partialCompositionSplit(
+            rawInput: "niao",
+            preedit: "你ma",
+            preeditSelectionStart: 3,
+            preeditSelectionEnd: 5
+        ) == nil)
+    }
+
     @Test("Rime composition remains current only in its captured document")
     func rimeCompositionUsesDocumentIdentity() {
         let captured = UUID()
