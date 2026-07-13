@@ -2,10 +2,10 @@
 # Simulator-only matrix smoke test for keyboard capture recovery paths.
 #
 # This verifies:
-#   - Background Mic standby can start and expose an active host mic session.
-#   - A missing mic session with the host/server still alive recovers on start.
-#   - A stopped local WebSocket server recovers before recording.
-#   - PiP mode with inactive PiP fails fast with capture_not_ready.
+#   - Background Mic standby and recovery when the simulator exposes audio input.
+#   - Explicit microphone-unavailable lifecycle failures otherwise.
+#   - A stopped local WebSocket server recovers before capture is attempted.
+#   - PiP mode with inactive PiP reaches an explicit failed lifecycle.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -148,36 +148,28 @@ PY
 
 wait_darwin_result() {
     local command_id="$1"
-    local expected_phase="$2"
-    /usr/bin/python3 - "$DIAGNOSTIC_LOG" "$PREFS_PLIST" "$command_id" "$expected_phase" <<'PY'
+    local expected_stage="$2"
+    local expected_failure_code="${3:-}"
+    /usr/bin/python3 - "$DIAGNOSTIC_LOG" "$PREFS_PLIST" "$command_id" "$expected_stage" "$expected_failure_code" <<'PY'
 import json
 import plistlib
 import sys
 import time
 
-diagnostic_log, prefs_plist, command_id, expected_phase = sys.argv[1:]
+diagnostic_log, prefs_plist, command_id, expected_stage, expected_failure_code = sys.argv[1:]
 terminal_prefixes = ("start_keyboard_recording_failed_",)
 terminal_events = {
     "start_keyboard_recording_succeeded",
     "start_keyboard_recording_reused_active_recording",
 }
-phase_rank = {
-    None: 0,
-    "accepted": 1,
-    "bridge_ready": 2,
-    "bridge_unavailable": 2,
-    "recording_started": 3,
-    "capture_not_ready": 3,
-    "failed": 3,
-}
 deadline = time.time() + 10.0
-consumed = False
-receipt_posted = False
-last_phase = None
+intent_loaded = False
+last_stage = None
+failure_code = None
 terminal_event = None
 
 def scan_log():
-    global consumed, receipt_posted, last_phase, terminal_event
+    global intent_loaded, terminal_event, last_stage, failure_code
     try:
         with open(diagnostic_log, "r", encoding="utf-8") as handle:
             lines = handle.readlines()
@@ -192,58 +184,61 @@ def scan_log():
         if fields.get("command_id") != command_id:
             continue
         event = entry.get("event")
-        if event == "darwin_request_start_command_consumed":
-            consumed = True
-        if event in {"darwin_start_receipt_posted", "command_receipt_posted"}:
-            receipt_posted = True
-            phase = fields.get("phase")
-            if phase_rank.get(phase, 0) >= phase_rank.get(last_phase, 0):
-                last_phase = phase
+        if event == "darwin_command_intent_loaded":
+            intent_loaded = True
+        if event == "command_lifecycle_published":
+            last_stage = fields.get("stage")
+            failure_code = fields.get("failure_code")
         if event in terminal_events or any(event.startswith(prefix) for prefix in terminal_prefixes):
             terminal_event = event
 
-def read_receipt_phase():
+def read_lifecycle():
+    global failure_code
     try:
         with open(prefs_plist, "rb") as handle:
             prefs = plistlib.load(handle)
     except FileNotFoundError:
         return None
-    raw = prefs.get("keyboard.command-receipt.v1")
+    raw = prefs.get("keyboard.command-lifecycle.v1")
     if not isinstance(raw, str):
         return None
     try:
-        receipt = json.loads(raw)
+        lifecycle = json.loads(raw)
     except json.JSONDecodeError:
         return None
-    if receipt.get("command_id") != command_id:
+    if (lifecycle.get("command") or {}).get("id") != command_id:
         return None
-    return receipt.get("phase")
+    failure_code = lifecycle.get("failure_code")
+    return lifecycle.get("stage")
 
 while time.time() < deadline:
     scan_log()
-    phase = read_receipt_phase()
-    if phase_rank.get(phase, 0) >= phase_rank.get(last_phase, 0):
-        last_phase = phase
-    if consumed and receipt_posted and terminal_event and last_phase == expected_phase:
+    # CFPreferences may delay rewriting the on-disk plist while Host is
+    # running. A newer `command_lifecycle_published` diagnostic is emitted
+    # only after the shared-defaults save succeeds, so never replace that
+    # evidence with an older plist snapshot.
+    if last_stage is None:
+        last_stage = read_lifecycle()
+    if intent_loaded and terminal_event and last_stage == expected_stage:
         break
     time.sleep(0.15)
 
 result = {
     "command_id": command_id,
-    "consumed": consumed,
-    "receipt_posted": receipt_posted,
-    "phase": last_phase,
+    "intent_loaded": intent_loaded,
+    "stage": last_stage,
+    "failure_code": failure_code,
     "terminal_event": terminal_event,
 }
 print(json.dumps(result, sort_keys=True))
 
 errors = []
-if not consumed:
-    errors.append("host did not consume Darwin start command")
-if not receipt_posted:
-    errors.append("host did not post command receipt")
-if last_phase != expected_phase:
-    errors.append(f"phase expected {expected_phase!r}, got {last_phase!r}")
+if not intent_loaded:
+    errors.append("host did not load the Darwin command intent")
+if last_stage != expected_stage:
+    errors.append(f"stage expected {expected_stage!r}, got {last_stage!r}")
+if expected_failure_code and failure_code != expected_failure_code:
+    errors.append(f"failure_code expected {expected_failure_code!r}, got {failure_code!r}")
 if terminal_event is None:
     errors.append("host did not finish start attempt")
 if errors:
@@ -292,13 +287,14 @@ PY
 
 post_start_and_expect() {
     local command_id="$1"
-    local expected_phase="$2"
-    echo "==> Posting Darwin start $command_id expecting $expected_phase"
+    local expected_stage="$2"
+    local expected_failure_code="${3:-}"
+    echo "==> Posting Darwin start $command_id expecting $expected_stage"
     debug_url "keyboard-darwin-start" "command_id=$command_id"
     local result
-    result="$(wait_darwin_result "$command_id" "$expected_phase")"
+    result="$(wait_darwin_result "$command_id" "$expected_stage" "$expected_failure_code")"
     echo "==> Darwin result: $result"
-    if [ "$expected_phase" = "recording_started" ]; then
+    if [ "$expected_stage" = "recording" ]; then
         debug_url "keyboard-darwin-cancel" "command_id=$command_id"
         wait_cancel_cleanup "$command_id"
     fi
@@ -320,23 +316,41 @@ echo "==> Starting mic session"
 debug_url "keyboard-mic-session" "run_id=$RUN_ID&request_mic=true&warm_input_engine=true"
 mic_result="$(wait_event "simulator_keyboard_mic_session_result" "mic_session_result" 10.0)"
 echo "==> Mic session result: $mic_result"
-assert_fields "$mic_result" \
-    "ready=true" \
-    "keyboard_active=true" \
-    "host_session_active=true" \
-    "server_running=true" \
-    "status_state=standby"
+mic_ready="$(/usr/bin/python3 - "$mic_result" <<'PY'
+import json
+import sys
+print((json.loads(sys.argv[1]).get("ready") or "false").lower())
+PY
+)"
+if [ "$mic_ready" = "true" ]; then
+    assert_fields "$mic_result" \
+        "keyboard_active=true" \
+        "host_session_active=true" \
+        "server_running=true" \
+        "status_state=standby"
 
-echo "==> Stopping background capture but keeping host/server alive"
-debug_url "keyboard-background-capture-stop" "run_id=$RUN_ID"
-background_stop_result="$(wait_event "simulator_keyboard_background_capture_stopped" "background_capture_stopped")"
-echo "==> Background stop result: $background_stop_result"
-assert_fields "$background_stop_result" \
-    "mode=background_mic" \
-    "host_session_active=false" \
-    "server_running=true"
+    echo "==> Stopping background capture but keeping host/server alive"
+    debug_url "keyboard-background-capture-stop" "run_id=$RUN_ID"
+    background_stop_result="$(wait_event "simulator_keyboard_background_capture_stopped" "background_capture_stopped")"
+    echo "==> Background stop result: $background_stop_result"
+    assert_fields "$background_stop_result" \
+        "mode=background_mic" \
+        "host_session_active=false" \
+        "server_running=true"
 
-post_start_and_expect "${RUN_ID}-missing-session" "recording_started"
+    post_start_and_expect "${RUN_ID}-missing-session" "recording"
+else
+    echo "==> Simulator audio input unavailable; validating explicit failure lifecycle"
+    assert_fields "$mic_result" \
+        "ready=false" \
+        "keyboard_active=false" \
+        "server_running=true" \
+        "status_state=idle"
+    post_start_and_expect \
+        "${RUN_ID}-missing-session" \
+        "failed" \
+        "microphone_unavailable"
+fi
 
 echo "==> Stopping local server while host remains alive"
 debug_url "keyboard-local-server-stop" "run_id=$RUN_ID"
@@ -344,7 +358,14 @@ server_stop_result="$(wait_event "simulator_keyboard_local_server_stopped" "loca
 echo "==> Local server stop result: $server_stop_result"
 assert_fields "$server_stop_result" "server_running=false"
 
-post_start_and_expect "${RUN_ID}-missing-server" "recording_started"
+if [ "$mic_ready" = "true" ]; then
+    post_start_and_expect "${RUN_ID}-missing-server" "recording"
+else
+    post_start_and_expect \
+        "${RUN_ID}-missing-server" \
+        "failed" \
+        "microphone_unavailable"
+fi
 
 echo "==> Switching to PiP mode and ensuring PiP is inactive"
 debug_url "keyboard-capture-mode" "run_id=$RUN_ID&mode=picture_in_picture"
@@ -359,7 +380,7 @@ assert_fields "$pip_stop_result" \
     "keyboard_active=false" \
     "standby_keeper_active=false"
 
-post_start_and_expect "${RUN_ID}-pip-inactive" "capture_not_ready"
+post_start_and_expect "${RUN_ID}-pip-inactive" "failed" "picture_in_picture_closed"
 
 echo "==> Restoring Background Mic mode and stopping simulator session"
 debug_url "keyboard-capture-mode" "run_id=$RUN_ID&mode=background_mic"

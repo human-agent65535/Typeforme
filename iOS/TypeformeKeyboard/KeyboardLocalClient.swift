@@ -425,7 +425,7 @@ extension KeyboardBridgeCommandAction {
         case .configure, .cancel:
             return 1.2
         case .stop:
-            // `.stop` only waits for the host to acknowledge receipt. The
+            // `.stop` only waits for the host to accept the command. The
             // host publishes transcription progress/result asynchronously.
             return 1.5
         case .refineText:

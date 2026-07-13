@@ -2,9 +2,8 @@
 # Simulator-only smoke test for the keyboard Darwin control plane.
 #
 # This verifies:
-#   debug URL -> host writes a keyboard start command -> authenticated Darwin
-#   requestStartDictation -> host consumes command -> host writes a command
-#   receipt. Simulator audio may legitimately finish as capture_not_ready.
+#   debug URL -> keyboard intent snapshot -> authenticated Darwin wake-up ->
+#   Host lifecycle snapshot. Simulator audio may legitimately end as failed.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -99,25 +98,15 @@ terminal_events = {
     "start_keyboard_recording_succeeded",
     "start_keyboard_recording_reused_active_recording",
 }
-terminal_phases = {"recording_started", "capture_not_ready", "failed"}
-phase_rank = {
-    None: 0,
-    "accepted": 1,
-    "bridge_ready": 2,
-    "bridge_unavailable": 2,
-    "recording_started": 3,
-    "capture_not_ready": 3,
-    "failed": 3,
-}
+terminal_stages = {"recording", "failed"}
 
 deadline = time.time() + 8.0
-last_phase = None
-consumed = False
-receipt_posted = False
+last_stage = None
+intent_loaded = False
 terminal_event = None
 
 def scan_log():
-    global consumed, receipt_posted, terminal_event, last_phase
+    global intent_loaded, terminal_event, last_stage
     try:
         with open(diagnostic_log, "r", encoding="utf-8") as handle:
             lines = handle.readlines()
@@ -132,47 +121,43 @@ def scan_log():
         if fields.get("command_id") != command_id:
             continue
         event = entry.get("event")
-        if event == "darwin_request_start_command_consumed":
-            consumed = True
-        if event in {"darwin_start_receipt_posted", "command_receipt_posted"}:
-            receipt_posted = True
-            phase = fields.get("phase")
-            if phase_rank.get(phase, 0) >= phase_rank.get(last_phase, 0):
-                last_phase = phase
+        if event == "darwin_command_intent_loaded":
+            intent_loaded = True
+        if event == "command_lifecycle_published":
+            last_stage = fields.get("stage")
         if event in terminal_events or any(event.startswith(prefix) for prefix in terminal_prefixes):
             terminal_event = event
 
-def read_receipt_phase():
+def read_lifecycle_stage():
     try:
         with open(prefs_plist, "rb") as handle:
             prefs = plistlib.load(handle)
     except FileNotFoundError:
         return None
-    raw = prefs.get("keyboard.command-receipt.v1")
+    raw = prefs.get("keyboard.command-lifecycle.v1")
     if not isinstance(raw, str):
         return None
     try:
-        receipt = json.loads(raw)
+        lifecycle = json.loads(raw)
     except json.JSONDecodeError:
         return None
-    if receipt.get("command_id") != command_id:
+    if (lifecycle.get("command") or {}).get("id") != command_id:
         return None
-    return receipt.get("phase")
+    return lifecycle.get("stage")
 
 while time.time() < deadline:
     scan_log()
-    phase = read_receipt_phase()
-    if phase_rank.get(phase, 0) >= phase_rank.get(last_phase, 0):
-        last_phase = phase
-    if consumed and receipt_posted and terminal_event and last_phase in terminal_phases:
+    persisted_stage = read_lifecycle_stage()
+    if persisted_stage is not None:
+        last_stage = persisted_stage
+    if intent_loaded and terminal_event and last_stage in terminal_stages:
         break
     time.sleep(0.15)
 
 print(json.dumps({
     "command_id": command_id,
-    "consumed": consumed,
-    "receipt_posted": receipt_posted,
-    "phase": last_phase,
+    "intent_loaded": intent_loaded,
+    "stage": last_stage,
     "terminal_event": terminal_event,
 }, sort_keys=True))
 PY
@@ -186,12 +171,10 @@ import sys
 
 result = json.loads(sys.argv[1])
 errors = []
-if not result.get("consumed"):
-    errors.append("host did not consume the Darwin start command")
-if not result.get("receipt_posted"):
-    errors.append("host did not post a command receipt")
-if result.get("phase") in (None, "accepted"):
-    errors.append(f"receipt did not advance beyond {result.get('phase')!r}")
+if not result.get("intent_loaded"):
+    errors.append("host did not load the Darwin command intent")
+if result.get("stage") not in ("recording", "failed"):
+    errors.append(f"lifecycle did not reach recording/failed: {result.get('stage')!r}")
 if not result.get("terminal_event"):
     errors.append("host did not finish the start attempt")
 
@@ -201,13 +184,13 @@ if errors:
     raise SystemExit(1)
 PY
 
-phase="$(/usr/bin/python3 - "$wait_result" <<'PY'
+stage="$(/usr/bin/python3 - "$wait_result" <<'PY'
 import json
 import sys
-print(json.loads(sys.argv[1]).get("phase") or "")
+print(json.loads(sys.argv[1]).get("stage") or "")
 PY
 )"
-if [ "$phase" = "recording_started" ]; then
+if [ "$stage" = "recording" ]; then
     echo "==> Recording started in simulator; posting stop"
     simctl openurl "$SIMULATOR_ID" "typeforme://debug/keyboard-darwin-stop?command_id=$COMMAND_ID" >/dev/null
     /usr/bin/python3 - "$DIAGNOSTIC_LOG" "$COMMAND_ID" <<'PY'

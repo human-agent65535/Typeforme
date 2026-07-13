@@ -50,21 +50,30 @@ for forbidden in (
 
 prepare = block(app, "private func prepareKeyboardStart(")
 for required in (
-    "keyboardProcessingCommandID == currentID",
-    "!hasAnyActiveRecordingCapture",
-    "phase == .sending || phase == .refining",
-    "activeKeyboardRecordingCommandID = command.id",
-    "processingTask.cancel()",
-    "await processingTask.value",
+    "keyboardCoordinator.acceptCommand(",
+    "case .accepted(let supersededCommandID):",
+    "cancelSupersededKeyboardCommand(",
+    "cancelCapture: supersededCommandID == previousActiveCommandID",
+    "keyboardCoordinator.transition(commandID: command.id, to: .preparing)",
 ):
     if required not in prepare:
-        raise AssertionError(f"refine supersession lost invariant: {required}")
-if not (
-    prepare.index("activeKeyboardRecordingCommandID = command.id")
-    < prepare.index("processingTask.cancel()")
-    < prepare.index("await processingTask.value")
+        raise AssertionError(f"latest-id admission lost invariant: {required}")
+if prepare.index("keyboardCoordinator.acceptCommand(") > prepare.index("cancelSupersededKeyboardCommand"):
+    raise AssertionError("B must claim lifecycle ownership before canceling A")
+
+supersede = block(app, "private func cancelSupersededKeyboardCommand(")
+for required in (
+    "startTask?.cancel()",
+    "processingTask?.cancel()",
+    "recorder.stop(deactivateSession: true)",
+    "keyboardAudioSession.cancelRecording()",
+    "keyboardStartTask = nil",
+    "keyboardProcessingTask = nil",
 ):
-    raise AssertionError("B must claim ownership before canceling and awaiting A")
+    if required not in supersede:
+        raise AssertionError(f"superseded command cleanup lost invariant: {required}")
+if "await startTask?.value" in supersede or "await processingTask?.value" in supersede:
+    raise AssertionError("a new command must not wait for a superseded command to unwind")
 
 stop_pipeline = block(app, "func stopAndSend(")
 if stop_pipeline.count("KeyboardDarwinNotificationName.dictationStopped") != 1:
@@ -77,6 +86,10 @@ for required in (
 
 begin_stop = block(app, "private func beginKeyboardStopAndSend(")
 for required in (
+    "KeyboardCommandControlPolicy.stopEffect(during: lifecycle.stage)",
+    "case .cancelBeforeRecording:",
+    "case .ignore:",
+    "case .stopAndProcess:",
     "keyboardProcessingCommandID = commandID",
     "keyboardProcessingTask = task",
     "await self.stopAndSend(keyboardCommandID: commandID)",
@@ -85,18 +98,27 @@ for required in (
     if required not in begin_stop:
         raise AssertionError(f"exact processing task is not retained: {required}")
 
+refine = block(app, "private func refineKeyboardText(")
+for required in (
+    "guard await prepareKeyboardRefine(command)",
+    "guard shouldContinueKeyboardOperation(command.id)",
+    "processingStage: .refining",
+):
+    if required not in refine:
+        raise AssertionError(f"refine command lost lifecycle ownership: {required}")
+
 finish_processing = block(app, "private func finishKeyboardProcessing(")
 for required in (
     "keyboardProcessingCommandID == commandID",
     "keyboardProcessingTask = nil",
     "keyboardProcessingCommandID = nil",
-    "KeyboardCommandCompletionPolicy.finishedCommandCanFinalizeSharedState",
-    "KeyboardCommandCompletionPolicy.shouldRecoverStandby",
-    "phase == .sending || phase == .refining",
-    "publishKeyboardStatus(.standby, commandID: commandID, message: \"Ready\")",
+    "keyboardCoordinator.latestCommandToken?.id == commandID",
+    "failKeyboardCommand(",
 ):
     if required not in finish_processing:
         raise AssertionError(f"processing terminal cleanup lost invariant: {required}")
+if "publishKeyboardStatus(.standby" in finish_processing:
+    raise AssertionError("processing completion can overwrite a terminal result with standby")
 
 start_flight = block(app, "private func runKeyboardRecordingStart(")
 for required in (
@@ -106,6 +128,53 @@ for required in (
 ):
     if required not in start_flight:
         raise AssertionError(f"exact start task is not retained: {required}")
+
+lifecycle_handler = block(keyboard, "private func handleCommandLifecycleNotification(")
+for required in (
+    "loadCommandLifecycle()",
+    "switch snapshot.stage",
+    "case .accepted, .preparing:",
+    "case .recording:",
+    "case .transcribing, .refining:",
+    "case .completed:",
+    "case .cancelled:",
+    "case .failed:",
+    "acknowledgeHostStartProgress(snapshot, now: now)",
+    "snapshot.command.id == currentCommandLifecycleID",
+):
+    if required not in lifecycle_handler:
+        raise AssertionError(f"keyboard no longer consumes command lifecycle: {required}")
+start_progress = block(keyboard, "private func acknowledgeHostStartProgress(")
+for required in (
+    "cancelDarwinStartAckTimeout()",
+    "pendingStartCommandID = snapshot.command.id",
+    "activeRecordingCommandID = snapshot.command.id",
+):
+    if required not in start_progress:
+        raise AssertionError(f"positive lifecycle progress lost acknowledgement: {required}")
+
+for required in (
+    'keyboard.command-intent.v1',
+    'keyboard.command-lifecycle.v1',
+    "static func saveCommandIntent(",
+    "static func loadCommandIntent(",
+    "static func saveCommandLifecycle(",
+    "static func loadCommandLifecycle(",
+):
+    if required not in shared:
+        raise AssertionError(f"single-slot command contract missing: {required}")
+
+lifecycle_policy = block(handshake, "enum KeyboardCommandLifecyclePolicy")
+for required in (
+    "incoming.issuedAt > current.issuedAt",
+    "guard !current.isTerminal",
+    "(.recording, .transcribing)",
+    "(.refining, .completed)",
+    "static func canPublishStatus(",
+    "guard commandID == lifecycle.command.id",
+):
+    if required not in lifecycle_policy:
+        raise AssertionError(f"lifecycle reducer lost invariant: {required}")
 
 cancel_command = block(app, "private func cancelKeyboardCommand(")
 for required in (
@@ -123,8 +192,38 @@ if "_ = self.beginKeyboardStopAndSend(commandID: command.id)" not in darwin:
     raise AssertionError("Darwin stop bypasses the retained processing task")
 if "await self.stopAndSend(keyboardCommandID:" in darwin:
     raise AssertionError("Darwin stop directly awaits an unowned processing operation")
-if darwin.index("guard await self.prepareKeyboardStart(command)") > darwin.index("self.applyKeyboardDefaultCorrectionMode(requestedMode)"):
+for required in (
+    "KeyboardDarwinNotificationName.commandIntentChanged",
+    "KeyboardSharedDefaults.loadCommandIntent()",
+    "switch command.action",
+):
+    if required not in darwin:
+        raise AssertionError(f"Darwin no longer consumes one complete intent snapshot: {required}")
+if darwin.index("await self.prepareKeyboardStart(command)") > darwin.index("self.applyKeyboardDefaultCorrectionMode(requestedMode)"):
     raise AssertionError("a stale Darwin start can change the active correction mode")
+if darwin.index("await self.prepareKeyboardStart(command)") > darwin.index("self.keyboardStandbyEnabled || self.keyboardAudioSession.isRecording"):
+    raise AssertionError("Darwin B must supersede and cancel A before checking capture capability")
+for forbidden in (
+    "requestStartDictation",
+    "requestStopDictation",
+    "requestCancelDictation",
+    "consumeDarwinCommand",
+):
+    if forbidden in darwin:
+        raise AssertionError(f"parallel Darwin command lane returned: {forbidden}")
+
+local_command = block(app, "private func handleKeyboardCommand(")
+switch_prefix = local_command[:local_command.index("switch command.action")]
+if "guard keyboardStandbyEnabled || keyboardAudioSession.isRecording" in switch_prefix:
+    raise AssertionError("capture capability must not reject stop/cancel commands")
+for forbidden in (
+    "scheduleStartConfirmationTimeout",
+    "scheduleHostOpenIfStartStalls",
+    "startConfirmationTask",
+    "scheduledHostOpenTask",
+):
+    if forbidden in keyboard:
+        raise AssertionError(f"parallel start watchdog returned: {forbidden}")
 
 unpair = block(app, "func unpair() async")
 for required in (
@@ -142,10 +241,19 @@ if "pairingRevision" not in app or "expectedPairingRevision" not in app:
     raise AssertionError("pairing async commits are not revision scoped")
 
 darwin_observers = block(keyboard, "private func configureKeyboardDarwinBridge(")
+if "KeyboardDarwinNotificationName.commandLifecycleChanged" not in darwin_observers:
+    raise AssertionError("keyboard is not observing the lifecycle snapshot")
 stopped = darwin_observers[darwin_observers.index("KeyboardDarwinNotificationName.dictationStopped"):]
 stopped = stopped[:stopped.index("KeyboardDarwinNotificationName.transcriptionReady")]
-if stopped.index("if wasStarting") > stopped.index("self.finishStoppedNotification()"):
-    raise AssertionError("an unscoped late A stop can clear the in-flight B start")
+for forbidden in (
+    "finishStoppedNotification()",
+    "isStartRequestInFlight = false",
+    "activeRecordingCommandID = nil",
+):
+    if forbidden in stopped:
+        raise AssertionError(f"unscoped dictationStopped regained command ownership: {forbidden}")
+if "handleCommandLifecycleNotification()" not in stopped:
+    raise AssertionError("dictationStopped no longer reloads the ID-scoped lifecycle")
 
 finish_skip = block(keyboard, "private func finishStoppedLivePartialRefine(")
 if "stopBridgeStatusStream" in finish_skip:
@@ -159,16 +267,16 @@ voice_press = block(keyboard, "@objc private func voicePressDown(")
 if "stopActiveStyleRewriteFromUserAction()" not in voice_press:
     raise AssertionError("style rewrite stop boundary is missing")
 skip_call = voice_press.index("stopLivePartialRefineFromUserAction()")
-transport_guard = voice_press.index("if currentBridgeStatus?.state == .sending", skip_call)
-if "return" not in voice_press[skip_call:transport_guard]:
+next_start = voice_press.index("guard !isVoicePressActive", skip_call)
+if "return" not in voice_press[skip_call:next_start]:
     raise AssertionError("voice-mode Send Without Refine must not also start the next recording")
 
 text_voice = block(keyboard, "@objc private func textVoiceTapped(")
-if "guard stopLivePartialRefineFromUserAction()" not in text_voice:
-    raise AssertionError("text keyboard mic cannot replace an active refine")
+if "if stopLivePartialRefineFromUserAction()" not in text_voice:
+    raise AssertionError("text keyboard mic lost the active-refine boundary")
 if "stopActiveStyleRewriteFromUserAction()" not in text_voice:
     raise AssertionError("text keyboard style rewrite stop boundary is missing")
-skip_call = text_voice.index("guard stopLivePartialRefineFromUserAction()")
+skip_call = text_voice.index("if stopLivePartialRefineFromUserAction()")
 next_start = text_voice.index("beginDictationFromKeyboard(")
 if "return" in text_voice[skip_call:next_start].split("}", 1)[-1]:
     raise AssertionError("text keyboard mic stops after skipping A instead of starting B")
@@ -190,6 +298,9 @@ for forbidden in ("textDocumentProxy", "replaceMarkedText", "unmarkText"):
 apply_status = block(keyboard, "private func applyBridgeStatus(")
 if "status.state == .error" not in apply_status or "finishStartRequestIfNeeded(status: status)" not in apply_status:
     raise AssertionError("a command-matched start error can leave the start flight active")
+
+if "activeStatusReconcileTask" in keyboard or "reconcileActiveBridgeStatusIfNeeded" in keyboard:
+    raise AssertionError("post-accept periodic status watchdog returned")
 
 for marker in (
     "private func waitForSourceView() async throws",
@@ -440,13 +551,41 @@ if release_audio.index("setActive(false") > release_audio.index("setCategory(.pl
 generic_deactivate = block(audio, "static func deactivateAndNotifyOthers(")
 if "setCategory" in generic_deactivate:
     raise AssertionError("generic standby deactivation must not change the category during session preparation")
+if "recordingShouldYieldOtherAudio" in audio:
+    raise AssertionError("recording teardown regained cross-mode other-audio ownership")
+restore_standby = block(audio, "private func restoreStandbyAfterRecording(")
+for forbidden in (
+    "releaseCaptureRouteAndNotifyOthers",
+    "setActive(false",
+    "engine.stop()",
+    "isActive = false",
+):
+    if forbidden in restore_standby:
+        raise AssertionError(f"Background Mic completion tears down persistent standby: {forbidden}")
+for required in (
+    "configureActiveSessionCategory(purpose: .standby)",
+    "KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.sessionStarted)",
+):
+    if required not in restore_standby:
+        raise AssertionError(f"Background Mic completion does not restore persistent standby: {required}")
 if "keyboardAudioSession.stopAfterCapture(discardInputEngine: true)" not in stop_pipeline:
     raise AssertionError("PiP recording completion does not use the capture-scoped route release")
+for signature in (
+    "private func cancelSupersededKeyboardCommand(",
+    "private func cancelActiveRecordingWithoutSending(",
+):
+    cancel_path = block(app, signature)
+    if "keyboardDictationCaptureMode == .pictureInPicture" not in cancel_path \
+            or "keyboardAudioSession.stopAfterCapture(discardInputEngine: true)" not in cancel_path:
+        raise AssertionError(f"PiP cancellation does not release its capture-scoped route: {signature}")
 
 interruption_began = block(app, "private func handleAudioSessionInterruptionBegan(")
 for required in (
     'event: "audio_session_interruption_began"',
     "pipDictationCoordinator.refreshContentAfterInterruption()",
+    "if hadCapture",
+    "failKeyboardCommand(",
+    "code: .audioInterrupted",
 ):
     if required not in interruption_began:
         raise AssertionError(f"PiP interruption diagnosis/repaint lost invariant: {required}")
@@ -469,6 +608,18 @@ for event in (
     if event not in pip:
         raise AssertionError(f"persistent PiP lifecycle diagnosis missing: {event}")
 
+media_reset = block(app, "private func handleMediaServicesReset(")
+for required in (
+    "KeyboardCommandCaptureEventPolicy.effect(",
+    "of: .mediaServicesReset",
+    "code: .mediaServicesReset",
+    "The next explicit recording or capture-mode action rebuilds it",
+):
+    if required not in media_reset:
+        raise AssertionError(f"media-services reset lost lifecycle invariant: {required}")
+if "AVAudioSession.mediaServicesWereResetNotification" not in audio:
+    raise AssertionError("standby input engine is not rebuilt after media-services reset")
+
 send_command = block(keyboard, "private func sendBridgeCommand(_ command:")
 for required in (
     "if action == .cancel",
@@ -480,8 +631,9 @@ for required in (
 if send_command.index("clearLivePartialMarkedTextIfStillOwned(") > send_command.index("livePartialPreviewState = nil"):
     raise AssertionError("cancel forgets preview ownership before clearing marked text")
 
-if "hasRecentProcessingTransportContact" not in keyboard or "processing_host_unavailable" not in keyboard:
-    raise AssertionError("lost host transport can leave the keyboard stuck in Sending")
+for forbidden in ("hasRecentProcessingTransportContact", "processing_host_unavailable"):
+    if forbidden in keyboard:
+        raise AssertionError(f"transport timeout can override Host lifecycle again: {forbidden}")
 
 apply_status = block(keyboard, "private func applyBridgeStatus(")
 for required in (

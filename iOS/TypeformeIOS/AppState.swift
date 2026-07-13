@@ -479,8 +479,9 @@ final class AppState {
     private var hostHoldReleasePending = false
     private var hostRecordingUsesKeyboardAudioSession = false
     private var keyboardCaptureStartedFromKeyboard = false
-    private var activeKeyboardRecordingCommandID: String?
-    private var activeKeyboardCommandCreatedAt: TimeInterval = 0
+    private var activeKeyboardRecordingCommandID: String? {
+        keyboardCoordinator.activeCommandID
+    }
     @ObservationIgnored private var keyboardStartTask: Task<Void, Never>?
     private var keyboardStartCommandID: String?
     @ObservationIgnored private var keyboardProcessingTask: Task<Void, Never>?
@@ -536,7 +537,6 @@ final class AppState {
     private var lastGeneratedResultText: String?
     private var activeKeyboardTextEditContext: KeyboardTextEditContext?
     private var activeKeyboardDictationContext: KeyboardDictationContext?
-    private var canceledKeyboardCommandIDs: [String: TimeInterval] = [:]
     private var lastHandledOpenURL: (value: String, time: TimeInterval)?
     private var keyboardAudioUnavailableMessage: String?
     private var audioSessionInterruptionActive = false
@@ -545,7 +545,6 @@ final class AppState {
     /// Request-time cache trust is owned by `BridgeRouteValidationPolicy`.
     private static let foregroundRouteRefreshTTL: TimeInterval = 20
     private static let networkPathSameSignatureRefreshInterval: TimeInterval = 15
-    private static let canceledKeyboardCommandTTL: TimeInterval = KeyboardBridgeCommand.maxAge + 5
     private static let bridgeProgressStatusDelay: TimeInterval = 1.2
     private static let keyboardStatusAudioLevelInterval: UInt64 = 100_000_000
     private static let keyboardStatusAudioLevelMinimumDelta: Float = 0.025
@@ -2728,22 +2727,14 @@ final class AppState {
             dictationContext: action == .start ? KeyboardDictationContext(contextBefore: "", contextAfter: "") : nil
         )
         if action == .start {
-            KeyboardSharedDefaults.clearCommandReceipt()
+            KeyboardSharedDefaults.clearCommandLifecycle()
         }
-        let saved = KeyboardSharedDefaults.saveDarwinCommand(command)
-        let notificationName: String
-        switch action {
-        case .start:
-            notificationName = KeyboardDarwinNotificationName.requestStartDictation
-        case .stop:
-            notificationName = KeyboardDarwinNotificationName.requestStopDictation
-        case .cancel:
-            notificationName = KeyboardDarwinNotificationName.requestCancelDictation
-        case .configure, .refineText:
+        guard action == .start || action == .stop || action == .cancel else {
             return
         }
+        let saved = KeyboardSharedDefaults.saveCommandIntent(command)
         guard let requestName = KeyboardDarwinNotificationName.authenticatedRequest(
-            notificationName,
+            KeyboardDarwinNotificationName.commandIntentChanged,
             token: keyboardBridgeToken
         ) else {
             KeyboardDiagnosticEventLog.record(
@@ -2992,6 +2983,7 @@ final class AppState {
 
     private func publishKeyboardCaptureNotReady() {
         guard !keyboardAudioSession.isRecording, !recorder.isRecording else { return }
+        guard activeKeyboardRecordingCommandID == nil else { return }
         appLog.notice("keyboard capture not ready mode=\(self.keyboardDictationCaptureMode.rawValue, privacy: .public) pip_active=\(self.pipDictationCoordinator.isActive, privacy: .public) keyboard_active=\(self.keyboardAudioSession.isActive, privacy: .public)")
         KeyboardDiagnosticEventLog.record(
             source: "host-app",
@@ -3002,7 +2994,12 @@ final class AppState {
                 "keyboard_active": "\(self.keyboardAudioSession.isActive)",
             ]
         )
-        publishKeyboardStatus(.idle, message: keyboardMicrophonePreparationMessage)
+        // Capability and command outcome are independent. A terminal result or
+        // failure remains the latest command truth until the next command ID;
+        // `sessionEnded` alone reports that capture is no longer ready.
+        if keyboardCoordinator.latestCommandToken == nil {
+            publishKeyboardStatus(.idle, message: keyboardMicrophonePreparationMessage)
+        }
         KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.sessionEnded)
     }
 
@@ -3181,6 +3178,24 @@ final class AppState {
         lastPiPStopAt = Date()
         suppressAutomaticPiPStart = true
         cancelAutomaticPiPStart()
+        let lifecycle = keyboardCoordinator.commandLifecycle
+        if case .fail(let failureCode) = KeyboardCommandCaptureEventPolicy.effect(
+            of: .pictureInPictureClosed,
+            during: lifecycle?.stage
+        ), let commandID = lifecycle?.command.id {
+            failKeyboardCommand(
+                commandID,
+                code: failureCode,
+                recovery: .openHost,
+                message: "Picture in Picture closed before recording finished."
+            )
+            await cancelActiveRecordingWithoutSending(
+                hostFailureMessage: "Picture in Picture closed before recording finished.",
+                keyboardCommandID: commandID,
+                keyboardMessage: keyboardMicrophonePreparationMessage,
+                resumeKeyboardStandby: false
+            )
+        }
         stopBackgroundAudioCaptureForVisibleMode()
         publishKeyboardCaptureNotReady()
         syncPiPDictationPresentation()
@@ -3852,36 +3867,33 @@ final class AppState {
         return result.ready
     }
 
-    private func postKeyboardCommandReceipt(
-        commandID: String,
-        action: KeyboardBridgeCommandAction,
-        phase: KeyboardCommandReceiptPhase,
-        reason: String? = nil
+    private func failKeyboardCommand(
+        _ commandID: String?,
+        code: KeyboardCommandFailureCode,
+        recovery: KeyboardCommandRecovery,
+        message: String
     ) {
-        let receipt = KeyboardCommandReceipt(
+        guard let commandID else { return }
+        let changed = keyboardCoordinator.transition(
             commandID: commandID,
-            action: action,
-            phase: phase,
-            reason: reason
+            to: .failed,
+            failureCode: code,
+            recovery: recovery,
+            message: message
         )
-        let saved = KeyboardSharedDefaults.saveCommandReceipt(receipt)
-        appLog.notice("keyboard command receipt phase=\(phase.rawValue, privacy: .public) saved=\(saved, privacy: .public) command_id=\(commandID, privacy: .public) reason=\(reason ?? "none", privacy: .public)")
-        KeyboardDiagnosticEventLog.record(
-            source: "host-app",
-            event: phase == .accepted ? "darwin_start_receipt_posted" : "command_receipt_posted",
-            fields: [
-                "command_id": commandID,
-                "action": action.rawValue,
-                "phase": phase.rawValue,
-                "reason": reason ?? "none",
-                "saved": "\(saved)",
-            ]
-        )
-        guard saved else { return }
-        KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.commandReceiptUpdated)
+        if changed {
+            setKeyboardBridgeStatus(KeyboardBridgeStatus(
+                commandID: commandID,
+                state: .error,
+                message: message,
+                defaultCorrectionMode: config.correctionMode.rawValue,
+                backendReachable: keyboardBridgeStatus.backendReachable
+            ))
+        }
+        appLog.notice("keyboard lifecycle failed changed=\(changed, privacy: .public) command_id=\(commandID, privacy: .public) code=\(code.rawValue, privacy: .public)")
     }
 
-    private func postKeyboardCaptureNotReadyReceipt(commandID: String?, reason: String) {
+    private func reportKeyboardCaptureNotReady(commandID: String?, reason: String) {
         appLog.notice("keyboard capture not ready command_id=\(commandID ?? "none", privacy: .public) reason=\(reason, privacy: .public)")
         KeyboardDiagnosticEventLog.record(
             source: "host-app",
@@ -3891,22 +3903,16 @@ final class AppState {
                 "reason": reason,
             ]
         )
-        guard let commandID else { return }
-        postKeyboardCommandReceipt(
-            commandID: commandID,
-            action: .start,
-            phase: .captureNotReady,
-            reason: reason
-        )
-    }
-
-    private func postKeyboardRecordingStartedReceipt(commandID: String?, reason: String) {
-        guard let commandID else { return }
-        postKeyboardCommandReceipt(
-            commandID: commandID,
-            action: .start,
-            phase: .recordingStarted,
-            reason: reason
+        let permissionDenied = AVAudioApplication.shared.recordPermission == .denied
+        failKeyboardCommand(
+            commandID,
+            code: permissionDenied
+                ? .microphonePermissionDenied
+                : (reason.contains("pip") || reason.contains("visible")
+                    ? .pictureInPictureClosed
+                    : .microphoneUnavailable),
+            recovery: permissionDenied ? .openSettings : .openHost,
+            message: keyboardMicrophonePreparationMessage
         )
     }
 
@@ -3946,13 +3952,11 @@ final class AppState {
         activeKeyboardTextEditContext = nil
         activeKeyboardDictationContext = nil
         keyboardCaptureStartedFromKeyboard = false
-        activeKeyboardRecordingCommandID = nil
-        activeKeyboardCommandCreatedAt = 0
         activeBridgeDictateJobID = nil
     }
 
     private func clearKeyboardCaptureContext(ifOwnedBy commandID: String) {
-        guard activeKeyboardRecordingCommandID == commandID else { return }
+        guard keyboardCoordinator.latestCommandToken?.id == commandID else { return }
         clearKeyboardCaptureContext()
     }
 
@@ -3966,62 +3970,94 @@ final class AppState {
         return ownsKeyboardCommand(commandID)
     }
 
-    /// A newer keyboard press may replace only the exact command currently
-    /// transcribing/refining. Recording and session preparation remain owned by
-    /// their original command and report busy instead of being torn down.
     private func prepareKeyboardStart(_ command: KeyboardBridgeCommand) async -> Bool {
-        if activeKeyboardRecordingCommandID == command.id {
-            // Darwin and the local bridge may deliver the same command. The
-            // second delivery is an idempotent no-op.
+        let previousActiveCommandID = keyboardCoordinator.activeCommandID
+        let admission = keyboardCoordinator.acceptCommand(
+            commandID: command.id,
+            issuedAt: command.createdAt
+        )
+        switch admission {
+        case .duplicate:
             return false
-        }
-
-        if let currentID = activeKeyboardRecordingCommandID {
-            guard command.createdAt > activeKeyboardCommandCreatedAt else {
-                appLog.notice("keyboard start ignored as stale command_id=\(command.id, privacy: .public) current_id=\(currentID, privacy: .public)")
+        case .stale:
+            appLog.notice("keyboard start ignored as stale command_id=\(command.id, privacy: .public) current_id=\(self.keyboardCoordinator.latestCommandToken?.id ?? "none", privacy: .public)")
+            return false
+        case .accepted(let supersededCommandID):
+            if let supersededCommandID {
+                cancelSupersededKeyboardCommand(
+                    supersededCommandID,
+                    cancelCapture: supersededCommandID == previousActiveCommandID
+                )
+            }
+            if previousActiveCommandID == nil,
+               hasAnyActiveRecordingCapture || phase == .preparing {
+                failKeyboardCommand(
+                    command.id,
+                    code: .hostBusy,
+                    recovery: .none,
+                    message: "Typeforme is busy"
+                )
                 return false
             }
-
-            let canSupersedeProcessing = keyboardProcessingCommandID == currentID
-                && keyboardProcessingTask != nil
-                && !hasAnyActiveRecordingCapture
-                && (phase == .sending || phase == .refining)
-            guard canSupersedeProcessing, let processingTask = keyboardProcessingTask else {
-                publishKeyboardBusyStatus(for: command.id)
-                return false
-            }
-
-            // Claim B before canceling A so every late A callback fails the
-            // ownership check. Await the exact task; B then uses the unchanged
-            // Thursday recording path.
-            activeKeyboardRecordingCommandID = command.id
-            activeKeyboardCommandCreatedAt = command.createdAt
-            activeKeyboardTextEditContext = nil
-            activeKeyboardDictationContext = nil
-            keyboardCaptureStartedFromKeyboard = false
-            activeBridgeDictateJobID = nil
-            if queuedKeyboardStopCommandID == currentID {
-                queuedKeyboardStopCommandID = nil
-            }
-            processingTask.cancel()
-            await processingTask.value
-            guard activeKeyboardRecordingCommandID == command.id else { return false }
-            if phase == .sending || phase == .refining {
-                setPhase(.idle)
-            }
-            return true
         }
 
-        guard phase.allowsRecordingStart,
-              keyboardStartTask == nil,
-              keyboardProcessingTask == nil
-        else {
-            publishKeyboardBusyStatus(for: command.id)
-            return false
-        }
-        activeKeyboardRecordingCommandID = command.id
-        activeKeyboardCommandCreatedAt = command.createdAt
+        guard ownsKeyboardCommand(command.id) else { return false }
+        activeKeyboardTextEditContext = nil
+        activeKeyboardDictationContext = nil
+        keyboardCaptureStartedFromKeyboard = false
+        activeBridgeDictateJobID = nil
+        keyboardCoordinator.transition(commandID: command.id, to: .preparing)
         return true
+    }
+
+    /// Claiming the new lifecycle happens before this cleanup, so every late
+    /// callback from the superseded command fails its ownership check.
+    private func cancelSupersededKeyboardCommand(
+        _ commandID: String,
+        cancelCapture: Bool
+    ) {
+        let startTask = keyboardStartCommandID == commandID ? keyboardStartTask : nil
+        let processingTask = keyboardProcessingCommandID == commandID ? keyboardProcessingTask : nil
+        startTask?.cancel()
+        processingTask?.cancel()
+        if keyboardStartCommandID == commandID {
+            keyboardStartTask = nil
+            keyboardStartCommandID = nil
+        }
+        if keyboardProcessingCommandID == commandID {
+            keyboardProcessingTask = nil
+            keyboardProcessingCommandID = nil
+        }
+        guard cancelCapture else { return }
+
+        let hadCapture = hasAnyActiveRecordingCapture || phase == .preparing
+
+        if let fileURL = recorder.stop(deactivateSession: true) {
+            try? FileManager.default.removeItem(at: fileURL)
+        }
+        if keyboardAudioSession.isRecording {
+            keyboardAudioSession.cancelRecording()
+        }
+        if keyboardDictationCaptureMode == .pictureInPicture,
+           keyboardAudioSession.isActive {
+            keyboardAudioSession.stopAfterCapture(discardInputEngine: true)
+        }
+        teardownLivePartialPreview(clearText: true)
+        hostRecordingUsesKeyboardAudioSession = false
+        hostHoldReleasePending = false
+        if queuedKeyboardStopCommandID == commandID {
+            queuedKeyboardStopCommandID = nil
+        }
+        activeKeyboardTextEditContext = nil
+        activeKeyboardDictationContext = nil
+        keyboardCaptureStartedFromKeyboard = false
+        activeBridgeDictateJobID = nil
+        if hadCapture {
+            releaseIdleTimer()
+        }
+        if phase == .preparing || phase == .recording || phase == .sending || phase == .refining {
+            setPhase(.idle)
+        }
     }
 
     private func runKeyboardRecordingStart(commandID: String, allowSessionStart: Bool) async {
@@ -4048,10 +4084,15 @@ final class AppState {
         processingTask?.cancel()
         await startTask?.value
         await processingTask?.value
-        guard activeKeyboardRecordingCommandID == commandID else { return }
+        guard keyboardCoordinator.latestCommandToken?.id == commandID else { return }
         if phase == .sending || phase == .refining {
             setPhase(.idle)
         }
+        keyboardCoordinator.transition(
+            commandID: commandID,
+            to: .cancelled,
+            message: "Cancelled"
+        )
         await cancelActiveRecordingWithoutSending(
             hostFailureMessage: nil,
             keyboardCommandID: commandID,
@@ -4060,20 +4101,68 @@ final class AppState {
         )
     }
 
-    private func rememberCanceledKeyboardCommand(_ commandID: String) {
-        guard !commandID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        pruneCanceledKeyboardCommands()
-        canceledKeyboardCommandIDs[commandID] = Date().timeIntervalSince1970
+    private enum KeyboardControlCommandDisposition {
+        case existing
+        case orphan
+        case rejected
     }
 
-    private func isCanceledKeyboardCommand(_ commandID: String) -> Bool {
-        pruneCanceledKeyboardCommands()
-        return canceledKeyboardCommandIDs[commandID] != nil
+    /// Stop and cancel may arrive through both the local bridge and Darwin.
+    /// They can control only their own command ID. When Host has no active
+    /// command, accepting the ID as an orphan records a terminal outcome so a
+    /// delayed start for that same ID cannot resurrect recording.
+    private func prepareKeyboardControlCommand(
+        _ command: KeyboardBridgeCommand
+    ) -> KeyboardControlCommandDisposition {
+        if keyboardCoordinator.latestCommandToken?.id == command.id {
+            return .existing
+        }
+        guard keyboardCoordinator.activeCommandID == nil else {
+            return .rejected
+        }
+        switch keyboardCoordinator.acceptCommand(
+            commandID: command.id,
+            issuedAt: command.createdAt
+        ) {
+        case .accepted:
+            return .orphan
+        case .duplicate:
+            return .existing
+        case .stale:
+            return .rejected
+        }
     }
 
-    private func pruneCanceledKeyboardCommands() {
-        let cutoff = Date().timeIntervalSince1970 - Self.canceledKeyboardCommandTTL
-        canceledKeyboardCommandIDs = canceledKeyboardCommandIDs.filter { $0.value >= cutoff }
+    private func finishKeyboardControlWithoutCapture(
+        commandID: String,
+        message: String
+    ) {
+        if keyboardStartCommandID == commandID {
+            keyboardStartTask?.cancel()
+            keyboardStartTask = nil
+            keyboardStartCommandID = nil
+        }
+        if keyboardProcessingCommandID == commandID {
+            keyboardProcessingTask?.cancel()
+            keyboardProcessingTask = nil
+            keyboardProcessingCommandID = nil
+        }
+        if queuedKeyboardStopCommandID == commandID {
+            queuedKeyboardStopCommandID = nil
+        }
+        teardownLivePartialPreview(clearText: true)
+        clearKeyboardCaptureContext(ifOwnedBy: commandID)
+        if phase == .preparing {
+            releaseIdleTimer()
+            setPhase(.idle)
+        }
+        keyboardCoordinator.transition(
+            commandID: commandID,
+            to: .cancelled,
+            message: message
+        )
+        publishKeyboardStatus(.standby, commandID: commandID, message: "Ready")
+        KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.dictationStopped)
     }
 
     private func configureKeyboardDarwinBridge() {
@@ -4088,18 +4177,10 @@ final class AppState {
                 self?.consumeKeyboardHostIssue()
             }
         }
-        guard let requestStartName = KeyboardDarwinNotificationName.authenticatedRequest(
-            KeyboardDarwinNotificationName.requestStartDictation,
+        guard let commandIntentName = KeyboardDarwinNotificationName.authenticatedRequest(
+            KeyboardDarwinNotificationName.commandIntentChanged,
             token: keyboardBridgeToken
         ),
-            let requestStopName = KeyboardDarwinNotificationName.authenticatedRequest(
-                KeyboardDarwinNotificationName.requestStopDictation,
-                token: keyboardBridgeToken
-            ),
-            let requestCancelName = KeyboardDarwinNotificationName.authenticatedRequest(
-                KeyboardDarwinNotificationName.requestCancelDictation,
-                token: keyboardBridgeToken
-            ),
             let requestSessionStatusName = KeyboardDarwinNotificationName.authenticatedRequest(
                 KeyboardDarwinNotificationName.requestSessionStatus,
                 token: keyboardBridgeToken
@@ -4111,115 +4192,89 @@ final class AppState {
         keyboardDarwinObservers = [
             fullAccessObserver,
             keyboardIssueObserver,
-            KeyboardDarwinBridge.observe(requestStartName) { [weak self] in
+            KeyboardDarwinBridge.observe(commandIntentName) { [weak self] in
                 Task { @MainActor [weak self] in
                     guard let self else { return }
                     self.markKeyboardEverContacted()
-                    appLog.notice("darwin requestStart received mode=\(self.keyboardDictationCaptureMode.rawValue, privacy: .public) standby=\(self.keyboardStandbyEnabled, privacy: .public) keyboard_active=\(self.keyboardAudioSession.isActive, privacy: .public) keyboard_recording=\(self.keyboardAudioSession.isRecording, privacy: .public) pip_active=\(self.pipDictationCoordinator.isActive, privacy: .public) bridge_state=\(self.keyboardBridgeStatus.state.rawValue, privacy: .public)")
+                    guard let command = KeyboardSharedDefaults.loadCommandIntent() else {
+                        appLog.notice("darwin command intent missing or expired")
+                        KeyboardDiagnosticEventLog.record(
+                            source: "host-app",
+                            event: "darwin_command_intent_missing"
+                        )
+                        return
+                    }
                     KeyboardDiagnosticEventLog.record(
                         source: "host-app",
-                        event: "darwin_request_start_received",
+                        event: "darwin_command_intent_loaded",
                         fields: [
-                            "mode": self.keyboardDictationCaptureMode.rawValue,
-                            "standby": "\(self.keyboardStandbyEnabled)",
-                            "keyboard_active": "\(self.keyboardAudioSession.isActive)",
-                            "keyboard_recording": "\(self.keyboardAudioSession.isRecording)",
-                            "pip_active": "\(self.pipDictationCoordinator.isActive)",
-                            "bridge_state": self.keyboardBridgeStatus.state.rawValue,
+                            "action": command.action.rawValue,
+                            "command_id": command.id,
                         ]
                     )
-                    guard self.keyboardStandbyEnabled || self.keyboardAudioSession.isRecording else {
-                        appLog.notice("darwin requestStart ignored: standby disabled and keyboard audio not recording")
-                        KeyboardDiagnosticEventLog.record(
-                            source: "host-app",
-                            event: "darwin_request_start_ignored_standby_disabled"
-                        )
-                        return
-                    }
-                    guard let command = KeyboardSharedDefaults.consumeDarwinCommand(action: .start) else {
-                        appLog.notice("darwin requestStart failed: command missing or expired")
-                        KeyboardDiagnosticEventLog.record(
-                            source: "host-app",
-                            event: "darwin_request_start_missing_command"
-                        )
-                        if self.activeKeyboardRecordingCommandID == nil {
-                            self.publishKeyboardStatus(.error, message: "Keyboard start command expired")
-                        }
-                        return
-                    }
-                    appLog.notice("darwin requestStart command consumed command_id=\(command.id, privacy: .public)")
-                    KeyboardDiagnosticEventLog.record(
-                        source: "host-app",
-                        event: "darwin_request_start_command_consumed",
-                        fields: ["command_id": command.id]
-                    )
-                    self.postKeyboardCommandReceipt(
-                        commandID: command.id,
-                        action: .start,
-                        phase: .accepted,
-                        reason: "darwin_start_received"
-                    )
-                    guard !self.isCanceledKeyboardCommand(command.id) else {
-                        appLog.notice("darwin requestStart command was canceled command_id=\(command.id, privacy: .public)")
-                        KeyboardDiagnosticEventLog.record(
-                            source: "host-app",
-                            event: "darwin_request_start_command_cancelled",
-                            fields: ["command_id": command.id]
-                        )
-                        if let activeID = self.activeKeyboardRecordingCommandID,
-                           activeID != command.id {
+                    switch command.action {
+                    case .start:
+                        guard await self.prepareKeyboardStart(command)
+                        else { return }
+                        guard self.keyboardStandbyEnabled || self.keyboardAudioSession.isRecording else {
+                            self.failKeyboardCommand(
+                                command.id,
+                                code: .microphoneUnavailable,
+                                recovery: .openHost,
+                                message: "Open Typeforme to prepare dictation."
+                            )
                             return
                         }
-                        self.clearKeyboardCaptureContext(ifOwnedBy: command.id)
-                        self.publishKeyboardStatus(.standby, commandID: command.id, message: "Ready")
-                        KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.dictationStopped)
+                        if let requestedMode = CorrectionMode(rawValue: command.correctionMode) {
+                            self.applyKeyboardDefaultCorrectionMode(requestedMode)
+                        }
+                        self.activeKeyboardTextEditContext = command.textEditContext
+                        self.activeKeyboardDictationContext = command.dictationContext
+                        self.keyboardCaptureStartedFromKeyboard = true
+                        let bridgeReady = await self.ensureKeyboardLocalBridgeReady(
+                            reason: "darwin_start",
+                            showErrors: false,
+                            forceProbe: true
+                        )
+                        guard !Task.isCancelled, self.ownsKeyboardCommand(command.id) else { return }
+                        guard bridgeReady else {
+                            self.failKeyboardCommand(
+                                command.id,
+                                code: .bridgeUnavailable,
+                                recovery: .openHost,
+                                message: "Keyboard bridge is unavailable."
+                            )
+                            return
+                        }
+                        await self.runKeyboardRecordingStart(commandID: command.id, allowSessionStart: true)
+                    case .stop:
+                        switch self.prepareKeyboardControlCommand(command) {
+                        case .existing:
+                            _ = self.beginKeyboardStopAndSend(commandID: command.id)
+                        case .orphan:
+                            self.finishKeyboardControlWithoutCapture(
+                                commandID: command.id,
+                                message: "Nothing recorded"
+                            )
+                        case .rejected:
+                            return
+                        }
+                    case .cancel:
+                        switch self.prepareKeyboardControlCommand(command) {
+                        case .existing:
+                            guard self.activeKeyboardRecordingCommandID == command.id else { return }
+                            await self.cancelKeyboardCommand(command.id, resumeKeyboardStandby: true)
+                        case .orphan:
+                            self.finishKeyboardControlWithoutCapture(
+                                commandID: command.id,
+                                message: "Cancelled"
+                            )
+                        case .rejected:
+                            return
+                        }
+                    case .configure, .refineText:
                         return
                     }
-                    guard await self.prepareKeyboardStart(command) else { return }
-                    if let requestedMode = CorrectionMode(rawValue: command.correctionMode) {
-                        self.applyKeyboardDefaultCorrectionMode(requestedMode)
-                    }
-                    self.activeKeyboardTextEditContext = command.textEditContext
-                    self.activeKeyboardDictationContext = command.dictationContext
-                    self.keyboardCaptureStartedFromKeyboard = true
-                    let bridgeReady = await self.ensureKeyboardLocalBridgeReady(
-                        reason: "darwin_start",
-                        showErrors: false,
-                        forceProbe: true
-                    )
-                    guard !Task.isCancelled, self.ownsKeyboardCommand(command.id) else { return }
-                    self.postKeyboardCommandReceipt(
-                        commandID: command.id,
-                        action: .start,
-                        phase: bridgeReady ? .bridgeReady : .bridgeUnavailable,
-                        reason: bridgeReady ? "bridge_ready" : "bridge_unavailable"
-                    )
-                    guard self.ownsKeyboardCommand(command.id) else {
-                        return
-                    }
-                    await self.runKeyboardRecordingStart(commandID: command.id, allowSessionStart: true)
-                }
-            },
-            KeyboardDarwinBridge.observe(requestStopName) { [weak self] in
-                Task { @MainActor [weak self] in
-                    guard let self else { return }
-                    guard self.keyboardStandbyEnabled || self.keyboardAudioSession.isRecording else { return }
-                    let command = KeyboardSharedDefaults.consumeDarwinCommand(action: .stop)
-                    if let command {
-                        self.rememberCanceledKeyboardCommand(command.id)
-                    }
-                    if let command {
-                        _ = self.beginKeyboardStopAndSend(commandID: command.id)
-                    }
-                }
-            },
-            KeyboardDarwinBridge.observe(requestCancelName) { [weak self] in
-                Task { @MainActor [weak self] in
-                    guard let self else { return }
-                    guard let command = KeyboardSharedDefaults.consumeDarwinCommand(action: .cancel) else { return }
-                    self.rememberCanceledKeyboardCommand(command.id)
-                    guard self.activeKeyboardRecordingCommandID == command.id else { return }
-                    await self.cancelKeyboardCommand(command.id, resumeKeyboardStandby: true)
                 }
             },
             KeyboardDarwinBridge.observe(requestSessionStatusName) { [weak self] in
@@ -4277,20 +4332,7 @@ final class AppState {
                 "bridge_state": self.keyboardBridgeStatus.state.rawValue,
             ]
         )
-        guard keyboardStandbyEnabled || keyboardAudioSession.isRecording else {
-            appLog.notice("local keyboard command rejected: standby disabled action=\(command.action.rawValue, privacy: .public) command_id=\(command.id, privacy: .public)")
-            KeyboardDiagnosticEventLog.record(
-                source: "host-app",
-                event: "local_keyboard_command_rejected_standby_disabled",
-                fields: [
-                    "action": command.action.rawValue,
-                    "command_id": command.id,
-                ]
-            )
-            publishKeyboardStatus(.idle, commandID: command.id, message: "Keyboard standby is off")
-            return keyboardBridgeStatus
-        }
-        guard command.isFresh() else {
+        if command.action != .start, !command.isFresh() {
             appLog.notice("local keyboard command rejected: expired action=\(command.action.rawValue, privacy: .public) command_id=\(command.id, privacy: .public)")
             KeyboardDiagnosticEventLog.record(
                 source: "host-app",
@@ -4300,28 +4342,41 @@ final class AppState {
                     "command_id": command.id,
                 ]
             )
-            publishKeyboardStatus(.error, commandID: command.id, message: "Keyboard command expired")
             return keyboardBridgeStatus
         }
         switch command.action {
         case .start:
-            guard !isCanceledKeyboardCommand(command.id) else {
-                appLog.notice("local start command canceled command_id=\(command.id, privacy: .public)")
-                KeyboardDiagnosticEventLog.record(
-                    source: "host-app",
-                    event: "local_start_command_cancelled",
-                    fields: ["command_id": command.id]
+            guard await prepareKeyboardStart(command) else { return keyboardBridgeStatus }
+            guard command.isFresh() else {
+                failKeyboardCommand(
+                    command.id,
+                    code: .commandExpired,
+                    recovery: .retry,
+                    message: "Keyboard command expired"
                 )
-                if let activeID = activeKeyboardRecordingCommandID,
-                   activeID != command.id {
-                    return keyboardBridgeStatus
-                }
-                clearKeyboardCaptureContext(ifOwnedBy: command.id)
-                publishKeyboardStatus(.standby, commandID: command.id, message: "Ready")
-                KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.dictationStopped)
+                publishKeyboardStatus(.error, commandID: command.id, message: "Keyboard command expired")
                 return keyboardBridgeStatus
             }
-            guard await prepareKeyboardStart(command) else { return keyboardBridgeStatus }
+            guard keyboardStandbyEnabled || keyboardAudioSession.isRecording else {
+                appLog.notice("local keyboard start rejected: standby disabled command_id=\(command.id, privacy: .public)")
+                KeyboardDiagnosticEventLog.record(
+                    source: "host-app",
+                    event: "local_keyboard_start_rejected_standby_disabled",
+                    fields: ["command_id": command.id]
+                )
+                failKeyboardCommand(
+                    command.id,
+                    code: .microphoneUnavailable,
+                    recovery: .openHost,
+                    message: "Open Typeforme to prepare dictation."
+                )
+                publishKeyboardStatus(
+                    .error,
+                    commandID: command.id,
+                    message: "Open Typeforme to prepare dictation."
+                )
+                return keyboardBridgeStatus
+            }
             if let requestedMode = CorrectionMode(rawValue: command.correctionMode) {
                 applyKeyboardDefaultCorrectionMode(requestedMode)
             }
@@ -4330,12 +4385,31 @@ final class AppState {
             keyboardCaptureStartedFromKeyboard = true
             await runKeyboardRecordingStart(commandID: command.id, allowSessionStart: true)
         case .stop:
-            return beginKeyboardStopAndSend(commandID: command.id)
+            switch prepareKeyboardControlCommand(command) {
+            case .existing:
+                return beginKeyboardStopAndSend(commandID: command.id)
+            case .orphan:
+                finishKeyboardControlWithoutCapture(
+                    commandID: command.id,
+                    message: "Nothing recorded"
+                )
+            case .rejected:
+                break
+            }
         case .cancel:
-            rememberCanceledKeyboardCommand(command.id)
-            guard activeKeyboardRecordingCommandID == command.id else { return keyboardBridgeStatus }
-            await cancelKeyboardCommand(command.id, resumeKeyboardStandby: true)
-            resetCorrectionModeToDefault()
+            switch prepareKeyboardControlCommand(command) {
+            case .existing:
+                guard activeKeyboardRecordingCommandID == command.id else { return keyboardBridgeStatus }
+                await cancelKeyboardCommand(command.id, resumeKeyboardStandby: true)
+                resetCorrectionModeToDefault()
+            case .orphan:
+                finishKeyboardControlWithoutCapture(
+                    commandID: command.id,
+                    message: "Cancelled"
+                )
+            case .rejected:
+                break
+            }
         case .configure:
             let hasActiveKeyboardCommand = activeKeyboardRecordingCommandID != nil
                 || keyboardStartTask != nil
@@ -4351,7 +4425,9 @@ final class AppState {
             if !hasActiveKeyboardCommand {
                 clearKeyboardCaptureContext()
             }
-            publishKeyboardStatus(.standby, commandID: command.id, message: "Ready")
+            setKeyboardBridgeStatus(
+                keyboardBridgeStatus.withDefaultCorrectionMode(config.correctionMode.rawValue)
+            )
         case .refineText:
             await refineKeyboardText(command)
         }
@@ -4360,14 +4436,32 @@ final class AppState {
 
     private func beginKeyboardStopAndSend(commandID: String) -> KeyboardBridgeStatus {
         let recognitionStageLabels = Self.recognitionStageLabels(for: activeKeyboardTextEditContext)
-        if let activeKeyboardRecordingCommandID,
-           activeKeyboardRecordingCommandID != commandID {
+        guard let lifecycle = keyboardCoordinator.commandLifecycle,
+              lifecycle.command.id == commandID
+        else {
             return keyboardBridgeStatus
         }
+
+        switch KeyboardCommandControlPolicy.stopEffect(during: lifecycle.stage) {
+        case .cancelBeforeRecording:
+            finishKeyboardControlWithoutCapture(
+                commandID: commandID,
+                message: "Stopped before recording began"
+            )
+            return keyboardBridgeStatus
+        case .ignore:
+            return keyboardBridgeStatus
+        case .stopAndProcess:
+            break
+        }
+
         guard keyboardAudioSession.isRecording || recorder.isRecording else {
-            queuedKeyboardStopCommandID = nil
-            clearKeyboardCaptureContext(ifOwnedBy: commandID)
-            publishKeyboardStatus(.standby, commandID: commandID, message: "Ready")
+            failKeyboardCommand(
+                commandID,
+                code: .microphoneUnavailable,
+                recovery: .retry,
+                message: "Recording ended before it could be sent."
+            )
             KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.dictationStopped)
             return keyboardBridgeStatus
         }
@@ -4405,48 +4499,69 @@ final class AppState {
 
     private func finishKeyboardProcessing(commandID: String) {
         guard keyboardProcessingCommandID == commandID else { return }
+        let wasCancelled = Task.isCancelled
         keyboardProcessingTask = nil
         keyboardProcessingCommandID = nil
         if queuedKeyboardStopCommandID == commandID {
             queuedKeyboardStopCommandID = nil
         }
 
-        // A newer command owns all state as soon as prepareKeyboardStart claims
-        // it. The old task may finish after cancellation, but it must not clear
-        // or publish over that newer command.
-        guard KeyboardCommandCompletionPolicy.finishedCommandCanFinalizeSharedState(
-            finishedCommandID: commandID,
-            activeCommandID: activeKeyboardRecordingCommandID
-        ) else {
-            return
-        }
-
+        guard !wasCancelled,
+              keyboardCoordinator.latestCommandToken?.id == commandID
+        else { return }
         clearKeyboardCaptureContext(ifOwnedBy: commandID)
-        guard KeyboardCommandCompletionPolicy.shouldRecoverStandby(
-            finishedCommandID: commandID,
-            activeCommandID: activeKeyboardRecordingCommandID,
-            statusCommandID: keyboardBridgeStatus.commandID,
-            statusIsSending: keyboardBridgeStatus.state == .sending
-        ) else { return }
+        guard keyboardCoordinator.activeCommandID == commandID else { return }
+        failKeyboardCommand(
+            commandID,
+            code: .processingFailed,
+            recovery: .retry,
+            message: "Processing ended without a result."
+        )
+    }
 
-        teardownLivePartialPreview(clearText: true)
-        if phase == .sending || phase == .refining {
-            setPhase(.idle)
+    private func prepareKeyboardRefine(_ command: KeyboardBridgeCommand) async -> Bool {
+        let previousActiveCommandID = keyboardCoordinator.activeCommandID
+        let admission = keyboardCoordinator.acceptCommand(
+            commandID: command.id,
+            issuedAt: command.createdAt
+        )
+        switch admission {
+        case .duplicate, .stale:
+            return false
+        case .accepted(let supersededCommandID):
+            if let supersededCommandID {
+                cancelSupersededKeyboardCommand(
+                    supersededCommandID,
+                    cancelCapture: supersededCommandID == previousActiveCommandID
+                )
+            }
+            if previousActiveCommandID == nil, isBusy {
+                failKeyboardCommand(
+                    command.id,
+                    code: .hostBusy,
+                    recovery: .none,
+                    message: "Typeforme is busy"
+                )
+                return false
+            }
         }
-        publishKeyboardStatus(.standby, commandID: commandID, message: "Ready")
-        scheduleKeyboardStandbyRefresh(delay: 0)
+
+        guard keyboardCoordinator.owns(command.id) else { return false }
+        return keyboardCoordinator.transition(commandID: command.id, to: .refining)
     }
 
     private func refineKeyboardText(_ command: KeyboardBridgeCommand) async {
-        guard !isBusy else {
-            publishKeyboardStatus(.error, commandID: command.id, message: "Typeforme is busy")
-            return
-        }
+        guard await prepareKeyboardRefine(command) else { return }
         let requestedCorrectionMode = CorrectionMode(rawValue: command.correctionMode) ?? config.correctionMode
         guard let source = command.text?.trimmingCharacters(in: .whitespacesAndNewlines),
               !source.isEmpty
         else {
-            publishKeyboardStatus(.error, commandID: command.id, message: "Nothing to refine")
+            failKeyboardCommand(
+                command.id,
+                code: .processingFailed,
+                recovery: .none,
+                message: "Nothing to refine"
+            )
             return
         }
         let existingResultText = resultText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -4468,7 +4583,8 @@ final class AppState {
         publishKeyboardStatus(
             .sending,
             commandID: command.id,
-            message: NSLocalizedString("Refining", comment: "Bridge job stage")
+            message: NSLocalizedString("Refining", comment: "Bridge job stage"),
+            processingStage: .refining
         )
         do {
             await refreshRoute(
@@ -4477,7 +4593,9 @@ final class AppState {
                 showIndicator: false,
                 reason: "keyboard_refine_route"
             )
+            guard shouldContinueKeyboardOperation(command.id) else { return }
             let client = try await activeBridgeClient()
+            guard shouldContinueKeyboardOperation(command.id) else { return }
             setPhase(.refining)
             publishKeyboardStatus(
                 .sending,
@@ -4501,6 +4619,7 @@ final class AppState {
                     )
                 }
             )
+            guard shouldContinueKeyboardOperation(command.id) else { return }
             let text = response.text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else {
                 setFailure("Mac returned an empty result.")
@@ -4535,6 +4654,7 @@ final class AppState {
                     : nil
             )
         } catch {
+            guard shouldContinueKeyboardOperation(command.id) else { return }
             // Invalidate the route cache on both auth and network errors so
             // the next keyboard-edit attempt re-probes.
             if shouldRetryBridgeRequest(after: error) {
@@ -4581,7 +4701,7 @@ final class AppState {
                     "elapsed_ms": "\(Int((Date().timeIntervalSince1970 - startAttemptedAt) * 1_000))",
                 ]
             )
-            postKeyboardCaptureNotReadyReceipt(commandID: commandID, reason: "pip_inactive")
+            reportKeyboardCaptureNotReady(commandID: commandID, reason: "pip_inactive")
             if let commandID { clearKeyboardCaptureContext(ifOwnedBy: commandID) }
             resetCorrectionModeToDefault()
             publishKeyboardStatus(.idle, commandID: commandID, message: keyboardMicrophonePreparationMessage)
@@ -4611,7 +4731,7 @@ final class AppState {
                     "elapsed_ms": "\(Int((Date().timeIntervalSince1970 - startAttemptedAt) * 1_000))",
                 ]
             )
-            postKeyboardCaptureNotReadyReceipt(commandID: commandID, reason: "visible_capture_unavailable")
+            reportKeyboardCaptureNotReady(commandID: commandID, reason: "visible_capture_unavailable")
             if let commandID { clearKeyboardCaptureContext(ifOwnedBy: commandID) }
             resetCorrectionModeToDefault()
             publishKeyboardStatus(.idle, commandID: commandID, message: keyboardMicrophonePreparationMessage)
@@ -4635,7 +4755,6 @@ final class AppState {
             keyboardCaptureStartedFromKeyboard = true
             publishKeyboardStatus(.recording, commandID: commandID, message: "Recording")
             KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.dictationStarted)
-            postKeyboardRecordingStartedReceipt(commandID: commandID, reason: "active_recording_reused")
             appLog.notice("start keyboard recording reused active recording command_id=\(commandID ?? "none", privacy: .public)")
             KeyboardDiagnosticEventLog.record(
                 source: "host-app",
@@ -4662,7 +4781,7 @@ final class AppState {
                         "elapsed_ms": "\(Int((Date().timeIntervalSince1970 - startAttemptedAt) * 1_000))",
                     ]
                 )
-                postKeyboardCaptureNotReadyReceipt(commandID: commandID, reason: "audio_inactive_session_start_not_allowed")
+                reportKeyboardCaptureNotReady(commandID: commandID, reason: "audio_inactive_session_start_not_allowed")
                 if let commandID { clearKeyboardCaptureContext(ifOwnedBy: commandID) }
                 resetCorrectionModeToDefault()
                 publishKeyboardStatus(.idle, commandID: commandID, message: "Keyboard audio session is not active")
@@ -4685,7 +4804,7 @@ final class AppState {
                             "elapsed_ms": "\(Int((Date().timeIntervalSince1970 - startAttemptedAt) * 1_000))",
                         ]
                     )
-                    postKeyboardCaptureNotReadyReceipt(commandID: commandID, reason: "input_standby_not_ready")
+                    reportKeyboardCaptureNotReady(commandID: commandID, reason: "input_standby_not_ready")
                     if let commandID { clearKeyboardCaptureContext(ifOwnedBy: commandID) }
                     resetCorrectionModeToDefault()
                     startSilentStandbyKeeperIfNeeded()
@@ -4709,7 +4828,7 @@ final class AppState {
                         "elapsed_ms": "\(Int((Date().timeIntervalSince1970 - startAttemptedAt) * 1_000))",
                     ]
                 )
-                postKeyboardCaptureNotReadyReceipt(commandID: commandID, reason: "standby_error")
+                reportKeyboardCaptureNotReady(commandID: commandID, reason: "standby_error")
                 if IOSRecordingAudioSession.isPriorityConflict(error) {
                     startSilentStandbyKeeperIfNeeded()
                     publishKeyboardStatus(.idle, commandID: commandID, message: message)
@@ -4748,7 +4867,7 @@ final class AppState {
                     "elapsed_ms": "\(Int((Date().timeIntervalSince1970 - startAttemptedAt) * 1_000))",
                 ]
             )
-            postKeyboardCaptureNotReadyReceipt(commandID: commandID, reason: "begin_recording_error")
+            reportKeyboardCaptureNotReady(commandID: commandID, reason: "begin_recording_error")
             if IOSRecordingAudioSession.isPriorityConflict(error) {
                 startSilentStandbyKeeperIfNeeded()
                 publishKeyboardStatus(.idle, commandID: commandID, message: message)
@@ -4783,7 +4902,7 @@ final class AppState {
                         "elapsed_ms": "\(Int((Date().timeIntervalSince1970 - startAttemptedAt) * 1_000))",
                     ]
                 )
-                postKeyboardCaptureNotReadyReceipt(commandID: commandID, reason: "pip_audio_unavailable")
+                reportKeyboardCaptureNotReady(commandID: commandID, reason: "pip_audio_unavailable")
                 if let commandID { clearKeyboardCaptureContext(ifOwnedBy: commandID) }
                 resetCorrectionModeToDefault()
                 publishKeyboardStatus(.idle, commandID: commandID, message: keyboardMicrophonePreparationMessage)
@@ -4831,7 +4950,7 @@ final class AppState {
                     "elapsed_ms": "\(Int((Date().timeIntervalSince1970 - startAttemptedAt) * 1_000))",
                 ]
             )
-            postKeyboardCaptureNotReadyReceipt(commandID: commandID, reason: "pip_audio_error")
+            reportKeyboardCaptureNotReady(commandID: commandID, reason: "pip_audio_error")
             if IOSRecordingAudioSession.isPriorityConflict(error) {
                 publishKeyboardStatus(.idle, commandID: commandID, message: message)
             } else {
@@ -4881,7 +5000,6 @@ final class AppState {
         setPhase(.recording)
         publishKeyboardStatus(.recording, commandID: commandID, message: "Recording")
         KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.dictationStarted)
-        postKeyboardRecordingStartedReceipt(commandID: commandID, reason: "begin_recording_succeeded")
         appLog.notice("start keyboard recording succeeded command_id=\(commandID ?? "none", privacy: .public)")
         KeyboardDiagnosticEventLog.record(
             source: "host-app",
@@ -4922,6 +5040,7 @@ final class AppState {
                 showErrors: false,
                 preserveCommandStatus: preserveCommandStatus
             )
+            guard !Task.isCancelled else { return }
             if !didPrepare, !preserveCommandStatus {
                 publishKeyboardCaptureNotReady()
             }
@@ -4954,6 +5073,7 @@ final class AppState {
             }
             scheduleHostAudioSessionExpiry()
         } catch {
+            guard !Task.isCancelled else { return }
             // This tail runs after recording/transcription has already
             // succeeded. iOS can reject immediate audio-session reactivation
             // while the recorder/route is still settling, so do not surface it
@@ -4971,7 +5091,13 @@ final class AppState {
     }
 
     private var shouldPreserveKeyboardCommandStatusDuringStandbyResume: Bool {
-        guard keyboardBridgeStatus.commandID != nil else { return false }
+        guard let commandID = keyboardBridgeStatus.commandID,
+              let lifecycle = keyboardCoordinator.commandLifecycle,
+              lifecycle.command.id == commandID
+        else { return false }
+        if lifecycle.stage.isTerminal {
+            return true
+        }
         switch keyboardBridgeStatus.state {
         case .error:
             return true
@@ -5007,9 +5133,12 @@ final class AppState {
         processingStage: KeyboardBridgeProcessingStage? = nil
     ) {
         if let commandID,
-           let activeKeyboardRecordingCommandID,
-           commandID != activeKeyboardRecordingCommandID {
-            appLog.debug("ignored stale keyboard status command_id=\(commandID, privacy: .public) current_id=\(activeKeyboardRecordingCommandID, privacy: .public)")
+           !KeyboardCommandLifecyclePolicy.canPublishStatus(
+               commandID: commandID,
+               state: keyboardStatusPolicyState(state),
+               lifecycle: keyboardCoordinator.commandLifecycle
+           ) {
+            appLog.debug("ignored stale or terminal keyboard status command_id=\(commandID, privacy: .public) current_id=\(self.keyboardCoordinator.latestCommandToken?.id ?? "none", privacy: .public) state=\(state.rawValue, privacy: .public)")
             return
         }
         // Last-known Mac bridge reachability. `nil` (= never probed this
@@ -5062,8 +5191,43 @@ final class AppState {
             backendReachable: reachable,
             processingStage: state == .sending ? processingStage : nil
         )
+        if let commandID, keyboardCoordinator.owns(commandID) {
+            switch state {
+            case .recording:
+                keyboardCoordinator.transition(commandID: commandID, to: .recording)
+            case .sending:
+                keyboardCoordinator.transition(
+                    commandID: commandID,
+                    to: processingStage == .refining ? .refining : .transcribing
+                )
+            case .result:
+                keyboardCoordinator.transition(commandID: commandID, to: .completed)
+            case .error:
+                failKeyboardCommand(
+                    commandID,
+                    code: .processingFailed,
+                    recovery: .retry,
+                    message: message ?? "Processing failed"
+                )
+            case .idle, .standby:
+                break
+            }
+        }
         setKeyboardBridgeStatus(status)
         syncPiPDictationPresentation()
+    }
+
+    private func keyboardStatusPolicyState(
+        _ state: KeyboardBridgeState
+    ) -> KeyboardStartHandshakePolicy.StatusState {
+        switch state {
+        case .idle: return .idle
+        case .standby: return .standby
+        case .recording: return .recording
+        case .sending: return .sending
+        case .result: return .result
+        case .error: return .error
+        }
     }
 
     private func setKeyboardBridgeStatus(_ status: KeyboardBridgeStatus, persistSnapshot: Bool = true) {
@@ -5604,6 +5768,15 @@ final class AppState {
                 self?.handleAudioSessionInterruption(rawType: rawType, rawOptions: rawOptions)
             }
         })
+        lifecycleObservers.append(center.addObserver(
+            forName: AVAudioSession.mediaServicesWereResetNotification,
+            object: AVAudioSession.sharedInstance(),
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                await self?.handleMediaServicesReset()
+            }
+        })
     }
 
     private func handleAudioSessionInterruption(rawType: UInt?, rawOptions: UInt) {
@@ -5672,17 +5845,40 @@ final class AppState {
             keyboardAudioSession.stopForAudioInterruption()
         }
         standbyKeeper.stop(deactivateSession: false)
-        teardownLivePartialPreview(clearText: true)
-
         let wasRecordingStatus = keyboardBridgeStatus.state == .recording
-        let hadCapture = hadRecorderCapture || hadKeyboardCapture || wasPreparing || wasRecordingStatus
+        let lifecycleEffect = KeyboardCommandCaptureEventPolicy.effect(
+            of: .audioInterrupted,
+            during: keyboardCoordinator.commandLifecycle?.stage
+        )
+        let lifecycleWasCapturing: Bool
+        if case .fail = lifecycleEffect {
+            lifecycleWasCapturing = true
+        } else {
+            lifecycleWasCapturing = false
+        }
+        let hadCapture = hadRecorderCapture
+            || hadKeyboardCapture
+            || wasPreparing
+            || wasRecordingStatus
+            || lifecycleWasCapturing
         let commandID = activeKeyboardRecordingCommandID ?? keyboardBridgeStatus.commandID
         hostRecordingUsesKeyboardAudioSession = false
         hostHoldReleasePending = false
         queuedKeyboardStopCommandID = nil
-        clearKeyboardCaptureContext()
 
         if hadCapture {
+            teardownLivePartialPreview(clearText: true)
+            failKeyboardCommand(
+                commandID,
+                code: .audioInterrupted,
+                recovery: .retry,
+                message: "Recording stopped because another app is using the microphone."
+            )
+            if let commandID {
+                clearKeyboardCaptureContext(ifOwnedBy: commandID)
+            } else {
+                clearKeyboardCaptureContext()
+            }
             releaseIdleTimer()
             setPhase(.failure("Recording stopped because another app is using the microphone."))
             publishKeyboardStatus(
@@ -5719,6 +5915,53 @@ final class AppState {
         guard !keyboardAudioSession.isRecording, !recorder.isRecording else { return }
         keyboardAudioUnavailableMessage = nil
         scheduleKeyboardStandbyRefresh(delay: shouldResume ? 0.5 : 1.0)
+    }
+
+    private func handleMediaServicesReset() async {
+        let lifecycle = keyboardCoordinator.commandLifecycle
+        let effect = KeyboardCommandCaptureEventPolicy.effect(
+            of: .mediaServicesReset,
+            during: lifecycle?.stage
+        )
+        let commandID: String?
+        if case .fail = effect {
+            commandID = lifecycle?.command.id
+        } else {
+            commandID = nil
+        }
+        KeyboardDiagnosticEventLog.record(
+            source: "host-app",
+            event: "audio_media_services_reset",
+            fields: [
+                "command_id": commandID ?? "none",
+                "lifecycle_stage": lifecycle?.stage.rawValue ?? "none",
+            ]
+        )
+
+        if let fileURL = recorder.stop(deactivateSession: false) {
+            try? FileManager.default.removeItem(at: fileURL)
+        }
+        recorder.discardPreWarm()
+        standbyKeeper.stop(deactivateSession: false)
+
+        if let commandID {
+            failKeyboardCommand(
+                commandID,
+                code: .mediaServicesReset,
+                recovery: .retry,
+                message: "The audio system restarted. Tap the microphone to try again."
+            )
+            await cancelActiveRecordingWithoutSending(
+                hostFailureMessage: "The audio system restarted.",
+                keyboardCommandID: commandID,
+                keyboardMessage: "Tap the microphone to try again.",
+                resumeKeyboardStandby: false
+            )
+        }
+        // Do not automatically reactivate AVAudioSession after a media-services
+        // reset. The next explicit recording or capture-mode action rebuilds it.
+        publishKeyboardCaptureNotReady()
+        syncPiPDictationPresentation()
     }
 
     private func startNetworkPathMonitor() {

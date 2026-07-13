@@ -766,7 +766,6 @@ final class StandbyAudioSession: ObservableObject {
     private var currentFormat: AVAudioFormat?
     private var needsEngineRestart = false
     private var recordingDidActivateCaptureCategory = false
-    private var recordingShouldYieldOtherAudio = false
     private var notificationObservers: [NSObjectProtocol] = []
 
     init() {
@@ -832,6 +831,7 @@ final class StandbyAudioSession: ObservableObject {
         let center = NotificationCenter.default
         let names: [Notification.Name] = [
             AVAudioSession.routeChangeNotification,
+            AVAudioSession.mediaServicesWereResetNotification,
         ]
         notificationObservers = names.map { name in
             center.addObserver(
@@ -855,9 +855,25 @@ final class StandbyAudioSession: ObservableObject {
         switch Notification.Name(name) {
         case AVAudioSession.routeChangeNotification:
             handleRouteChange(reason: routeChangeReason)
+        case AVAudioSession.mediaServicesWereResetNotification:
+            resetAfterMediaServicesReset()
         default:
             markEngineRestartNeeded()
         }
+    }
+
+    private func resetAfterMediaServicesReset() {
+        level = 0
+        _ = fileWriter.cancel()
+        removeInputTap()
+        engine.stop()
+        engine = AVAudioEngine()
+        isActive = false
+        currentFormat = nil
+        needsEngineRestart = true
+        recordingDidActivateCaptureCategory = false
+        recordAudioDiagnostic(event: "keyboard_audio_media_services_reset")
+        KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.sessionEnded)
     }
 
     private func handleRouteChange(reason rawReason: UInt?) {
@@ -1036,7 +1052,6 @@ final class StandbyAudioSession: ObservableObject {
 
     func stop(deactivateSession: Bool = true, discardInputEngine: Bool = false) {
         recordingDidActivateCaptureCategory = false
-        recordingShouldYieldOtherAudio = false
         onPCMBuffer = nil
         removeInputTap()
         _ = fileWriter.cancel()
@@ -1064,7 +1079,6 @@ final class StandbyAudioSession: ObservableObject {
     ) {
         guard !fileWriter.isRecording else { return }
         recordingDidActivateCaptureCategory = false
-        recordingShouldYieldOtherAudio = false
         removeInputTap()
         _ = fileWriter.cancel()
         engine.stop()
@@ -1080,7 +1094,6 @@ final class StandbyAudioSession: ObservableObject {
 
     func stopForAudioInterruption() {
         recordingDidActivateCaptureCategory = false
-        recordingShouldYieldOtherAudio = false
         onPCMBuffer = nil
         removeInputTap()
         fileWriter.discard()
@@ -1112,17 +1125,16 @@ final class StandbyAudioSession: ObservableObject {
             throw NSError(domain: "Typeforme", code: 5, userInfo: [NSLocalizedDescriptionKey: "Keyboard dictation is already recording"])
         }
         recordingDidActivateCaptureCategory = false
-        recordingShouldYieldOtherAudio = false
         do {
             return try await beginRecordingNow()
         } catch {
-            restoreAudioSessionAfterCapture()
+            restoreStandbyAfterRecording()
             needsEngineRestart = true
             try? await Task.sleep(nanoseconds: 150_000_000)
             do {
                 return try await beginRecordingNow()
             } catch {
-                restoreAudioSessionAfterCapture()
+                restoreStandbyAfterRecording()
                 throw error
             }
         }
@@ -1140,13 +1152,11 @@ final class StandbyAudioSession: ObservableObject {
         )
         if needsRestart {
             recordingDidActivateCaptureCategory = true
-            recordingShouldYieldOtherAudio = shouldInterruptOtherAudio
             try await IOSRecordingAudioSession.activateKeyboardRecording(reuseActiveSession: true)
             try restartEngine(purpose: .keyboardRecording)
         } else {
             if shouldInterruptOtherAudio {
                 recordingDidActivateCaptureCategory = true
-                recordingShouldYieldOtherAudio = true
                 try? IOSRecordingAudioSession.configureActiveSessionCategory(purpose: .keyboardRecording)
             }
             currentFormat = currentFormat ?? engine.inputNode.outputFormat(forBus: 0)
@@ -1161,7 +1171,6 @@ final class StandbyAudioSession: ObservableObject {
                 .merging([
                     "needs_restart": "\(needsRestart)",
                     "should_interrupt_other_audio": "\(shouldInterruptOtherAudio)",
-                    "recording_yields_other_audio": "\(recordingShouldYieldOtherAudio)",
                 ]) { current, _ in current }
         )
         return url
@@ -1188,28 +1197,12 @@ final class StandbyAudioSession: ObservableObject {
         }
     }
 
+    /// Recording completion returns this reusable input graph to standby.
+    /// Capture-scoped owners such as PiP explicitly call `stopAfterCapture`
+    /// afterward; this layer must not tear down persistent Background Mic.
     private func restoreStandbyAfterRecording() {
-        restoreAudioSessionAfterCapture()
-    }
-
-    private func restoreAudioSessionAfterCapture() {
-        let shouldYieldOtherAudio = recordingShouldYieldOtherAudio
         let shouldRestoreStandbyCategory = recordingDidActivateCaptureCategory
         recordingDidActivateCaptureCategory = false
-        recordingShouldYieldOtherAudio = false
-        if shouldYieldOtherAudio {
-            removeInputTap()
-            if engine.isRunning {
-                engine.stop()
-            }
-            isActive = false
-            level = 0
-            currentFormat = nil
-            needsEngineRestart = true
-            IOSRecordingAudioSession.releaseCaptureRouteAndNotifyOthers()
-            KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.sessionEnded)
-            return
-        }
         guard isActive else {
             needsEngineRestart = true
             KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.sessionEnded)

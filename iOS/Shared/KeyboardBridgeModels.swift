@@ -144,7 +144,8 @@ enum KeyboardSharedDefaults {
     private static let keyboardStatusKey = "keyboard.status.v1"
     private static let hostHandoffKey = "keyboard.host-handoff.v1"
     private static let hostForegroundKey = "keyboard.host-foreground.v1"
-    private static let commandReceiptKey = "keyboard.command-receipt.v1"
+    private static let commandIntentKey = "keyboard.command-intent.v1"
+    private static let commandLifecycleKey = "keyboard.command-lifecycle.v1"
     private static let keyboardHostIssueKey = "keyboard.host-issue.v1"
     private static let touchLearningStatsKey = "keyboard.touchLearningStats.v1"
     private static let chineseLearningKey = "keyboard.chineseLearning.v1"
@@ -268,47 +269,37 @@ enum KeyboardSharedDefaults {
     }
 
     @discardableResult
-    static func saveCommandReceipt(_ receipt: KeyboardCommandReceipt) -> Bool {
-        saveCodable(receipt, key: commandReceiptKey, flush: true)
+    static func saveCommandLifecycle(_ snapshot: KeyboardCommandLifecycleSnapshot) -> Bool {
+        saveCodable(snapshot, key: commandLifecycleKey, flush: true)
     }
 
-    static func loadCommandReceipt(now: TimeInterval = Date().timeIntervalSince1970) -> KeyboardCommandReceipt? {
-        guard let defaults = suite(),
-              let receipt = loadCodable(KeyboardCommandReceipt.self, key: commandReceiptKey)
-        else { return nil }
-        guard receipt.isFresh(now: now) else {
-            defaults.removeObject(forKey: commandReceiptKey)
-            return nil
-        }
-        return receipt
+    static func loadCommandLifecycle() -> KeyboardCommandLifecycleSnapshot? {
+        loadCodable(KeyboardCommandLifecycleSnapshot.self, key: commandLifecycleKey)
     }
 
-    static func clearCommandReceipt() {
-        suite()?.removeObject(forKey: commandReceiptKey)
+    static func clearCommandLifecycle() {
+        suite()?.removeObject(forKey: commandLifecycleKey)
     }
 
+    /// Darwin notifications are wake-up hints only. The keyboard always writes
+    /// its complete latest intent to this single slot before posting, so a
+    /// coalesced or reordered notification cannot resurrect an older action.
     @discardableResult
-    static func saveDarwinCommand(_ command: KeyboardBridgeCommand) -> Bool {
-        saveCodable(command, key: darwinCommandKey(for: command.action), flush: true)
+    static func saveCommandIntent(_ command: KeyboardBridgeCommand) -> Bool {
+        saveCodable(command, key: commandIntentKey, flush: true)
     }
 
-    static func consumeDarwinCommand(
-        action: KeyboardBridgeCommandAction,
+    static func loadCommandIntent(
         now: TimeInterval = Date().timeIntervalSince1970
     ) -> KeyboardBridgeCommand? {
         guard let defaults = suite(),
-              let command = loadCodable(KeyboardBridgeCommand.self, key: darwinCommandKey(for: action))
+              let command = loadCodable(KeyboardBridgeCommand.self, key: commandIntentKey)
         else { return nil }
-        guard command.action == action, command.isFresh(now: now) else {
-            defaults.removeObject(forKey: darwinCommandKey(for: action))
+        guard command.isFresh(now: now) else {
+            defaults.removeObject(forKey: commandIntentKey)
             return nil
         }
-        defaults.removeObject(forKey: darwinCommandKey(for: action))
         return command
-    }
-
-    private static func darwinCommandKey(for action: KeyboardBridgeCommandAction) -> String {
-        "keyboard.darwin-command.\(action.rawValue).v1"
     }
 
     private static func loadCodable<T: Decodable>(_ type: T.Type, key: String) -> T? {
@@ -700,58 +691,6 @@ struct KeyboardHostIssueReport: Codable, Equatable, Sendable {
     }
 }
 
-enum KeyboardCommandReceiptPhase: String, Codable, Sendable {
-    case accepted
-    case bridgeReady = "bridge_ready"
-    case bridgeUnavailable = "bridge_unavailable"
-    case recordingStarted = "recording_started"
-    case captureNotReady = "capture_not_ready"
-    case failed
-}
-
-struct KeyboardCommandReceipt: Codable, Equatable, Sendable {
-    static let maxAge: TimeInterval = 10
-
-    let id: String
-    let commandID: String
-    let action: KeyboardBridgeCommandAction
-    let phase: KeyboardCommandReceiptPhase
-    let reason: String?
-    let createdAt: TimeInterval
-
-    init(
-        id: String = UUID().uuidString,
-        commandID: String,
-        action: KeyboardBridgeCommandAction,
-        phase: KeyboardCommandReceiptPhase,
-        reason: String? = nil,
-        createdAt: TimeInterval = Date().timeIntervalSince1970
-    ) {
-        self.id = id
-        self.commandID = commandID
-        self.action = action
-        self.phase = phase
-        self.reason = reason.map {
-            String($0.trimmingCharacters(in: .whitespacesAndNewlines).prefix(120))
-        }
-        self.createdAt = createdAt
-    }
-
-    func isFresh(now: TimeInterval = Date().timeIntervalSince1970) -> Bool {
-        let age = now - createdAt
-        return age >= 0 && age <= Self.maxAge
-    }
-
-    enum CodingKeys: String, CodingKey {
-        case id
-        case commandID = "command_id"
-        case action
-        case phase
-        case reason
-        case createdAt = "created_at"
-    }
-}
-
 enum KeyboardDarwinNotificationName {
     private static let namespace = TypeformeBundleConfiguration.keyboardNotificationNamespace
     static let transcriptionReady = "\(namespace).transcriptionReady"
@@ -760,13 +699,11 @@ enum KeyboardDarwinNotificationName {
     static let sessionStarted = "\(namespace).sessionStarted"
     static let sessionEnded = "\(namespace).sessionEnded"
     static let requestSessionStatus = "\(namespace).requestSessionStatus"
-    static let requestStartDictation = "\(namespace).requestStartDictation"
-    static let requestStopDictation = "\(namespace).requestStopDictation"
-    static let requestCancelDictation = "\(namespace).requestCancelDictation"
+    static let commandIntentChanged = "\(namespace).commandIntentChanged"
     static let keyboardDefaultsChanged = "\(namespace).defaultsChanged"
     static let fullAccessRequired = "\(namespace).fullAccessRequired"
     static let keyboardIssueReported = "\(namespace).issueReported"
-    static let commandReceiptUpdated = "\(namespace).commandReceiptUpdated"
+    static let commandLifecycleChanged = "\(namespace).commandLifecycleChanged"
 
     static func authenticatedRequest(_ name: String, token: String?) -> String? {
         guard let token,
@@ -1308,6 +1245,24 @@ struct KeyboardBridgeStatus: Codable, Equatable, Sendable {
             backendReachable: backendReachable,
             processingStage: processingStage,
             updatedAt: updatedAt
+        )
+    }
+
+    func withDefaultCorrectionMode(_ mode: String?) -> KeyboardBridgeStatus {
+        KeyboardBridgeStatus(
+            commandID: commandID,
+            state: state,
+            message: message,
+            resultText: resultText,
+            audioDurationSeconds: audioDurationSeconds,
+            audioByteCount: audioByteCount,
+            rawTranscriptLength: rawTranscriptLength,
+            defaultCorrectionMode: mode,
+            audioLevel: audioLevel,
+            livePartialTranscript: livePartialTranscript,
+            backendReachable: backendReachable,
+            processingStage: processingStage,
+            updatedAt: Date().timeIntervalSince1970
         )
     }
 
