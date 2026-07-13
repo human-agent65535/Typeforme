@@ -8371,7 +8371,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             return
         }
 
-        let state = commitDisplayedRimeCompositionIfNeeded(from: currentState)
+        let state = currentState.isComposing ? rimeInput.commitRawInput() : currentState
+        applyRimeState(state)
         if state.commitText.isEmpty {
             clearRefineUndoStateForManualEdit()
             textDocumentProxy.insertText("\n")
@@ -9605,9 +9606,17 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
 
         guard let insertionAnchor = activeDictationInsertionAnchor,
-              insertionAnchor.commandID == commandID,
-              matchesCurrentInsertionAnchor(insertionAnchor)
+              insertionAnchor.commandID == commandID
         else {
+            KeyboardDiagnosticEventLog.record(
+                source: "keyboard-ui",
+                event: "live_preview_unowned_controller_ignored",
+                fields: ["command_id": commandID]
+            )
+            return false
+        }
+
+        guard matchesCurrentInsertionAnchor(insertionAnchor) else {
             livePartialPreviewState = LivePartialPreviewState(
                 commandID: commandID,
                 text: text,
@@ -11794,6 +11803,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
            status.commandID != styleRewriteCommandID,
            let commandID = status.commandID,
            defaults.string(forKey: lastInsertedCommandIDKey) != commandID,
+           controllerOwnsVoiceCommand(commandID),
            let text = status.resultText?.trimmingCharacters(in: .whitespacesAndNewlines),
            !text.isEmpty {
             let didApply: Bool
@@ -12030,12 +12040,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         guard commandID != styleRewriteCommandID else { return false }
 
         let expectedIDs = expectedRecordingResultCommandIDs()
-        guard !expectedIDs.isEmpty else {
-            kbLog.notice("ignoring result without active command id=\(commandID, privacy: .public)")
-            return true
-        }
+        // A controller with no local command owner may still observe the Host
+        // terminal status, but result delivery below remains owner-only. Ignore
+        // a result here only when it conflicts with another command this
+        // controller is actively tracking.
+        guard !expectedIDs.isEmpty else { return false }
         guard !expectedIDs.contains(commandID) else { return false }
-
         kbLog.notice(
             "ignoring stale result id=\(commandID, privacy: .public) expected=\(expectedIDs.joined(separator: ","), privacy: .public)"
         )
@@ -12053,14 +12063,22 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         if let commandID = activeRecordingTextTarget?.commandID {
             ids.insert(commandID)
         }
-        if currentBridgeStatus?.state == .sending,
-           let commandID = currentBridgeStatus?.commandID {
+        if let commandID = activeDictationInsertionAnchor?.commandID {
             ids.insert(commandID)
         }
         if let commandID = livePartialPreviewState?.commandID {
             ids.insert(commandID)
         }
         return ids
+    }
+
+    private func controllerOwnsVoiceCommand(_ commandID: String) -> Bool {
+        KeyboardLivePartialOwnershipPolicy.controllerOwnsCommand(
+            commandID,
+            insertionAnchorCommandID: activeDictationInsertionAnchor?.commandID,
+            livePartialCommandID: livePartialPreviewState?.commandID,
+            rewriteTargetCommandID: activeRecordingTextTarget?.commandID
+        )
     }
 }
 

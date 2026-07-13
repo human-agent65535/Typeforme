@@ -49,8 +49,10 @@ struct BridgeRouteValidationPolicy: Sendable, Equatable {
 
     func shouldPreflight(
         status: BridgeRouteResolutionStatus,
-        routeIsFresh: Bool
+        routeIsFresh: Bool,
+        requiresCurrentRouteEvidence: Bool = false
     ) -> Bool {
+        if requiresCurrentRouteEvidence { return true }
         guard status.activeURL != nil else { return true }
         guard routeIsFresh else { return true }
         return status.activeKind == .local

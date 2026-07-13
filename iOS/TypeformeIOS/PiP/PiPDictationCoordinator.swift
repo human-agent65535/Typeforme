@@ -86,6 +86,16 @@ final class PiPDictationCoordinator: NSObject, ObservableObject {
         updateContentView()
     }
 
+    func refreshContentAfterInterruption() {
+        updateContentView()
+        contentView?.setNeedsDisplay()
+        contentView?.layoutIfNeeded()
+        refreshCapability()
+        if isActive {
+            startContentUpdates()
+        }
+    }
+
     @discardableResult
     func start() async -> Bool {
         guard isSupported else {
@@ -333,15 +343,48 @@ final class PiPDictationCoordinator: NSObject, ObservableObject {
             audioLevel: max(0, min(1, CGFloat(audioLevelProvider?() ?? 0)))
         )
     }
+
+    private func recordLifecycle(
+        _ event: String,
+        fields extraFields: [String: String] = [:]
+    ) {
+        let controller = pictureInPictureController
+        var fields: [String: String] = [
+            "active": "\(controller?.isPictureInPictureActive ?? false)",
+            "possible": "\(controller?.isPictureInPicturePossible ?? false)",
+            "source_attached": "\(sourceView?.window != nil)",
+            "content_attached": "\(contentView?.window != nil)",
+        ]
+        for (key, value) in extraFields {
+            fields[key] = value
+        }
+        KeyboardDiagnosticEventLog.record(source: "host-pip", event: event, fields: fields)
+    }
 }
 
 extension PiPDictationCoordinator: AVPictureInPictureControllerDelegate {
+    nonisolated func pictureInPictureControllerWillStartPictureInPicture(_: AVPictureInPictureController) {
+        Task { @MainActor in
+            pipLog.notice("delegate willStart")
+            self.recordLifecycle("pip_will_start")
+            self.refreshContentAfterInterruption()
+        }
+    }
+
     nonisolated func pictureInPictureControllerDidStartPictureInPicture(_: AVPictureInPictureController) {
         Task { @MainActor in
             pipLog.notice("delegate didStart")
             self.isActive = true
             self.statusMessage = NSLocalizedString("Picture in Picture is active.", comment: "PiP active status")
             self.startContentUpdates()
+            self.recordLifecycle("pip_did_start")
+        }
+    }
+
+    nonisolated func pictureInPictureControllerWillStopPictureInPicture(_: AVPictureInPictureController) {
+        Task { @MainActor in
+            pipLog.notice("delegate willStop")
+            self.recordLifecycle("pip_will_stop")
         }
     }
 
@@ -351,6 +394,7 @@ extension PiPDictationCoordinator: AVPictureInPictureControllerDelegate {
             self.isActive = false
             self.statusMessage = NSLocalizedString("Picture in Picture stopped.", comment: "PiP stopped status")
             self.stopContentUpdatesIfIdle()
+            self.recordLifecycle("pip_did_stop")
             self.onDidStop?()
         }
     }
@@ -365,6 +409,10 @@ extension PiPDictationCoordinator: AVPictureInPictureControllerDelegate {
             self.statusMessage = error.localizedDescription
             self.stopContentUpdatesIfIdle()
             self.refreshCapability()
+            self.recordLifecycle(
+                "pip_failed_to_start",
+                fields: ["error": error.localizedDescription]
+            )
         }
     }
 

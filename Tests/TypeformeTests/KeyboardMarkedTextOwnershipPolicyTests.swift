@@ -152,4 +152,38 @@ struct KeyboardMarkedTextOwnershipPolicyTests {
             currentContextAfter: "after"
         ))
     }
+
+    @Test("Only the keyboard controller that captured the command may consume its voice result")
+    func voiceResultUsesCommandScopedControllerOwnership() {
+        #expect(KeyboardLivePartialOwnershipPolicy.controllerOwnsCommand(
+            "voice-command",
+            insertionAnchorCommandID: "voice-command",
+            livePartialCommandID: nil,
+            rewriteTargetCommandID: nil
+        ))
+        #expect(KeyboardLivePartialOwnershipPolicy.controllerOwnsCommand(
+            "voice-command",
+            insertionAnchorCommandID: nil,
+            livePartialCommandID: "voice-command",
+            rewriteTargetCommandID: nil
+        ))
+        #expect(KeyboardLivePartialOwnershipPolicy.controllerOwnsCommand(
+            "rewrite-command",
+            insertionAnchorCommandID: nil,
+            livePartialCommandID: nil,
+            rewriteTargetCommandID: "rewrite-command"
+        ))
+        #expect(!KeyboardLivePartialOwnershipPolicy.controllerOwnsCommand(
+            "observed-command",
+            insertionAnchorCommandID: nil,
+            livePartialCommandID: nil,
+            rewriteTargetCommandID: nil
+        ))
+        #expect(!KeyboardLivePartialOwnershipPolicy.controllerOwnsCommand(
+            "new-command",
+            insertionAnchorCommandID: "old-command",
+            livePartialCommandID: "old-command",
+            rewriteTargetCommandID: nil
+        ))
+    }
 }

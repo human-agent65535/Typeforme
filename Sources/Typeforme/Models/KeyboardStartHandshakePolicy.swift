@@ -55,3 +55,26 @@ struct KeyboardStartHandshakePolicy {
         }
     }
 }
+
+enum KeyboardCommandCompletionPolicy {
+    static func finishedCommandCanFinalizeSharedState(
+        finishedCommandID: String,
+        activeCommandID: String?
+    ) -> Bool {
+        activeCommandID == nil || activeCommandID == finishedCommandID
+    }
+
+    static func shouldRecoverStandby(
+        finishedCommandID: String,
+        activeCommandID: String?,
+        statusCommandID: String?,
+        statusIsSending: Bool
+    ) -> Bool {
+        finishedCommandCanFinalizeSharedState(
+            finishedCommandID: finishedCommandID,
+            activeCommandID: activeCommandID
+        )
+            && statusCommandID == finishedCommandID
+            && statusIsSending
+    }
+}

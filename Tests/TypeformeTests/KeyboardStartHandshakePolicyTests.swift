@@ -115,4 +115,32 @@ struct KeyboardStartHandshakePolicyTests {
             snapshot: snapshot
         ))
     }
+
+    @Test func completedCommandCannotFinalizeOverANewerOwner() {
+        #expect(!KeyboardCommandCompletionPolicy.finishedCommandCanFinalizeSharedState(
+            finishedCommandID: "command-a",
+            activeCommandID: "command-b"
+        ))
+        #expect(!KeyboardCommandCompletionPolicy.shouldRecoverStandby(
+            finishedCommandID: "command-a",
+            activeCommandID: "command-b",
+            statusCommandID: "command-a",
+            statusIsSending: true
+        ))
+    }
+
+    @Test func incompleteOwnerRestoresStandbyButTerminalResultDoesNot() {
+        #expect(KeyboardCommandCompletionPolicy.shouldRecoverStandby(
+            finishedCommandID: "command-a",
+            activeCommandID: "command-a",
+            statusCommandID: "command-a",
+            statusIsSending: true
+        ))
+        #expect(!KeyboardCommandCompletionPolicy.shouldRecoverStandby(
+            finishedCommandID: "command-a",
+            activeCommandID: "command-a",
+            statusCommandID: "command-a",
+            statusIsSending: false
+        ))
+    }
 }

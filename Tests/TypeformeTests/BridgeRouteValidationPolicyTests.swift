@@ -87,6 +87,16 @@ struct BridgeRouteValidationPolicyTests {
         #expect(policy.shouldPreflight(status: offline, routeIsFresh: true))
     }
 
+    @Test func aRecordedKeyboardJobAlwaysValidatesItsRouteBeforeTheOnlyUpload() {
+        let freshCloud = status(kind: .cloud, url: "https://bridge.example.com")
+
+        #expect(policy.shouldPreflight(
+            status: freshCloud,
+            routeIsFresh: true,
+            requiresCurrentRouteEvidence: true
+        ))
+    }
+
     private func status(kind: BridgeRouteResolutionKind, url: String) -> BridgeRouteResolutionStatus {
         BridgeRouteResolutionStatus(
             activeKind: kind,

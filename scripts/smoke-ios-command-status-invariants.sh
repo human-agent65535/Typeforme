@@ -14,6 +14,7 @@ keyboard = (root / "iOS/TypeformeKeyboard/KeyboardViewController.swift").read_te
 rime_controller = (root / "iOS/TypeformeKeyboard/RimeInputController.swift").read_text()
 shared = (root / "iOS/Shared/KeyboardBridgeModels.swift").read_text()
 pip = (root / "iOS/TypeformeIOS/PiP/PiPDictationCoordinator.swift").read_text()
+audio = (root / "iOS/TypeformeIOS/Recording/AudioRecorder.swift").read_text()
 local_server = (root / "iOS/TypeformeIOS/Bridge/KeyboardLocalServer.swift").read_text()
 handshake = (root / "Sources/Typeforme/Models/KeyboardStartHandshakePolicy.swift").read_text()
 marked_policy = (root / "Sources/Typeforme/Models/KeyboardMarkedTextOwnershipPolicy.swift").read_text()
@@ -70,7 +71,6 @@ if stop_pipeline.count("KeyboardDarwinNotificationName.dictationStopped") != 1:
     raise AssertionError("stopAndSend must emit dictationStopped exactly once")
 for required in (
     "guard shouldContinueKeyboardOperation(effectiveKeyboardCommandID)",
-    "activeKeyboardRecordingCommandID == effectiveKeyboardCommandID",
 ):
     if required not in stop_pipeline:
         raise AssertionError(f"processing result lost ownership guard: {required}")
@@ -80,9 +80,23 @@ for required in (
     "keyboardProcessingCommandID = commandID",
     "keyboardProcessingTask = task",
     "await self.stopAndSend(keyboardCommandID: commandID)",
+    "self.finishKeyboardProcessing(commandID: commandID)",
 ):
     if required not in begin_stop:
         raise AssertionError(f"exact processing task is not retained: {required}")
+
+finish_processing = block(app, "private func finishKeyboardProcessing(")
+for required in (
+    "keyboardProcessingCommandID == commandID",
+    "keyboardProcessingTask = nil",
+    "keyboardProcessingCommandID = nil",
+    "KeyboardCommandCompletionPolicy.finishedCommandCanFinalizeSharedState",
+    "KeyboardCommandCompletionPolicy.shouldRecoverStandby",
+    "phase == .sending || phase == .refining",
+    "publishKeyboardStatus(.standby, commandID: commandID, message: \"Ready\")",
+):
+    if required not in finish_processing:
+        raise AssertionError(f"processing terminal cleanup lost invariant: {required}")
 
 start_flight = block(app, "private func runKeyboardRecordingStart(")
 for required in (
@@ -193,6 +207,10 @@ active_wait = block(app, "private func waitUntilApplicationIsActive(")
 if "try? await Task.sleep" in active_wait or "!Task.isCancelled" not in active_wait:
     raise AssertionError("foreground wait swallows PiP cancellation")
 
+stop_visible_audio = block(app, "private func stopBackgroundAudioCaptureForVisibleMode(")
+if "keyboardStandbyRefreshTask" in stop_visible_audio:
+    raise AssertionError("PiP capture cleanup must not cancel the refresh task that invoked it")
+
 ensure_ready = block(local_server, "func ensureReady(")
 for required in ("catch is CancellationError", "wasCancelled = true", "!wasCancelled"):
     if required not in ensure_ready:
@@ -246,10 +264,29 @@ for required in (
     "activeDictationInsertionAnchor",
     "insertionAnchor.commandID == commandID",
     "matchesCurrentInsertionAnchor(insertionAnchor)",
+    'event: "live_preview_unowned_controller_ignored"',
     'event: "live_preview_initial_target_changed"',
 ):
     if required not in partial_update:
         raise AssertionError(f"live partial ownership loss is not fail-closed: {required}")
+if partial_update.index('event: "live_preview_unowned_controller_ignored"') > partial_update.index("matchesCurrentInsertionAnchor(insertionAnchor)"):
+    raise AssertionError("an unowned keyboard controller must be rejected before target validation")
+
+expected_results = block(keyboard, "private func expectedRecordingResultCommandIDs(")
+if "currentBridgeStatus" in expected_results:
+    raise AssertionError("observing Host sending state must not make another keyboard controller the result owner")
+if "activeDictationInsertionAnchor?.commandID" not in expected_results:
+    raise AssertionError("plain voice results lost their command-scoped insertion owner")
+
+if "controllerOwnsCommand" not in marked_policy:
+    raise AssertionError("voice delivery lacks a pure command-owner policy")
+result_delivery = apply_status[apply_status.index("if status.state == .result,"):]
+result_delivery = result_delivery[:result_delivery.index("if status.state == .error || status.state == .idle")]
+if "controllerOwnsVoiceCommand(commandID)" not in result_delivery:
+    raise AssertionError("an observing keyboard controller can still consume another controller's voice result")
+stale_result = block(keyboard, "private func shouldIgnoreStaleResultStatus(")
+if "guard !expectedIDs.isEmpty else { return false }" not in stale_result:
+    raise AssertionError("an unowned controller cannot observe Host terminal state and may remain Transcribing")
 
 safe_clear = block(keyboard, "private func clearLivePartialMarkedTextIfStillOwned(")
 for required in (
@@ -290,6 +327,12 @@ for forbidden in ("commitComposition", "commitDisplayedRimeCompositionIfNeeded",
         raise AssertionError(f"space trackpad must preserve marked Rime text: {forbidden}")
 if "setTextTrackpadMode(true)" not in space_cursor:
     raise AssertionError("space trackpad no longer enters cursor mode")
+
+text_return = block(keyboard, "private func handleTextReturn(")
+if "rimeInput.commitRawInput()" not in text_return:
+    raise AssertionError("Return must commit raw pinyin while Rime is composing")
+if "commitDisplayedRimeCompositionIfNeeded" in text_return:
+    raise AssertionError("Return must not select or commit the displayed Rime candidate")
 
 trackpad_end = block(keyboard, "private func endTextSpaceCursorTracking(")
 for required in ("state.isComposing", "renderRimeState(state)", "renderRefineSuggestionsIfIdle()"):
@@ -376,6 +419,55 @@ for required in (
         raise AssertionError(f"plain dictation lost insertion anchor: {required}")
 if start_command.index("commitDisplayedRimeCompositionIfNeeded()") > start_command.index("currentDictationContext()"):
     raise AssertionError("voice input captures its anchor before committing Rime composition")
+
+if "dictateWithRouteRetry" in app:
+    raise AssertionError("dictation must not retry an upload after a resolved route already accepted the job")
+dictate_once = block(app, "private func dictateUsingResolvedRoute(")
+if "refreshRoute(" in dictate_once or "shouldRetryBridgeRequest" in dictate_once:
+    raise AssertionError("resolved dictation transport regained hidden route retry behavior")
+if "requiresCurrentRouteEvidence: isKeyboardPath" not in stop_pipeline:
+    raise AssertionError("keyboard audio must validate its route before the one upload attempt")
+
+release_audio = block(audio, "static func releaseCaptureRouteAndNotifyOthers(")
+for required in (
+    "setActive(false, options: .notifyOthersOnDeactivation)",
+    "setCategory(.playback, mode: .default, options: [.mixWithOthers])",
+):
+    if required not in release_audio:
+        raise AssertionError(f"capture audio category is not released to passive playback: {required}")
+if release_audio.index("setActive(false") > release_audio.index("setCategory(.playback"):
+    raise AssertionError("capture session must deactivate before changing to the passive category")
+generic_deactivate = block(audio, "static func deactivateAndNotifyOthers(")
+if "setCategory" in generic_deactivate:
+    raise AssertionError("generic standby deactivation must not change the category during session preparation")
+if "keyboardAudioSession.stopAfterCapture(discardInputEngine: true)" not in stop_pipeline:
+    raise AssertionError("PiP recording completion does not use the capture-scoped route release")
+
+interruption_began = block(app, "private func handleAudioSessionInterruptionBegan(")
+for required in (
+    'event: "audio_session_interruption_began"',
+    "pipDictationCoordinator.refreshContentAfterInterruption()",
+):
+    if required not in interruption_began:
+        raise AssertionError(f"PiP interruption diagnosis/repaint lost invariant: {required}")
+interruption_ended = block(app, "private func handleAudioSessionInterruptionEnded(")
+for required in (
+    'event: "audio_session_interruption_ended"',
+    "pipDictationCoordinator.refreshContentAfterInterruption()",
+):
+    if required not in interruption_ended:
+        raise AssertionError(f"PiP interruption recovery lost invariant: {required}")
+if "func refreshContentAfterInterruption()" not in pip:
+    raise AssertionError("PiP content cannot be explicitly repainted after a system interruption")
+for event in (
+    "pip_will_start",
+    "pip_did_start",
+    "pip_failed_to_start",
+    "pip_will_stop",
+    "pip_did_stop",
+):
+    if event not in pip:
+        raise AssertionError(f"persistent PiP lifecycle diagnosis missing: {event}")
 
 send_command = block(keyboard, "private func sendBridgeCommand(_ command:")
 for required in (

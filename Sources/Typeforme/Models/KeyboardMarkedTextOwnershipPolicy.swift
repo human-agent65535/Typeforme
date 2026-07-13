@@ -80,6 +80,17 @@ enum KeyboardRimeInlineEditPolicy {
 }
 
 enum KeyboardLivePartialOwnershipPolicy {
+    static func controllerOwnsCommand(
+        _ commandID: String,
+        insertionAnchorCommandID: String?,
+        livePartialCommandID: String?,
+        rewriteTargetCommandID: String?
+    ) -> Bool {
+        commandID == insertionAnchorCommandID
+            || commandID == livePartialCommandID
+            || commandID == rewriteTargetCommandID
+    }
+
     static func insertionTargetIsCurrent(
         capturedDocumentIdentifier: UUID,
         currentDocumentIdentifier: UUID,

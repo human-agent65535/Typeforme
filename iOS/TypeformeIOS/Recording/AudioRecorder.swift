@@ -65,6 +65,20 @@ enum IOSRecordingAudioSession {
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
 
+    static func releaseCaptureRouteAndNotifyOthers() {
+        let session = AVAudioSession.sharedInstance()
+        do {
+            try session.setActive(false, options: .notifyOthersOnDeactivation)
+            // Capture is no longer an owner of the route. Leaving
+            // playAndRecord/voiceChat configured can keep Bluetooth on HFP even
+            // after another app resumes music; an inactive playback category
+            // lets iOS restore A2DP until the next explicit capture activation.
+            try session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
+        } catch {
+            recordingLog.notice("audio capture route release deferred: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
     static func shouldInterruptOtherAudioForKeyboardRecording() -> Bool {
         let session = AVAudioSession.sharedInstance()
         return session.isOtherAudioPlaying || session.secondaryAudioShouldBeSilencedHint
@@ -527,7 +541,7 @@ final class AudioRecorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
         let url = currentURL
         currentURL = nil
         if deactivateSession {
-            IOSRecordingAudioSession.deactivateAndNotifyOthers()
+            IOSRecordingAudioSession.releaseCaptureRouteAndNotifyOthers()
         }
         guard let url else { return nil }
         guard BridgeAudioFormat.isFLACFile(url) else {
@@ -1039,6 +1053,11 @@ final class StandbyAudioSession: ObservableObject {
         KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.sessionEnded)
     }
 
+    func stopAfterCapture(discardInputEngine: Bool) {
+        stop(deactivateSession: false, discardInputEngine: discardInputEngine)
+        IOSRecordingAudioSession.releaseCaptureRouteAndNotifyOthers()
+    }
+
     func discardInactiveInputEngine(
         deactivateSession: Bool = true,
         reason: String
@@ -1187,7 +1206,7 @@ final class StandbyAudioSession: ObservableObject {
             level = 0
             currentFormat = nil
             needsEngineRestart = true
-            IOSRecordingAudioSession.deactivateAndNotifyOthers()
+            IOSRecordingAudioSession.releaseCaptureRouteAndNotifyOthers()
             KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.sessionEnded)
             return
         }
