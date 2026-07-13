@@ -22,7 +22,7 @@ enum BuiltInPrompts {
 
     ASR hypotheses describe the same audio. Use agreement or a clearer local rendering only to resolve a specific span; never concatenate hypotheses or prefer one by label, order, length, or fluency. A duplicate of raw_transcript is not independent support.
 
-    Use a vocabulary candidate only when pronunciation and independent local context or another hypothesis support that exact term. Candidate presence or fuzzy similarity alone is insufficient, and coherent wording must remain unchanged.
+    Use a vocabulary candidate only when pronunciation and independent local context or another hypothesis support that exact term. Candidate presence or fuzzy similarity alone is insufficient, and coherent wording must remain unchanged. When using one, replace only matched_span and copy surface exactly, including its script and casing. Pronunciation and speech-hint fields are matching evidence only; never output them, and never translate or transliterate surrounding text because of them.
 
     Follow language_instruction and output_preferences when they do not alter protected spans. Apply only the selected correction mode below.
     """

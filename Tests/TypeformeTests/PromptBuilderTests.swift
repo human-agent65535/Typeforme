@@ -434,6 +434,8 @@ struct PromptBuilderTests {
         #expect(base.contains("A duplicate of raw_transcript is not independent support"))
         #expect(base.contains("Use a vocabulary candidate only when pronunciation and independent local context"))
         #expect(base.contains("Candidate presence or fuzzy similarity alone is insufficient"))
+        #expect(base.contains("replace only matched_span and copy surface exactly"))
+        #expect(base.contains("Pronunciation and speech-hint fields are matching evidence only"))
         #expect(base.contains("Follow language_instruction and output_preferences"))
         #expect(base.contains("Apply only the selected correction mode below"))
         #expect(!base.contains("ASR source notes for local conflicts"))

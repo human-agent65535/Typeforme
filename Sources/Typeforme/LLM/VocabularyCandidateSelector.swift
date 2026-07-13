@@ -118,6 +118,7 @@ enum VocabularyCandidateSelector {
         let matchKind: String
         let confidence: Double
         let evidenceSource: String
+        let sourceText: String
     }
 
     private struct ScoredCandidate {
@@ -297,13 +298,13 @@ enum VocabularyCandidateSelector {
 
         guard let evidence = best else { return nil }
 
-        // A fuzzy near-pinyin window alone is not enough to turn ordinary
-        // Chinese prose into a person's name. Require independent person-use
-        // context (for example, calling, meeting, or confirming with someone);
-        // exact/same-pinyin matches keep their stronger acoustic evidence.
-        if entry.type == "person",
-           evidence.matchKind == "near_pinyin",
-           signals.person <= 0 {
+        // Chinese homophones are common enough that pronunciation alone does
+        // not establish person-name usage. Keep the candidate only when the
+        // transcript also anchors its spelling or uses the span as a person.
+        if !isPlausibleChinesePersonCandidate(
+            entry,
+            evidence: evidence
+        ) {
             return nil
         }
 
@@ -393,6 +394,20 @@ enum VocabularyCandidateSelector {
         let termPhonetic = phoneticKey(term)
         guard termPhonetic.count >= 4 else { return nil }
 
+        if let token = evidenceText.latinTokens.first(where: {
+            compactNormalized($0.token) == termPhonetic
+        }) {
+            return candidateEvidence(
+                score: 95 + evidenceText.source.sourceScore,
+                matchedSpan: token.span,
+                matchKind: "same_pinyin",
+                confidence: 0.92,
+                evidenceText: evidenceText,
+                matchedStart: token.startChar,
+                matchedEnd: token.endChar
+            )
+        }
+
         let looseTerm = loosenPinyin(termPhonetic)
         if let windowEvidence = bestChineseWindowEvidence(
             termPhonetic: termPhonetic,
@@ -436,9 +451,10 @@ enum VocabularyCandidateSelector {
         var best: CandidateEvidence?
 
         for window in cjkWindows(in: evidenceText.text, minLength: minLength, maxLength: maxLength) {
+            let lengthPenalty = abs(window.text.count - termCJKCount) * 8
             if window.phonetic == termPhonetic {
                 let candidate = candidateEvidence(
-                    score: 95 + evidenceText.source.sourceScore,
+                    score: 95 - lengthPenalty + evidenceText.source.sourceScore,
                     matchedSpan: window.text,
                     matchKind: "same_pinyin",
                     confidence: 0.92,
@@ -451,7 +467,7 @@ enum VocabularyCandidateSelector {
             }
             if window.loosePhonetic == looseTermPhonetic {
                 let candidate = candidateEvidence(
-                    score: 82 + evidenceText.source.sourceScore,
+                    score: 82 - lengthPenalty + evidenceText.source.sourceScore,
                     matchedSpan: window.text,
                     matchKind: "loose_pinyin",
                     confidence: 0.84,
@@ -466,7 +482,7 @@ enum VocabularyCandidateSelector {
                   match.score >= 0.74
             else { continue }
             let candidate = candidateEvidence(
-                score: Int((70.0 + match.score * 15.0).rounded()) + evidenceText.source.sourceScore,
+                score: Int((70.0 + match.score * 15.0).rounded()) - lengthPenalty + evidenceText.source.sourceScore,
                 matchedSpan: window.text,
                 matchKind: "near_pinyin",
                 confidence: roundedConfidence(min(0.82, match.score)),
@@ -478,6 +494,104 @@ enum VocabularyCandidateSelector {
         }
 
         return best
+    }
+
+    private static func isPlausibleChinesePersonCandidate(
+        _ entry: DictionaryEntry,
+        evidence: CandidateEvidence
+    ) -> Bool {
+        guard entry.type == "person",
+              UnicodeScriptClassifier.hanBMPCount(in: entry.surface) >= 2,
+              chinesePersonPhoneticMatchKinds.contains(evidence.matchKind)
+        else {
+            return true
+        }
+
+        guard let matchedSpan = evidence.matchedSpan else { return false }
+        if sharesLeadingHanCharacter(entry.surface, matchedSpan) {
+            return true
+        }
+
+        return hasLocalPersonUseContext(for: evidence) || isDirectAddress(for: evidence)
+    }
+
+    private static func sharesLeadingHanCharacter(_ surface: String, _ matchedSpan: String) -> Bool {
+        guard let surfaceFirst = surface.first,
+              let matchedFirst = matchedSpan.first,
+              surfaceFirst == matchedFirst,
+              surfaceFirst.unicodeScalars.contains(where: UnicodeScriptClassifier.isHanBMP),
+              matchedFirst.unicodeScalars.contains(where: UnicodeScriptClassifier.isHanBMP)
+        else {
+            return false
+        }
+        return true
+    }
+
+    private static func hasLocalPersonUseContext(
+        for evidence: CandidateEvidence
+    ) -> Bool {
+        guard let start = evidence.matchedStart,
+              let end = evidence.matchedEnd
+        else {
+            return false
+        }
+        let characters = Array(evidence.sourceText)
+        guard start >= 0, end > start, end <= characters.count else { return false }
+
+        let prefix = normalize(String(characters[max(0, start - 12)..<start]))
+        let suffix = normalize(String(characters[end..<min(characters.count, end + 12)]))
+        if personRolePrefixes.contains(where: { prefix.hasSuffix($0) }) {
+            return true
+        }
+        if personActionPrefixes.contains(where: { prefix.hasSuffix($0) }),
+           !nonPersonContinuations.contains(where: { suffix.hasPrefix($0) }) {
+            return true
+        }
+
+        let hasRelationPrefix = chinesePersonRelationPrefixes.contains {
+            prefix.hasSuffix($0)
+        }
+        let hasRelationSuffix = chinesePersonRelationSuffixes.contains {
+            suffix.hasPrefix($0)
+        }
+        return hasRelationPrefix && hasRelationSuffix
+    }
+
+    private static func isDirectAddress(
+        for evidence: CandidateEvidence
+    ) -> Bool {
+        guard let start = evidence.matchedStart,
+              let end = evidence.matchedEnd
+        else {
+            return false
+        }
+        let characters = Array(evidence.sourceText)
+        guard start >= 0, end > start, end < characters.count else { return false }
+
+        let prefix = String(characters[..<start]).trimmingCharacters(in: .whitespacesAndNewlines)
+        if let last = prefix.last, !directAddressBoundaries.contains(last) {
+            return false
+        }
+
+        var cursor = end
+        while cursor < characters.count, characters[cursor].isWhitespace {
+            cursor += 1
+        }
+        guard cursor < characters.count, directAddressDelimiters.contains(characters[cursor]) else {
+            return false
+        }
+        cursor += 1
+        while cursor < characters.count, characters[cursor].isWhitespace {
+            cursor += 1
+        }
+        guard cursor < characters.count else { return false }
+
+        let remainder = normalize(String(characters[cursor...]))
+        return remainder.hasPrefix("你") ||
+            remainder.hasPrefix("您") ||
+            englishDirectAddressOpeners.contains { opener in
+                remainder == opener || remainder.hasPrefix(opener + " ")
+            }
     }
 
     private static func englishPhoneticEvidence(for term: String, in evidenceText: EvidenceText) -> CandidateEvidence? {
@@ -650,7 +764,8 @@ enum VocabularyCandidateSelector {
             matchedEnd: matchedEnd,
             matchKind: matchKind,
             confidence: confidence,
-            evidenceSource: evidenceText.source.promptLabel
+            evidenceSource: evidenceText.source.promptLabel,
+            sourceText: evidenceText.text
         )
     }
 
@@ -795,6 +910,42 @@ enum VocabularyCandidateSelector {
     private static func containsAny(_ text: String, _ needles: [String]) -> Bool {
         needles.contains { text.contains($0) }
     }
+
+    private static let chinesePersonPhoneticMatchKinds: Set<String> = [
+        "same_pinyin", "loose_pinyin", "near_pinyin",
+    ]
+
+    private static let personRolePrefixes = [
+        "同事", "老板", "经理", "联系人",
+    ]
+
+    private static let personActionPrefixes = [
+        "找", "联系", "通知", "回复", "发给", "约",
+    ]
+
+    private static let nonPersonContinuations = [
+        "集团", "公司", "机器", "社会", "组织", "项目", "产品",
+    ]
+
+    private static let chinesePersonRelationPrefixes = [
+        "和", "跟",
+    ]
+
+    private static let chinesePersonRelationSuffixes = [
+        "确认", "沟通", "联系", "聊", "说", "回复", "开会", "对一下",
+    ]
+
+    private static let directAddressBoundaries: Set<Character> = [
+        ".", "!", "?", ";", "。", "！", "？", "；",
+    ]
+
+    private static let directAddressDelimiters: Set<Character> = [
+        ",", ":", "!", "?", "，", "：", "！", "？",
+    ]
+
+    private static let englishDirectAddressOpeners = [
+        "you", "please", "can", "could", "would", "will", "do", "did", "are", "have",
+    ]
 
     private static func normalize(_ text: String) -> String {
         text

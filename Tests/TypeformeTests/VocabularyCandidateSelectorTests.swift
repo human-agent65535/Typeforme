@@ -57,12 +57,15 @@ struct VocabularyCandidateSelectorTests {
             DictionaryEntry(type: "person", surface: "样例山"),
         ]
 
-        let result = VocabularyCandidateSelector.select(
+        let payload = VocabularyCandidateSelector.promptPayload(
             from: entries,
             rawText: "找样例散确认一下"
         )
 
-        #expect(result.first?.surface == "样例山")
+        #expect(payload.first?.surface == "样例山")
+        #expect(payload.first?.matchedSpan == "样例散")
+        #expect(payload.first?.matchedStart == 1)
+        #expect(payload.first?.matchedEnd == 4)
     }
 
     @Test func nearPinyinAloneDoesNotInsertPersonIntoCoherentProse() {
@@ -76,6 +79,61 @@ struct VocabularyCandidateSelectorTests {
         )
 
         #expect(payload.isEmpty)
+    }
+
+    @Test func rejectsChinesePersonHomophonesWithoutPersonUseContext() {
+        let entries = [DictionaryEntry(type: "person", surface: "郭霁")]
+        let transcripts = [
+            "你的国籍是什么？",
+            "锅鸡很好吃。",
+            "用户名是 guoji。",
+            "国家机器简称国机。",
+            "国机集团今天发布财报。",
+            "请确认你的国籍。",
+            "中国和国际社会合作。",
+            "我喜欢锅鸡和米饭。",
+            "请问国机集团怎么走？",
+        ]
+
+        for transcript in transcripts {
+            let payload = VocabularyCandidateSelector.promptPayload(
+                from: entries,
+                rawText: transcript
+            )
+            #expect(payload.isEmpty, "Unexpected person candidate for: \(transcript)")
+        }
+    }
+
+    @Test func keepsChinesePersonHomophonesWithIndependentPersonUseEvidence() {
+        let entries = [DictionaryEntry(type: "person", surface: "郭霁")]
+        let transcripts = [
+            "郭吉，你吃饭了吗？",
+            "国际，你吃饭了吗？",
+            "我刚和国际确认过。",
+            "guoji, you can check this later.",
+        ]
+
+        for transcript in transcripts {
+            let payload = VocabularyCandidateSelector.promptPayload(
+                from: entries,
+                rawText: transcript
+            )
+            #expect(payload.first?.surface == "郭霁", "Missing person candidate for: \(transcript)")
+        }
+    }
+
+    @Test func anchorsLatinPinyinPersonMatchToTheTranscriptSpan() {
+        let entries = [DictionaryEntry(type: "person", surface: "郭霁")]
+
+        let payload = VocabularyCandidateSelector.promptPayload(
+            from: entries,
+            rawText: "guoji, you can check this later."
+        )
+
+        #expect(payload.first?.matchedSpan == "guoji")
+        #expect(payload.first?.matchedStart == 0)
+        #expect(payload.first?.matchedEnd == 5)
+        #expect(payload.first?.matchKind == "same_pinyin")
     }
 
     @Test func selectsSpokenEnglishAcronym() {
