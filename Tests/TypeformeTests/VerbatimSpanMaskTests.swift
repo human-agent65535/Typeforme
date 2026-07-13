@@ -3,6 +3,14 @@ import Testing
 
 @Suite("Verbatim span mask")
 struct VerbatimSpanMaskTests {
+    @Test func protectsVersionsTimesGroupedNumbersAndOrderedListMarkers() {
+        let input = "模型是Qwen3.6-27B 时间3:30 金额1,000.50\n1. item"
+        let mask = VerbatimSpanMask(input)
+
+        #expect(mask.entries.map(\.text) == ["Qwen3.6-27B", "3:30", "1,000.50", "1."])
+        #expect(mask.restoring(mask.maskedText) == input)
+    }
+
     @Test func protectsOverlappingTechnicalSpansAndRoundTrips() throws {
         let input = """
         打开 https://例子.test/資料?q=a,b&next=/使用者/資料#繁體，然后检查 `x!=y && foo(a,b)`。

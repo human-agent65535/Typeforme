@@ -26,17 +26,6 @@ enum NumberOutputPreference: String, CaseIterable, Identifiable, Codable, Sendab
         }
     }
 
-    var promptInstruction: String {
-        switch self {
-        case .automatic:
-            return "natural"
-        case .digits:
-            return "prefer digits for numeric values"
-        case .words:
-            return "prefer words unless digits are exact tokens"
-        }
-    }
-
     static func normalized(_ raw: String?) -> NumberOutputPreference {
         guard let raw,
               let value = NumberOutputPreference(rawValue: raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
@@ -68,17 +57,6 @@ enum PunctuationOutputPreference: String, CaseIterable, Identifiable, Codable, S
             return "Use ASCII punctuation such as commas, periods, question marks, and colons."
         case .spaces:
             return "Replace sentence punctuation with spaces where possible."
-        }
-    }
-
-    var promptInstruction: String {
-        switch self {
-        case .normal:
-            return "natural"
-        case .english:
-            return "ASCII punctuation"
-        case .spaces:
-            return "spaces instead of sentence punctuation"
         }
     }
 

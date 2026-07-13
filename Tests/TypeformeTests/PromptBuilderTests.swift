@@ -16,6 +16,7 @@ struct PromptBuilderTests {
         )
 
         let prompt = PromptBuilder.userPrompt(for: request)
+        let systemPrompt = PromptBuilder.systemPrompt(for: request)
 
         #expect(prompt.contains("\"language_codes\":[\"zh\",\"en\"]"))
         #expect(!prompt.contains("\"languages\""))
@@ -36,6 +37,9 @@ struct PromptBuilderTests {
         #expect(!prompt.contains("\"locale\""))
         #expect(!prompt.contains("\"mode\""))
         #expect(!prompt.contains("/no_think"))
+        #expect(systemPrompt.contains("<output_preferences numbers=\"auto\" punctuation=\"normal\">"))
+        #expect(systemPrompt.contains("Choose the form that is natural for the value"))
+        #expect(systemPrompt.contains("Use punctuation natural for the output language"))
 
         let repairRequest = CorrectionRequest(
             correctionMode: .polishPlus,
@@ -512,7 +516,7 @@ struct PromptBuilderTests {
         #expect(!formalPlus.contains("unless the transcript explicitly asks"))
     }
 
-    @Test func userPromptCarriesOutputPreferences() {
+    @Test func promptCarriesOutputPreferenceModesAndSystemInstructions() {
         let request = CorrectionRequest(
             correctionMode: .polishPlus,
             frontmostAppName: "Notes",
@@ -525,12 +529,66 @@ struct PromptBuilderTests {
             userDictionary: []
         )
 
-        let prompt = PromptBuilder.userPrompt(for: request)
+        let prompt = PromptBuilder.build(for: request)
 
-        #expect(prompt.contains("\"numbers\":\"digits\""))
-        #expect(prompt.contains("\"punctuation\":\"english\""))
-        #expect(prompt.contains("prefer digits for numeric values"))
-        #expect(prompt.contains("ASCII punctuation"))
+        #expect(prompt.user.contains("\"numbers\":\"digits\""))
+        #expect(prompt.user.contains("\"punctuation\":\"english\""))
+        #expect(prompt.user.contains("<final_output_format numbers=\"digits\" punctuation=\"english\">"))
+        #expect(prompt.user.contains("Keep the original language mix"))
+        #expect(!prompt.user.contains("number_instruction"))
+        #expect(!prompt.user.contains("punctuation_instruction"))
+        #expect(prompt.system.contains("<output_preferences numbers=\"digits\" punctuation=\"english\">"))
+        #expect(prompt.system.contains("required final-output constraints"))
+        #expect(prompt.system.contains("Prefer Arabic numerals for genuine numeric values"))
+        #expect(prompt.system.contains("never re-parse or concatenate the remaining unit"))
+        #expect(prompt.system.contains("Use ASCII punctuation for prose"))
+        #expect(prompt.system.contains("must contain none of these CJK punctuation characters"))
+        #expect(prompt.system.contains("Never change a numeric value"))
+        #expect(prompt.system.contains("check the entire final text"))
+    }
+
+    @Test func systemPromptSelectsEveryOutputPreferenceInstruction() {
+        let numberCases: [(NumberOutputPreference, String)] = [
+            (.automatic, "Choose the form that is natural for the value"),
+            (.digits, "Prefer Arabic numerals for genuine numeric values"),
+            (.words, "This exception overrides the word preference in every language"),
+        ]
+        for (preference, instruction) in numberCases {
+            let request = CorrectionRequest(
+                correctionMode: .polishPlus,
+                frontmostAppName: nil,
+                frontmostBundleID: nil,
+                appCategory: .unknown,
+                languageIDs: ["zh-CN", "en-US"],
+                rawTranscript: "测试 twenty five",
+                numberOutputPreference: preference,
+                userDictionary: []
+            )
+            let prompt = PromptBuilder.systemPrompt(for: request)
+            #expect(prompt.contains("numbers=\"\(preference.rawValue)\""))
+            #expect(prompt.contains(instruction))
+        }
+
+        let punctuationCases: [(PunctuationOutputPreference, String)] = [
+            (.normal, "Use punctuation natural for the output language"),
+            (.english, "Use ASCII punctuation for prose"),
+            (.spaces, "Prefer spaces instead of sentence punctuation"),
+        ]
+        for (preference, instruction) in punctuationCases {
+            let request = CorrectionRequest(
+                correctionMode: .polishPlus,
+                frontmostAppName: nil,
+                frontmostBundleID: nil,
+                appCategory: .unknown,
+                languageIDs: ["zh-CN", "en-US"],
+                rawTranscript: "测试 punctuation",
+                punctuationPreference: preference,
+                userDictionary: []
+            )
+            let prompt = PromptBuilder.systemPrompt(for: request)
+            #expect(prompt.contains("punctuation=\"\(preference.rawValue)\""))
+            #expect(prompt.contains(instruction))
+        }
     }
 
     @Test func userPromptCarriesRelevantVocabularyCandidates() {
@@ -840,7 +898,9 @@ struct PromptBuilderTests {
         let prompt = TextEditPromptBuilder.build(for: request)
 
         #expect(prompt.system.contains("not the language of spoken_instruction"))
-        #expect(prompt.system.contains("Follow output_preferences"))
+        #expect(prompt.system.contains("<output_preferences numbers=\"auto\" punctuation=\"normal\">"))
+        #expect(prompt.system.contains("Choose the form that is natural for the value"))
+        #expect(prompt.system.contains("Use punctuation natural for the output language"))
         #expect(prompt.system.contains("wrong language/script"))
         #expect(prompt.system.contains("language/script mismatch alone is evidence to reason about"))
         #expect(prompt.system.contains("Decision order:"))

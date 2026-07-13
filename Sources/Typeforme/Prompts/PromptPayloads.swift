@@ -2,15 +2,11 @@ import Foundation
 
 struct PromptOutputPreferencesPayload: Codable, Sendable, Equatable {
     let numbers: String
-    let numberInstruction: String
     let punctuation: String
-    let punctuationInstruction: String
 
     enum CodingKeys: String, CodingKey {
         case numbers
-        case numberInstruction = "number_instruction"
         case punctuation
-        case punctuationInstruction = "punctuation_instruction"
     }
 
     var isDefault: Bool {
@@ -21,13 +17,7 @@ struct PromptOutputPreferencesPayload: Codable, Sendable, Equatable {
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(numbers, forKey: .numbers)
-        if numberInstruction != "natural" {
-            try container.encode(numberInstruction, forKey: .numberInstruction)
-        }
         try container.encode(punctuation, forKey: .punctuation)
-        if punctuationInstruction != "natural" {
-            try container.encode(punctuationInstruction, forKey: .punctuationInstruction)
-        }
     }
 }
 

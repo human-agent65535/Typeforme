@@ -74,7 +74,14 @@ enum PromptBuilder {
         let systemPrompt = PromptOverrideStore.readSystemPrompt() ?? BuiltInPrompts.baseSystem
         let modePrompt = PromptOverrideStore.readModePrompt(for: request.correctionMode)
             ?? BuiltInPrompts.modePrompt(request.correctionMode)
-        var parts = [systemPrompt, modePrompt]
+        var parts = [
+            systemPrompt,
+            modePrompt,
+            OutputPreferencePrompt.systemPrompt(
+                numbers: request.numberOutputPreference,
+                punctuation: request.punctuationPreference
+            ),
+        ]
 
         let additional = AppSettings.promptAdditionalSystem.trimmingCharacters(in: .whitespacesAndNewlines)
         if !additional.isEmpty {
@@ -247,9 +254,7 @@ enum PromptBuilder {
 
         let outputPreferences = PromptOutputPreferencesPayload(
             numbers: request.numberOutputPreference.rawValue,
-            numberInstruction: request.numberOutputPreference.promptInstruction,
-            punctuation: request.punctuationPreference.rawValue,
-            punctuationInstruction: request.punctuationPreference.promptInstruction
+            punctuation: request.punctuationPreference.rawValue
         )
         let context = DictationPromptContextPayload(
             appName: includeAppMetadata ? request.frontmostAppName ?? "" : "",
@@ -277,6 +282,10 @@ enum PromptBuilder {
         <input_json>
         \(json)
         </input_json>
+        \(OutputPreferencePrompt.finalReminder(
+            numbers: NumberOutputPreference.normalized(input.context.outputPreferences.numbers),
+            punctuation: PunctuationOutputPreference.normalized(input.context.outputPreferences.punctuation)
+        ))
         Return exactly one JSON object and nothing else: {"text":"corrected transcript"}.
         """
     }

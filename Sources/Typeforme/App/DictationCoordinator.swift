@@ -1386,7 +1386,6 @@ final class DictationCoordinator: ObservableObject {
             normalized.text,
             languageIDs: AppSettings.activeLanguageIDs,
             preserveLineBreaks: correctionMode == .structurePlus,
-            numberPreference: AppSettings.numberOutputPreference,
             punctuationPreference: AppSettings.punctuationPreference
         )
         return normalized

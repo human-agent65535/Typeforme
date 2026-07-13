@@ -43,9 +43,13 @@ enum TextEditPromptBuilder {
         - context_before and context_after are read-only context. Use them to infer meaning, grammar, punctuation, references, casing, and domain terms, but never rewrite or include them unless they are naturally part of the target replacement.
         - If the same words appear multiple times in context, only the selected/targeted span is editable.
         - language_ids and language_instruction are ASR/script-normalization hints, not instructions to translate the output.
-        - Follow output_preferences for number formatting and punctuation style unless doing so would corrupt URLs, code, file paths, model names, exact IDs, decimals, or protected technical tokens.
 
         \(modeInstruction)
+
+        \(OutputPreferencePrompt.systemPrompt(
+            numbers: request.numberOutputPreference,
+            punctuation: request.punctuationPreference
+        ))
 
         Output language policy:
         - By default, the replacement must stay in the language/script of target_text and its surrounding context, not the language of spoken_instruction.
@@ -83,9 +87,7 @@ enum TextEditPromptBuilder {
         let languageIDs = ASRLanguageSelection.validatedIDs(request.languageIDs)
         let outputPreferences = PromptOutputPreferencesPayload(
             numbers: request.numberOutputPreference.rawValue,
-            numberInstruction: request.numberOutputPreference.promptInstruction,
-            punctuation: request.punctuationPreference.rawValue,
-            punctuationInstruction: request.punctuationPreference.promptInstruction
+            punctuation: request.punctuationPreference.rawValue
         )
         let context = TextEditPromptContextPayload(
             appName: request.frontmostAppName ?? "",
@@ -140,6 +142,10 @@ enum TextEditPromptBuilder {
         \(json)
         </input_json>
         """)
+        parts.append(OutputPreferencePrompt.finalReminder(
+            numbers: request.numberOutputPreference,
+            punctuation: request.punctuationPreference
+        ))
         parts.append("Return only the replacement JSON object described above.")
         return parts.joined(separator: "\n")
     }

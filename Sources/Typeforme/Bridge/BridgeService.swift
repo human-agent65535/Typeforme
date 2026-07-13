@@ -1157,7 +1157,6 @@ final class BridgeService {
             normalized.text,
             languageIDs: languageIDs,
             preserveLineBreaks: correctionMode == .structurePlus,
-            numberPreference: AppSettings.numberOutputPreference,
             punctuationPreference: AppSettings.punctuationPreference
         )
         return normalized
