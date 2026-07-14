@@ -2349,21 +2349,33 @@ final class AppState {
     func applyCorrectionMode(_ newMode: CorrectionMode) async {
         // Block mode changes while a request is mid-flight to avoid a stale
         // result coming back in the old mode while the UI shows the new one.
-        guard !isBusy else { return }
-        guard let source = currentRefineSource() else {
-            rawTranscript = ""
-            sessionID = nil
-            lastGeneratedResultText = nil
-            applyKeyboardDefaultCorrectionMode(newMode)
-            setPhase(.idle)
-            // Without a result to refine, a chip tap silently changed the
-            // default style — invisible, and it also retargets the keyboard's
-            // default. Say so.
-            showTransient("Default style: \(newMode.title)")
+        guard !isBusy,
+              newMode != correctionMode,
+              isCorrectionModeAvailable(newMode)
+        else { return }
+
+        applyKeyboardDefaultCorrectionMode(newMode)
+        guard correctionMode == newMode else { return }
+
+        if newMode == .fast {
+            showTransient(
+                NSLocalizedString(
+                    "Fast applies to next dictation",
+                    comment: "Toast after selecting Fast mode"
+                )
+            )
             return
         }
-        correctionMode = newMode
-        constrainKeyboardLivePreviewSourceToMacSettings()
+
+        guard let source = currentRefineSource() else {
+            setPhase(.idle)
+            let format = NSLocalizedString(
+                "Default style: %@",
+                comment: "Toast after changing the default correction style"
+            )
+            showTransient(String(format: format, newMode.title))
+            return
+        }
         do {
             await refreshRoute(
                 force: false,

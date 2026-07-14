@@ -54,6 +54,8 @@
 "Dictation result" = "听写结果";
 "Dictation result appears here after you speak." = "说话后，听写结果会显示在这里。";
 "Dismiss error" = "关闭错误提示";
+"Default style: %@" = "默认样式：%@";
+"Fast applies to next dictation" = "Fast 将从下次听写生效";
 
 // 设置状态卡片
 "Paired with Mac" = "已与 Mac 配对";

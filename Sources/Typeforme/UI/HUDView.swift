@@ -86,20 +86,28 @@ struct HUDView: View {
                     .truncationMode(.middle)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 Button {
-                    if errorUsesSettingsAction {
+                    if coordinator.presentationError?.recovery == .openSettings {
                         onOpenSettings()
                     } else {
                         coordinator.reset()
                     }
                 } label: {
-                    Image(systemName: errorUsesSettingsAction ? "gearshape" : "xmark")
+                    Image(systemName: coordinator.presentationError?.recovery == .openSettings ? "gearshape" : "xmark")
                         .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(errorUsesSettingsAction ? Color.secondary : Color.red)
+                        .foregroundStyle(
+                            coordinator.presentationError?.recovery == .openSettings
+                                ? Color.secondary
+                                : Color.red
+                        )
                         .frame(width: 24, height: 24)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .help(errorUsesSettingsAction ? "Open Settings" : "Cancel")
+                .help(
+                    coordinator.presentationError?.recovery == .openSettings
+                        ? "Open Settings"
+                        : "Cancel"
+                )
             } else if coordinator.state == .success, let warningText {
                 Text(warningText)
                     .font(.system(size: 13, weight: .semibold, design: .rounded))
@@ -173,34 +181,6 @@ struct HUDView: View {
     private var warningText: String? {
         let trimmed = coordinator.lastWarning?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return trimmed.isEmpty ? nil : trimmed
-    }
-
-    private var errorUsesSettingsAction: Bool {
-        let message = coordinator.lastError?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let lower = message.lowercased()
-        return [
-            "system settings",
-            "microphone permission",
-            "speech recognition permission",
-            "accessibility",
-            "client bridge",
-            "external llm",
-            "external model identifier",
-            "api key",
-            "api token",
-            "model file is missing",
-            "model not found",
-            "model download url",
-            "download url is empty",
-            "download failed with http",
-            "llama-server",
-            "bundled llama-server",
-            "nvidia nemotron asr runtime",
-            "does not support the selected languages",
-            "on-device recognition is unavailable",
-            "recognizer is unavailable",
-            "backend unavailable"
-        ].contains { lower.contains($0) }
     }
 
     private var voicePreviewText: String {
@@ -410,7 +390,11 @@ private struct ModeChipRow: View {
                     Task { await coordinator.requestCorrectionModeChange(to: mode) }
                 }
                 .help(mode.helpText)
-                .disabled(disabled || !AppSettings.isCorrectionModeAvailable(mode))
+                .disabled(
+                    disabled
+                        || active == mode
+                        || !AppSettings.isCorrectionModeAvailable(mode)
+                )
             }
         }
         .opacity(disabled ? 0.55 : 1.0)

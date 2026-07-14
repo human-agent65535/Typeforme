@@ -52,7 +52,7 @@ final class DictationCoordinator: ObservableObject {
     }
 
     @Published private(set) var state: DictationState = .idle
-    @Published private(set) var lastError: String?
+    @Published private(set) var presentationError: DictationPresentationError?
     @Published private(set) var lastWarning: String?
     @Published private(set) var lastTranscript: String = ""
     @Published private(set) var lastCorrected: String = ""
@@ -65,6 +65,8 @@ final class DictationCoordinator: ObservableObject {
     /// it, then cleared. Empty string = no preview.
     @Published private(set) var livePartialTranscript: String = ""
     @Published private(set) var transcriptionProgress: ASRTranscriptionProgress?
+
+    var lastError: String? { presentationError?.message }
 
     private let recorder = AudioRecorder()
     private var activeCorrectionConfiguration: CorrectionSessionConfiguration?
@@ -121,7 +123,10 @@ final class DictationCoordinator: ObservableObject {
         }
         recorder.onCaptureFailure = { [weak self] error in
             guard let self, self.state == .recording || self.isStartingDictation else { return }
-            self.reportError(error.localizedDescription)
+            self.reportError(
+                error.localizedDescription,
+                recovery: error == .permissionDenied ? .openSettings : .dismiss
+            )
             self.scheduleAutoReset(after: Self.errorResetDelay)
         }
     }
@@ -288,7 +293,7 @@ final class DictationCoordinator: ObservableObject {
             teardownLivePartialPreview(clearText: true, ifOwnedBy: sessionID)
             stopAfterStart = false
             clearActiveSession()
-            reportError(error.localizedDescription)
+            reportError(error.localizedDescription, recovery: .openSettings)
             scheduleAutoReset(after: Self.errorResetDelay)
         }
     }
@@ -458,7 +463,7 @@ final class DictationCoordinator: ObservableObject {
             endLivePartialPreviewAudio(sessionID: sessionID)
             audioLevel = 0
             guard activeSessionID == sessionID else { return }
-            reportError(error.localizedDescription)
+            reportError(error.localizedDescription, recovery: .openSettings)
             scheduleAutoReset(after: Self.errorResetDelay)
             return
         }
@@ -675,7 +680,10 @@ final class DictationCoordinator: ObservableObject {
                     )
                 } catch {
                     try await ensureActive(sessionID: sessionID, token: cancelToken)
-                    reportError("Text edit failed: \(error.localizedDescription)")
+                    reportError(
+                        "Text edit failed: \(error.localizedDescription)",
+                        recovery: .openSettings
+                    )
                     scheduleAutoReset(after: Self.errorResetDelay)
                 }
                 return
@@ -798,7 +806,7 @@ final class DictationCoordinator: ObservableObject {
                 transition(to: .idle)
                 return
             }
-            reportError(error.localizedDescription)
+            reportError(error.localizedDescription, recovery: .openSettings)
             scheduleAutoReset(after: Self.errorResetDelay)
         }
     }
@@ -892,7 +900,10 @@ final class DictationCoordinator: ObservableObject {
         lastWarning = nil
     }
 
-    func reportError(_ message: String) {
+    func reportError(
+        _ message: String,
+        recovery: DictationErrorRecovery = .dismiss
+    ) {
         activeStartOperation?.task.cancel()
         activeStartOperation = nil
         activeProcessingTask?.cancel()
@@ -908,7 +919,10 @@ final class DictationCoordinator: ObservableObject {
         stopAfterStart = false
         recordingStartedAt = nil
         teardownLivePartialPreview(clearText: true)
-        lastError = message
+        presentationError = DictationPresentationError(
+            message: message,
+            recovery: recovery
+        )
         lastWarning = nil
         Log.coordinator.error("\(message, privacy: .public)")
         DictationErrorLog.shared.record(message)
@@ -932,7 +946,7 @@ final class DictationCoordinator: ObservableObject {
         clearActiveSession()
         stopAfterStart = false
         recordingStartedAt = nil
-        lastError = nil
+        presentationError = nil
         lastWarning = nil
         lastTranscript = ""
         lastCorrected = ""
@@ -1041,13 +1055,27 @@ final class DictationCoordinator: ObservableObject {
 
     // MARK: - Mode switching
 
-    /// Style chips in the HUD action bar refine the focused input's current
-    /// text in place. Only valid while idle with the bar expanded — during an
-    /// active dictation the chips are disabled.
+    /// A style chip changes the next-dictation default. Refine modes also
+    /// rewrite the current focused text when there is a usable target; Fast
+    /// deliberately leaves the current text unchanged.
     func requestCorrectionModeChange(to newMode: CorrectionMode) async {
         guard acceptsNewUserOperations,
-              canRefineFocusedInputFromHUD
+              canRefineFocusedInputFromHUD,
+              AppSettings.isCorrectionModeAvailable(newMode),
+              newMode != (previewCorrectionMode ?? AppSettings.correctionMode)
         else { return }
+
+        UserDefaults.standard.set(newMode.rawValue, forKey: AppSettings.Keys.correctionMode)
+        previewCorrectionMode = newMode
+        if !newMode.usesRefine {
+            lastWarning = NSLocalizedString(
+                "Fast applies to next dictation",
+                comment: "HUD feedback after selecting Fast mode"
+            )
+            return
+        }
+
+        lastWarning = nil
         let taskID = UUID()
         let task = Task { @MainActor [weak self] in
             guard let self else { return }
@@ -1178,16 +1206,6 @@ final class DictationCoordinator: ObservableObject {
             return ASRFactory.shared.getInstalled(source: source)
         }
         return ASRFactory.shared.get(sources: settings.canonicalRecognitionSources)
-    }
-
-    private func validateCorrectionModeAvailable(_ correctionMode: CorrectionMode) throws {
-        if correctionMode == .fast {
-            _ = try fastRouteForCurrentSession()
-            return
-        }
-        guard !AppSettings.enabledRecognitionSources.isEmpty else {
-            throw ASRAudioSupportError.httpStatus(503, "No ASR source enabled")
-        }
     }
 
     private func fastRouteForCurrentSession() throws -> FastASRRoute {
@@ -1811,7 +1829,7 @@ final class DictationCoordinator: ObservableObject {
                 alternateTranscripts: []
             )
             guard await isActive(sessionID: sessionID, token: cancelToken) else { return }
-            reportError(error.localizedDescription)
+            reportError(error.localizedDescription, recovery: .openSettings)
             scheduleAutoReset(after: Self.errorResetDelay)
         }
     }
@@ -1844,8 +1862,6 @@ final class DictationCoordinator: ObservableObject {
 
         let snapshot = FrontmostAppCapture.snapshot()
         guard let target = TextEditTargetCapture.snapshot(in: snapshot, allowFocusedValue: true) else {
-            reportError("Style needs selected or existing text")
-            scheduleAutoReset(after: Self.errorResetDelay)
             return
         }
 
@@ -1873,12 +1889,7 @@ final class DictationCoordinator: ObservableObject {
 
         do {
             let text: String
-            if !newMode.usesRefine {
-                try validateCorrectionModeAvailable(newMode)
-                try await ensureActive(sessionID: sessionID, token: cancelToken)
-                lastWarning = nil
-                text = sourceText
-            } else if processingMode == .client {
+            if processingMode == .client {
                 let client = try await resolveRemoteBridgeClient(
                     configuration: clientBridgeConfiguration
                 )
@@ -1989,7 +2000,10 @@ final class DictationCoordinator: ObservableObject {
             returnToIdleIfOwned(sessionID: sessionID)
         } catch {
             guard activeSessionID == sessionID else { return }
-            reportError("Refine failed: \(error.localizedDescription)")
+            reportError(
+                "Refine failed: \(error.localizedDescription)",
+                recovery: .openSettings
+            )
             scheduleAutoReset(after: Self.errorResetDelay)
         }
     }
@@ -2111,7 +2125,7 @@ final class DictationCoordinator: ObservableObject {
             returnToIdleIfOwned(sessionID: sessionID)
         } catch {
             guard activeSessionID == sessionID else { return }
-            reportError(error.localizedDescription)
+            reportError(error.localizedDescription, recovery: .openSettings)
             scheduleAutoReset(after: Self.errorResetDelay)
         }
     }
@@ -2157,7 +2171,7 @@ final class DictationCoordinator: ObservableObject {
             returnToIdleIfOwned(sessionID: sessionID)
         } catch {
             guard activeSessionID == sessionID else { return }
-            reportError(error.localizedDescription)
+            reportError(error.localizedDescription, recovery: .openSettings)
             scheduleAutoReset(after: Self.errorResetDelay)
         }
     }

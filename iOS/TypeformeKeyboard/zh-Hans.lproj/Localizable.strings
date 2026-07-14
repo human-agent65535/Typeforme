@@ -12,6 +12,7 @@
 "Editing" = "编辑中";
 "Understanding" = "理解中";
 "Style saved" = "样式已保存";
+"Fast applies to next dictation" = "Fast 将从下次听写生效";
 "Restored" = "已还原";
 "Undo unavailable" = "无法撤销";
 "Inserted" = "已插入";

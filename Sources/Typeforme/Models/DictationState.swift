@@ -11,3 +11,13 @@ enum DictationState: String, Sendable, CustomStringConvertible {
 
     var description: String { rawValue }
 }
+
+enum DictationErrorRecovery: Sendable, Equatable {
+    case dismiss
+    case openSettings
+}
+
+struct DictationPresentationError: Sendable, Equatable {
+    let message: String
+    let recovery: DictationErrorRecovery
+}

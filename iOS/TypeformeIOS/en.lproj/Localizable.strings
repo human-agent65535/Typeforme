@@ -54,6 +54,8 @@
 "Dictation result" = "Dictation result";
 "Dictation result appears here after you speak." = "Dictation result appears here after you speak.";
 "Dismiss error" = "Dismiss error";
+"Default style: %@" = "Default style: %@";
+"Fast applies to next dictation" = "Fast applies to next dictation";
 
 // Setup status card
 "Paired with Mac" = "Paired with Mac";

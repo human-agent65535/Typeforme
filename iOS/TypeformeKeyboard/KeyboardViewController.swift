@@ -6506,6 +6506,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     @objc private func selectCorrectionModeButton(_ sender: UIButton) {
         guard let preset = correctionModeButtons.first(where: { $0.button === sender })?.preset else { return }
+        guard preset != correctionMode else { return }
         lightHaptic()
         // Close the popover before kicking off the rewrite so the user sees
         // the orb again immediately rather than the popover lingering.
@@ -6628,7 +6629,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             item.button.titleLabel?.lineBreakMode = .byTruncatingTail
             item.button.titleLabel?.adjustsFontSizeToFitWidth = true
             item.button.titleLabel?.minimumScaleFactor = 0.7
-            item.button.isEnabled = isEnabled && isAvailable
+            item.button.isEnabled = isEnabled && isAvailable && !isSelected
             item.button.alpha = isEnabled && isAvailable ? 1 : 0.45
             item.button.accessibilityTraits = isSelected ? [.button, .selected] : .button
         }
@@ -6739,7 +6740,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func rewriteCurrentInputOrPasteboard(using preset: CorrectionMode) {
-        guard isCorrectionModeAvailable(preset) else { return }
+        guard preset != correctionMode,
+              isCorrectionModeAvailable(preset)
+        else { return }
         guard hasFullAccess else {
             openHostForFullAccessSetup()
             return
@@ -6752,6 +6755,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         pendingDefaultCorrectionMode = preset
         lastCorrectionModeButtonSignature = ""
         updateCorrectionModeButtons()
+        if preset == .fast {
+            saveCorrectionModeForNextRecording(using: preset)
+            return
+        }
         guard let target = currentTextRewriteTarget(),
               !target.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else {
@@ -6808,7 +6815,16 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     private func saveCorrectionModeForNextRecording(using preset: CorrectionMode) {
         let command = KeyboardBridgeCommand(action: .configure, correctionMode: preset.rawValue)
-        showTextKeyboardStatus(NSLocalizedString("Style saved", comment: "Inline status after choosing a style without rewrite text"))
+        let feedback = preset == .fast
+            ? NSLocalizedString(
+                "Fast applies to next dictation",
+                comment: "Inline status after selecting Fast mode"
+            )
+            : NSLocalizedString(
+                "Style saved",
+                comment: "Inline status after choosing a style without rewrite text"
+            )
+        showTextKeyboardStatus(feedback)
 
         styleConfigureTask?.cancel()
         let bridgeToken = hostKeyboardBridgeToken
@@ -6825,7 +6841,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                     guard !Task.isCancelled else { return }
                     self.styleConfigureTask = nil
                     self.applyBridgeStatus(status)
-                    self.showTextKeyboardStatus(NSLocalizedString("Style saved", comment: "Inline status after choosing a style without rewrite text"))
+                    self.showTextKeyboardStatus(feedback)
                 }
             } catch {
                 guard !Task.isCancelled else { return }

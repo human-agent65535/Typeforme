@@ -267,7 +267,9 @@ private struct ModeChipsRow: View {
                     ModeChip(
                         mode: mode,
                         isSelected: state.correctionMode == mode,
-                        isDisabled: state.isBusy || !state.isCorrectionModeAvailable(mode)
+                        isDisabled: state.isBusy
+                            || state.correctionMode == mode
+                            || !state.isCorrectionModeAvailable(mode)
                     ) {
                         Task { await state.applyCorrectionMode(mode) }
                     }
