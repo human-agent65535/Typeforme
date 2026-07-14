@@ -34,13 +34,25 @@ enum TextEditTargetCapture {
         in appSnapshot: FrontmostAppSnapshot?,
         allowFocusedValue: Bool
     ) -> TextEditTargetSnapshot? {
-        guard AppPermissions.accessibilityTrusted else { return nil }
-        guard let appSnapshot else { return nil }
+        guard AppPermissions.accessibilityTrusted else {
+            Log.textCommit.notice("edit target capture unavailable reason=accessibility_not_trusted")
+            return nil
+        }
+        guard let appSnapshot else {
+            Log.textCommit.notice("edit target capture unavailable reason=no_frontmost_app")
+            return nil
+        }
         let app = AXUIElementCreateApplication(appSnapshot.pid)
         AXUIElementSetMessagingTimeout(app, 0.25)
-        guard let focused = focusedElement(in: app) else { return nil }
+        guard let focused = focusedElement(in: app) else {
+            Log.textCommit.notice("edit target capture unavailable reason=no_focused_element pid=\(appSnapshot.pid)")
+            return nil
+        }
         AXUIElementSetMessagingTimeout(focused, 0.25)
-        guard !isSecureTextElement(focused) else { return nil }
+        guard !isSecureTextElement(focused) else {
+            Log.textCommit.notice("edit target capture unavailable reason=secure_input pid=\(appSnapshot.pid)")
+            return nil
+        }
 
         let selectedRange = selectedRange(in: focused)
         if let selected = stringAttribute(kAXSelectedTextAttribute, from: focused),
@@ -59,7 +71,13 @@ enum TextEditTargetCapture {
         guard allowFocusedValue,
               let value = stringAttribute(kAXValueAttribute, from: focused),
               !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        else { return nil }
+        else {
+            let role = stringAttribute(kAXRoleAttribute, from: focused) ?? "unknown"
+            Log.textCommit.notice(
+                "edit target capture unavailable reason=no_editable_text pid=\(appSnapshot.pid) role=\(role, privacy: .public) allow_focused_value=\(allowFocusedValue)"
+            )
+            return nil
+        }
 
         return TextEditTargetSnapshot(
             kind: .focusedValue,

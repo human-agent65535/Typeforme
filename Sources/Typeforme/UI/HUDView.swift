@@ -3,7 +3,7 @@ import KeyboardShortcuts
 
 /// Bottom-centered glass HUD. Idle collapses to a mic pip; clicking it (or
 /// starting a dictation) opens the expanded layout: live transcript text on
-/// top, action bar below. The bar morphs by state — Wand + style chips at
+/// top, action bar below. The bar morphs by state — Dictate, Wand, and style chips at
 /// idle, pulsing dot + waveform + elapsed timer while recording, processing
 /// label while transcribing/refining — and ✕ stays live as Cancel. Brief
 /// terminal states (inserting/success/error) use a compact capsule.
@@ -559,8 +559,20 @@ private struct VoicePreviewActionBar: View {
     private var idleCluster: some View {
         HStack(spacing: 4) {
             VoicePreviewBarButton(
+                title: "Dictate",
+                systemImage: "mic.fill",
+                help: "Start normal dictation in the focused text field"
+            ) {
+                Task { await coordinator.toggleDictation() }
+            }
+
+            Divider()
+                .frame(height: 18)
+
+            VoicePreviewBarButton(
                 title: "Wand",
-                systemImage: "wand.and.stars"
+                systemImage: "wand.and.stars",
+                help: "Speak an edit command for selected or existing text"
             ) {
                 Task { await coordinator.togglePreviewCommand() }
             }
@@ -714,6 +726,7 @@ private struct RecordingElapsedLabel: View {
 private struct VoicePreviewBarButton: View {
     let title: String
     let systemImage: String
+    let help: String
     let action: () -> Void
 
     var body: some View {
@@ -722,7 +735,7 @@ private struct VoicePreviewBarButton: View {
                 .foregroundStyle(Color.primary)
         }
         .buttonStyle(.plain)
-        .help("Speak a command for the current input")
+        .help(help)
     }
 }
 

@@ -215,14 +215,22 @@ final class DictationCoordinator: ObservableObject {
         activeSessionID = sessionID
         activeCancelToken = cancelToken
         activeBridgeDictateJobID = Self.bridgeJobID(prefix: "mac_dictate", sessionID: sessionID)
-        clearPreviewState()
-        voicePreviewHUDExpanded = true
         stopAfterStart = false
         resetTask?.cancel(); resetTask = nil
         captureFrontmost()
         activeTextEditIntent = intent
         activeFastASRRoute = nil
         activeCorrectionConfiguration = nil
+        guard captureDictationContextAndTarget(intent: intent) else {
+            let message = intent == .command
+                ? "Wand needs selected or existing text. Use Dictate for an empty text field."
+                : "Focus a text field first"
+            reportError(message)
+            scheduleAutoReset(after: Self.errorResetDelay)
+            return
+        }
+        clearPreviewState()
+        voicePreviewHUDExpanded = true
 
         do {
             let sessionSettings = try DictationSessionSettings.capture()
@@ -270,13 +278,6 @@ final class DictationCoordinator: ObservableObject {
                 return
             }
             transition(to: .recording)
-            guard captureDictationContextAndTarget(intent: intent) else {
-                await recorder.discard()
-                audioLevel = 0
-                reportError("Select text or focus a text field first")
-                scheduleAutoReset(after: Self.errorResetDelay)
-                return
-            }
             scheduleAutoStop(after: sessionSettings.maxRecordingDuration)
             if stopAfterStart {
                 stopAfterStart = false
@@ -296,6 +297,9 @@ final class DictationCoordinator: ObservableObject {
         clearDictationContext()
         if let intent {
             activeTextEditIntent = intent
+            Log.textCommit.notice(
+                "edit target capture requested pid=\(self.frontmostSnapshot?.pid ?? -1) bundle=\(self.frontmostSnapshot?.bundleID ?? "unknown", privacy: .public)"
+            )
             activeTextEditTarget = TextEditTargetCapture.snapshot(
                 in: frontmostSnapshot,
                 allowFocusedValue: intent == .command
@@ -1840,7 +1844,7 @@ final class DictationCoordinator: ObservableObject {
 
         let snapshot = FrontmostAppCapture.snapshot()
         guard let target = TextEditTargetCapture.snapshot(in: snapshot, allowFocusedValue: true) else {
-            reportError("Select text or focus a text field first")
+            reportError("Style needs selected or existing text")
             scheduleAutoReset(after: Self.errorResetDelay)
             return
         }

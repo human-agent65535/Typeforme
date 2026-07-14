@@ -3,6 +3,7 @@ import AppKit
 /// Frameless, non-activating panel. Showing this panel must not steal focus
 /// from the user's current app.
 final class HUDPanel: NSPanel {
+    var allowsKeyFocus = false
     var manualDragRegionHeight: CGFloat = 0
     var onManualDragBegan: (() -> Void)?
     var onManualDragMoved: (() -> Void)?
@@ -42,7 +43,10 @@ final class HUDPanel: NSPanel {
         minSize = .zero
     }
 
-    override var canBecomeKey: Bool { true }
+    // Input actions operate on the text control focused in another app, so
+    // the panel stays non-key while they are available. A completed preview
+    // may opt in so its text remains selectable after the commit is finished.
+    override var canBecomeKey: Bool { allowsKeyFocus }
     override var canBecomeMain: Bool { false }
 
     override func sendEvent(_ event: NSEvent) {
