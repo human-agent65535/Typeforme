@@ -15,25 +15,6 @@ private struct BridgeListenerSettings: Equatable {
     }
 }
 
-private actor AsyncDeadlineRace {
-    private var result: Bool?
-    private var continuation: CheckedContinuation<Bool, Never>?
-
-    func resolve(_ value: Bool) {
-        guard result == nil else { return }
-        result = value
-        continuation?.resume(returning: value)
-        continuation = nil
-    }
-
-    func wait() async -> Bool {
-        if let result { return result }
-        return await withCheckedContinuation { continuation in
-            self.continuation = continuation
-        }
-    }
-}
-
 enum AsyncDeadline {
     /// Races an unstructured operation against a deadline. The losing task is
     /// cancelled but deliberately not awaited, so a non-cooperative shutdown
@@ -42,27 +23,19 @@ enum AsyncDeadline {
         timeoutNanoseconds: UInt64,
         operation: @escaping @Sendable () async -> Void
     ) async -> Bool {
-        let race = AsyncDeadlineRace()
         let operationTask = Task {
             await operation()
-            await race.resolve(true)
         }
-        let timeoutTask = Task {
-            do {
-                try await Task.sleep(nanoseconds: timeoutNanoseconds)
-            } catch {
-                return
-            }
-            await race.resolve(false)
-        }
-
-        let completed = await race.wait()
-        if completed {
-            timeoutTask.cancel()
-        } else {
+        do {
+            try await AsyncTaskBarrier.wait(
+                for: operationTask,
+                timeoutNanoseconds: timeoutNanoseconds
+            )
+            return true
+        } catch {
             operationTask.cancel()
+            return false
         }
-        return completed
     }
 }
 
@@ -86,9 +59,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var comboHotkeyReleaseWatchdog: Task<Void, Never>?
     private var commandTextEditHotkeyReleaseWatchdog: Task<Void, Never>?
     private var terminationTask: Task<Void, Never>?
+    private var runtimeTransitionTask: Task<Void, Never>?
+    private var requestedProcessingMode: ProcessingMode?
+    private var appliedProcessingMode: ProcessingMode?
+    private var applicationIsTerminating = false
     private static let comboHotkeyReleaseWatchdogDelay: UInt64 = 1_500_000_000
     private static let commandTextEditHotkeyReleaseWatchdogDelay: UInt64 = 1_500_000_000
-    private static let terminationShutdownDeadline: UInt64 = 4_000_000_000
+    private static let terminationShutdownDeadline: UInt64 = 6_000_000_000
     private var lastComboHotkeyPressAt: Date?
     private var lastCommandTextEditHotkeyPressAt: Date?
     private static let hotkeyBounceWindow: TimeInterval = 0.35
@@ -155,12 +132,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .publisher(for: UserDefaults.didChangeNotification)
             .map { _ in BridgeListenerSettings.current }
             .removeDuplicates()
-            .sink { [weak self] settings in
-                if AppSettings.processingMode == .server, settings.enabled {
-                    self?.bridgeServer.applySettings()
-                } else {
-                    self?.bridgeServer.stop()
-                }
+            .sink { [weak self] _ in
+                self?.applyBridgeListenerSettings()
             }
             .store(in: &cancellables)
 
@@ -177,6 +150,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .publisher(for: NSApplication.didBecomeActiveNotification)
             .sink { [weak self] _ in
                 self?.clientSettingsSync.syncIfNeeded()
+            }
+            .store(in: &cancellables)
+
+        NotificationCenter.default
+            .publisher(for: .clientBridgeConfigurationDidChange)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                self?.clientSettingsSync.configurationDidChange()
             }
             .store(in: &cancellables)
 
@@ -202,16 +183,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Stops owned ASR and correction helper subprocesses before the system
     /// kills the app.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        bridgeServer.stop()
+        applicationIsTerminating = true
+        coordinator.prepareForApplicationShutdown()
+        let bridgeShutdown = bridgeServer.stop()
+        let pendingRuntimeTransition = runtimeTransitionTask
+        pendingRuntimeTransition?.cancel()
         terminationTask?.cancel()
         terminationTask = Task { @MainActor in
             let completed = await AsyncDeadline.run(
                 timeoutNanoseconds: Self.terminationShutdownDeadline
             ) { @MainActor in
-                await self.coordinator.shutdown()
-                await ASRFactory.shared.stopQwenLlama()
-                await ASRFactory.shared.stopNvidiaNemotron()
-                await CorrectorFactory.shared.shutdownAll()
+                // The serial mode worker owns any in-progress preload. Join it
+                // before tearing down the sessions that use those runtimes.
+                await pendingRuntimeTransition?.value
+                async let coordinatorShutdown: Void = self.coordinator.shutdown()
+                async let bridgeCleanup: Void = bridgeShutdown.value
+                _ = await (coordinatorShutdown, bridgeCleanup)
+                await self.shutdownRuntimeModels()
             }
             if !completed {
                 Log.app.error("Shutdown timed out; allowing macOS termination")
@@ -222,11 +210,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        applicationIsTerminating = true
         bridgeServer.stop()
         clientSettingsSync.cancel()
         holdMonitor.uninstall()
         comboHotkeyReleaseWatchdog?.cancel()
         commandTextEditHotkeyReleaseWatchdog?.cancel()
+        runtimeTransitionTask?.cancel()
+        runtimeTransitionTask = nil
         terminationTask?.cancel()
         if let m = escMonitor { NSEvent.removeMonitor(m); escMonitor = nil }
         if let m = localEscMonitor { NSEvent.removeMonitor(m); localEscMonitor = nil }
@@ -248,7 +239,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func showSetupGuideIfNeeded() {
-        guard !AppSettings.setupGuideCompleted else { return }
+        guard AppSettings.shouldAutomaticallyShowSetupGuide else { return }
         AppSettings.setSetupGuideHasShown(true)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
             self?.openSetupGuide()
@@ -347,6 +338,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func handleHoldStart() {
         Task { @MainActor in
+            guard coordinator.acceptsNewUserOperations else { return }
             // Mirror toggleDictation's terminal-state handling: a fresh
             // double-tap-hold while the preview / wand toolbar is still on
             // screen must reset and start a new dictation, otherwise the
@@ -422,30 +414,86 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func preloadRuntimeModels() {
-        guard AppSettings.processingMode == .server else {
-            Log.app.info("Skipping local model preload in client mode")
-            return
-        }
-        Task { @MainActor in
-            await ASRFactory.shared.preloadCachedActiveModel()
-            _ = await CorrectorFactory.shared.preloadActiveModels()
-        }
+    private func preloadRuntimeModels() async {
+        await ASRFactory.shared.preloadCachedActiveModel()
+        guard !Task.isCancelled else { return }
+        _ = await CorrectorFactory.shared.preloadActiveModels()
+    }
+
+    private func shutdownRuntimeModels() async {
+        async let qwenShutdown: Void = ASRFactory.shared.stopQwenLlama()
+        async let nvidiaShutdown: Void = ASRFactory.shared.stopNvidiaNemotron()
+        async let correctorShutdown: Void = CorrectorFactory.shared.shutdownAll()
+        _ = await (qwenShutdown, nvidiaShutdown, correctorShutdown)
     }
 
     private func applyProcessingMode(_ mode: ProcessingMode) {
+        guard !applicationIsTerminating,
+              requestedProcessingMode != mode || appliedProcessingMode != mode
+        else { return }
+
+        let isInitialMode = requestedProcessingMode == nil && appliedProcessingMode == nil
+        requestedProcessingMode = mode
+        if !isInitialMode {
+            // Closing admission is synchronous. The single worker below then
+            // cancels the current operation and moves runtimes in one order.
+            coordinator.beginRuntimeTransition()
+        }
+        guard runtimeTransitionTask == nil else { return }
+
+        runtimeTransitionTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.runProcessingModeTransitions()
+        }
+    }
+
+    private func runProcessingModeTransitions() async {
+        while !Task.isCancelled,
+              let mode = requestedProcessingMode,
+              mode != appliedProcessingMode {
+            if coordinator.requiresRuntimeDiscard {
+                await coordinator.cancelDictation()
+            }
+            guard !Task.isCancelled else { break }
+            guard await transitionProcessingMode(to: mode) else { break }
+            appliedProcessingMode = mode
+        }
+
+        runtimeTransitionTask = nil
+        if !applicationIsTerminating,
+           requestedProcessingMode == appliedProcessingMode {
+            coordinator.endRuntimeTransition()
+        }
+    }
+
+    private func transitionProcessingMode(to mode: ProcessingMode) async -> Bool {
         switch mode {
         case .server:
+            clientSettingsSync.cancel()
+            // Health, pairing, and settings stay available while local models
+            // warm. Real mode changes have already quiesced dictation above.
             bridgeServer.applySettings()
-            preloadRuntimeModels()
+            await preloadRuntimeModels()
+            guard !Task.isCancelled else { return false }
+
         case .client:
-            bridgeServer.stop()
+            let bridgeShutdown = bridgeServer.stop()
             clientSettingsSync.syncIfNeeded(force: true)
-            Task { @MainActor in
-                await ASRFactory.shared.stopQwenLlama()
-                await ASRFactory.shared.stopNvidiaNemotron()
-                await CorrectorFactory.shared.shutdownAll()
-            }
+            // Bridge previews own ASR leases, so listener cleanup precedes the
+            // shared runtime shutdown.
+            await bridgeShutdown.value
+            guard !Task.isCancelled else { return false }
+            await shutdownRuntimeModels()
+        }
+        return !Task.isCancelled
+    }
+
+    private func applyBridgeListenerSettings() {
+        if AppSettings.processingMode == .server,
+           requestedProcessingMode == .server {
+            bridgeServer.applySettings()
+        } else {
+            bridgeServer.stop()
         }
     }
 }

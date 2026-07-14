@@ -14,6 +14,7 @@ struct HUDView: View {
     let onOpenSettings: () -> Void
 
     private static let cornerRadius: CGFloat = 24
+    private static let voicePreviewBottomID = "typeforme.voice-preview.bottom"
 
     /// Expanded layout: live transcript text on top (when present), action
     /// bar below. Active while dictating and while the idle bar is open.
@@ -128,13 +129,29 @@ struct HUDView: View {
     private var voicePreviewBody: some View {
         VStack(alignment: .leading, spacing: voicePreviewText.isEmpty ? 0 : 12) {
             if !voicePreviewText.isEmpty {
-                Text(voicePreviewText)
-                    .font(.system(size: 13.5, weight: .medium, design: .rounded))
-                    .foregroundStyle(.primary)
-                    .multilineTextAlignment(.leading)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .textSelection(.enabled)
+                ScrollViewReader { proxy in
+                    ScrollView(.vertical) {
+                        VStack(alignment: .leading, spacing: 0) {
+                            Text(voicePreviewText)
+                                .font(.system(size: 13.5, weight: .medium, design: .rounded))
+                                .foregroundStyle(.primary)
+                                .multilineTextAlignment(.leading)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .textSelection(.enabled)
+                            Color.clear
+                                .frame(height: 1)
+                                .id(Self.voicePreviewBottomID)
+                        }
+                    }
+                    .onAppear {
+                        proxy.scrollTo(Self.voicePreviewBottomID, anchor: .bottom)
+                    }
+                    .onChange(of: voicePreviewText) {
+                        proxy.scrollTo(Self.voicePreviewBottomID, anchor: .bottom)
+                    }
+                }
+                .frame(maxHeight: .infinity)
             }
             if let warningText {
                 Label(warningText, systemImage: "exclamationmark.triangle.fill")

@@ -369,6 +369,14 @@ struct BridgeLivePreviewFinishResponse: Codable, Sendable {
     }
 }
 
+struct BridgeLivePreviewCancelResponse: Codable, Sendable {
+    let sessionID: String
+
+    enum CodingKeys: String, CodingKey {
+        case sessionID = "session_id"
+    }
+}
+
 struct BridgeLivePreviewSocketControl: Codable, Sendable {
     enum ControlType: String, Codable, Sendable {
         case finish

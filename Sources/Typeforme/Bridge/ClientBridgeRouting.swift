@@ -1,5 +1,11 @@
 import Foundation
 
+extension Notification.Name {
+    static let clientBridgeConfigurationDidChange = Notification.Name(
+        "typeformeClientBridgeConfigurationDidChange"
+    )
+}
+
 struct ClientBridgeConfiguration: Sendable, Equatable {
     var localBridgeURLs: [String]
     var cloudBridgeURL: String

@@ -142,4 +142,81 @@ struct BridgeConnectionStoreTests {
         #expect(client.count(for: .settingsRead) == 1)
     }
 
+    @Test func evictsLeastRecentlyUsedClientAtDeterministicBound() {
+        var accumulator = BridgeConnectionAccumulator(maxClients: 2)
+        let now = Date(timeIntervalSince1970: 4_000)
+
+        func activity(id: String, offset: TimeInterval) -> BridgeClientRequestActivity {
+            BridgeClientRequestActivity(
+                endpoint: .health,
+                clientHost: "127.0.0.1",
+                clientPort: nil,
+                userAgent: nil,
+                clientIdentityID: id,
+                statusCode: 200,
+                occurredAt: now.addingTimeInterval(offset),
+                latencyMs: 1,
+                appName: nil,
+                bundleID: nil
+            )
+        }
+
+        _ = accumulator.record(activity(id: "client-old", offset: 0))
+        _ = accumulator.record(activity(id: "client-new", offset: 1))
+        let snapshot = accumulator.record(activity(id: "client-latest", offset: 2))
+
+        #expect(snapshot.clients.map(\.id) == ["client-latest", "client-new"])
+        #expect(snapshot.totalRequests == 3)
+    }
+
+    @Test func resetPreservesClientCardinalityBound() {
+        var accumulator = BridgeConnectionAccumulator(maxClients: 1)
+        let now = Date(timeIntervalSince1970: 5_000)
+        func activity(_ id: String, _ offset: TimeInterval) -> BridgeClientRequestActivity {
+            BridgeClientRequestActivity(
+                endpoint: .health,
+                clientHost: "127.0.0.1",
+                clientPort: nil,
+                userAgent: nil,
+                clientIdentityID: id,
+                statusCode: 200,
+                occurredAt: now.addingTimeInterval(offset),
+                latencyMs: 1,
+                appName: nil,
+                bundleID: nil
+            )
+        }
+
+        _ = accumulator.reset()
+        _ = accumulator.record(activity("client-a", 0))
+        let snapshot = accumulator.record(activity("client-b", 1))
+
+        #expect(snapshot.clients.map(\.id) == ["client-b"])
+    }
+
+    @Test func lruTieEvictsLexicographicallyFirstClientID() {
+        var accumulator = BridgeConnectionAccumulator(maxClients: 2)
+        let timestamp = Date(timeIntervalSince1970: 6_000)
+        func activity(_ id: String, at date: Date) -> BridgeClientRequestActivity {
+            BridgeClientRequestActivity(
+                endpoint: .health,
+                clientHost: "127.0.0.1",
+                clientPort: nil,
+                userAgent: nil,
+                clientIdentityID: id,
+                statusCode: 200,
+                occurredAt: date,
+                latencyMs: 1,
+                appName: nil,
+                bundleID: nil
+            )
+        }
+
+        _ = accumulator.record(activity("client-b", at: timestamp))
+        _ = accumulator.record(activity("client-a", at: timestamp))
+        let snapshot = accumulator.record(activity("client-c", at: timestamp.addingTimeInterval(1)))
+
+        #expect(Set(snapshot.clients.map(\.id)) == Set(["client-b", "client-c"]))
+    }
+
 }

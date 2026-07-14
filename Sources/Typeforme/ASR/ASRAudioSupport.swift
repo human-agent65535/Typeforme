@@ -5,6 +5,7 @@ import Foundation
 enum ASRAudioSupportError: LocalizedError {
     case audioConversionFailed(String)
     case requestBodyFailed(String)
+    case invalidResponse(String)
     case httpStatus(Int, String)
     case timeout(seconds: TimeInterval)
     case emptyTranscript
@@ -16,6 +17,8 @@ enum ASRAudioSupportError: LocalizedError {
             return "Could not convert audio for ASR upload: \(detail)"
         case .requestBodyFailed(let detail):
             return "Could not build ASR request body: \(detail)"
+        case .invalidResponse(let detail):
+            return "ASR server returned an invalid response: \(detail)"
         case .httpStatus(let code, let body):
             return "ASR server returned HTTP \(code): \(body)"
         case .timeout(let seconds):

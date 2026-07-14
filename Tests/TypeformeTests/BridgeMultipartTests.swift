@@ -323,6 +323,63 @@ struct BridgeMultipartTests {
         }
     }
 
+    @Test func orphanCleanupRemovesOnlyInactiveProcessAndExpiredUnownedUploads() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("typeforme-orphan-cleanup-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let currentPID: Int32 = 111
+        let currentNonce = UUID().uuidString.lowercased()
+        let currentPrefix = "typeforme-bridge-upload_\(currentPID)_\(currentNonce)_"
+        let current = directory.appendingPathComponent("\(currentPrefix)\(UUID().uuidString.lowercased()).flac")
+        let deadProcess = directory.appendingPathComponent(
+            "typeforme-bridge-upload_222_\(UUID().uuidString.lowercased())_\(UUID().uuidString.lowercased()).flac"
+        )
+        let liveProcess = directory.appendingPathComponent(
+            "typeforme-bridge-upload_333_\(UUID().uuidString.lowercased())_\(UUID().uuidString.lowercased()).flac"
+        )
+        let expiredUnowned = directory.appendingPathComponent("\(UUID().uuidString).flac")
+        let retainedUnowned = directory.appendingPathComponent("\(UUID().uuidString).flac")
+        let expiredUnrecognized = directory.appendingPathComponent("abandoned.flac")
+        let unrelated = directory.appendingPathComponent("notes.flac")
+        for file in [current, deadProcess, liveProcess, expiredUnowned, retainedUnowned, expiredUnrecognized, unrelated] {
+            try Data("test".utf8).write(to: file)
+        }
+
+        let now = Date(timeIntervalSince1970: 50_000)
+        try FileManager.default.setAttributes(
+            [.modificationDate: now.addingTimeInterval(-3_600)],
+            ofItemAtPath: expiredUnowned.path
+        )
+        try FileManager.default.setAttributes(
+            [.modificationDate: now.addingTimeInterval(-3_600)],
+            ofItemAtPath: expiredUnrecognized.path
+        )
+        try FileManager.default.setAttributes(
+            [.modificationDate: now],
+            ofItemAtPath: retainedUnowned.path
+        )
+
+        let removed = BridgeMultipart.cleanupOrphanedAudioFiles(
+            in: directory,
+            now: now,
+            unownedRetention: 60,
+            currentProcessID: currentPID,
+            currentProcessPrefix: currentPrefix,
+            isProcessRunning: { $0 == 333 }
+        )
+
+        #expect(removed == 3)
+        #expect(FileManager.default.fileExists(atPath: current.path))
+        #expect(!FileManager.default.fileExists(atPath: deadProcess.path))
+        #expect(FileManager.default.fileExists(atPath: liveProcess.path))
+        #expect(!FileManager.default.fileExists(atPath: expiredUnowned.path))
+        #expect(FileManager.default.fileExists(atPath: retainedUnowned.path))
+        #expect(!FileManager.default.fileExists(atPath: expiredUnrecognized.path))
+        #expect(FileManager.default.fileExists(atPath: unrelated.path))
+    }
+
     private func multipartBody(
         boundary: String,
         audioBytes: Data,

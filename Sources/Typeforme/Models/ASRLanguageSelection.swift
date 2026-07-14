@@ -183,6 +183,13 @@ enum ASRLanguageSelection {
             .sorted { ($0.commonRank ?? .max) < ($1.commonRank ?? .max) }
     }
 
+    static func shouldClampSettingsSelection(
+        sources: [RecognitionSource],
+        appleSpeechSupportResolved: Bool
+    ) -> Bool {
+        !sources.contains(.appleSpeech) || appleSpeechSupportResolved
+    }
+
     static func parse(_ rawValue: String) -> [String] {
         parse(rawValue, supportedOptions: all)
     }
@@ -213,6 +220,24 @@ enum ASRLanguageSelection {
 
     static func validatedIDs(_ ids: [String], sources: [RecognitionSource]) -> [String] {
         validatedIDs(ids, supportedOptions: supportedOptions(for: sources))
+    }
+
+    /// Freezes the user's canonical selection for one transcription request.
+    /// Apple Speech support is device-specific and may still be loading, so an
+    /// Apple route must not filter against its synchronous cache here. The
+    /// Apple attempt resolves these canonical IDs asynchronously before use.
+    static func validatedIDsForTranscription(
+        _ ids: [String],
+        sources: [RecognitionSource]
+    ) -> [String] {
+        guard !sources.isEmpty else { return [] }
+        guard sources.contains(.appleSpeech) else {
+            return validatedIDs(ids, sources: sources)
+        }
+
+        let canonical = filteredIDs(ids, supportedOptions: all)
+        if !canonical.isEmpty { return canonical }
+        return ids.isEmpty ? defaultIDs : []
     }
 
     static func validatedIDs(_ ids: [String], supportedOptions: [ASRLanguageOption]) -> [String] {

@@ -1,5 +1,65 @@
 import Foundation
 
+struct QwenLlamaASRConfiguration: Sendable, Equatable {
+    let modelID: String
+    let modelPath: String
+    let mmprojPath: String
+    let modelName: String
+    let requestTimeoutSeconds: TimeInterval
+    let maxTokens: Int
+    let useFlashAttention: Bool
+    let binaryURL: URL?
+    let warmupLanguageIDs: [String]
+    let modelFilesInstalledAtCapture: Bool
+    let runtimeIdentity: String
+
+    var isInstalledAtCapture: Bool {
+        modelFilesInstalledAtCapture && binaryURL != nil
+    }
+
+    init(
+        modelID: String,
+        modelPath: String,
+        mmprojPath: String,
+        modelName: String,
+        requestTimeoutSeconds: TimeInterval,
+        maxTokens: Int,
+        useFlashAttention: Bool,
+        binaryURL: URL?,
+        warmupLanguageIDs: [String],
+        modelFilesInstalledAtCapture: Bool,
+        fileManager: FileManager = .default
+    ) {
+        self.modelID = modelID
+        self.modelPath = modelPath
+        self.mmprojPath = mmprojPath
+        self.modelName = modelName
+        self.requestTimeoutSeconds = requestTimeoutSeconds
+        self.maxTokens = maxTokens
+        self.useFlashAttention = useFlashAttention
+        self.binaryURL = binaryURL
+        self.warmupLanguageIDs = warmupLanguageIDs
+        self.modelFilesInstalledAtCapture = modelFilesInstalledAtCapture
+        self.runtimeIdentity = [
+            "model=\(RuntimeFileIdentity.capture(URL(fileURLWithPath: modelPath), fileManager: fileManager))",
+            "mmproj=\(RuntimeFileIdentity.capture(URL(fileURLWithPath: mmprojPath), fileManager: fileManager))",
+            "binary=\(binaryURL.map { RuntimeFileIdentity.capture($0, fileManager: fileManager) } ?? "missing")",
+        ].joined(separator: "|")
+    }
+
+    /// Settings that change the helper process itself. Request timeout,
+    /// transcript limits, and warmup languages stay on the session service so
+    /// changing them does not evict a compatible running model backend.
+    var serverRuntimeReuseKey: String {
+        [
+            modelID,
+            runtimeIdentity,
+            "flashAttention=\(useFlashAttention)",
+        ].joined(separator: "|")
+    }
+
+}
+
 final class QwenLlamaASRService: ASRService {
     static let maxTransientASRAttempts = 2
     private static let requestBodyAudioChunkSize = 48 * 1024
@@ -8,10 +68,12 @@ final class QwenLlamaASRService: ASRService {
     private static let warmupTimeout: TimeInterval = 20
 
     private let server: LlamaCppServerManager
+    let configuration: QwenLlamaASRConfiguration
     private let warmupState = QwenLlamaWarmupState()
 
-    init(server: LlamaCppServerManager) {
+    init(server: LlamaCppServerManager, configuration: QwenLlamaASRConfiguration) {
         self.server = server
+        self.configuration = configuration
     }
 
     func transcribe(audioFileURL: URL, languageIDs: [String]) async throws -> String {
@@ -22,6 +84,8 @@ final class QwenLlamaASRService: ASRService {
         let port: Int
         do {
             port = try await server.ensureRunning()
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             throw ASRAudioSupportError.httpStatus(503, error.localizedDescription)
         }
@@ -30,9 +94,9 @@ final class QwenLlamaASRService: ASRService {
                 audioFileURL: audioFileURL,
                 languageIDs: supportedLanguageIDs,
                 port: port,
-                timeout: AppSettings.asrTimeoutSeconds,
-                maxTokens: AppSettings.asrQwenLlamaMaxTokens,
-                model: (AppSettings.asrQwenLlamaModelPath as NSString).lastPathComponent
+                timeout: configuration.requestTimeoutSeconds,
+                maxTokens: configuration.maxTokens,
+                model: configuration.modelName
             )
         }
     }
@@ -45,7 +109,7 @@ final class QwenLlamaASRService: ASRService {
                 return true
             case .httpStatus(let code, _):
                 return code >= 500 && code < 600
-            case .audioConversionFailed, .requestBodyFailed, .timeout, .unsupportedBridgeAudioExtension:
+            case .audioConversionFailed, .requestBodyFailed, .invalidResponse, .timeout, .unsupportedBridgeAudioExtension:
                 return false
             }
         }
@@ -62,18 +126,14 @@ final class QwenLlamaASRService: ASRService {
 
     func preload() async throws {
         let port = try await server.ensureRunning()
-        let model = (AppSettings.asrQwenLlamaModelPath as NSString).lastPathComponent
-        let languageIDs = ASRLanguageSelection.validatedIDs(
-            AppSettings.asrLanguageIDs,
-            supportedOptions: ASRLanguageSelection.qwenASRSupportedLanguages
-        )
-        let key = Self.warmupKey(port: port, languageIDs: languageIDs)
+        let languageIDs = configuration.warmupLanguageIDs
+        let key = warmupKey(port: port, languageIDs: languageIDs)
         switch await warmupState.beginWarmup(key: key) {
         case .started(let ticket):
             let task = Task(priority: .utility) {
                 await Self.warmUpLlamaChat(
                     port: port,
-                    model: model.isEmpty ? "qwen3-asr" : model,
+                    model: configuration.modelName,
                     languageIDs: languageIDs
                 )
             }
@@ -96,6 +156,13 @@ final class QwenLlamaASRService: ASRService {
         await server.stop()
     }
 
+    /// Factory eviction and configuration replacement are permanent for this
+    /// service instance. Retiring the manager prevents an in-flight cold start
+    /// or a stale session reference from launching it again.
+    func shutdown() async {
+        await server.retire()
+    }
+
     func transcribeLivePreviewPCM16kMonoFloat32Data(
         _ pcmData: Data,
         languageIDs: [String],
@@ -110,10 +177,11 @@ final class QwenLlamaASRService: ASRService {
         let port: Int
         do {
             port = try await server.ensureRunning()
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             throw ASRAudioSupportError.httpStatus(503, error.localizedDescription)
         }
-        let model = (AppSettings.asrQwenLlamaModelPath as NSString).lastPathComponent
         return try await runPreviewRequest {
             let audioURL = try Self.writePCM16kMonoFloat32WAVFile(pcmData)
             defer { try? FileManager.default.removeItem(at: audioURL) }
@@ -124,7 +192,7 @@ final class QwenLlamaASRService: ASRService {
                 port: port,
                 timeout: timeout,
                 maxTokens: maxTokens,
-                model: model.isEmpty ? "qwen3-asr" : model,
+                model: configuration.modelName,
                 allowEmptyTranscript: true
             )
         }
@@ -134,11 +202,11 @@ final class QwenLlamaASRService: ASRService {
         URL(string: "http://127.0.0.1:\(port)/v1/chat/completions")!
     }
 
-    private static func warmupKey(port: Int, languageIDs: [String]) -> String {
+    private func warmupKey(port: Int, languageIDs: [String]) -> String {
         [
             "port=\(port)",
-            "model=\(AppSettings.asrQwenLlamaModelPath)",
-            "mmproj=\(AppSettings.asrQwenLlamaMMProjPath)",
+            "model=\(configuration.modelPath)",
+            "mmproj=\(configuration.mmprojPath)",
             "languages=\(languageIDs.joined(separator: ","))",
         ].joined(separator: "|")
     }
@@ -171,15 +239,25 @@ final class QwenLlamaASRService: ASRService {
     }
 
     static func parseChatTranscript(data: Data) throws -> String {
-        guard let response = try? BridgeJSON.decode(QwenASRChatResponse.self, from: data) else {
-            return ASRAudioSupport.cleanTranscriptText(
-                String(data: data, encoding: .utf8) ?? ""
+        let response: QwenASRChatResponse
+        do {
+            response = try BridgeJSON.decode(QwenASRChatResponse.self, from: data)
+        } catch {
+            throw ASRAudioSupportError.invalidResponse(
+                "Qwen ASR chat response was not valid JSON (\(data.count) bytes)"
+            )
+        }
+        if let error = response.error {
+            throw ASRAudioSupportError.invalidResponse(
+                "Qwen ASR chat response contained an error: \(error.message)"
             )
         }
         if let text = response.extractedText {
             return ASRAudioSupport.cleanTranscriptText(text)
         }
-        return ""
+        throw ASRAudioSupportError.invalidResponse(
+            "Qwen ASR chat response did not contain transcript content"
+        )
     }
 
     private static func responseSummary(data: Data) -> String {
@@ -361,19 +439,9 @@ final class QwenLlamaASRService: ASRService {
 
     private func runUserRequest<T>(_ operation: () async throws -> T) async throws -> T {
         let requestStart = await warmupState.beginUserRequest()
-        let cancelledPreview = await QwenLlamaLivePreviewTaskRegistry.shared.cancelAll()
-        let waitedForPreview: Bool
-        do {
-            waitedForPreview = try await warmupState.waitForPreviewRequestsToFinish()
-        } catch {
-            await warmupState.finishUserRequest()
-            throw error
-        }
+        let cancelledPreview = QwenLlamaLivePreviewTaskRegistry.shared.cancelAllWithoutWaiting()
         if cancelledPreview {
             Log.asr.notice("Qwen3-ASR live preview cancelled for user transcription")
-        }
-        if waitedForPreview {
-            Log.asr.notice("Qwen3-ASR user transcription waited for live preview to stop")
         }
         if requestStart.cancelledWarmup {
             Log.asr.notice("Qwen3-ASR GGUF audio warmup cancelled for user transcription")
@@ -636,18 +704,6 @@ private actor QwenLlamaWarmupState {
         warmingID = nil
         warmingTask = nil
         return QwenLlamaUserRequestStart(cancelledWarmup: cancelled)
-    }
-
-    func waitForPreviewRequestsToFinish() async throws -> Bool {
-        let waitedForPreview = previewRequestCount > 0
-        do {
-            while previewRequestCount > 0 {
-                try await Task.sleep(nanoseconds: 10_000_000)
-            }
-        } catch {
-            throw error
-        }
-        return waitedForPreview
     }
 
     func finishUserRequest() {

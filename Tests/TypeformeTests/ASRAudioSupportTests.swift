@@ -3,7 +3,10 @@ import Foundation
 import Testing
 @testable import Typeforme
 
-@Suite("ASRAudioSupport")
+// Several cases exercise the process-wide Qwen preview registry. Running them
+// concurrently makes one test's intentional cancelAll invalidate another's
+// reservation, so this suite must serialize access to that shared owner.
+@Suite("ASRAudioSupport", .serialized)
 struct ASRAudioSupportTests {
     @Test func canonicalConversionProducesBounded16kMonoWAV() async throws {
         let input = try TestAudioFixtures.makeFLACFile()
@@ -37,6 +40,20 @@ struct ASRAudioSupportTests {
     @Test func parsesLlamaChatASRContentArrayResponse() throws {
         let data = #"{"choices":[{"message":{"role":"assistant","content":[{"type":"text","text":"language Chinese<asr_text>你好，世界。</asr_text>"}]}}]}"#.data(using: .utf8)!
         #expect(try QwenLlamaASRService.parseChatTranscript(data: data) == "你好，世界。")
+    }
+
+    @Test func rejectsMalformedLlamaChatASRResponseInsteadOfTreatingItAsTranscript() {
+        let data = Data("Internal server error".utf8)
+        #expect(throws: ASRAudioSupportError.self) {
+            try QwenLlamaASRService.parseChatTranscript(data: data)
+        }
+    }
+
+    @Test func rejectsLlamaChatASRResponseWithoutTranscriptContent() {
+        let data = Data(#"{"choices":[]}"#.utf8)
+        #expect(throws: ASRAudioSupportError.self) {
+            try QwenLlamaASRService.parseChatTranscript(data: data)
+        }
     }
 
     @Test func qwenASRUsesAutomaticLanguageDetectionForMultiLanguageSelection() {
@@ -141,37 +158,38 @@ struct ASRAudioSupportTests {
         }
     }
 
-    @Test func qwenLivePreviewRegistryCancelsRegisteredAndPendingTasks() async {
+    @Test func qwenLivePreviewRegistryCancelsAndJoinsRegisteredTasks() async {
         _ = await QwenLlamaLivePreviewTaskRegistry.shared.cancelAll()
 
         let registeredID = UUID()
         let registeredMarker = QwenPreviewRegistryMarker()
-        QwenLlamaLivePreviewTaskRegistry.shared.reserve(id: registeredID)
-        let registeredTask = Task {
+        _ = QwenLlamaLivePreviewTaskRegistry.shared.start(id: registeredID) {
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 1_000_000)
             }
             await registeredMarker.markFinished()
         }
 
-        #expect(QwenLlamaLivePreviewTaskRegistry.shared.install(registeredTask, id: registeredID))
         #expect(await QwenLlamaLivePreviewTaskRegistry.shared.cancelAll())
         #expect(await registeredMarker.isFinished)
+    }
 
-        let pendingID = UUID()
-        let pendingMarker = QwenPreviewRegistryMarker()
-        QwenLlamaLivePreviewTaskRegistry.shared.reserve(id: pendingID)
-        #expect(await QwenLlamaLivePreviewTaskRegistry.shared.cancelAll())
-
-        let pendingTask = Task {
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 1_000_000)
-            }
-            await pendingMarker.markFinished()
+    @Test func qwenCanonicalASRCancelsPreviewWithoutJoiningIt() async {
+        _ = await QwenLlamaLivePreviewTaskRegistry.shared.cancelAll()
+        let id = UUID()
+        let gate = QwenPreviewRegistryGate()
+        let marker = QwenPreviewRegistryMarker()
+        let task = QwenLlamaLivePreviewTaskRegistry.shared.start(id: id) {
+            await gate.wait()
+            await marker.markFinished()
         }
-        #expect(!QwenLlamaLivePreviewTaskRegistry.shared.install(pendingTask, id: pendingID))
-        await pendingTask.value
-        #expect(await pendingMarker.isFinished)
+
+        #expect(QwenLlamaLivePreviewTaskRegistry.shared.cancelAllWithoutWaiting())
+        #expect(!(await marker.isFinished))
+
+        await gate.open()
+        await task.value
+        #expect(await marker.isFinished)
     }
 
     @Test func nvidiaNemotronTargetLanguageUsesAutoForMixedSelection() {
@@ -238,6 +256,48 @@ struct ASRAudioSupportTests {
         #expect(status.missingModelFiles == ["tokenizer.model"])
     }
 
+    @Test func nvidiaWarmPoolReuseKeyTracksEffectiveModelFileIdentity() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("typeforme-nemotron-key-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let spec = NvidiaNemotronASRModelCatalog
+            .spec(for: NvidiaNemotronASRModelCatalog.defaultID)
+            .files[0]
+        let model = root.appendingPathComponent(spec.filename)
+        try Data("old".utf8).write(to: model)
+        let oldStatus = NvidiaNemotronASRRuntimeStatus(
+            runnerURL: nil,
+            runnerReady: false,
+            modelFiles: [NvidiaNemotronASRModelFileStatus(spec: spec, url: model, installed: true)]
+        )
+        let oldConfiguration = NvidiaNemotronASRConfiguration(
+            modelID: NvidiaNemotronASRModelCatalog.defaultID,
+            requestTimeoutSeconds: 40,
+            runtimeStatus: oldStatus
+        )
+        let oldKey = oldConfiguration.reuseKey(languageIDs: ["en-US"])
+
+        try FileManager.default.removeItem(at: model)
+        try Data("new".utf8).write(to: model)
+        let replacementStatus = NvidiaNemotronASRRuntimeStatus(
+            runnerURL: nil,
+            runnerReady: false,
+            modelFiles: [NvidiaNemotronASRModelFileStatus(spec: spec, url: model, installed: true)]
+        )
+        let replacementConfiguration = NvidiaNemotronASRConfiguration(
+            modelID: NvidiaNemotronASRModelCatalog.defaultID,
+            requestTimeoutSeconds: 40,
+            runtimeStatus: replacementStatus
+        )
+        let replacementKey = replacementConfiguration.reuseKey(languageIDs: ["en-US"])
+
+        #expect(oldConfiguration.reuseKey(languageIDs: ["en-US"]) == oldKey)
+        #expect(replacementKey != oldKey)
+        #expect(oldConfiguration.runtimeStatus.modelFiles.map(\.url) == [model])
+    }
+
     private func ascii(_ data: Data, _ range: Range<Int>) -> String {
         String(data: data.subdata(in: range), encoding: .ascii) ?? ""
     }
@@ -263,5 +323,27 @@ private actor QwenPreviewRegistryMarker {
 
     func markFinished() {
         finished = true
+    }
+}
+
+private actor QwenPreviewRegistryGate {
+    private var opened = false
+    private var waiter: CheckedContinuation<Void, Never>?
+
+    func wait() async {
+        guard !opened else { return }
+        await withCheckedContinuation { continuation in
+            if opened {
+                continuation.resume()
+            } else {
+                waiter = continuation
+            }
+        }
+    }
+
+    func open() {
+        opened = true
+        waiter?.resume()
+        waiter = nil
     }
 }

@@ -1,0 +1,4 @@
+"NSMicrophoneUsageDescription" = "Typeforme 通过麦克风录制你的口述；语音会在本机处理，或在 Client 模式下发送到你配置的 Typeforme Bridge 进行识别与文本整理。";
+"NSLocalNetworkUsageDescription" = "Typeforme 需要连接你配置的局域网 Bridge 或兼容外部 LLM 服务。";
+"NSAppleEventsUsageDescription" = "Typeforme 需要把整理后的文本插入当前 App。";
+"NSSpeechRecognitionUsageDescription" = "Typeforme 在启用 Apple Speech 识别源或预览源时使用 Apple 语音识别。仅对支持设备端识别的语言开启，音频不会离开本机。";

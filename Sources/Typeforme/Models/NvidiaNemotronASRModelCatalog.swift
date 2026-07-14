@@ -1,6 +1,6 @@
 import Foundation
 
-struct NvidiaNemotronASRModelSpec: Identifiable, Equatable {
+struct NvidiaNemotronASRModelSpec: Identifiable, Equatable, Sendable {
     let id: String
     let label: String
     let note: String
@@ -8,7 +8,7 @@ struct NvidiaNemotronASRModelSpec: Identifiable, Equatable {
     let files: [NvidiaNemotronASRFileSpec]
 }
 
-struct NvidiaNemotronASRFileSpec: Identifiable, Equatable {
+struct NvidiaNemotronASRFileSpec: Identifiable, Equatable, Sendable {
     let id: String
     let label: String
     let filename: String

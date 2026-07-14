@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 enum BridgeMultipartError: LocalizedError {
@@ -12,6 +13,12 @@ enum BridgeMultipartError: LocalizedError {
 }
 
 enum BridgeMultipart {
+    private static let uploadFileStem = "typeforme-bridge-upload"
+    private static let processID = ProcessInfo.processInfo.processIdentifier
+    private static let processNonce = UUID().uuidString.lowercased()
+    static let currentUploadFilePrefix = "\(uploadFileStem)_\(processID)_\(processNonce)_"
+    static let unownedUploadRetention: TimeInterval = 24 * 60 * 60
+
     struct StreamedFormData {
         let fields: [String: String]
         let audioFileURL: URL?
@@ -450,7 +457,7 @@ enum BridgeMultipart {
             try FileManager.default.createDirectory(at: audioDirectory, withIntermediateDirectories: true)
             let ext = try streamedAudioExtension()
             try validateAudioPartMetadata(part, expectedExtension: ext)
-            let url = audioDirectory.appendingPathComponent("\(UUID().uuidString).\(ext)")
+            let url = BridgeMultipart.makeAudioFileURL(in: audioDirectory, fileExtension: ext)
             _ = FileManager.default.createFile(atPath: url.path, contents: nil)
             audioHandle = try FileHandle(forWritingTo: url)
             audioFileURL = url
@@ -503,6 +510,83 @@ enum BridgeMultipart {
 
     static func mimeType(forExtension ext: String) -> String {
         BridgeAudioFormat.mimeType(forExtension: ext)
+    }
+
+    static func makeAudioFileURL(in directory: URL, fileExtension: String) -> URL {
+        directory.appendingPathComponent(
+            "\(currentUploadFilePrefix)\(UUID().uuidString.lowercased()).\(fileExtension)"
+        )
+    }
+
+    @discardableResult
+    static func cleanupOrphanedAudioFiles(in directory: URL) -> Int {
+        cleanupOrphanedAudioFiles(
+            in: directory,
+            now: Date(),
+            unownedRetention: unownedUploadRetention,
+            currentProcessID: processID,
+            currentProcessPrefix: currentUploadFilePrefix,
+            isProcessRunning: processIsRunning
+        )
+    }
+
+    @discardableResult
+    static func cleanupOrphanedAudioFiles(
+        in directory: URL,
+        now: Date,
+        unownedRetention: TimeInterval,
+        currentProcessID: Int32,
+        currentProcessPrefix: String,
+        isProcessRunning: (Int32) -> Bool
+    ) -> Int {
+        let keys: Set<URLResourceKey> = [.isRegularFileKey, .contentModificationDateKey]
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: Array(keys),
+            options: [.skipsHiddenFiles, .skipsSubdirectoryDescendants]
+        ) else { return 0 }
+
+        let unownedCutoff = now.addingTimeInterval(-max(0, unownedRetention))
+        var removedCount = 0
+        for file in files {
+            guard BridgeAudioFormat.isAllowedExtension(file.pathExtension),
+                  let values = try? file.resourceValues(forKeys: keys),
+                  values.isRegularFile == true
+            else { continue }
+
+            let filename = file.lastPathComponent
+            let shouldRemove: Bool
+            if filename.hasPrefix(currentProcessPrefix) {
+                shouldRemove = false
+            } else if let ownerPID = uploadOwnerProcessID(filename: filename) {
+                shouldRemove = ownerPID == currentProcessID || !isProcessRunning(ownerPID)
+            } else {
+                shouldRemove = (values.contentModificationDate ?? .distantFuture) <= unownedCutoff
+            }
+
+            if shouldRemove, (try? FileManager.default.removeItem(at: file)) != nil {
+                removedCount += 1
+            }
+        }
+        return removedCount
+    }
+
+    private static func uploadOwnerProcessID(filename: String) -> Int32? {
+        let basename = URL(fileURLWithPath: filename).deletingPathExtension().lastPathComponent
+        let parts = basename.split(separator: "_", omittingEmptySubsequences: false)
+        guard parts.count == 4,
+              parts[0] == Substring(uploadFileStem),
+              let pid = Int32(parts[1]),
+              UUID(uuidString: String(parts[2])) != nil,
+              UUID(uuidString: String(parts[3])) != nil
+        else { return nil }
+        return pid
+    }
+
+    private static func processIsRunning(_ pid: Int32) -> Bool {
+        guard pid > 0 else { return false }
+        if Darwin.kill(pid, 0) == 0 { return true }
+        return Darwin.errno == EPERM
     }
 
     private static func boundary(from contentType: String) -> String? {

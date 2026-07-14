@@ -17,29 +17,56 @@ struct ASRLivePreviewLease {
     let languageIDs: [String]
     let session: any ASRLivePreviewSession
 
-    private let returnIdleHandler: @MainActor (String) -> Void
-    private let preloadReplacementHandler: @MainActor () -> Void
+    private let returnIdleHandler: @MainActor (String) async -> Void
+    private let preloadReplacementHandler: @MainActor () async -> Void
+    private let discardHandler: @MainActor (String) async -> Void
+    private let terminalAction = ASRLivePreviewLeaseTerminalAction()
 
     init(
         provider: String,
         languageIDs: [String],
         session: any ASRLivePreviewSession,
-        returnIdleHandler: @escaping @MainActor (String) -> Void,
-        preloadReplacementHandler: @escaping @MainActor () -> Void
+        returnIdleHandler: @escaping @MainActor (String) async -> Void,
+        preloadReplacementHandler: @escaping @MainActor () async -> Void,
+        discardHandler: (@MainActor (String) async -> Void)? = nil
     ) {
         self.provider = provider
         self.languageIDs = languageIDs
         self.session = session
         self.returnIdleHandler = returnIdleHandler
         self.preloadReplacementHandler = preloadReplacementHandler
+        self.discardHandler = discardHandler ?? { reason in
+            session.terminate(reason: reason)
+        }
     }
 
-    func returnIdle(reason: String) {
-        returnIdleHandler(reason)
+    func returnIdle(reason: String) async {
+        guard terminalAction.claim() else { return }
+        await returnIdleHandler(reason)
     }
 
-    func preloadReplacement() {
-        preloadReplacementHandler()
+    func preloadReplacement() async {
+        guard terminalAction.claim() else { return }
+        await preloadReplacementHandler()
+    }
+
+    /// Permanently releases this checked-out session without starting a warm
+    /// replacement. Mode changes and application shutdown use this path so a
+    /// late preview cleanup cannot resurrect a helper after runtime teardown.
+    func discard(reason: String) async {
+        guard terminalAction.claim() else { return }
+        await discardHandler(reason)
+    }
+}
+
+@MainActor
+private final class ASRLivePreviewLeaseTerminalAction {
+    private var claimed = false
+
+    func claim() -> Bool {
+        guard !claimed else { return false }
+        claimed = true
+        return true
     }
 }
 
@@ -50,7 +77,7 @@ enum ASRLivePreviewLeaseFactory {
         requestedLanguageIDs: [String],
         diagnosticID: String,
         onTranscript: @escaping (String) -> Void
-    ) throws -> ASRLivePreviewLease {
+    ) async throws -> ASRLivePreviewLease {
         switch source {
         case .qwen:
             return try takeQwen(
@@ -59,7 +86,7 @@ enum ASRLivePreviewLeaseFactory {
                 onTranscript: onTranscript
             )
         case .nvidiaNemotron:
-            return try takeNvidiaNemotron(
+            return try await takeNvidiaNemotron(
                 requestedLanguageIDs: requestedLanguageIDs,
                 diagnosticID: diagnosticID,
                 onTranscript: onTranscript
@@ -88,11 +115,15 @@ enum ASRLivePreviewLeaseFactory {
                 "Qwen3-ASR does not support the selected live preview languages"
             )
         }
-        guard let service = ASRFactory.shared.qwenLlamaServiceAfterInstall() else {
-            throw ASRLivePreviewLeaseError.unavailable("Bundled llama-server binary not found")
+        let backendLease: QwenLlamaASRServiceLease
+        switch ASRFactory.shared.qwenLlamaLivePreviewServiceLease() {
+        case .acquired(let lease):
+            backendLease = lease
+        case .unavailable(let reason):
+            throw ASRLivePreviewLeaseError.unavailable(reason.message)
         }
         let session = try QwenLlamaLivePreviewSession.start(
-            service: service,
+            service: backendLease.service,
             languageIDs: languageIDs,
             diagnosticID: diagnosticID,
             onTranscript: onTranscript
@@ -102,12 +133,18 @@ enum ASRLivePreviewLeaseFactory {
             languageIDs: languageIDs,
             session: session,
             returnIdleHandler: { reason in
+                _ = backendLease
                 session.terminate(reason: reason)
             },
             preloadReplacementHandler: {
+                _ = backendLease
                 Task {
                     await ASRFactory.shared.preloadQwenLlama()
                 }
+            },
+            discardHandler: { reason in
+                _ = backendLease
+                session.terminate(reason: reason)
             }
         )
     }
@@ -116,7 +153,7 @@ enum ASRLivePreviewLeaseFactory {
         requestedLanguageIDs: [String],
         diagnosticID: String,
         onTranscript: @escaping (String) -> Void
-    ) throws -> ASRLivePreviewLease {
+    ) async throws -> ASRLivePreviewLease {
         guard AppSettings.enabledRecognitionSources.contains(.nvidiaNemotron) else {
             throw ASRLivePreviewLeaseError.unavailable("NVIDIA Nemotron ASR is not enabled")
         }
@@ -126,24 +163,67 @@ enum ASRLivePreviewLeaseFactory {
                 "NVIDIA Nemotron ASR does not support the selected live preview languages"
             )
         }
-        let session = try NvidiaNemotronWarmPool.shared.takeOrStart(
-            languageIDs: languageIDs,
-            diagnosticID: diagnosticID,
-            onTranscript: onTranscript
+        guard let runtimeLease = ASRFactory.shared.nvidiaNemotronRuntimeLease() else {
+            throw ASRLivePreviewLeaseError.unavailable(
+                "NVIDIA Nemotron ASR is temporarily unavailable during model maintenance"
+            )
+        }
+        let configuration = NvidiaNemotronASRConfiguration.capture(
+            requestTimeoutSeconds: AppSettings.asrTimeoutSeconds(for: [.nvidiaNemotron])
         )
+        var acquiredSession: NvidiaNemotronLivePreviewSession?
+        let session: NvidiaNemotronLivePreviewSession
+        do {
+            try Task.checkCancellation()
+            let candidate = try await NvidiaNemotronWarmPool.shared.takeOrStart(
+                configuration: configuration,
+                languageIDs: languageIDs,
+                diagnosticID: diagnosticID,
+                onTranscript: onTranscript
+            )
+            acquiredSession = candidate
+            try Task.checkCancellation()
+            session = candidate
+        } catch {
+            if let acquiredSession {
+                await NvidiaNemotronWarmPool.shared.discard(
+                    acquiredSession,
+                    reason: "live_preview_acquisition_cancelled"
+                )
+            }
+            runtimeLease.release()
+            if Task.isCancelled {
+                throw CancellationError()
+            }
+            throw error
+        }
         return ASRLivePreviewLease(
             provider: session.provider,
             languageIDs: languageIDs,
             session: session,
             returnIdleHandler: { reason in
-                NvidiaNemotronWarmPool.shared.returnIdle(
+                await NvidiaNemotronWarmPool.shared.returnIdle(
                     session,
+                    configuration: configuration,
                     languageIDs: languageIDs,
                     reason: reason
                 )
+                runtimeLease.release()
             },
             preloadReplacementHandler: {
-                NvidiaNemotronWarmPool.shared.preload(languageIDs: languageIDs)
+                await NvidiaNemotronWarmPool.shared.discardAndPreload(
+                    session,
+                    languageIDs: languageIDs,
+                    reason: "live_preview_replacement"
+                )
+                runtimeLease.release()
+            },
+            discardHandler: { reason in
+                await NvidiaNemotronWarmPool.shared.discard(
+                    session,
+                    reason: reason
+                )
+                runtimeLease.release()
             }
         )
     }

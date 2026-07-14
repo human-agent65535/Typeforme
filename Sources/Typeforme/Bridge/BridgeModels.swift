@@ -293,9 +293,10 @@ struct BridgeSettingsPayload: Codable, Sendable {
         let sources = AppSettings.configuredRecognitionSources
         let supportedBySource = supportedLanguagesByRecognitionSource
         let supportedLanguages = ASRLanguageSelection.supportedOptions(for: sources).map(BridgeLanguageOption.init)
-        let languageIDs = ASRLanguageSelection.validatedIDs(
-            AppSettings.asrLanguageIDs,
-            sources: sources
+        let languageIDs = resolvedSettingsLanguageIDs(
+            AppSettings.asrCanonicalLanguageIDs,
+            sources: sources,
+            appleSpeechSupportResolved: AppleSpeechLanguageSupport.resolutionState == .resolved
         )
         let configuredCorrectionMode = AppSettings.correctionMode
         let correctionMode = configuredCorrectionMode
@@ -349,7 +350,7 @@ struct BridgeSettingsPayload: Codable, Sendable {
     }
 
     static func currentSourceAvailabilityByRecognitionSource(
-        languageIDs: [String] = AppSettings.asrLanguageIDs
+        languageIDs: [String] = AppSettings.asrCanonicalLanguageIDs
     ) -> [String: BridgeSourceAvailability] {
         [
             RecognitionSource.qwen.rawValue: qwenSourceAvailability(),
@@ -426,7 +427,7 @@ struct BridgeSettingsPayload: Codable, Sendable {
     }
 
     private static func appleSpeechModelStatus() -> BridgeModelStatus {
-        let availability = AppleSpeechAvailability.report(languageIDs: AppSettings.asrLanguageIDs)
+        let availability = AppleSpeechAvailability.report(languageIDs: AppSettings.asrCanonicalLanguageIDs)
         return BridgeModelStatus(
             id: modelStatusID(source: .appleSpeech, modelID: "on-device"),
             kind: "asr",
@@ -527,11 +528,14 @@ struct BridgeSettingsPayload: Codable, Sendable {
     }
 
     mutating func normalize() {
+        let receivedAppleSpeechLanguages = supportedLanguagesByRecognitionSource[
+            RecognitionSource.appleSpeech.rawValue
+        ]
         recognitionSourceOptions = Self.controllableRecognitionSources
         enabledRecognitionSources = RecognitionSource.recognizedSources(enabledRecognitionSources).map(\.rawValue)
-        sourceAvailabilityByRecognitionSource = Self.currentSourceAvailabilityByRecognitionSource(
-            languageIDs: languageIDs
-        )
+        // Availability belongs to the Bridge that produced this payload. This
+        // method also runs on Client Macs while editing a remote snapshot, so
+        // replacing it with local model and permission state is incorrect.
 
         asrModelOptionsByRecognitionSource = Self.controllableASRModelOptionsByRecognitionSource
         asrModelIDsByRecognitionSource = BridgeSettingsNormalization.normalizedASRModelIDs(
@@ -545,7 +549,18 @@ struct BridgeSettingsPayload: Codable, Sendable {
         fastASRSource = Self.normalizedFastASRSource(fastASRSource).rawValue
 
         supportedLanguagesByRecognitionSource = Self.supportedLanguagesByRecognitionSource
-        supportedLanguages = ASRLanguageSelection.supportedOptions(for: enabledSources).map(BridgeLanguageOption.init)
+        if let receivedAppleSpeechLanguages {
+            // Apple support is device-specific. A client normalizing a remote
+            // server payload must not replace the server's resolved/pending
+            // state with the client's local Speech cache.
+            supportedLanguagesByRecognitionSource[RecognitionSource.appleSpeech.rawValue] =
+                Self.orderedUniqueLanguageOptions(receivedAppleSpeechLanguages)
+        }
+        supportedLanguages = Self.orderedUniqueLanguageOptions(
+            enabledSources.flatMap { source in
+                supportedLanguagesByRecognitionSource[source.rawValue] ?? []
+            }
+        )
         if !correctionBackendOptions.isEmpty && !correctionBackendOptions.contains(where: { $0.id == correctionBackend }) {
             correctionBackend = correctionBackendOptions[0].id
         }
@@ -567,9 +582,40 @@ struct BridgeSettingsPayload: Codable, Sendable {
         ).rawValue
         correctionTimeoutMs = Self.clampedCorrectionTimeoutMs(correctionTimeoutMs)
         correctionColdTimeoutMs = Self.clampedCorrectionColdTimeoutMs(correctionColdTimeoutMs)
-        languageIDs = ASRLanguageSelection.validatedIDs(
+        languageIDs = Self.resolvedSettingsLanguageIDs(
             languageIDs,
+            sources: enabledSources,
+            appleSpeechSupportResolved: !enabledSources.contains(.appleSpeech)
+                || !(supportedLanguagesByRecognitionSource[RecognitionSource.appleSpeech.rawValue] ?? []).isEmpty,
             supportedOptions: BridgeLanguageOption.asASROptions(supportedLanguages)
+        )
+    }
+
+    /// Settings payloads may be produced before the device-specific Apple
+    /// Speech support cache resolves. Preserve the canonical selection until
+    /// the cache is authoritative; an empty cache is not evidence that the
+    /// user's saved languages are unsupported.
+    static func resolvedSettingsLanguageIDs(
+        _ languageIDs: [String],
+        sources: [RecognitionSource],
+        appleSpeechSupportResolved: Bool,
+        supportedOptions: [ASRLanguageOption]? = nil
+    ) -> [String] {
+        if ASRLanguageSelection.shouldClampSettingsSelection(
+            sources: sources,
+            appleSpeechSupportResolved: appleSpeechSupportResolved
+        ) {
+            if let supportedOptions {
+                return ASRLanguageSelection.validatedIDs(
+                    languageIDs,
+                    supportedOptions: supportedOptions
+                )
+            }
+            return ASRLanguageSelection.validatedIDs(languageIDs, sources: sources)
+        }
+        return ASRLanguageSelection.validatedIDsForTranscription(
+            languageIDs,
+            sources: sources
         )
     }
 
@@ -787,7 +833,7 @@ struct BridgeLANAdapter: Codable, Sendable, Identifiable, Hashable {
 }
 
 extension BridgePairingPayload {
-    static func current() -> BridgePairingPayload {
+    static func current() throws -> BridgePairingPayload {
         let port = AppSettings.bridgePort
         let lanURLs = AppSettings.bridgeLANEnabled ? lanBridgeURLs(port: port) : []
         let publicURL = AppSettings.bridgePublicEnabled ? publicBridgeURL() : nil
@@ -795,7 +841,7 @@ extension BridgePairingPayload {
         return BridgePairingPayload(
             lanBridgeURLs: lanURLs.isEmpty ? nil : lanURLs,
             publicBridgeURL: publicURL,
-            token: AppSettings.ensureBridgeAuthToken()
+            token: try AppSettings.ensureBridgeAuthToken()
         )
     }
 

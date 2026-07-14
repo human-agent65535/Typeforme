@@ -7,6 +7,14 @@ protocol SecureSettingsStoring: Sendable {
     @discardableResult func removeString(forKey key: String) -> Bool
 }
 
+enum SecureSettingError: LocalizedError {
+    case writeFailed
+
+    var errorDescription: String? {
+        "Could not save the secure setting to Keychain."
+    }
+}
+
 struct KeychainSecureSettingsStore: SecureSettingsStoring {
     let service: String
 
@@ -85,5 +93,36 @@ struct SecureSettingValue {
         }
 
         return store.setString(trimmed, forKey: key)
+    }
+
+    /// Persists the complete new value or reports failure. An empty value is
+    /// an explicit revocation: callers must not update their visible state
+    /// unless Keychain confirms that the item was removed.
+    @discardableResult
+    func set(_ value: String) throws -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            guard store.removeString(forKey: key) else {
+                throw SecureSettingError.writeFailed
+            }
+            return ""
+        }
+        return try replace(with: trimmed)
+    }
+
+    func ensure(generating newValue: () -> String) throws -> String {
+        let existing = load()
+        if !existing.isEmpty {
+            return existing
+        }
+        return try replace(with: newValue())
+    }
+
+    func replace(with value: String) throws -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, save(trimmed), load() == trimmed else {
+            throw SecureSettingError.writeFailed
+        }
+        return trimmed
     }
 }

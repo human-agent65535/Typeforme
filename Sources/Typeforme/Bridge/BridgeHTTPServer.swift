@@ -96,73 +96,92 @@ private extension HTTPField.Name {
     static let xForwardedFor = Self("X-Forwarded-For")!
 }
 
+typealias BridgeListenerRunOperation = @Sendable (_ host: String, _ port: Int) async throws -> Void
+struct BridgeListenerConfiguration: Equatable, Sendable {
+    let enabled: Bool
+    let host: String
+    let port: Int
+}
+typealias BridgeListenerConfigurationProvider = @Sendable () -> BridgeListenerConfiguration
+
 final class BridgeHTTPServer: @unchecked Sendable {
+    private struct ListenerEndpoint: Equatable, Sendable {
+        let host: String
+        let port: Int
+    }
+
     private let service: BridgeService
-    private let stateLock = NSLock()
-    private var serverTask: Task<Void, Never>?
-    private var pendingStartTask: Task<Void, Never>?
-    private var activePort: Int?
-    private var activeHost: String?
+    private let listenerRunOperation: BridgeListenerRunOperation?
+    private let listenerConfigurationProvider: BridgeListenerConfigurationProvider
+    /// Every replacement captures and joins the previous task before binding.
+    /// These fields are only touched by MainActor-isolated lifecycle methods.
+    private var lifecycleTask: Task<Void, Never>?
+    private var requestedEndpoint: ListenerEndpoint?
+    private var requestedRunID: UUID?
     private var activeRunID: UUID?
-    private var running = false
 
     private static let maxBodyBytes = 25 * 1024 * 1024
     private static let maxMultipartHeaderBytes = 16 * 1024
     private static let maxMultipartFieldBytes = 1 * 1024 * 1024
     private static let maxLivePreviewSocketMessageBytes = BridgeLivePreviewOpusDecoder.maxPacketBytes
     private static let maxJobEventsSocketMessageBytes = 1 * 1024
-    private static let restartSettleDelay: UInt64 = 150_000_000
-
     @MainActor
-    init(dictionary: UserDictionaryStore) {
+    init(
+        dictionary: UserDictionaryStore,
+        listenerRunOperation: BridgeListenerRunOperation? = nil,
+        listenerConfigurationProvider: @escaping BridgeListenerConfigurationProvider = {
+            BridgeListenerConfiguration(
+                enabled: AppSettings.bridgeEnabled,
+                host: AppSettings.bridgeLANEnabled ? "0.0.0.0" : "127.0.0.1",
+                port: AppSettings.bridgePort
+            )
+        }
+    ) {
         service = BridgeService(dictionary: dictionary)
+        self.listenerRunOperation = listenerRunOperation
+        self.listenerConfigurationProvider = listenerConfigurationProvider
+        let removedUploads = BridgeMultipart.cleanupOrphanedAudioFiles(in: AppPaths.bridgeDir)
+        if removedUploads > 0 {
+            Log.bridge.notice("Bridge removed \(removedUploads, privacy: .public) orphaned audio upload(s)")
+        }
     }
 
+    @MainActor
     func applySettings() {
-        cancelPendingStart()
-        guard AppSettings.bridgeEnabled else {
+        let configuration = listenerConfigurationProvider()
+        guard configuration.enabled else {
             stop()
             return
         }
 
-        let port = AppSettings.bridgePort
-        let host = Self.bindHost()
-        let current = stateSnapshot()
-        if current.running, current.port == port, current.host == host { return }
-        stop()
-        if current.running {
-            scheduleStart(host: host, port: port, after: Self.restartSettleDelay)
-        } else {
-            startIfSettingsStillMatch(host: host, port: port)
-        }
+        let endpoint = ListenerEndpoint(host: configuration.host, port: configuration.port)
+        guard requestedEndpoint != endpoint || lifecycleTask == nil else { return }
+        scheduleListener(at: endpoint)
     }
 
-    func stop() {
-        let task: Task<Void, Never>?
-        let pending: Task<Void, Never>?
-        stateLock.lock()
-        task = serverTask
-        pending = pendingStartTask
-        serverTask = nil
-        pendingStartTask = nil
-        activePort = nil
-        activeHost = nil
-        activeRunID = nil
-        running = false
-        stateLock.unlock()
-
-        pending?.cancel()
-        task?.cancel()
-        if task != nil {
+    /// Closes admission synchronously and returns the same serial lifecycle
+    /// barrier that a later listener start must join before binding.
+    @discardableResult
+    @MainActor
+    func stop() -> Task<Void, Never> {
+        let stopID = UUID()
+        let previous = lifecycleTask
+        let previewCleanup = service.beginCancelAllLivePreviews()
+        requestedEndpoint = nil
+        requestedRunID = stopID
+        previous?.cancel()
+        if previous != nil {
             Log.app.info("Bridge stopping")
         }
-        publishStatus(.stopped)
-    }
+        BridgeServerStatusStore.shared.set(.stopped)
 
-    private func publishStatus(_ status: BridgeServerStatusStore.Status) {
-        Task { @MainActor in
-            BridgeServerStatusStore.shared.set(status)
+        let barrier = Task { @MainActor [weak self] in
+            await previous?.value
+            await previewCleanup.value
+            self?.finishStop(id: stopID)
         }
+        lifecycleTask = barrier
+        return barrier
     }
 
     static func constantTimeEquals(_ supplied: String, _ expected: String) -> Bool {
@@ -178,104 +197,122 @@ final class BridgeHTTPServer: @unchecked Sendable {
         return diff == 0
     }
 
-    private func stateSnapshot() -> (running: Bool, port: Int?, host: String?) {
-        stateLock.lock()
-        defer { stateLock.unlock() }
-        return (running, activePort, activeHost)
-    }
-
-    private func cancelPendingStart() {
-        let pending: Task<Void, Never>?
-        stateLock.lock()
-        pending = pendingStartTask
-        pendingStartTask = nil
-        stateLock.unlock()
-        pending?.cancel()
-    }
-
-    private static func bindHost() -> String {
-        AppSettings.bridgeLANEnabled ? "0.0.0.0" : "127.0.0.1"
-    }
-
-    private func scheduleStart(host: String, port: Int, after delay: UInt64) {
-        let task = Task.detached(priority: .utility) { [weak self] in
-            try? await Task.sleep(nanoseconds: delay)
-            guard !Task.isCancelled else { return }
-            self?.startIfSettingsStillMatch(host: host, port: port)
-        }
-        stateLock.lock()
-        pendingStartTask = task
-        stateLock.unlock()
-    }
-
-    private func startIfSettingsStillMatch(host: String, port: Int) {
-        guard AppSettings.bridgeEnabled,
-              AppSettings.bridgePort == port,
-              Self.bindHost() == host
-        else { return }
-        let current = stateSnapshot()
-        guard !current.running else { return }
-        start(host: host, port: port)
-    }
-
-    private func start(host: String, port: Int) {
+    @MainActor
+    private func scheduleListener(at endpoint: ListenerEndpoint) {
         let runID = UUID()
-        let app = makeApplication(host: host, port: port)
-
-        // Mark the run active and publish .running BEFORE spawning the server
-        // task: a fast bind failure checks `isActiveRun` and must find this
-        // run registered, and its .failed publish must come after .running.
-        stateLock.lock()
-        activePort = port
-        activeHost = host
-        activeRunID = runID
-        running = true
-        stateLock.unlock()
-        publishStatus(.running(host: host, port: port))
-
-        let task = Task.detached(priority: .utility) { [weak self] in
-            defer {
-                self?.markStopped(runID: runID)
-            }
-            do {
-                try await app.runService(gracefulShutdownSignals: [])
-            } catch is CancellationError {
-                Log.app.info("Bridge stopped")
-            } catch {
-                Log.app.error("Bridge server failed: \(error.localizedDescription)")
-                // Only the still-active run may report failure — a stale run
-                // dying during a restart must not overwrite the new status.
-                if let self, self.isActiveRun(runID) {
-                    self.publishStatus(.failed(message: error.localizedDescription))
-                }
-            }
+        let previous = lifecycleTask
+        let previewCleanup = service.beginCancelAllLivePreviews()
+        requestedEndpoint = endpoint
+        requestedRunID = runID
+        previous?.cancel()
+        if previous != nil {
+            Log.app.info("Bridge stopping for listener reconfiguration")
+            BridgeServerStatusStore.shared.set(.stopped)
         }
 
-        stateLock.lock()
-        serverTask = task
-        stateLock.unlock()
-
-        Log.app.info("Bridge listening on \(host):\(port)")
+        lifecycleTask = Task { @MainActor [weak self] in
+            await previous?.value
+            await previewCleanup.value
+            guard let self,
+                  !Task.isCancelled,
+                  self.requestedRunID == runID,
+                  self.requestedEndpoint == endpoint,
+                  self.settingsStillMatch(endpoint)
+            else {
+                self?.finishPendingStart(runID: runID)
+                return
+            }
+            await self.runListener(runID: runID, endpoint: endpoint)
+        }
     }
 
-    private func isActiveRun(_ runID: UUID) -> Bool {
-        stateLock.lock()
-        defer { stateLock.unlock() }
-        return activeRunID == runID
+    @MainActor
+    private func settingsStillMatch(_ endpoint: ListenerEndpoint) -> Bool {
+        let configuration = listenerConfigurationProvider()
+        return configuration.enabled
+            && configuration.port == endpoint.port
+            && configuration.host == endpoint.host
     }
 
-    private func markStopped(runID: UUID) {
-        stateLock.lock()
-        defer { stateLock.unlock() }
+    @MainActor
+    private func runListener(runID: UUID, endpoint: ListenerEndpoint) async {
+        activeRunID = runID
+        service.beginAcceptingLivePreviews(listenerRunID: runID)
+        BridgeServerStatusStore.shared.set(.running(host: endpoint.host, port: endpoint.port))
+        Log.app.info("Bridge listening on \(endpoint.host):\(endpoint.port)")
+
+        do {
+            if let listenerRunOperation {
+                try await listenerRunOperation(endpoint.host, endpoint.port)
+            } else {
+                let app = makeApplication(
+                    host: endpoint.host,
+                    port: endpoint.port,
+                    listenerRunID: runID
+                )
+                try await app.runService(gracefulShutdownSignals: [])
+            }
+            if !Task.isCancelled {
+                let message = "Bridge listener stopped unexpectedly"
+                Log.app.error("Bridge listener stopped unexpectedly")
+                publishFailureIfCurrent(runID: runID, message: message)
+            }
+        } catch is CancellationError {
+            if Task.isCancelled {
+                Log.app.info("Bridge stopped")
+            } else {
+                let message = "Bridge listener stopped unexpectedly"
+                Log.app.error("Bridge listener stopped unexpectedly")
+                publishFailureIfCurrent(runID: runID, message: message)
+            }
+        } catch {
+            Log.app.error("Bridge server failed: \(error.localizedDescription)")
+            publishFailureIfCurrent(runID: runID, message: error.localizedDescription)
+        }
+        if let previewCleanup = service.beginCancelAllLivePreviewsIfOwned(
+            listenerRunID: runID
+        ) {
+            await previewCleanup.value
+        }
+        finishRun(runID: runID)
+    }
+
+    @MainActor
+    private func publishFailureIfCurrent(runID: UUID, message: String) {
+        guard requestedRunID == runID, activeRunID == runID else { return }
+        BridgeServerStatusStore.shared.set(.failed(message: message))
+    }
+
+    @MainActor
+    private func finishPendingStart(runID: UUID) {
+        guard requestedRunID == runID else { return }
+        requestedEndpoint = nil
+        requestedRunID = nil
+        lifecycleTask = nil
+    }
+
+    @MainActor
+    private func finishRun(runID: UUID) {
         guard activeRunID == runID else { return }
-        serverTask = nil
-        activePort = nil
-        activeHost = nil
         activeRunID = nil
-        running = false
+        guard requestedRunID == runID else { return }
+        requestedRunID = nil
+        lifecycleTask = nil
     }
 
-    private func makeApplication(host: String, port: Int) -> Application<RouterResponder<BridgeRequestContext>> {
+    @MainActor
+    private func finishStop(id: UUID) {
+        guard requestedRunID == id else { return }
+        activeRunID = nil
+        requestedRunID = nil
+        lifecycleTask = nil
+    }
+
+    private func makeApplication(
+        host: String,
+        port: Int,
+        listenerRunID: UUID
+    ) -> Application<RouterResponder<BridgeRequestContext>> {
         let service = self.service
         let router = Router(context: BridgeRequestContext.self)
 
@@ -296,7 +333,7 @@ final class BridgeHTTPServer: @unchecked Sendable {
                 request: request,
                 context: context
             ) {
-                let payload = BridgePairingPayload.current()
+                let payload = try BridgePairingPayload.current()
                 return Self.jsonResponse(payload)
             }
         }
@@ -339,7 +376,6 @@ final class BridgeHTTPServer: @unchecked Sendable {
 
         router.ws("v1/jobs/:jobID/events") { request, context async throws -> RouterShouldUpgrade in
             guard Self.isAuthorized(request) else {
-                Self.recordRequest(.jobEvents, request: request, context: context, statusCode: 404, startedAt: Date())
                 return .dontUpgrade
             }
             guard Self.hasClientIdentity(request) else {
@@ -370,14 +406,16 @@ final class BridgeHTTPServer: @unchecked Sendable {
                 decode: { try await Self.decodeJSON(BridgeLivePreviewStartRequest.self, from: request) },
                 metadata: { BridgeRequestMetadata(appName: $0.appName, bundleID: $0.bundleID) }
             ) { payload in
-                let response = try await service.startLivePreview(payload)
+                let response = try await service.startLivePreview(
+                    payload,
+                    listenerRunID: listenerRunID
+                )
                 return Self.jsonResponse(response)
             }
         }
 
         router.ws("v1/live-preview/:sessionID/socket") { request, context async throws -> RouterShouldUpgrade in
             guard Self.isAuthorized(request) else {
-                Self.recordRequest(.livePreviewSocket, request: request, context: context, statusCode: 404, startedAt: Date())
                 return .dontUpgrade
             }
             guard Self.hasClientIdentity(request) else {
@@ -404,6 +442,18 @@ final class BridgeHTTPServer: @unchecked Sendable {
             ) {
                 let sessionID = try context.parameters.require("sessionID")
                 let response = try await service.finishLivePreview(sessionID: sessionID)
+                return Self.jsonResponse(response)
+            }
+        }
+
+        router.post("v1/live-preview/:sessionID/cancel") { request, context async -> Response in
+            await Self.authorizedRecordedRequest(
+                .livePreviewCancel,
+                request: request,
+                context: context
+            ) {
+                let sessionID = try context.parameters.require("sessionID")
+                let response = await service.cancelLivePreview(sessionID: sessionID)
                 return Self.jsonResponse(response)
             }
         }
@@ -629,7 +679,7 @@ final class BridgeHTTPServer: @unchecked Sendable {
     }
 
     private static func isAuthorized(_ request: Request) -> Bool {
-        let token = AppSettings.bridgeAuthToken
+        guard let token = AppSettings.bridgeAuthToken else { return false }
         let auth = request.headers[.authorization] ?? ""
         guard auth.hasPrefix("Bearer ") else { return false }
         return constantTimeEquals(String(auth.dropFirst(7)), token)
@@ -696,7 +746,7 @@ final class BridgeHTTPServer: @unchecked Sendable {
         inbound: WebSocketInboundStream,
         outbound: WebSocketOutboundWriter
     ) async throws {
-        let process = try await service.livePreviewAudioProcess(sessionID: sessionID)
+        let inputGate = try await service.livePreviewInputGate(sessionID: sessionID)
         let audioDecoder = BridgeLivePreviewOpusDecoder()
         let writer = BridgeLivePreviewWebSocketWriter()
         let socketOpenedAt = Date()
@@ -733,8 +783,7 @@ final class BridgeHTTPServer: @unchecked Sendable {
                                     "Bridge live preview socket audio session=\(socketLogID, privacy: .public) first=\(isFirst, privacy: .public) opus_bytes=\(packet.count, privacy: .public) pcm_bytes=\(data.count, privacy: .public) received_audio_ms=\(receivedSamples * 1_000 / 16_000, privacy: .public) elapsed_ms=\(Self.elapsedMS(since: socketOpenedAt), privacy: .public)"
                                 )
                             }
-                            process.appendPCM16kMonoFloat32Data(data)
-                            await service.touchLivePreviewSession(sessionID: sessionID)
+                            guard inputGate.append(data) else { return }
 
                         case .text(let text):
                             let control = try BridgeJSON.decode(
@@ -750,7 +799,7 @@ final class BridgeHTTPServer: @unchecked Sendable {
                                 try await writer.sendFinal(response, outbound: outbound)
                                 return
                             case .cancel:
-                                await service.cancelLivePreview(sessionID: sessionID)
+                                _ = await service.cancelLivePreview(sessionID: sessionID)
                                 return
                             }
                         }
@@ -758,12 +807,12 @@ final class BridgeHTTPServer: @unchecked Sendable {
                     Log.bridge.notice(
                         "Bridge live preview socket closed by peer session=\(socketLogID, privacy: .public) received_audio_ms=\(receivedSamples * 1_000 / 16_000, privacy: .public) elapsed_ms=\(Self.elapsedMS(since: socketOpenedAt), privacy: .public)"
                     )
-                    await service.cancelLivePreview(sessionID: sessionID)
+                    _ = await service.cancelLivePreview(sessionID: sessionID)
                 } catch {
                     Log.bridge.notice(
                         "Bridge live preview socket error session=\(socketLogID, privacy: .public) received_audio_ms=\(receivedSamples * 1_000 / 16_000, privacy: .public) elapsed_ms=\(Self.elapsedMS(since: socketOpenedAt), privacy: .public) error=\(error.localizedDescription, privacy: .public)"
                     )
-                    await service.cancelLivePreview(sessionID: sessionID)
+                    _ = await service.cancelLivePreview(sessionID: sessionID)
                     throw error
                 }
             }

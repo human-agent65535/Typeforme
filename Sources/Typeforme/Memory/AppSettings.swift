@@ -196,13 +196,18 @@ enum AppSettings {
         }
         UserDefaults.standard.register(defaults: registeredDefaults)
 
-        _ = ensureBridgeAuthToken()
+        do {
+            _ = try ensureBridgeAuthToken()
+        } catch {
+            Log.bridge.error("Bridge auth token initialization failed: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     // MARK: - Service-side accessors
 
     private static var ud: UserDefaults { .standard }
     private static let secureSettingsStore = KeychainSecureSettingsStore()
+    private static let bridgeAuthTokenLock = NSLock()
     private static let cachedClientIdentityID = OSAllocatedUnfairLock<String?>(initialState: nil)
 
     private static func secureSetting(forKey key: String) -> SecureSettingValue {
@@ -214,8 +219,8 @@ enum AppSettings {
     }
 
     @discardableResult
-    private static func setSecureString(_ value: String, forKey key: String) -> Bool {
-        secureSetting(forKey: key).save(value)
+    private static func setSecureString(_ value: String, forKey key: String) throws -> String {
+        try secureSetting(forKey: key).set(value)
     }
 
     private static func rawSetting<Value>(
@@ -369,9 +374,20 @@ enum AppSettings {
         RecognitionSource.recognizedSources(raw.components(separatedBy: ","))
     }
 
+    static var asrCanonicalLanguageIDs: [String] {
+        canonicalASRLanguageIDs(
+            fromRawValue: ud.string(forKey: Keys.asrLanguageIDs)
+                ?? ASRLanguageSelection.defaultRawValue
+        )
+    }
+
+    static func canonicalASRLanguageIDs(fromRawValue rawValue: String) -> [String] {
+        ASRLanguageSelection.parse(rawValue)
+    }
+
     static var asrLanguageIDs: [String] {
-        ASRLanguageSelection.parse(
-            ud.string(forKey: Keys.asrLanguageIDs) ?? ASRLanguageSelection.defaultRawValue,
+        ASRLanguageSelection.validatedIDs(
+            asrCanonicalLanguageIDs,
             sources: enabledRecognitionSources
         )
     }
@@ -458,6 +474,12 @@ enum AppSettings {
     }
     static var setupGuideHasShown: Bool { ud.bool(forKey: Keys.setupGuideHasShown) }
     static var setupGuideCompleted: Bool { ud.bool(forKey: Keys.setupGuideCompleted) }
+    static var shouldAutomaticallyShowSetupGuide: Bool {
+        shouldShowSetupGuide(hasShown: setupGuideHasShown, completed: setupGuideCompleted)
+    }
+    static func shouldShowSetupGuide(hasShown: Bool, completed: Bool) -> Bool {
+        !hasShown && !completed
+    }
     static func setSetupGuideHasShown(_ shown: Bool) {
         ud.set(shown, forKey: Keys.setupGuideHasShown)
     }
@@ -480,8 +502,8 @@ enum AppSettings {
         secureString(forKey: Keys.externalLLMAPIKey)
     }
     @discardableResult
-    static func setExternalLLMAPIKey(_ value: String) -> Bool {
-        setSecureString(value, forKey: Keys.externalLLMAPIKey)
+    static func setExternalLLMAPIKey(_ value: String) throws -> String {
+        try setSecureString(value, forKey: Keys.externalLLMAPIKey)
     }
     static var externalLLMModel: String {
         ud.string(forKey: Keys.externalLLMModel)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -573,8 +595,11 @@ enum AppSettings {
         secureString(forKey: Keys.clientBridgeToken)
     }
     @discardableResult
-    static func setClientBridgeToken(_ value: String) -> Bool {
-        setSecureString(value, forKey: Keys.clientBridgeToken)
+    static func setClientBridgeToken(_ value: String) throws -> String {
+        let persisted = try setSecureString(value, forKey: Keys.clientBridgeToken)
+        setClientSettingsRevision(nil)
+        NotificationCenter.default.post(name: .clientBridgeConfigurationDidChange, object: nil)
+        return persisted
     }
     static var clientSettingsRevision: String {
         ud.string(forKey: Keys.clientSettingsRevision)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -615,27 +640,22 @@ enum AppSettings {
     static var diagnosticsDebugMode: Bool {
         ud.bool(forKey: Keys.diagnosticsDebugMode)
     }
-    static var bridgeAuthToken: String {
-        ensureBridgeAuthToken()
+    static var bridgeAuthToken: String? {
+        try? ensureBridgeAuthToken()
     }
 
     @discardableResult
-    static func ensureBridgeAuthToken() -> String {
-        let existing = secureString(forKey: Keys.bridgeAuthToken)
-        if !existing.isEmpty {
-            return existing
-        }
-
-        let token = newBridgeAuthToken()
-        setSecureString(token, forKey: Keys.bridgeAuthToken)
-        return token
+    static func ensureBridgeAuthToken() throws -> String {
+        bridgeAuthTokenLock.lock()
+        defer { bridgeAuthTokenLock.unlock() }
+        return try secureSetting(forKey: Keys.bridgeAuthToken).ensure(generating: newBridgeAuthToken)
     }
 
     @discardableResult
-    static func rotateBridgeAuthToken() -> String {
-        let token = newBridgeAuthToken()
-        setSecureString(token, forKey: Keys.bridgeAuthToken)
-        return token
+    static func rotateBridgeAuthToken() throws -> String {
+        bridgeAuthTokenLock.lock()
+        defer { bridgeAuthTokenLock.unlock() }
+        return try secureSetting(forKey: Keys.bridgeAuthToken).replace(with: newBridgeAuthToken())
     }
 
     private static func newBridgeAuthToken() -> String {

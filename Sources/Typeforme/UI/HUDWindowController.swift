@@ -207,9 +207,25 @@ final class HUDWindowController {
     /// point: height changes grow the panel upward only, so the user's chip
     /// row never slides closer to (or below) the screen edge as text wraps.
     private func originForAnchor(_ anchor: NSPoint, size: NSSize) -> NSPoint {
+        Self.clampedOrigin(
+            for: anchor,
+            size: size,
+            screens: NSScreen.screens.map { (frame: $0.frame, visibleFrame: $0.visibleFrame) }
+        )
+    }
+
+    static func clampedOrigin(
+        for anchor: NSPoint,
+        size: NSSize,
+        screens: [(frame: NSRect, visibleFrame: NSRect)]
+    ) -> NSPoint {
         var origin = NSPoint(x: anchor.x - size.width / 2, y: anchor.y)
-        if let screen = NSScreen.main {
-            let visible = screen.visibleFrame
+        let selectedScreen = screens.first(where: { $0.frame.contains(anchor) })
+            ?? screens.min(by: {
+                distanceSquared(from: anchor, to: $0.frame)
+                    < distanceSquared(from: anchor, to: $1.frame)
+            })
+        if let visible = selectedScreen?.visibleFrame {
             let minX = visible.minX + Self.edgePadding
             let maxX = visible.maxX - size.width - Self.edgePadding
             let minY = visible.minY + Self.edgePadding
@@ -240,7 +256,7 @@ final class HUDWindowController {
         // user's intent by clamping the old point onto the nearest screen
         // instead of discarding their placement.
         guard let nearest = NSScreen.screens.min(by: {
-            distanceSquared(from: p, to: $0.frame.center) < distanceSquared(from: p, to: $1.frame.center)
+            distanceSquared(from: p, to: $0.frame) < distanceSquared(from: p, to: $1.frame)
         }) else { return nil }
         let visible = nearest.visibleFrame
         return NSPoint(
@@ -249,9 +265,9 @@ final class HUDWindowController {
         )
     }
 
-    private static func distanceSquared(from lhs: NSPoint, to rhs: NSPoint) -> CGFloat {
-        let dx = lhs.x - rhs.x
-        let dy = lhs.y - rhs.y
+    private static func distanceSquared(from point: NSPoint, to rect: NSRect) -> CGFloat {
+        let dx = max(0, max(rect.minX - point.x, point.x - rect.maxX))
+        let dy = max(0, max(rect.minY - point.y, point.y - rect.maxY))
         return dx * dx + dy * dy
     }
 
@@ -398,10 +414,4 @@ final class HUDWindowController {
 
 private final class TransparentHUDHostingView<Content: View>: NSHostingView<Content> {
     override var isOpaque: Bool { false }
-}
-
-private extension NSRect {
-    var center: NSPoint {
-        NSPoint(x: midX, y: midY)
-    }
 }

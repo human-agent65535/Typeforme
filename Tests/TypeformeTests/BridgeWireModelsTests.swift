@@ -14,6 +14,8 @@ struct BridgeWireModelsTests {
         #expect(BridgeAPIEndpoint.jobEvents(jobID: "ios_1").methodAndPath == "WS /v1/jobs/ios_1/events")
         #expect(BridgeRequestEndpoint.livePreviewSocket.methodAndPath == "WS /v1/live-preview/:sessionID/socket")
         #expect(BridgeAPIEndpoint.livePreviewSocket(sessionID: "preview_1").methodAndPath == "WS /v1/live-preview/preview_1/socket")
+        #expect(BridgeRequestEndpoint.livePreviewCancel.methodAndPath == "POST /v1/live-preview/:sessionID/cancel")
+        #expect(BridgeAPIEndpoint.livePreviewCancel(sessionID: "preview_1").methodAndPath == "POST /v1/live-preview/preview_1/cancel")
     }
 
     @Test func bridgeClientIdentityHeadersUseSharedNames() {
@@ -239,6 +241,14 @@ struct BridgeWireModelsTests {
         #expect(object["finished_at"] as? Double == 123.0)
     }
 
+    @Test func livePreviewCancelResponseUsesCurrentSessionKey() throws {
+        let response = BridgeLivePreviewCancelResponse(sessionID: "preview-1")
+
+        let object = try encodedJSONObject(response)
+        #expect(object["session_id"] as? String == "preview-1")
+        #expect(object.count == 1)
+    }
+
     @Test func settingsUpdateRequestEncodesSharedBridgeKeys() throws {
         let entryID = UUID(uuidString: "00000000-0000-0000-0000-000000000123")!
         let snapshot = BridgeSettingsEditableSnapshot(
@@ -307,6 +317,21 @@ struct BridgeWireModelsTests {
 
         #expect(payload.enabledSources == [])
         #expect(payload.languageIDs == [])
+    }
+
+    @Test func bridgeSettingsPayloadPreservesRemoteSourceAvailability() {
+        var payload = BridgeSettingsPayload.current()
+        let remoteQwen = BridgeSourceAvailability(
+            canEnable: false,
+            ready: false,
+            status: "remote_model_missing",
+            reason: "The remote Bridge does not have this model."
+        )
+        payload.sourceAvailabilityByRecognitionSource[RecognitionSource.qwen.rawValue] = remoteQwen
+
+        payload.normalize()
+
+        #expect(payload.sourceAvailability(for: .qwen) == remoteQwen)
     }
 
     @Test func bridgeSettingsPayloadKeepsFastWithExplicitAppleSpeechSource() {

@@ -29,12 +29,17 @@ enum CommandLineHandler {
         UserDefaults.standard.setVolatileDomain(overrides, forName: UserDefaults.argumentDomain)
 
         Task { @MainActor in
+            let sources = AppSettings.enabledRecognitionSources
+            let languageIDs = ASRLanguageSelection.validatedIDsForTranscription(
+                AppSettings.asrCanonicalLanguageIDs,
+                sources: sources
+            )
             let execution = await executeDebugTranscribe(
                 request,
-                provider: AppSettings.enabledRecognitionSources.map(\.rawValue).joined(separator: ","),
-                languageIDs: AppSettings.asrLanguageIDs,
+                provider: sources.map(\.rawValue).joined(separator: ","),
+                languageIDs: languageIDs,
                 transcribe: { audioURL, languageIDs in
-                    try await ASRFactory.shared.get().transcribe(
+                    try await ASRFactory.shared.get(sources: sources).transcribe(
                         audioFileURL: audioURL,
                         languageIDs: languageIDs
                     )

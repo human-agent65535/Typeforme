@@ -61,8 +61,10 @@ enum ModelDownloadIntegrity {
         at url: URL,
         checksumPolicy: ModelDownloadChecksumPolicy? = nil,
         expectedBytes: Int64? = nil,
-        label: String
+        label: String,
+        cancellationCheck: (() throws -> Void)? = nil
     ) throws {
+        try cancellationCheck?()
         if let expectedBytes {
             let actual = try byteCount(of: url)
             guard actual == expectedBytes else {
@@ -75,7 +77,7 @@ enum ModelDownloadIntegrity {
         }
 
         if case .verifySHA256(let expectedSHA256)? = checksumPolicy {
-            let actual = try sha256Hex(of: url)
+            let actual = try sha256Hex(of: url, cancellationCheck: cancellationCheck)
             guard actual.caseInsensitiveCompare(expectedSHA256) == .orderedSame else {
                 throw ModelDownloadIntegrityError.checksumMismatch(
                     label: label,
@@ -84,6 +86,7 @@ enum ModelDownloadIntegrity {
                 )
             }
         }
+        try cancellationCheck?()
     }
 
     static func byteCount(of url: URL) throws -> Int64 {
@@ -92,16 +95,21 @@ enum ModelDownloadIntegrity {
         return value.int64Value
     }
 
-    static func sha256Hex(of url: URL) throws -> String {
+    static func sha256Hex(
+        of url: URL,
+        cancellationCheck: (() throws -> Void)? = nil
+    ) throws -> String {
         let input = try FileHandle(forReadingFrom: url)
         defer { try? input.close() }
 
         var hasher = SHA256()
         while true {
+            try cancellationCheck?()
             let chunk = try input.read(upToCount: readChunkSize) ?? Data()
             guard !chunk.isEmpty else { break }
             hasher.update(data: chunk)
         }
+        try cancellationCheck?()
         return hasher.finalize()
             .map { String(format: "%02x", $0) }
             .joined()

@@ -2,13 +2,26 @@ import Foundation
 
 actor CommitCancellationToken {
     private var cancelled = false
+    private var commitStarted = false
 
-    func cancel() {
+    /// Returns false once an irreversible text commit has begun. At that point
+    /// the caller must let the completed insertion win instead of reporting a
+    /// cancellation after text has already reached the target app.
+    @discardableResult
+    func cancel() -> Bool {
+        guard !commitStarted else { return false }
         cancelled = true
+        return true
     }
 
     func isCancelled() -> Bool {
         cancelled
+    }
+
+    func beginCommit(taskIsCancelled: Bool) -> Bool {
+        guard !cancelled, !taskIsCancelled else { return false }
+        commitStarted = true
+        return true
     }
 }
 

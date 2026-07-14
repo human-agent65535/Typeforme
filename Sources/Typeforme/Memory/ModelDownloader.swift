@@ -1,6 +1,99 @@
 import Combine
 import Foundation
 
+@MainActor
+final class ModelDownloadOperationOwnership: @unchecked Sendable {
+    private var owner: (any Sendable)?
+
+    init(owner: (any Sendable)?) {
+        self.owner = owner
+    }
+
+    var isRetainingOwner: Bool { owner != nil }
+
+    func finish() {
+        owner = nil
+    }
+}
+
+/// Owns the two resources a manual model change must exclude: automatic
+/// installation for the target paths and inference using the affected runtime.
+/// Multiple downloaders may retain the same lease; both exclusions end when the
+/// last downloader releases it.
+final class ModelManualMaintenanceLease: @unchecked Sendable {
+    private let autoInstallLease: ModelAutoInstallMaintenanceLease
+    private let runtimeLease: RuntimeMaintenanceLease
+
+    fileprivate init(
+        autoInstallLease: ModelAutoInstallMaintenanceLease,
+        runtimeLease: RuntimeMaintenanceLease
+    ) {
+        self.autoInstallLease = autoInstallLease
+        self.runtimeLease = runtimeLease
+    }
+
+    func finishAndWait() async {
+        runtimeLease.finish()
+        await autoInstallLease.finishAndWait()
+    }
+}
+
+@MainActor
+enum ModelManualMaintenance {
+    static func begin(
+        atPaths paths: [String],
+        beginRuntimeMaintenance: () async throws -> RuntimeMaintenanceLease
+    ) async throws -> ModelManualMaintenanceLease {
+        let autoInstallLease = try await ModelAutoInstaller.shared.beginMaintenance(atPaths: paths)
+        do {
+            try Task.checkCancellation()
+            let runtimeLease = try await beginRuntimeMaintenance()
+            do {
+                try Task.checkCancellation()
+                return ModelManualMaintenanceLease(
+                    autoInstallLease: autoInstallLease,
+                    runtimeLease: runtimeLease
+                )
+            } catch {
+                runtimeLease.finish()
+                throw error
+            }
+        } catch {
+            await autoInstallLease.finishAndWait()
+            throw error
+        }
+    }
+}
+
+/// Owns the cancellable preparation phase before a manual model download or
+/// deletion reaches `ModelDownloader`. SwiftUI rows use one controller so a
+/// second click cannot enqueue a hidden operation behind a path lease.
+@MainActor
+final class ModelManualOperationController: ObservableObject {
+    @Published private(set) var isPending = false
+
+    private var task: Task<Void, Never>?
+
+    func start(_ operation: @escaping @MainActor () async -> Void) {
+        guard task == nil else { return }
+        isPending = true
+        task = Task { @MainActor [weak self] in
+            await operation()
+            guard let self else { return }
+            self.task = nil
+            self.isPending = false
+        }
+    }
+
+    func cancel() {
+        task?.cancel()
+    }
+
+    deinit {
+        task?.cancel()
+    }
+}
+
 /// Streams a single GGUF (or any large file) from a URL to disk with live
 /// progress, suitable for binding from SwiftUI via `@ObservedObject`.
 /// Used by the Settings UI download buttons.
@@ -21,18 +114,25 @@ final class ModelDownloader: ObservableObject {
     private var resumeData: Data?
     private var resumeDestination: URL?
     private var runID: UUID?
+    /// Retains operation-scoped resources (for example a model maintenance
+    /// lease) until the transfer has actually completed or cancelled. SwiftUI
+    /// view lifetime is shorter than a registry-owned download.
+    private var operationOwnership: ModelDownloadOperationOwnership?
 
     func start(
         from url: URL,
         to destination: URL,
         checksumPolicy: ModelDownloadChecksumPolicy,
-        expectedBytes: Int64? = nil
+        expectedBytes: Int64? = nil,
+        operationOwner: (any Sendable)? = nil
     ) {
         if task != nil {
             cancel()
         }
 
         self.destination = destination
+        let operationOwnership = ModelDownloadOperationOwnership(owner: operationOwner)
+        self.operationOwnership = operationOwnership
         let runID = UUID()
         self.runID = runID
         state = .downloading(received: 0, total: 0)
@@ -48,19 +148,18 @@ final class ModelDownloader: ObservableObject {
                     self?.state = .downloading(received: received, total: total)
                 }
             },
-            onCompletion: { [weak self] completion in
+            onCompletion: { [weak self, operationOwnership] completion in
                 Task { @MainActor in
-                    guard self?.runID == runID else { return }
+                    guard self?.runID == runID else {
+                        operationOwnership.finish()
+                        return
+                    }
                     self?.handleCompletion(completion)
                 }
             }
         )
         let matchingResumeData = resumeDestination == destination ? resumeData : nil
-        if matchingResumeData != nil {
-            resumeData = nil
-        } else {
-            resumeData = nil
-        }
+        resumeData = nil
 
         resumeDestination = destination
         self.runner = runner
@@ -71,13 +170,19 @@ final class ModelDownloader: ObservableObject {
     func cancel() {
         guard let task else {
             if case .downloading = state { state = .idle }
+            operationOwnership?.finish()
+            operationOwnership = nil
             return
         }
 
         let cancelledDestination = destination
-        runner?.cancel { [weak self] data in
+        let operationOwnership = self.operationOwnership
+        runner?.cancel { [weak self, operationOwnership] data in
             Task { @MainActor in
-                guard let self else { return }
+                guard let self else {
+                    operationOwnership?.finish()
+                    return
+                }
                 if let data, !data.isEmpty {
                     self.storeResumeData(data, for: cancelledDestination)
                 }
@@ -86,6 +191,8 @@ final class ModelDownloader: ObservableObject {
                     if case .downloading = self.state {
                         self.state = .idle
                     }
+                } else {
+                    operationOwnership?.finish()
                 }
             }
         }
@@ -136,6 +243,8 @@ final class ModelDownloader: ObservableObject {
         task = nil
         runner = nil
         runID = nil
+        operationOwnership?.finish()
+        operationOwnership = nil
     }
 
     private func storeResumeData(_ data: Data, for destination: URL?) {

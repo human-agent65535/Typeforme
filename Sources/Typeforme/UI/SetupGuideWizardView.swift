@@ -88,7 +88,7 @@ struct SetupGuideWizardView: View {
     @State private var checkedClientConfig: ClientBridgeConfiguration?
     @State private var bridgeStatus: String?
     @State private var bridgeIsError = false
-    @State private var isCheckingBridge = false
+    @State private var bridgeOperationState = LatestDraftOperationState<ClientBridgeConfiguration>()
     @State private var externalLLMAPIKey = AppSettings.externalLLMAPIKey
     @State private var externalLLMStatus = "Not checked"
     @State private var externalLLMDetail = "Refresh models before using an external refine backend."
@@ -128,11 +128,6 @@ struct SetupGuideWizardView: View {
         }
         .onChange(of: processingModeRaw) { _, _ in
             normalizePage()
-        }
-        .onChange(of: clientLocalBridgeURLsRaw) { _, _ in resetClientBridgeCheck() }
-        .onChange(of: clientCloudBridgeURL) { _, _ in resetClientBridgeCheck() }
-        .onChange(of: clientBridgeToken) { _, newValue in
-            AppSettings.setClientBridgeToken(newValue)
             resetClientBridgeCheck()
         }
         .onChange(of: backendRaw) { _, _ in
@@ -671,6 +666,10 @@ struct SetupGuideWizardView: View {
         clientConfig.isConfigured && checkedClientConfig == clientConfig && routeStatus.activeURL != nil
     }
 
+    private var isCheckingBridge: Bool {
+        bridgeOperationState.isActive
+    }
+
     private var primaryLocalEndpoint: String {
         if routeStatus.activeKind == .local, let activeURL = routeStatus.activeURL?.absoluteString {
             return activeURL
@@ -683,13 +682,32 @@ struct SetupGuideWizardView: View {
     }
 
     private var asrReady: Bool {
-        (!appleSpeechEnabled || appleSpeechAvailability.ready)
-            && (!qwenEnabled || qwenModelInstalled)
-            && (!nvidiaEnabled || nvidiaModelInstalled)
+        Self.isASRConfigurationReady(
+            appleSpeechEnabled: appleSpeechEnabled,
+            appleSpeechReady: appleSpeechAvailability.ready,
+            qwenEnabled: qwenEnabled,
+            qwenInstalled: qwenModelInstalled,
+            nvidiaEnabled: nvidiaEnabled,
+            nvidiaInstalled: nvidiaModelInstalled
+        )
+    }
+
+    nonisolated static func isASRConfigurationReady(
+        appleSpeechEnabled: Bool,
+        appleSpeechReady: Bool,
+        qwenEnabled: Bool,
+        qwenInstalled: Bool,
+        nvidiaEnabled: Bool,
+        nvidiaInstalled: Bool
+    ) -> Bool {
+        (appleSpeechEnabled || qwenEnabled || nvidiaEnabled)
+            && (!appleSpeechEnabled || appleSpeechReady)
+            && (!qwenEnabled || qwenInstalled)
+            && (!nvidiaEnabled || nvidiaInstalled)
     }
 
     private var appleSpeechAvailability: AppleSpeechAvailabilityReport {
-        AppleSpeechAvailability.report(languageIDs: AppSettings.asrLanguageIDs)
+        AppleSpeechAvailability.report(languageIDs: AppSettings.asrCanonicalLanguageIDs)
     }
 
     private var appleSpeechCanEnable: Bool {
@@ -760,7 +778,13 @@ struct SetupGuideWizardView: View {
 
     private func advance() {
         if isLastPage {
-            persistExternalRefineCredentialsIfNeeded()
+            do {
+                try persistExternalRefineCredentialsIfNeeded()
+            } catch {
+                externalLLMStatus = "Failed"
+                externalLLMDetail = error.localizedDescription
+                return
+            }
             AppSettings.setSetupGuideCompleted(true)
             AppSettings.setSetupGuideHasShown(true)
             warmSelectedModelsAfterDone()
@@ -785,6 +809,7 @@ struct SetupGuideWizardView: View {
     }
 
     private func resetClientBridgeCheck() {
+        bridgeOperationState.invalidate()
         routeStatus = BridgeRouteResolutionStatus()
         checkedClientConfig = nil
         bridgeStatus = nil
@@ -793,16 +818,18 @@ struct SetupGuideWizardView: View {
 
     @MainActor
     private func checkClientBridge(pullServerDefaults: Bool) async {
-        isCheckingBridge = true
+        let config = clientConfig
+        let operation = bridgeOperationState.begin(snapshot: config)
         bridgeStatus = nil
         bridgeIsError = false
-        defer { isCheckingBridge = false }
+        defer { bridgeOperationState.finish(operation) }
 
-        let config = clientConfig
-        routeStatus = await ClientBridgeRouteResolver().resolve(
+        let resolvedStatus = await ClientBridgeRouteResolver().resolve(
             config: config,
             probeAllEndpoints: true
         )
+        guard bridgeOperationState.canApply(operation, to: clientConfig) else { return }
+        routeStatus = resolvedStatus
         checkedClientConfig = config
 
         guard routeStatus.activeURL != nil else {
@@ -816,13 +843,17 @@ struct SetupGuideWizardView: View {
 
         guard pullServerDefaults else { return }
         do {
-            let resolved = try await RemoteBridgeClient.resolvedFromSettings(probeAllEndpoints: true)
-            routeStatus = resolved.routeStatus
-            checkedClientConfig = ClientBridgeConfiguration.current
-            let settings = try await resolved.client.settings()
+            guard let activeURL = resolvedStatus.activeURL else { return }
+            let client = try RemoteBridgeClient(
+                baseURLString: activeURL.absoluteString,
+                token: config.token
+            )
+            let settings = try await client.settings()
+            guard bridgeOperationState.canApply(operation, to: clientConfig) else { return }
             ClientBridgeSettingsSync.applyServerDefaults(settings)
-            bridgeStatus = "Connected. Server defaults pulled from \(resolved.routeStatus.activeKind.rawValue)."
+            bridgeStatus = "Connected. Server defaults pulled from \(resolvedStatus.activeKind.rawValue)."
         } catch {
+            guard bridgeOperationState.canApply(operation, to: clientConfig) else { return }
             bridgeStatus = "Connected, but server settings could not be pulled: \(error.localizedDescription)"
             bridgeIsError = false
         }
@@ -840,28 +871,35 @@ struct SetupGuideWizardView: View {
         do {
             let payload = try BridgeJSON.decode(BridgePairingPayload.self, from: data)
             let config = ClientBridgeConfiguration.fromPairingPayload(payload)
+            let persistedToken = try AppSettings.setClientBridgeToken(config.token)
             clientLocalBridgeURLsRaw = ClientBridgeConfiguration.rawValue(for: config.localBridgeURLs)
             clientCloudBridgeURL = config.cloudBridgeURL
-            clientBridgeToken = config.token
-            AppSettings.setClientBridgeToken(config.token)
+            clientBridgeToken = persistedToken
             resetClientBridgeCheck()
             bridgeStatus = "Pairing JSON applied. Checking Bridge..."
             bridgeIsError = false
             Task { await checkClientBridge(pullServerDefaults: true) }
         } catch {
-            bridgeStatus = "Couldn't parse pairing JSON."
+            bridgeStatus = error is SecureSettingError
+                ? "Pairing could not be saved: \(error.localizedDescription)"
+                : "Couldn't parse pairing JSON."
             bridgeIsError = true
         }
     }
 
     private func clearClientPairing() {
-        clientLocalBridgeURLsRaw = ""
-        clientCloudBridgeURL = ""
-        clientBridgeToken = ""
-        AppSettings.setClientBridgeToken("")
-        resetClientBridgeCheck()
-        bridgeStatus = "Pairing cleared."
-        bridgeIsError = false
+        do {
+            let persistedToken = try AppSettings.setClientBridgeToken("")
+            clientLocalBridgeURLsRaw = ""
+            clientCloudBridgeURL = ""
+            clientBridgeToken = persistedToken
+            resetClientBridgeCheck()
+            bridgeStatus = "Pairing cleared."
+            bridgeIsError = false
+        } catch {
+            bridgeStatus = "Could not clear pairing: \(error.localizedDescription)"
+            bridgeIsError = true
+        }
     }
 
     private func endpointState(isConfigured: Bool, isChecked: Bool, isOK: Bool) -> String {
@@ -879,11 +917,20 @@ struct SetupGuideWizardView: View {
         }
     }
 
-    private func persistExternalRefineCredentialsIfNeeded() {
-        guard selectedBackendKind?.isExternalCompatible == true else { return }
+    private func persistExternalRefineCredentialsIfNeeded() throws {
+        guard processingMode == .server,
+              selectedBackendKind?.isExternalCompatible == true
+        else { return }
+        let normalizedAPIKey = externalLLMAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let persistedAPIKey: String
+        if normalizedAPIKey == AppSettings.externalLLMAPIKey {
+            persistedAPIKey = normalizedAPIKey
+        } else {
+            persistedAPIKey = try AppSettings.setExternalLLMAPIKey(normalizedAPIKey)
+        }
         externalLLMBaseURL = externalLLMBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         externalLLMModel = externalLLMModel.trimmingCharacters(in: .whitespacesAndNewlines)
-        AppSettings.setExternalLLMAPIKey(externalLLMAPIKey)
+        externalLLMAPIKey = persistedAPIKey
     }
 
     private func warmSelectedModelsAfterDone() {
@@ -1270,6 +1317,7 @@ private struct SetupQwenASRInstallRow: View {
     @AppStorage private var mmprojPath: String
     @AppStorage private var modelURL: String
     @AppStorage private var mmprojURL: String
+    @StateObject private var manualOperation = ModelManualOperationController()
 
     init(spec: QwenASRModelSpec) {
         self.spec = spec
@@ -1284,42 +1332,60 @@ private struct SetupQwenASRInstallRow: View {
             title: spec.label,
             detail: spec.note,
             isInstalled: isInstalled,
-            isDownloading: isDownloading,
+            isDownloading: isDownloading || manualOperation.isPending,
             failureText: failureText,
             progress: progress,
             installAction: startDownloads,
-            cancelAction: cancelDownloads
+            cancelAction: {
+                manualOperation.cancel()
+                cancelDownloads()
+            }
         )
+        .onDisappear {
+            manualOperation.cancel()
+        }
     }
 
     private func startDownloads() {
         guard let modelDownloadURL = URL(string: effectiveModelURLString),
-              let mmprojDownloadURL = URL(string: effectiveMMProjURLString)
-        else { return }
-        Task { @MainActor in
-            try? AppPaths.ensureDirectories()
-            await ASRFactory.shared.stopQwenLlama()
-            guard let modelChecksumPolicy = setupChecksumPolicy(
+              let mmprojDownloadURL = URL(string: effectiveMMProjURLString),
+              let modelChecksumPolicy = setupChecksumPolicy(
                 for: modelDownloadURL,
                 label: "Qwen3-ASR model",
                 downloader: modelDownloader
-            ),
-                  let mmprojChecksumPolicy = setupChecksumPolicy(
-                    for: mmprojDownloadURL,
-                    label: "Qwen3-ASR mmproj",
-                    downloader: mmprojDownloader
-                  )
-            else { return }
-            modelDownloader.start(
-                from: modelDownloadURL,
-                to: URL(fileURLWithPath: effectiveModelPath),
-                checksumPolicy: modelChecksumPolicy
-            )
-            mmprojDownloader.start(
-                from: mmprojDownloadURL,
-                to: URL(fileURLWithPath: effectiveMMProjPath),
-                checksumPolicy: mmprojChecksumPolicy
-            )
+              ),
+              let mmprojChecksumPolicy = setupChecksumPolicy(
+                for: mmprojDownloadURL,
+                label: "Qwen3-ASR mmproj",
+                downloader: mmprojDownloader
+              )
+        else { return }
+        let modelPath = effectiveModelPath
+        let mmprojPath = effectiveMMProjPath
+        manualOperation.start {
+            do {
+                try AppPaths.ensureDirectories()
+                let paths = [modelPath, mmprojPath]
+                let maintenanceLease = try await ModelManualMaintenance.begin(atPaths: paths) {
+                    try await ASRFactory.shared.beginQwenLlamaMaintenance()
+                }
+                modelDownloader.start(
+                    from: modelDownloadURL,
+                    to: URL(fileURLWithPath: modelPath),
+                    checksumPolicy: modelChecksumPolicy,
+                    operationOwner: maintenanceLease
+                )
+                mmprojDownloader.start(
+                    from: mmprojDownloadURL,
+                    to: URL(fileURLWithPath: mmprojPath),
+                    checksumPolicy: mmprojChecksumPolicy,
+                    operationOwner: maintenanceLease
+                )
+            } catch is CancellationError {
+                return
+            } catch {
+                modelDownloader.fail(error.localizedDescription)
+            }
         }
     }
 
@@ -1380,6 +1446,7 @@ private struct SetupNvidiaNemotronInstallRow: View {
     @AppStorage private var encoderDataURL: String
     @AppStorage private var decoderJointURL: String
     @AppStorage private var tokenizerURL: String
+    @StateObject private var manualOperation = ModelManualOperationController()
 
     init(spec: NvidiaNemotronASRModelSpec) {
         self.spec = spec
@@ -1399,35 +1466,63 @@ private struct SetupNvidiaNemotronInstallRow: View {
             title: spec.label,
             detail: spec.note,
             isInstalled: isInstalled,
-            isDownloading: isDownloading,
+            isDownloading: isDownloading || manualOperation.isPending,
             failureText: failureText,
             progress: progress,
             installAction: startDownloads,
-            cancelAction: cancelDownloads
+            cancelAction: {
+                manualOperation.cancel()
+                cancelDownloads()
+            }
         )
-    }
-
-    private func startDownloads() {
-        Task { @MainActor in
-            try? AppPaths.ensureDirectories()
-            startDownload(file: files[0], path: effectiveEncoderPath, url: encoderURL, downloader: encoderDownloader)
-            startDownload(file: files[1], path: effectiveEncoderDataPath, url: encoderDataURL, downloader: encoderDataDownloader)
-            startDownload(file: files[2], path: effectiveDecoderJointPath, url: decoderJointURL, downloader: decoderJointDownloader)
-            startDownload(file: files[3], path: effectiveTokenizerPath, url: tokenizerURL, downloader: tokenizerDownloader)
+        .onDisappear {
+            manualOperation.cancel()
         }
     }
 
-    private func startDownload(file: NvidiaNemotronASRFileSpec, path: String, url: String, downloader: ModelDownloader) {
-        let trimmed = url.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let downloadURL = URL(string: trimmed.isEmpty ? file.defaultURL : trimmed),
-              let checksumPolicy = setupChecksumPolicy(for: downloadURL, label: file.label, downloader: downloader)
-        else { return }
-        downloader.start(
-            from: downloadURL,
-            to: URL(fileURLWithPath: path),
-            checksumPolicy: checksumPolicy,
-            expectedBytes: file.expectedBytes
-        )
+    private func startDownloads() {
+        let paths = effectivePaths
+        let urlStrings = [encoderURL, encoderDataURL, decoderJointURL, tokenizerURL]
+        let downloaders = [encoderDownloader, encoderDataDownloader, decoderJointDownloader, tokenizerDownloader]
+        var prepared: [(URL, String, ModelDownloader, ModelDownloadChecksumPolicy, Int64)] = []
+        for index in files.indices {
+            let trimmed = urlStrings[index].trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let downloadURL = URL(string: trimmed.isEmpty ? files[index].defaultURL : trimmed),
+                  let checksumPolicy = setupChecksumPolicy(
+                    for: downloadURL,
+                    label: files[index].label,
+                    downloader: downloaders[index]
+                  )
+            else { return }
+            prepared.append((
+                downloadURL,
+                paths[index],
+                downloaders[index],
+                checksumPolicy,
+                files[index].expectedBytes
+            ))
+        }
+        manualOperation.start {
+            do {
+                try AppPaths.ensureDirectories()
+                let maintenanceLease = try await ModelManualMaintenance.begin(atPaths: paths) {
+                    try await ASRFactory.shared.beginNvidiaNemotronMaintenance()
+                }
+                for request in prepared {
+                    request.2.start(
+                        from: request.0,
+                        to: URL(fileURLWithPath: request.1),
+                        checksumPolicy: request.3,
+                        expectedBytes: request.4,
+                        operationOwner: maintenanceLease
+                    )
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                encoderDownloader.fail(error.localizedDescription)
+            }
+        }
     }
 
     private func cancelDownloads() {
@@ -1495,6 +1590,7 @@ private struct SetupLocalLlamaInstallRow: View {
     @EnvironmentObject private var modelDownloads: ModelDownloadRegistry
     @AppStorage private var path: String
     @AppStorage private var url: String
+    @StateObject private var manualOperation = ModelManualOperationController()
 
     init(spec: LocalLlamaModelSpec) {
         self.spec = spec
@@ -1507,25 +1603,57 @@ private struct SetupLocalLlamaInstallRow: View {
             title: spec.label,
             detail: spec.note,
             isInstalled: isInstalled,
-            isDownloading: isDownloading,
+            isDownloading: isDownloading || manualOperation.isPending,
             failureText: failureText,
             progress: progress,
             installAction: startDownload,
-            cancelAction: { downloader.cancel() }
+            cancelAction: {
+                manualOperation.cancel()
+                downloader.cancel()
+            }
         )
+        .onDisappear {
+            manualOperation.cancel()
+        }
     }
 
     private func startDownload() {
         guard let downloadURL = URL(string: effectiveURLString) else { return }
-        Task { @MainActor in
-            try? AppPaths.ensureDirectories()
-            await CorrectorFactory.shared.shutdownAll()
-            guard let checksumPolicy = setupChecksumPolicy(for: downloadURL, label: spec.label, downloader: downloader) else { return }
-            downloader.start(
-                from: downloadURL,
-                to: URL(fileURLWithPath: effectivePath),
-                checksumPolicy: checksumPolicy
-            )
+        let destination = URL(fileURLWithPath: effectivePath)
+        manualOperation.start {
+            do {
+                try AppPaths.ensureDirectories()
+                let autoInstallLease = try await ModelAutoInstaller.shared.beginMaintenance(
+                    atPaths: [destination.path]
+                )
+                guard !Task.isCancelled else {
+                    await autoInstallLease.finishAndWait()
+                    return
+                }
+                await CorrectorFactory.shared.drainAndShutdownAll()
+                guard !Task.isCancelled else {
+                    await autoInstallLease.finishAndWait()
+                    return
+                }
+                guard let checksumPolicy = setupChecksumPolicy(
+                    for: downloadURL,
+                    label: spec.label,
+                    downloader: downloader
+                ) else {
+                    await autoInstallLease.finishAndWait()
+                    return
+                }
+                downloader.start(
+                    from: downloadURL,
+                    to: destination,
+                    checksumPolicy: checksumPolicy,
+                    operationOwner: autoInstallLease
+                )
+            } catch is CancellationError {
+                return
+            } catch {
+                downloader.fail(error.localizedDescription)
+            }
         }
     }
 

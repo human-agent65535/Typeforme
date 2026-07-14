@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import os.lock
 
 enum ModelDownloadRunnerError: LocalizedError {
@@ -17,12 +18,181 @@ enum ModelDownloadCompletion: Sendable {
     case failure(message: String, resumeData: Data?, wasCancelled: Bool)
 }
 
+/// Commits a verified download without exposing a partially written model or
+/// deleting the last known file first. The per-destination lock is shared by
+/// UI and automatic installers, so independently created downloaders cannot
+/// race their final validation and rename.
+enum ModelDownloadFileInstaller {
+    private static let copyChunkSize = 1024 * 1024
+    private static let destinationLocks = OSAllocatedUnfairLock(initialState: [String: NSLock]())
+
+    static func install(
+        downloadedFile: URL,
+        at destination: URL,
+        checksumPolicy: ModelDownloadChecksumPolicy,
+        expectedBytes: Int64?,
+        label: String,
+        cancellationCheck: @escaping () throws -> Void,
+        beginCommit: () throws -> Void
+    ) throws {
+        let lock = lock(for: destination)
+        lock.lock()
+        defer { lock.unlock() }
+
+        try cancellationCheck()
+        let fileManager = FileManager.default
+        let parent = destination.deletingLastPathComponent()
+        try fileManager.createDirectory(at: parent, withIntermediateDirectories: true)
+        let staging = parent.appendingPathComponent(
+            ".\(destination.lastPathComponent).install-\(UUID().uuidString)",
+            isDirectory: false
+        )
+        defer { try? fileManager.removeItem(at: staging) }
+
+        do {
+            try fileManager.moveItem(at: downloadedFile, to: staging)
+        } catch {
+            try copyFile(
+                from: downloadedFile,
+                to: staging,
+                cancellationCheck: cancellationCheck
+            )
+        }
+
+        try ModelDownloadIntegrity.validateFile(
+            at: staging,
+            checksumPolicy: checksumPolicy,
+            expectedBytes: expectedBytes,
+            label: label,
+            cancellationCheck: cancellationCheck
+        )
+        // beginCommit is the atomic cancellation boundary. Its caller must
+        // reject cancellation already requested and then mark the commit as
+        // started in one synchronization step. No cancellation check belongs
+        // between this point and rename: once rename starts, its result wins.
+        try beginCommit()
+        try atomicRename(from: staging, to: destination)
+    }
+
+    static func remove(at destination: URL) throws {
+        let lock = lock(for: destination)
+        lock.lock()
+        defer { lock.unlock() }
+
+        let fileManager = FileManager.default
+        if fileManager.fileExists(atPath: destination.path) {
+            try fileManager.removeItem(at: destination)
+        }
+        ModelDownloadResumeStore.remove(for: destination)
+    }
+
+    private static func lock(for destination: URL) -> NSLock {
+        let path = destination.standardizedFileURL.path
+        return destinationLocks.withLock { locks in
+            if let existing = locks[path] { return existing }
+            let lock = NSLock()
+            locks[path] = lock
+            return lock
+        }
+    }
+
+    private static func copyFile(
+        from source: URL,
+        to destination: URL,
+        cancellationCheck: () throws -> Void
+    ) throws {
+        let fileManager = FileManager.default
+        try? fileManager.removeItem(at: destination)
+        guard fileManager.createFile(atPath: destination.path, contents: nil) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        let input = try FileHandle(forReadingFrom: source)
+        let output = try FileHandle(forWritingTo: destination)
+        defer {
+            try? input.close()
+            try? output.close()
+        }
+        while true {
+            try cancellationCheck()
+            let chunk = try input.read(upToCount: copyChunkSize) ?? Data()
+            guard !chunk.isEmpty else { break }
+            try output.write(contentsOf: chunk)
+        }
+        try cancellationCheck()
+        try output.synchronize()
+    }
+
+    private static func atomicRename(from source: URL, to destination: URL) throws {
+        let result = source.path.withCString { sourcePath in
+            destination.path.withCString { destinationPath in
+                Darwin.rename(sourcePath, destinationPath)
+            }
+        }
+        guard result == 0 else {
+            let code = errno
+            throw NSError(
+                domain: NSPOSIXErrorDomain,
+                code: Int(code),
+                userInfo: [
+                    NSFilePathErrorKey: destination.path,
+                    NSLocalizedDescriptionKey: String(cString: strerror(code)),
+                ]
+            )
+        }
+    }
+}
+
+struct ModelDownloadRunnerLifecycle {
+    private(set) var didComplete = false
+    private(set) var cancellationRequested = false
+    private(set) var isInstalling = false
+    private(set) var commitStarted = false
+
+    mutating func prepareForStart() -> Bool {
+        let wasCancellationRequested = cancellationRequested
+        didComplete = false
+        isInstalling = false
+        commitStarted = false
+        return wasCancellationRequested
+    }
+
+    mutating func beginInstalling() -> Bool {
+        guard !didComplete, !isInstalling else { return false }
+        isInstalling = true
+        return true
+    }
+
+    mutating func requestCancellation() -> Bool {
+        guard !didComplete, !commitStarted else { return false }
+        cancellationRequested = true
+        return true
+    }
+
+    mutating func beginCommit() -> Bool {
+        guard isInstalling,
+              !didComplete,
+              !cancellationRequested,
+              !commitStarted
+        else { return false }
+        commitStarted = true
+        return true
+    }
+
+    mutating func claimCompletion(unlessInstalling: Bool = false) -> Bool {
+        guard !didComplete, !(unlessInstalling && isInstalling) else { return false }
+        didComplete = true
+        cancellationRequested = false
+        isInstalling = false
+        commitStarted = false
+        return true
+    }
+}
+
 final class ResumableModelDownloadRunner: NSObject, URLSessionDownloadDelegate {
     private struct State {
         var continuation: CheckedContinuation<Void, Error>?
         var task: URLSessionDownloadTask?
-        var didComplete = false
-        var cancellationRequested = false
+        var lifecycle = ModelDownloadRunnerLifecycle()
     }
 
     private let destination: URL
@@ -91,16 +261,15 @@ final class ResumableModelDownloadRunner: NSObject, URLSessionDownloadDelegate {
         let cancellationRequested = state.withLock { state in
             state.continuation = continuation
             state.task = nextTask
-            state.didComplete = false
-            let cancellationRequested = state.cancellationRequested
-            if !cancellationRequested {
-                state.cancellationRequested = false
-            }
-            return cancellationRequested
+            return state.lifecycle.prepareForStart()
         }
         if cancellationRequested {
             nextTask.cancel()
-            finish(.failure(CancellationError()), wasCancelled: true)
+            finish(
+                .failure(CancellationError()),
+                wasCancelled: true,
+                matching: nextTask
+            )
         } else {
             nextTask.resume()
         }
@@ -108,10 +277,17 @@ final class ResumableModelDownloadRunner: NSObject, URLSessionDownloadDelegate {
     }
 
     func cancel(onResumeData: (@Sendable (Data?) -> Void)? = nil) {
-        let cancellation = state.withLock { state in
-            state.cancellationRequested = true
-            return (task: state.task, hasContinuation: state.continuation != nil)
+        let cancellation = state.withLock { state -> (
+            accepted: Bool,
+            task: URLSessionDownloadTask?,
+            hasContinuation: Bool
+        ) in
+            guard state.lifecycle.requestCancellation() else {
+                return (accepted: false, task: nil, hasContinuation: false)
+            }
+            return (accepted: true, task: state.task, hasContinuation: state.continuation != nil)
         }
+        guard cancellation.accepted else { return }
         guard let activeTask = cancellation.task else {
             if cancellation.hasContinuation {
                 finish(.failure(CancellationError()), wasCancelled: true)
@@ -120,10 +296,17 @@ final class ResumableModelDownloadRunner: NSObject, URLSessionDownloadDelegate {
             return
         }
         activeTask.cancel { data in
-            if let data, !data.isEmpty {
-                ModelDownloadResumeStore.store(data, for: self.destination)
+            let wonCompletion = self.finish(
+                .failure(CancellationError()),
+                resumeData: data,
+                wasCancelled: true,
+                matching: activeTask,
+                unlessInstalling: true,
+                persistResumeData: true
+            )
+            if wonCompletion {
+                onResumeData?(data)
             }
-            onResumeData?(data)
         }
     }
 
@@ -134,6 +317,10 @@ final class ResumableModelDownloadRunner: NSObject, URLSessionDownloadDelegate {
         totalBytesWritten: Int64,
         totalBytesExpectedToWrite: Int64
     ) {
+        let shouldReport = state.withLock { state in
+            state.task === downloadTask && !state.lifecycle.didComplete
+        }
+        guard shouldReport else { return }
         onProgress?(totalBytesWritten, totalBytesExpectedToWrite)
     }
 
@@ -142,31 +329,44 @@ final class ResumableModelDownloadRunner: NSObject, URLSessionDownloadDelegate {
         downloadTask: URLSessionDownloadTask,
         didFinishDownloadingTo location: URL
     ) {
+        let shouldInstall = state.withLock { state in
+            guard state.task === downloadTask else { return false }
+            return state.lifecycle.beginInstalling()
+        }
+        guard shouldInstall else { return }
+
         if let http = downloadTask.response as? HTTPURLResponse,
            !(200...299).contains(http.statusCode) {
             ModelDownloadResumeStore.remove(for: destination)
-            finish(.failure(ModelDownloadRunnerError.httpStatus(http.statusCode, label: label)))
+            finish(
+                .failure(ModelDownloadRunnerError.httpStatus(http.statusCode, label: label)),
+                matching: downloadTask
+            )
             return
         }
 
+        // The transfer is complete; resume data from an older partial transfer
+        // must not survive a validation or install failure.
+        ModelDownloadResumeStore.remove(for: destination)
         do {
-            let fileManager = FileManager.default
-            try fileManager.createDirectory(
-                at: destination.deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
-            try ModelDownloadIntegrity.validateFile(
-                at: location,
+            try ModelDownloadFileInstaller.install(
+                downloadedFile: location,
+                at: destination,
                 checksumPolicy: checksumPolicy,
                 expectedBytes: expectedBytes,
-                label: label
+                label: label,
+                cancellationCheck: checkCancellation,
+                beginCommit: beginInstallCommit
             )
-            try? fileManager.removeItem(at: destination)
-            try fileManager.moveItem(at: location, to: destination)
             ModelDownloadResumeStore.remove(for: destination)
-            finish(.success(()))
+            finish(.success(()), matching: downloadTask)
         } catch {
-            finish(.failure(error))
+            let wasCancelled = error is CancellationError || cancellationRequested
+            finish(
+                .failure(wasCancelled ? CancellationError() : error),
+                wasCancelled: wasCancelled,
+                matching: downloadTask
+            )
         }
     }
 
@@ -175,46 +375,104 @@ final class ResumableModelDownloadRunner: NSObject, URLSessionDownloadDelegate {
         task: URLSessionTask,
         didCompleteWithError error: Error?
     ) {
+        let callbackState = state.withLock { state in
+            (
+                matchesActiveTask: state.task === task,
+                didComplete: state.lifecycle.didComplete,
+                isInstalling: state.lifecycle.isInstalling
+            )
+        }
+        guard callbackState.matchesActiveTask,
+              !callbackState.didComplete,
+              !callbackState.isInstalling
+        else { return }
         guard let error else { return }
         let nsError = error as NSError
         let producedResumeData = nsError.userInfo[NSURLSessionDownloadTaskResumeData] as? Data
-        if let producedResumeData, !producedResumeData.isEmpty {
-            ModelDownloadResumeStore.store(producedResumeData, for: destination)
-        } else if nsError.code != NSURLErrorCancelled {
-            ModelDownloadResumeStore.remove(for: destination)
-        }
 
         if nsError.code == NSURLErrorCancelled {
-            finish(.failure(CancellationError()), resumeData: producedResumeData, wasCancelled: true)
+            finish(
+                .failure(CancellationError()),
+                resumeData: producedResumeData,
+                wasCancelled: true,
+                matching: task,
+                unlessInstalling: true,
+                persistResumeData: true
+            )
         } else {
-            finish(.failure(error), resumeData: producedResumeData, wasCancelled: false)
+            finish(
+                .failure(error),
+                resumeData: producedResumeData,
+                wasCancelled: false,
+                matching: task,
+                unlessInstalling: true,
+                persistResumeData: true,
+                removeResumeDataWhenMissing: true
+            )
         }
     }
 
-    private func finish(_ result: Result<Void, Error>, resumeData: Data? = nil, wasCancelled: Bool = false) {
-        let continuation = state.withLock { state in
-            guard !state.didComplete else { return nil as CheckedContinuation<Void, Error>? }
-            state.didComplete = true
+    @discardableResult
+    private func finish(
+        _ result: Result<Void, Error>,
+        resumeData: Data? = nil,
+        wasCancelled: Bool = false,
+        matching task: URLSessionTask? = nil,
+        unlessInstalling: Bool = false,
+        persistResumeData: Bool = false,
+        removeResumeDataWhenMissing: Bool = false
+    ) -> Bool {
+        let completion = state.withLock { state in
+            if let task, state.task !== task {
+                return (won: false, continuation: nil as CheckedContinuation<Void, Error>?)
+            }
+            guard state.lifecycle.claimCompletion(unlessInstalling: unlessInstalling) else {
+                return (won: false, continuation: nil as CheckedContinuation<Void, Error>?)
+            }
             state.task = nil
-            state.cancellationRequested = false
             let continuation = state.continuation
             state.continuation = nil
-            return continuation
+            return (won: true, continuation: continuation)
+        }
+        guard completion.won else { return false }
+
+        if persistResumeData {
+            if let resumeData, !resumeData.isEmpty {
+                ModelDownloadResumeStore.store(resumeData, for: destination)
+            } else if removeResumeDataWhenMissing {
+                ModelDownloadResumeStore.remove(for: destination)
+            }
         }
 
         invalidateSession()
         switch result {
         case .success:
             onCompletion?(.success(destination))
-            continuation?.resume()
+            completion.continuation?.resume()
         case .failure(let error):
             onCompletion?(.failure(
                 message: error.localizedDescription,
                 resumeData: resumeData,
                 wasCancelled: wasCancelled
             ))
-            continuation?.resume(throwing: error)
+            completion.continuation?.resume(throwing: error)
         }
+        return true
+    }
+
+    private var cancellationRequested: Bool {
+        state.withLock { $0.lifecycle.cancellationRequested }
+    }
+
+    private func checkCancellation() throws {
+        guard !cancellationRequested else { throw CancellationError() }
+    }
+
+    private func beginInstallCommit() throws {
+        let didBegin = state.withLock { state in
+            state.lifecycle.beginCommit()
+        }
+        guard didBegin else { throw CancellationError() }
     }
 
     private func makeSession() -> URLSession {

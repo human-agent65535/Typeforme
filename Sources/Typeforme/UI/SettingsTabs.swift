@@ -230,21 +230,8 @@ struct GeneralSettingsView: View {
             }
         }
         .formStyle(.grouped)
-        // Poll while Settings is visible so the state flips to "Granted"
-        // the moment the user toggles it in System Settings → Privacy.
-        .task {
-            while !Task.isCancelled {
-                let now = AppPermissions.accessibilityTrusted
-                if now != axTrusted { axTrusted = now }
-                let mic = AppPermissions.microphoneStatus
-                if mic != microphoneStatus { microphoneStatus = mic }
-                let loginStatus = LaunchAtLoginController.status
-                if loginStatus != launchAtLoginStatus { launchAtLoginStatus = loginStatus }
-                try? await Task.sleep(nanoseconds: 1_500_000_000)
-            }
-        }
-        // Belt-and-braces: also re-check the instant the user switches back
-        // to Typeforme after granting in System Settings.
+        // Permission and login-item changes happen outside the app. Refresh
+        // once when the user returns instead of polling TCC and SMAppService.
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             axTrusted = AppPermissions.accessibilityTrusted
             microphoneStatus = AppPermissions.microphoneStatus
@@ -357,10 +344,15 @@ struct GeneralSettingsView: View {
 // MARK: - Setup Guide
 
 extension Notification.Name {
-    static let setupGuideRequested = Notification.Name("TypeformeSetupGuideRequested")
+    static let setupGuideRequested = Notification.Name("typeformeSetupGuideRequested")
 }
 
 // MARK: - Client Server
+
+private struct ClientBridgeSettingsOperationSnapshot: Equatable {
+    let configuration: ClientBridgeConfiguration
+    let draft: BridgeSettingsEditableSnapshot?
+}
 
 struct ClientServerSettingsView: View {
     @AppStorage(AppSettings.Keys.clientLocalBridgeURLs) private var clientLocalBridgeURLsRaw = ""
@@ -368,9 +360,9 @@ struct ClientServerSettingsView: View {
     @AppStorage(AppSettings.Keys.clientLanguageIDs) private var clientLanguageIDsRaw = ASRLanguageSelection.defaultRawValue
     @State private var clientBridgeToken = AppSettings.clientBridgeToken
     @State private var draft: BridgeSettingsPayload?
-    @State private var isChecking = false
-    @State private var isLoading = false
-    @State private var isSaving = false
+    @State private var routeOperationState = LatestDraftOperationState<ClientBridgeConfiguration>()
+    @State private var loadOperationState = LatestDraftOperationState<ClientBridgeSettingsOperationSnapshot>()
+    @State private var saveOperationState = LatestDraftOperationState<ClientBridgeSettingsOperationSnapshot>()
     @State private var statusMessage = ""
     @State private var statusIsError = false
     @State private var showAllClientLanguages = false
@@ -410,7 +402,7 @@ struct ClientServerSettingsView: View {
                     Text("Local URLs")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.secondary)
-                    TextEditor(text: $clientLocalBridgeURLsRaw)
+                    TextEditor(text: clientLocalBridgeURLsBinding)
                         .font(.system(.caption, design: .monospaced))
                         .frame(minHeight: 54)
                         .scrollContentBackground(.hidden)
@@ -420,9 +412,9 @@ struct ClientServerSettingsView: View {
                         )
                 }
 
-                TextField("Cloud URL", text: $clientCloudBridgeURL, prompt: Text("https://voice.example.com"))
+                TextField("Cloud URL", text: clientCloudBridgeURLBinding, prompt: Text("https://voice.example.com"))
                     .textFieldStyle(.roundedBorder)
-                SecureField("Bearer token", text: $clientBridgeToken)
+                SecureField("Bearer token", text: clientBridgeTokenBinding)
                     .textFieldStyle(.roundedBorder)
 
                 ClientRouteRow(
@@ -646,11 +638,48 @@ struct ClientServerSettingsView: View {
         .onAppear {
             clientBridgeToken = AppSettings.clientBridgeToken
         }
-        .onChange(of: clientBridgeToken) { _, newValue in
-            AppSettings.setClientBridgeToken(newValue)
-        }
         .task {
             await loadSettings(force: false)
+        }
+    }
+
+    private var isChecking: Bool { routeOperationState.isActive }
+    private var isLoading: Bool { loadOperationState.isActive }
+    private var isSaving: Bool { saveOperationState.isActive }
+
+    private var clientLocalBridgeURLsBinding: Binding<String> {
+        Binding {
+            clientLocalBridgeURLsRaw
+        } set: { newValue in
+            guard clientLocalBridgeURLsRaw != newValue else { return }
+            clientLocalBridgeURLsRaw = newValue
+            clientConfigurationWasEdited()
+        }
+    }
+
+    private var clientCloudBridgeURLBinding: Binding<String> {
+        Binding {
+            clientCloudBridgeURL
+        } set: { newValue in
+            guard clientCloudBridgeURL != newValue else { return }
+            clientCloudBridgeURL = newValue
+            clientConfigurationWasEdited()
+        }
+    }
+
+    private var clientBridgeTokenBinding: Binding<String> {
+        Binding {
+            clientBridgeToken
+        } set: { newValue in
+            do {
+                let persisted = try AppSettings.setClientBridgeToken(newValue)
+                guard clientBridgeToken != persisted else { return }
+                clientBridgeToken = persisted
+                clientConfigurationWasEdited()
+            } catch {
+                statusMessage = error.localizedDescription
+                statusIsError = true
+            }
         }
     }
 
@@ -799,6 +828,13 @@ struct ClientServerSettingsView: View {
             ),
             cloudBridgeURL: ClientBridgeConfiguration.normalizedBaseURL(clientCloudBridgeURL),
             token: clientBridgeToken
+        )
+    }
+
+    private var clientSettingsOperationSnapshot: ClientBridgeSettingsOperationSnapshot {
+        ClientBridgeSettingsOperationSnapshot(
+            configuration: clientConfig,
+            draft: draft?.editableSnapshot
         )
     }
 
@@ -980,14 +1016,17 @@ struct ClientServerSettingsView: View {
 
     @MainActor
     private func checkRoutes() async {
-        isChecking = true
+        let configuration = clientConfig
+        let operation = routeOperationState.begin(snapshot: configuration)
         statusMessage = ""
         statusIsError = false
-        defer { isChecking = false }
-        routeStatus = await ClientBridgeRouteResolver().resolve(
-            config: clientConfig,
+        defer { routeOperationState.finish(operation) }
+        let resolvedStatus = await ClientBridgeRouteResolver().resolve(
+            config: configuration,
             probeAllEndpoints: true
         )
+        guard routeOperationState.canApply(operation, to: clientConfig) else { return }
+        routeStatus = resolvedStatus
         if routeStatus.activeURL != nil {
             statusMessage = "\(routeStatus.activeKind.rawValue) active"
             statusIsError = false
@@ -1001,19 +1040,26 @@ struct ClientServerSettingsView: View {
     private func loadSettings(force: Bool) async {
         guard force || draft == nil else { return }
         guard clientConfig.isConfigured else { return }
-        isLoading = true
+        let operationSnapshot = clientSettingsOperationSnapshot
+        let operation = loadOperationState.begin(snapshot: operationSnapshot)
         statusMessage = ""
         statusIsError = false
-        defer { isLoading = false }
+        defer { loadOperationState.finish(operation) }
         do {
-            let resolved = try await RemoteBridgeClient.resolvedFromSettings(probeAllEndpoints: true)
+            let resolved = try await RemoteBridgeClient.resolved(
+                config: operationSnapshot.configuration,
+                probeAllEndpoints: true
+            )
+            guard loadOperationState.canApply(operation, to: clientSettingsOperationSnapshot) else { return }
             routeStatus = resolved.routeStatus
             var settings = try await resolved.client.settings()
+            guard loadOperationState.canApply(operation, to: clientSettingsOperationSnapshot) else { return }
             settings.normalize()
             draft = settings
             applyServerDefaults(settings)
             statusMessage = "Pulled from \(resolved.routeStatus.activeKind.rawValue)"
         } catch {
+            guard loadOperationState.canApply(operation, to: clientSettingsOperationSnapshot) else { return }
             statusMessage = error.localizedDescription
             statusIsError = true
         }
@@ -1023,19 +1069,27 @@ struct ClientServerSettingsView: View {
     private func saveSettings() async {
         guard var current = draft else { return }
         current.normalize()
-        isSaving = true
+        draft = current
+        let operationSnapshot = clientSettingsOperationSnapshot
+        let operation = saveOperationState.begin(snapshot: operationSnapshot)
         statusMessage = ""
         statusIsError = false
-        defer { isSaving = false }
+        defer { saveOperationState.finish(operation) }
         do {
-            let resolved = try await RemoteBridgeClient.resolvedFromSettings(probeAllEndpoints: true)
+            let resolved = try await RemoteBridgeClient.resolved(
+                config: operationSnapshot.configuration,
+                probeAllEndpoints: true
+            )
+            guard saveOperationState.canApply(operation, to: clientSettingsOperationSnapshot) else { return }
             routeStatus = resolved.routeStatus
             var updated = try await resolved.client.updateSettings(current)
+            guard saveOperationState.canApply(operation, to: clientSettingsOperationSnapshot) else { return }
             updated.normalize()
             draft = updated
             applyServerDefaults(updated)
             statusMessage = "Saved to \(resolved.routeStatus.activeKind.rawValue)"
         } catch {
+            guard saveOperationState.canApply(operation, to: clientSettingsOperationSnapshot) else { return }
             statusMessage = error.localizedDescription
             statusIsError = true
         }
@@ -1063,9 +1117,11 @@ struct ClientServerSettingsView: View {
         do {
             let payload = try BridgeJSON.decode(BridgePairingPayload.self, from: data)
             let config = ClientBridgeConfiguration.fromPairingPayload(payload)
+            let persistedToken = try AppSettings.setClientBridgeToken(config.token)
             clientLocalBridgeURLsRaw = ClientBridgeConfiguration.rawValue(for: config.localBridgeURLs)
             clientCloudBridgeURL = config.cloudBridgeURL
-            clientBridgeToken = config.token
+            clientBridgeToken = persistedToken
+            invalidateClientConfigurationState()
             statusMessage = "Pairing JSON applied"
             statusIsError = false
             Task {
@@ -1073,19 +1129,42 @@ struct ClientServerSettingsView: View {
                 await loadSettings(force: true)
             }
         } catch {
-            statusMessage = "Couldn't parse pairing JSON"
+            statusMessage = error is SecureSettingError
+                ? "Pairing could not be saved: \(error.localizedDescription)"
+                : "Couldn't parse pairing JSON"
             statusIsError = true
         }
     }
 
     private func unpairClient() {
-        clientLocalBridgeURLsRaw = ""
-        clientCloudBridgeURL = ""
-        clientBridgeToken = ""
+        do {
+            let persistedToken = try AppSettings.setClientBridgeToken("")
+            clientLocalBridgeURLsRaw = ""
+            clientCloudBridgeURL = ""
+            clientBridgeToken = persistedToken
+            invalidateClientConfigurationState()
+            statusMessage = "Unpaired"
+            statusIsError = false
+        } catch {
+            statusMessage = "Could not unpair: \(error.localizedDescription)"
+            statusIsError = true
+        }
+    }
+
+    private func clientConfigurationWasEdited() {
+        AppSettings.setClientSettingsRevision(nil)
+        NotificationCenter.default.post(name: .clientBridgeConfigurationDidChange, object: nil)
+        invalidateClientConfigurationState()
+        statusMessage = "Connection changed. Check routes before using it."
+        statusIsError = false
+    }
+
+    private func invalidateClientConfigurationState() {
+        routeOperationState.invalidate()
+        loadOperationState.invalidate()
+        saveOperationState.invalidate()
         draft = nil
         routeStatus = BridgeRouteResolutionStatus()
-        statusMessage = "Unpaired"
-        statusIsError = false
     }
 }
 
@@ -1616,6 +1695,7 @@ struct ASRSettingsView: View {
                     .foregroundStyle(.secondary)
 
                 languageGrid(commonLanguageOptions)
+                    .disabled(!canClampLanguageSelection)
 
                 Button {
                     withAnimation(.easeInOut(duration: 0.16)) {
@@ -1637,10 +1717,12 @@ struct ASRSettingsView: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .disabled(!canClampLanguageSelection)
 
                 if showAllLanguages {
                     languageGrid(allOtherLanguages)
                         .padding(.top, 2)
+                        .disabled(!canClampLanguageSelection)
                 }
 
                 Text(languageHelpText)
@@ -1734,13 +1816,12 @@ struct ASRSettingsView: View {
         .onChange(of: draftNvidiaModelID) { _, _ in clearASRSaveStatus() }
         .onChange(of: savedQwenModelID) { _, _ in
             Task { @MainActor in
-                await ASRFactory.shared.stopQwenLlama()
                 await ASRFactory.shared.preloadCachedActiveModel()
             }
         }
         .onChange(of: savedNvidiaModelID) { _, _ in
             Task { @MainActor in
-                await ASRFactory.shared.stopNvidiaNemotron()
+                NvidiaNemotronWarmPool.shared.terminateIdle(reason: "model_selection_changed")
                 await ASRFactory.shared.preloadCachedActiveModel()
             }
         }
@@ -1786,7 +1867,17 @@ struct ASRSettingsView: View {
     }
 
     private var selectedLanguageIDs: [String] {
-        ASRLanguageSelection.parse(languageIDsRaw, supportedOptions: supportedLanguageOptions)
+        guard canClampLanguageSelection else {
+            return ASRLanguageSelection.parse(languageIDsRaw)
+        }
+        return ASRLanguageSelection.parse(languageIDsRaw, supportedOptions: supportedLanguageOptions)
+    }
+
+    private var canClampLanguageSelection: Bool {
+        ASRLanguageSelection.shouldClampSettingsSelection(
+            sources: selectedSources,
+            appleSpeechSupportResolved: AppleSpeechLanguageSupport.resolutionState == .resolved
+        )
     }
 
     private var selectedQwenModel: QwenASRModelSpec {
@@ -1815,6 +1906,9 @@ struct ASRSettingsView: View {
     }
 
     private var asrDraftReadinessIssue: String? {
+        if selectedSources.isEmpty {
+            return "Enable at least one ASR source."
+        }
         if RecognitionSource(rawValue: draftFastASRSourceRaw) == nil {
             return "Fast ASR source is invalid."
         }
@@ -1894,13 +1988,19 @@ struct ASRSettingsView: View {
         if selectedSources.isEmpty {
             return "No ASR source enabled."
         }
+        let displayOptions = canClampLanguageSelection
+            ? supportedLanguageOptions
+            : ASRLanguageSelection.all
         return "Enabled: " + ASRLanguageSelection
-            .displayNames(for: selectedLanguageIDs, supportedOptions: supportedLanguageOptions)
+            .displayNames(for: selectedLanguageIDs, supportedOptions: displayOptions)
             .joined(separator: ", ")
     }
 
     private var languageHelpText: String {
-        "Each selected language must be covered by at least one enabled source. Unsupported languages are skipped only for sources that cannot handle them."
+        if !canClampLanguageSelection {
+            return "Checking Apple Speech language support on this Mac. Your saved selection is preserved while this finishes."
+        }
+        return "Each selected language must be covered by at least one enabled source. Unsupported languages are skipped only for sources that cannot handle them."
     }
 
     private var allOtherLanguages: [ASRLanguageOption] {
@@ -1976,6 +2076,7 @@ struct ASRSettingsView: View {
     }
 
     private func clampLanguageSelection() {
+        guard canClampLanguageSelection else { return }
         let normalized = ASRLanguageSelection.rawValue(
             for: selectedLanguageIDs,
             supportedOptions: supportedLanguageOptions
@@ -2181,6 +2282,7 @@ private struct QwenASRModelRow: View {
     @AppStorage private var modelURL: String
     @AppStorage private var mmprojURL: String
     @State private var deleteError: String?
+    @StateObject private var manualOperation = ModelManualOperationController()
 
     init(spec: QwenASRModelSpec) {
         self.spec = spec
@@ -2217,6 +2319,9 @@ private struct QwenASRModelRow: View {
         .onChange(of: modelDownloadRefreshToken) { _, _ in
             refreshModelStatus()
         }
+        .onDisappear {
+            manualOperation.cancel()
+        }
     }
 
     @ViewBuilder
@@ -2235,7 +2340,22 @@ private struct QwenASRModelRow: View {
 
     @ViewBuilder
     private var downloadControls: some View {
-        if isDownloading {
+        if manualOperation.isPending {
+            HStack(spacing: 8) {
+                ProgressView()
+                    .controlSize(.small)
+                Text("Preparing model operation…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Cancel") {
+                    manualOperation.cancel()
+                    modelDownloader.cancel()
+                    mmprojDownloader.cancel()
+                }
+                .controlSize(.small)
+            }
+        } else if isDownloading {
             VStack(alignment: .leading, spacing: 4) {
                 downloadProgress(received: aggregateReceivedBytes, total: aggregateTotalBytes)
                 Button {
@@ -2302,48 +2422,72 @@ private struct QwenASRModelRow: View {
         let modelURLString = effectiveModelURLString
         let mmprojURLString = effectiveMMProjURLString
         guard let modelDownloadURL = URL(string: modelURLString),
-              let mmprojDownloadURL = URL(string: mmprojURLString)
-        else { return }
-        deleteError = nil
-        Task { @MainActor in
-            try? AppPaths.ensureDirectories()
-            await ASRFactory.shared.stopQwenLlama()
-            guard let modelChecksumPolicy = strictDownloadChecksumPolicy(
+              let mmprojDownloadURL = URL(string: mmprojURLString),
+              let modelChecksumPolicy = strictDownloadChecksumPolicy(
                 for: modelDownloadURL,
                 label: "Qwen3-ASR model",
                 downloader: modelDownloader
-            ),
-                  let mmprojChecksumPolicy = strictDownloadChecksumPolicy(
-                    for: mmprojDownloadURL,
-                    label: "Qwen3-ASR mmproj",
-                    downloader: mmprojDownloader
-                  )
-            else { return }
-            modelDownloader.start(
-                from: modelDownloadURL,
-                to: URL(fileURLWithPath: effectiveModelPath),
-                checksumPolicy: modelChecksumPolicy
-            )
-            mmprojDownloader.start(
-                from: mmprojDownloadURL,
-                to: URL(fileURLWithPath: effectiveMMProjPath),
-                checksumPolicy: mmprojChecksumPolicy
-            )
+              ),
+              let mmprojChecksumPolicy = strictDownloadChecksumPolicy(
+                for: mmprojDownloadURL,
+                label: "Qwen3-ASR mmproj",
+                downloader: mmprojDownloader
+              )
+        else { return }
+        let modelPath = effectiveModelPath
+        let mmprojPath = effectiveMMProjPath
+        deleteError = nil
+        manualOperation.start {
+            do {
+                try AppPaths.ensureDirectories()
+                let paths = [modelPath, mmprojPath]
+                let maintenanceLease = try await ModelManualMaintenance.begin(atPaths: paths) {
+                    try await ASRFactory.shared.beginQwenLlamaMaintenance()
+                }
+                modelDownloader.start(
+                    from: modelDownloadURL,
+                    to: URL(fileURLWithPath: modelPath),
+                    checksumPolicy: modelChecksumPolicy,
+                    operationOwner: maintenanceLease
+                )
+                mmprojDownloader.start(
+                    from: mmprojDownloadURL,
+                    to: URL(fileURLWithPath: mmprojPath),
+                    checksumPolicy: mmprojChecksumPolicy,
+                    operationOwner: maintenanceLease
+                )
+            } catch is CancellationError {
+                return
+            } catch {
+                deleteError = error.localizedDescription
+            }
         }
     }
 
     private func deleteModel() {
         let targets = [URL(fileURLWithPath: effectiveModelPath), URL(fileURLWithPath: effectiveMMProjPath)]
         deleteError = nil
-        Task { @MainActor in
-            await ASRFactory.shared.stopQwenLlama()
+        manualOperation.start {
             do {
-                for target in targets where FileManager.default.fileExists(atPath: target.path) {
-                    try FileManager.default.removeItem(at: target)
+                let maintenanceLease = try await ModelManualMaintenance.begin(
+                    atPaths: targets.map(\.path)
+                ) {
+                    try await ASRFactory.shared.beginQwenLlamaMaintenance()
                 }
-                modelDownloader.reset()
-                mmprojDownloader.reset()
-                refreshModelStatus()
+                do {
+                    for target in targets {
+                        try ModelDownloadFileInstaller.remove(at: target)
+                    }
+                    modelDownloader.reset()
+                    mmprojDownloader.reset()
+                    refreshModelStatus()
+                } catch {
+                    await maintenanceLease.finishAndWait()
+                    throw error
+                }
+                await maintenanceLease.finishAndWait()
+            } catch is CancellationError {
+                return
             } catch {
                 deleteError = error.localizedDescription
             }
@@ -2506,6 +2650,7 @@ private struct NvidiaNemotronASRModelRow: View {
     @AppStorage private var decoderJointURL: String
     @AppStorage private var tokenizerURL: String
     @State private var deleteError: String?
+    @StateObject private var manualOperation = ModelManualOperationController()
 
     init(spec: NvidiaNemotronASRModelSpec) {
         self.spec = spec
@@ -2550,11 +2695,28 @@ private struct NvidiaNemotronASRModelRow: View {
         .onChange(of: downloadRefreshToken) { _, _ in
             refreshRuntimeStatus()
         }
+        .onDisappear {
+            manualOperation.cancel()
+        }
     }
 
     @ViewBuilder
     private var downloadControls: some View {
-        if isDownloading {
+        if manualOperation.isPending {
+            HStack(spacing: 8) {
+                ProgressView()
+                    .controlSize(.small)
+                Text("Preparing model operation…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Cancel") {
+                    manualOperation.cancel()
+                    cancelDownloads()
+                }
+                .controlSize(.small)
+            }
+        } else if isDownloading {
             VStack(alignment: .leading, spacing: 4) {
                 downloadProgress(received: aggregateReceivedBytes, total: totalExpectedBytes)
                 Button {
@@ -2617,29 +2779,49 @@ private struct NvidiaNemotronASRModelRow: View {
     }
 
     private func startDownloads() {
-        deleteError = nil
-        Task { @MainActor in
-            try? AppPaths.ensureDirectories()
-            startDownload(file: files[0], path: effectiveEncoderPath, url: encoderURL, downloader: encoderDownloader)
-            startDownload(file: files[1], path: effectiveEncoderDataPath, url: encoderDataURL, downloader: encoderDataDownloader)
-            startDownload(file: files[2], path: effectiveDecoderJointPath, url: decoderJointURL, downloader: decoderJointDownloader)
-            startDownload(file: files[3], path: effectiveTokenizerPath, url: tokenizerURL, downloader: tokenizerDownloader)
+        let paths = effectiveModelPaths
+        let urlStrings = [encoderURL, encoderDataURL, decoderJointURL, tokenizerURL]
+        let downloaders = [encoderDownloader, encoderDataDownloader, decoderJointDownloader, tokenizerDownloader]
+        var prepared: [(URL, String, ModelDownloader, ModelDownloadChecksumPolicy, Int64)] = []
+        for index in files.indices {
+            let trimmed = urlStrings[index].trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let downloadURL = URL(string: trimmed),
+                  let checksumPolicy = strictDownloadChecksumPolicy(
+                    for: downloadURL,
+                    label: files[index].label,
+                    downloader: downloaders[index]
+                  )
+            else { return }
+            prepared.append((
+                downloadURL,
+                paths[index],
+                downloaders[index],
+                checksumPolicy,
+                files[index].expectedBytes
+            ))
         }
-    }
-
-    private func startDownload(file: NvidiaNemotronASRFileSpec, path: String, url: String, downloader: ModelDownloader) {
-        guard let downloadURL = URL(string: url.trimmingCharacters(in: .whitespacesAndNewlines)) else { return }
-        guard let checksumPolicy = strictDownloadChecksumPolicy(
-            for: downloadURL,
-            label: file.label,
-            downloader: downloader
-        ) else { return }
-        downloader.start(
-            from: downloadURL,
-            to: URL(fileURLWithPath: path),
-            checksumPolicy: checksumPolicy,
-            expectedBytes: file.expectedBytes
-        )
+        deleteError = nil
+        manualOperation.start {
+            do {
+                try AppPaths.ensureDirectories()
+                let maintenanceLease = try await ModelManualMaintenance.begin(atPaths: paths) {
+                    try await ASRFactory.shared.beginNvidiaNemotronMaintenance()
+                }
+                for request in prepared {
+                    request.2.start(
+                        from: request.0,
+                        to: URL(fileURLWithPath: request.1),
+                        checksumPolicy: request.3,
+                        expectedBytes: request.4,
+                        operationOwner: maintenanceLease
+                    )
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                deleteError = error.localizedDescription
+            }
+        }
     }
 
     private func cancelDownloads() {
@@ -2650,20 +2832,30 @@ private struct NvidiaNemotronASRModelRow: View {
     }
 
     private func deleteModel() {
+        let paths = effectiveModelPaths
         deleteError = nil
-        Task { @MainActor in
+        manualOperation.start {
             do {
-                for path in effectiveModelPaths {
-                    let url = URL(fileURLWithPath: path)
-                    if FileManager.default.fileExists(atPath: url.path) {
-                        try FileManager.default.removeItem(at: url)
-                    }
+                let maintenanceLease = try await ModelManualMaintenance.begin(atPaths: paths) {
+                    try await ASRFactory.shared.beginNvidiaNemotronMaintenance()
                 }
-                encoderDownloader.reset()
-                encoderDataDownloader.reset()
-                decoderJointDownloader.reset()
-                tokenizerDownloader.reset()
-                refreshRuntimeStatus()
+                do {
+                    for path in paths {
+                        let url = URL(fileURLWithPath: path)
+                        try ModelDownloadFileInstaller.remove(at: url)
+                    }
+                    encoderDownloader.reset()
+                    encoderDataDownloader.reset()
+                    decoderJointDownloader.reset()
+                    tokenizerDownloader.reset()
+                    refreshRuntimeStatus()
+                } catch {
+                    await maintenanceLease.finishAndWait()
+                    throw error
+                }
+                await maintenanceLease.finishAndWait()
+            } catch is CancellationError {
+                return
             } catch {
                 deleteError = error.localizedDescription
             }
@@ -3264,9 +3456,20 @@ struct CorrectionSettingsView: View {
             modelLoadIsError = true
             return
         }
+        do {
+            let normalizedAPIKey = draftExternalLLMAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+            if normalizedAPIKey == AppSettings.externalLLMAPIKey {
+                draftExternalLLMAPIKey = normalizedAPIKey
+            } else {
+                draftExternalLLMAPIKey = try AppSettings.setExternalLLMAPIKey(normalizedAPIKey)
+            }
+        } catch {
+            modelLoadStatus = error.localizedDescription
+            modelLoadIsError = true
+            return
+        }
         savedExternalLLMBaseURL = draftExternalLLMBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         savedExternalLLMModel = draftExternalLLMModel.trimmingCharacters(in: .whitespacesAndNewlines)
-        AppSettings.setExternalLLMAPIKey(draftExternalLLMAPIKey)
         savedBackendRaw = draftBackendRaw
         preloadSavedBackend()
     }
@@ -3286,7 +3489,6 @@ struct CorrectionSettingsView: View {
             ? "Refine settings saved."
             : "Preparing \(backendLabel(kind))..."
         Task { @MainActor in
-            await CorrectorFactory.shared.shutdownAll()
             if kind.isExternalCompatible {
                 guard savedBackendRaw == raw else { return }
                 loadingBackendRaw = nil
@@ -3418,6 +3620,7 @@ private struct ModelDownloadRow: View {
     @AppStorage private var path: String
     @AppStorage private var url:  String
     @State private var deleteError: String?
+    @StateObject private var manualOperation = ModelManualOperationController()
 
     init(spec: LocalLlamaModelSpec, isSelected: Bool) {
         self.spec = spec
@@ -3463,6 +3666,9 @@ private struct ModelDownloadRow: View {
         .onChange(of: modelDownloadRefreshToken) { _, _ in
             refreshModelStatus()
         }
+        .onDisappear {
+            manualOperation.cancel()
+        }
     }
 
     // MARK: - Sub-views
@@ -3484,58 +3690,74 @@ private struct ModelDownloadRow: View {
 
     @ViewBuilder
     private var downloadControls: some View {
-        switch downloader.state {
-        case .idle, .completed, .failed:
-            HStack {
-                Button {
-                    startDownload()
-                } label: {
-                    Label(
-                        modelExists ? "Reinstall" : "Download",
-                        systemImage: "arrow.down.circle"
-                    )
-                }
-                .disabled(effectiveURLString.isEmpty)
-                Button(role: .destructive) {
-                    deleteModel()
-                } label: {
-                    Label("Delete", systemImage: "trash")
-                }
-                .disabled(!modelExists || isDownloading)
-                Button {
-                    revealModelFolder()
-                } label: {
-                    Label("Reveal", systemImage: "folder")
-                }
-                if case .failed(let why) = downloader.state {
-                    Text(why)
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                        .lineLimit(2)
-                }
-                if let deleteError {
-                    Text(deleteError)
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                        .lineLimit(2)
-                }
-                if case .completed = downloader.state {
-                    Label("Done", systemImage: "checkmark.circle.fill")
-                        .font(.caption)
-                        .foregroundStyle(.green)
-                }
+        if manualOperation.isPending {
+            HStack(spacing: 8) {
+                ProgressView()
+                    .controlSize(.small)
+                Text("Preparing model operation…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 Spacer()
+                Button("Cancel") {
+                    manualOperation.cancel()
+                    downloader.cancel()
+                }
+                .controlSize(.small)
             }
-        case .downloading(let received, let total):
-            VStack(alignment: .leading, spacing: 4) {
-                ProgressView(value: total > 0 ? Double(received) / Double(total) : 0)
+        } else {
+            switch downloader.state {
+            case .idle, .completed, .failed:
                 HStack {
-                    Text("Downloading model: \(format(received)) / \(format(total))")
-                        .font(.caption)
-                        .monospacedDigit()
+                    Button {
+                        startDownload()
+                    } label: {
+                        Label(
+                            modelExists ? "Reinstall" : "Download",
+                            systemImage: "arrow.down.circle"
+                        )
+                    }
+                    .disabled(effectiveURLString.isEmpty)
+                    Button(role: .destructive) {
+                        deleteModel()
+                    } label: {
+                        Label("Delete", systemImage: "trash")
+                    }
+                    .disabled(!modelExists || isDownloading)
+                    Button {
+                        revealModelFolder()
+                    } label: {
+                        Label("Reveal", systemImage: "folder")
+                    }
+                    if case .failed(let why) = downloader.state {
+                        Text(why)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                            .lineLimit(2)
+                    }
+                    if let deleteError {
+                        Text(deleteError)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                            .lineLimit(2)
+                    }
+                    if case .completed = downloader.state {
+                        Label("Done", systemImage: "checkmark.circle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.green)
+                    }
                     Spacer()
-                    Button("Cancel") { downloader.cancel() }
-                        .controlSize(.small)
+                }
+            case .downloading(let received, let total):
+                VStack(alignment: .leading, spacing: 4) {
+                    ProgressView(value: total > 0 ? Double(received) / Double(total) : 0)
+                    HStack {
+                        Text("Downloading model: \(format(received)) / \(format(total))")
+                            .font(.caption)
+                            .monospacedDigit()
+                        Spacer()
+                        Button("Cancel") { downloader.cancel() }
+                            .controlSize(.small)
+                    }
                 }
             }
         }
@@ -3548,33 +3770,65 @@ private struct ModelDownloadRow: View {
         guard let u = URL(string: trimmed) else { return }
         let dest = URL(fileURLWithPath: effectivePath)
         deleteError = nil
-        Task { @MainActor in
-            try? AppPaths.ensureDirectories()
-            await CorrectorFactory.shared.shutdownAll()
-            guard let checksumPolicy = strictDownloadChecksumPolicy(
-                for: u,
-                label: spec.label,
-                downloader: downloader
-            ) else { return }
-            downloader.start(
-                from: u,
-                to: dest,
-                checksumPolicy: checksumPolicy
-            )
+        manualOperation.start {
+            do {
+                try AppPaths.ensureDirectories()
+                let autoInstallLease = try await ModelAutoInstaller.shared.beginMaintenance(atPaths: [dest.path])
+                guard !Task.isCancelled else {
+                    await autoInstallLease.finishAndWait()
+                    return
+                }
+                await CorrectorFactory.shared.drainAndShutdownAll()
+                guard !Task.isCancelled else {
+                    await autoInstallLease.finishAndWait()
+                    return
+                }
+                guard let checksumPolicy = strictDownloadChecksumPolicy(
+                    for: u,
+                    label: spec.label,
+                    downloader: downloader
+                ) else {
+                    await autoInstallLease.finishAndWait()
+                    return
+                }
+                downloader.start(
+                    from: u,
+                    to: dest,
+                    checksumPolicy: checksumPolicy,
+                    operationOwner: autoInstallLease
+                )
+            } catch is CancellationError {
+                return
+            } catch {
+                deleteError = error.localizedDescription
+            }
         }
     }
 
     private func deleteModel() {
         let target = URL(fileURLWithPath: effectivePath)
         deleteError = nil
-        Task { @MainActor in
-            await CorrectorFactory.shared.shutdownAll()
+        manualOperation.start {
             do {
-                if FileManager.default.fileExists(atPath: target.path) {
-                    try FileManager.default.removeItem(at: target)
+                let autoInstallLease = try await ModelAutoInstaller.shared.beginMaintenance(atPaths: [target.path])
+                guard !Task.isCancelled else {
+                    await autoInstallLease.finishAndWait()
+                    return
                 }
-                downloader.reset()
-                refreshModelStatus()
+                do {
+                    try await CorrectorFactory.shared.withDrainedModelRuntime(atPath: target.path) {
+                        try Task.checkCancellation()
+                        try ModelDownloadFileInstaller.remove(at: target)
+                    }
+                    downloader.reset()
+                    refreshModelStatus()
+                } catch {
+                    await autoInstallLease.finishAndWait()
+                    throw error
+                }
+                await autoInstallLease.finishAndWait()
+            } catch is CancellationError {
+                return
             } catch {
                 deleteError = error.localizedDescription
             }
@@ -3953,6 +4207,8 @@ struct BridgeSettingsView: View {
     @State private var showingPairingQR = false
     @State private var showingRotateConfirm = false
     @State private var copiedMessage = ""
+    @State private var tokenError = ""
+    @State private var pairingPayloadJSON = ""
     @ObservedObject private var connectionStore = BridgeConnectionStore.shared
     @ObservedObject private var serverStatus = BridgeServerStatusStore.shared
 
@@ -4012,6 +4268,7 @@ struct BridgeSettingsView: View {
                     }
                     .buttonStyle(.borderless)
                     .help(showToken ? "Hide token" : "Show token")
+                    .disabled(authToken.isEmpty)
                 }
                 HStack {
                     Button {
@@ -4019,17 +4276,20 @@ struct BridgeSettingsView: View {
                     } label: {
                         Label("Copy Pairing JSON", systemImage: "doc.on.doc")
                     }
+                    .disabled(authToken.isEmpty)
                     Button {
-                        showingPairingQR = true
+                        showPairingQR()
                     } label: {
                         Label("Show QR", systemImage: "qrcode")
                     }
                     .help("Display a QR for the iOS app to scan")
+                    .disabled(authToken.isEmpty)
                     Button {
                         copyToken()
                     } label: {
                         Label("Copy Token", systemImage: "key")
                     }
+                    .disabled(authToken.isEmpty)
                     Button(role: .destructive) {
                         showingRotateConfirm = true
                     } label: {
@@ -4040,9 +4300,7 @@ struct BridgeSettingsView: View {
                         isPresented: $showingRotateConfirm
                     ) {
                         Button("Rotate Token", role: .destructive) {
-                            authToken = AppSettings.rotateBridgeAuthToken()
-                            showToken = false
-                            copiedMessage = "Token rotated"
+                            rotateToken()
                         }
                         Button("Cancel", role: .cancel) {}
                     } message: {
@@ -4054,6 +4312,12 @@ struct BridgeSettingsView: View {
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
+                }
+                if !tokenError.isEmpty {
+                    Text(tokenError)
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 Text("Mac stores this token in Keychain. Other clients cannot read it automatically, so pair by copying the token or JSON into the client. Pairing JSON contains the token plus enabled client URLs: lan_bridge_urls when LAN access is on, and public_bridge_url when Public Bridge URL is on. Clients pull languages and defaults from the server settings endpoint.")
                     .font(.footnote)
@@ -4070,7 +4334,7 @@ struct BridgeSettingsView: View {
                     .foregroundStyle(.secondary)
             }
             Section("Endpoints") {
-                Text("GET  /v1/health\nGET  /v1/pairing\nGET  /v1/settings\nWS   /v1/jobs/:jobID/events\nWS   /v1/live-preview/:sessionID/socket\nPOST /v1/settings\nPOST /v1/dictate\nPOST /v1/live-preview/start\nPOST /v1/live-preview/:sessionID/finish\nPOST /v1/refine\nPOST /v1/edit-text")
+                Text("GET  /v1/health\nGET  /v1/pairing\nGET  /v1/settings\nWS   /v1/jobs/:jobID/events\nWS   /v1/live-preview/:sessionID/socket\nPOST /v1/settings\nPOST /v1/dictate\nPOST /v1/live-preview/start\nPOST /v1/live-preview/:sessionID/finish\nPOST /v1/live-preview/:sessionID/cancel\nPOST /v1/refine\nPOST /v1/edit-text")
                     .font(.system(.callout, design: .monospaced))
                     .foregroundStyle(.secondary)
                 Text("All endpoints require the bearer token. Missing or wrong tokens return an empty not-found response. /v1/pairing returns token plus enabled LAN/public URLs for first setup; clients pull languages and defaults from /v1/settings. /v1/jobs/:jobID/events is the WebSocket job event stream for transcript and refine status. /v1/live-preview/:sessionID/socket accepts one Opus 16 kHz mono 20 ms packet per binary frame and returns live preview partial/final JSON frames on the same WebSocket. /v1/dictate uses multipart FLAC audio file upload, requires audio_extension before the audio file part, and returns refined text. /v1/refine reuses text from a recent session or submitted text so mode switching does not require another recording. /v1/edit-text edits a selected or targeted text span from a spoken repair or command.")
@@ -4080,10 +4344,10 @@ struct BridgeSettingsView: View {
         }
         .formStyle(.grouped)
         .onAppear {
-            authToken = AppSettings.ensureBridgeAuthToken()
+            loadToken()
         }
         .sheet(isPresented: $showingPairingQR) {
-            PairingQRSheetView(payloadJSON: pairingPayloadJSONString())
+            PairingQRSheetView(payloadJSON: pairingPayloadJSON)
         }
     }
 
@@ -4158,38 +4422,79 @@ struct BridgeSettingsView: View {
     }
 
     private var currentToken: String {
-        authToken.isEmpty ? AppSettings.ensureBridgeAuthToken() : authToken
+        authToken
     }
 
     private var maskedToken: String {
         let token = currentToken
+        guard !token.isEmpty else { return "Unavailable" }
         guard token.count > 10 else { return "••••••" }
         return "••••••" + token.suffix(6)
     }
 
     private func copyToken() {
+        guard !currentToken.isEmpty else { return }
         copyToClipboard(currentToken)
         copiedMessage = "Token copied"
     }
 
     private func copyPairingJSON() {
-        copyToClipboard(pairingPayloadJSONString())
+        guard let payload = pairingPayloadJSONString() else { return }
+        copyToClipboard(payload)
         copiedMessage = "JSON copied"
+    }
+
+    private func showPairingQR() {
+        guard let payload = pairingPayloadJSONString() else { return }
+        pairingPayloadJSON = payload
+        showingPairingQR = true
+    }
+
+    private func loadToken() {
+        do {
+            authToken = try AppSettings.ensureBridgeAuthToken()
+            tokenError = ""
+        } catch {
+            authToken = ""
+            showToken = false
+            copiedMessage = ""
+            tokenError = error.localizedDescription
+        }
+    }
+
+    private func rotateToken() {
+        do {
+            authToken = try AppSettings.rotateBridgeAuthToken()
+            showToken = false
+            copiedMessage = "Token rotated"
+            tokenError = ""
+        } catch {
+            authToken = ""
+            showToken = false
+            copiedMessage = ""
+            tokenError = error.localizedDescription
+        }
     }
 
     /// Shared encoder for clipboard + QR consumers. Compact (no
     /// `.prettyPrinted`) so the QR is denser; iOS parser tolerates both.
-    private func pairingPayloadJSONString() -> String {
-        let payload = BridgePairingPayload.current()
+    private func pairingPayloadJSONString() -> String? {
         let data: Data
         do {
+            let payload = try BridgePairingPayload.current()
             data = try BridgeJSON.encodeSorted(payload)
         } catch {
-            preconditionFailure("Could not encode pairing payload: \(error)")
+            authToken = ""
+            showToken = false
+            copiedMessage = ""
+            tokenError = error.localizedDescription
+            return nil
         }
         guard let text = String(data: data, encoding: .utf8) else {
-            preconditionFailure("Pairing payload JSON was not UTF-8")
+            tokenError = "Could not encode pairing payload as UTF-8."
+            return nil
         }
+        tokenError = ""
         return text
     }
 

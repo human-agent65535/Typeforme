@@ -11,6 +11,7 @@ enum BridgeRequestEndpoint: String, CaseIterable, Hashable, Sendable {
     case livePreviewStart
     case livePreviewSocket
     case livePreviewFinish
+    case livePreviewCancel
     case refine
     case editText
 
@@ -25,6 +26,7 @@ enum BridgeRequestEndpoint: String, CaseIterable, Hashable, Sendable {
         case .livePreviewStart: return "Live preview start"
         case .livePreviewSocket: return "Live preview socket"
         case .livePreviewFinish: return "Live preview finish"
+        case .livePreviewCancel: return "Live preview cancel"
         case .refine: return "Refine"
         case .editText: return "Edit text"
         }
@@ -41,6 +43,7 @@ enum BridgeRequestEndpoint: String, CaseIterable, Hashable, Sendable {
         case .livePreviewStart: return BridgeAPIEndpoint.livePreviewStart.methodAndPath
         case .livePreviewSocket: return BridgeAPIEndpoint.livePreviewSocketTemplate.methodAndPath
         case .livePreviewFinish: return BridgeAPIEndpoint.livePreviewFinishTemplate.methodAndPath
+        case .livePreviewCancel: return BridgeAPIEndpoint.livePreviewCancelTemplate.methodAndPath
         case .refine: return BridgeAPIEndpoint.refine.methodAndPath
         case .editText: return BridgeAPIEndpoint.editText.methodAndPath
         }
@@ -239,6 +242,9 @@ struct BridgeConnectionSnapshot: Equatable, Sendable {
 }
 
 struct BridgeConnectionAccumulator {
+    static let defaultMaxClients = 128
+
+    private let maxClients: Int
     private var clientsByID: [String: BridgeClientActivityRecord] = [:]
     private var endpointCounts: [BridgeRequestEndpoint: Int] = [:]
     private var totalRequests = 0
@@ -246,6 +252,10 @@ struct BridgeConnectionAccumulator {
     private var failedRequests = 0
     private var firstRequestAt: Date?
     private var lastRequestAt: Date?
+
+    init(maxClients: Int = Self.defaultMaxClients) {
+        self.maxClients = max(1, maxClients)
+    }
 
     mutating func record(_ activity: BridgeClientRequestActivity) -> BridgeConnectionSnapshot {
         totalRequests += 1
@@ -262,6 +272,7 @@ struct BridgeConnectionAccumulator {
             client.record(activity)
             clientsByID[activity.clientID] = client
         } else {
+            evictLeastRecentlyUsedClientIfNeeded()
             clientsByID[activity.clientID] = BridgeClientActivityRecord(activity: activity)
         }
 
@@ -269,8 +280,27 @@ struct BridgeConnectionAccumulator {
     }
 
     mutating func reset() -> BridgeConnectionSnapshot {
-        self = BridgeConnectionAccumulator()
+        clientsByID.removeAll(keepingCapacity: false)
+        endpointCounts.removeAll(keepingCapacity: false)
+        totalRequests = 0
+        successfulRequests = 0
+        failedRequests = 0
+        firstRequestAt = nil
+        lastRequestAt = nil
         return .empty
+    }
+
+    private mutating func evictLeastRecentlyUsedClientIfNeeded() {
+        guard clientsByID.count >= maxClients else { return }
+        let clientID = clientsByID.values.min {
+            if $0.lastSeenAt == $1.lastSeenAt {
+                return $0.id < $1.id
+            }
+            return $0.lastSeenAt < $1.lastSeenAt
+        }?.id
+        if let clientID {
+            clientsByID.removeValue(forKey: clientID)
+        }
     }
 
     var snapshot: BridgeConnectionSnapshot {

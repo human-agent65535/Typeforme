@@ -55,6 +55,7 @@ final class NvidiaNemotronLivePreviewSession: ASRLivePreviewSession, @unchecked 
     }
 
     static func start(
+        configuration: NvidiaNemotronASRConfiguration,
         languageIDs: [String],
         diagnosticID: String = UUID().uuidString,
         onTranscript: @escaping (String) -> Void
@@ -66,7 +67,7 @@ final class NvidiaNemotronLivePreviewSession: ASRLivePreviewSession, @unchecked 
                 "NVIDIA Nemotron ASR does not support the selected live preview languages"
             )
         }
-        let runtimeStatus = NvidiaNemotronASRService.bundledRuntimeStatus()
+        let runtimeStatus = configuration.runtimeStatus
         guard runtimeStatus.isReady,
               let runnerURL = runtimeStatus.runnerURL
         else {

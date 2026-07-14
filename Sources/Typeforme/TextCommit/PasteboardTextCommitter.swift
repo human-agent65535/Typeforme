@@ -13,6 +13,11 @@ final class PasteboardTextCommitter: TextCommitter {
     private static let unicodeInputChunkUTF16Limit = 32
     private static let transientPasteboardType = NSPasteboard.PasteboardType("org.nspasteboard.TransientType")
 
+    private struct PreparedUnicodeEvents {
+        let down: CGEvent
+        let up: CGEvent
+    }
+
     static func copyForManualPaste(_ text: String) {
         let pb = NSPasteboard.general
         pb.clearContents()
@@ -111,6 +116,7 @@ final class PasteboardTextCommitter: TextCommitter {
                 Self.copyForManualPaste(text)
                 throw TextCommitterError.selectionChanged
             }
+            try await beginIrreversibleCommit(cancelToken)
             guard TextEditTargetCapture.setFocusedValue(text, target: target) else {
                 Self.copyForManualPaste(text)
                 throw TextCommitterError.eventPostFailed
@@ -125,25 +131,31 @@ final class PasteboardTextCommitter: TextCommitter {
             throw TextCommitterError.eventSourceFailed
         }
 
-        for chunk in Self.unicodeInputChunks(for: text) {
-            try await checkCancelled(cancelToken)
-            let units = Array(chunk.utf16)
-            try units.withUnsafeBufferPointer { buffer in
-                guard let down = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true),
-                      let up = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false)
-                else {
-                    throw TextCommitterError.eventPostFailed
+        try await TextCommitEventSequence.run(
+            chunks: Self.unicodeInputChunks(for: text),
+            prepare: { chunk in
+                let units = Array(chunk.utf16)
+                return try units.withUnsafeBufferPointer { buffer in
+                    guard let down = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true),
+                          let up = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false)
+                    else {
+                        throw TextCommitterError.eventPostFailed
+                    }
+                    down.keyboardSetUnicodeString(
+                        stringLength: buffer.count,
+                        unicodeString: buffer.baseAddress
+                    )
+                    return PreparedUnicodeEvents(down: down, up: up)
                 }
-                down.keyboardSetUnicodeString(
-                    stringLength: buffer.count,
-                    unicodeString: buffer.baseAddress
-                )
-                down.post(tap: .cghidEventTap)
-                up.post(tap: .cghidEventTap)
+            },
+            checkCancellation: {
+                try await self.beginIrreversibleCommit(cancelToken)
+            },
+            post: { events in
+                events.down.post(tap: .cghidEventTap)
+                events.up.post(tap: .cghidEventTap)
             }
-            await Task.yield()
-        }
-        try await checkCancelled(cancelToken)
+        )
     }
 
     private static func unicodeInputChunks(for text: String) -> [String] {
@@ -171,11 +183,56 @@ final class PasteboardTextCommitter: TextCommitter {
     }
 
     private func checkCancelled(_ token: CommitCancellationToken?) async throws {
-        if Task.isCancelled {
+        let tokenIsCancelled: Bool
+        if let token {
+            tokenIsCancelled = await token.isCancelled()
+        } else {
+            tokenIsCancelled = false
+        }
+        if TextCommitCancellationPolicy.shouldAbort(
+            taskIsCancelled: Task.isCancelled,
+            tokenIsCancelled: tokenIsCancelled
+        ) {
             throw TextCommitterError.cancelled
         }
-        if let token, await token.isCancelled() {
+    }
+
+    private func beginIrreversibleCommit(_ token: CommitCancellationToken?) async throws {
+        let taskIsCancelled = Task.isCancelled
+        if let token {
+            guard await token.beginCommit(taskIsCancelled: taskIsCancelled) else {
+                throw TextCommitterError.cancelled
+            }
+        } else if taskIsCancelled {
             throw TextCommitterError.cancelled
+        }
+    }
+}
+
+enum TextCommitCancellationPolicy {
+    static func shouldAbort(
+        taskIsCancelled: Bool,
+        tokenIsCancelled: Bool
+    ) -> Bool {
+        taskIsCancelled || tokenIsCancelled
+    }
+}
+
+/// Builds every reversible event before the final cancellation boundary, then
+/// posts the prepared sequence without a suspension point that could split the
+/// commit between chunks.
+@MainActor
+enum TextCommitEventSequence {
+    static func run<Prepared>(
+        chunks: [String],
+        prepare: (String) throws -> Prepared,
+        checkCancellation: () async throws -> Void,
+        post: (Prepared) -> Void
+    ) async throws {
+        let prepared = try chunks.map(prepare)
+        try await checkCancellation()
+        for item in prepared {
+            post(item)
         }
     }
 }

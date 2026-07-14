@@ -6,28 +6,44 @@ import Foundation
 final class EmbeddedLlamaCorrectorService: CorrectorService {
     let kind: CorrectionBackendKind
     private let server: LlamaCppServerManager
+    private let contextSize: Int
+    private let maxTokens: Int
+    private let runtimeLease: CorrectorLlamaRuntimeLease
+    private let activationBarrier: Task<Void, Never>?
+    private let coldTimeoutMilliseconds: Int
 
-    init(kind: CorrectionBackendKind, server: LlamaCppServerManager) {
+    init(
+        kind: CorrectionBackendKind,
+        server: LlamaCppServerManager,
+        contextSize: Int,
+        maxTokens: Int,
+        runtimeLease: CorrectorLlamaRuntimeLease,
+        activationBarrier: Task<Void, Never>?,
+        coldTimeoutMilliseconds: Int
+    ) {
         self.kind = kind
         self.server = server
+        self.contextSize = contextSize
+        self.maxTokens = maxTokens
+        self.runtimeLease = runtimeLease
+        self.activationBarrier = activationBarrier
+        self.coldTimeoutMilliseconds = coldTimeoutMilliseconds
     }
 
     func correct(_ request: CorrectionRequest, timeoutMs: Int) async throws -> CorrectorOutput {
-        let contextSize = AppSettings.correctionContextSize
-        let maxOutputTokens = AppSettings.correctionMaxTokens
         return try await CorrectorPipeline.correct(
             request: request,
             timeoutMs: timeoutMs,
             promptBudget: CorrectionPromptBudget(
                 contextSize: contextSize,
-                maxOutputTokens: maxOutputTokens
+                maxOutputTokens: maxTokens
             ),
             complete: { system, messages, timeoutMs in
                 try await complete(
                     system: system,
                     messages: messages,
                     contextSize: contextSize,
-                    maxTokens: maxOutputTokens,
+                    maxTokens: maxTokens,
                     timeoutMs: timeoutMs
                 )
             }
@@ -38,8 +54,8 @@ final class EmbeddedLlamaCorrectorService: CorrectorService {
         try await complete(
             system: system,
             messages: messages,
-            contextSize: AppSettings.correctionContextSize,
-            maxTokens: AppSettings.correctionMaxTokens,
+            contextSize: contextSize,
+            maxTokens: maxTokens,
             timeoutMs: timeoutMs
         )
     }
@@ -61,7 +77,15 @@ final class EmbeddedLlamaCorrectorService: CorrectorService {
         // Warmup uses the cold-timeout window from settings.
         let port: Int
         do {
+            try await CorrectorLlamaActivationDeadline.wait(
+                for: activationBarrier,
+                timeoutMilliseconds: coldTimeoutMilliseconds
+            )
             port = try await server.ensureRunning()
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as CorrectorError {
+            throw error
         } catch {
             throw CorrectorError.unavailable(error.localizedDescription)
         }
@@ -102,6 +126,30 @@ final class EmbeddedLlamaCorrectorService: CorrectorService {
                     + "(estimated input \(estimated), output \(max(0, maxTokens)), "
                     + "context \(max(0, contextSize)))"
             )
+        }
+    }
+}
+
+/// Waiting for a predecessor runtime must not consume an unbounded request.
+/// Each waiter owns only its deadline/cancellation; the shared retirement task
+/// keeps running so timing out one request cannot strand later activations.
+enum CorrectorLlamaActivationDeadline {
+    static func wait(
+        for barrier: Task<Void, Never>?,
+        timeoutMilliseconds: Int
+    ) async throws {
+        guard let barrier else {
+            try Task.checkCancellation()
+            return
+        }
+
+        do {
+            try await AsyncTaskBarrier.wait(
+                for: barrier,
+                timeoutNanoseconds: UInt64(max(1, timeoutMilliseconds)) * 1_000_000
+            )
+        } catch AsyncTaskBarrierError.timedOut {
+            throw CorrectorError.timeout
         }
     }
 }

@@ -1,10 +1,13 @@
 import AVFoundation
 import Foundation
+import os.lock
 
-enum AudioRecorderError: LocalizedError {
+enum AudioRecorderError: LocalizedError, Sendable, Equatable {
     case permissionDenied
     case engineFailedToStart(String)
     case fileSetupFailed(String)
+    case invalidInputFormat(String)
+    case captureBufferOverflow(capacity: Int)
 
     var errorDescription: String? {
         switch self {
@@ -14,6 +17,10 @@ enum AudioRecorderError: LocalizedError {
             return "AudioEngine failed to start: \(why)"
         case .fileSetupFailed(let why):
             return "Couldn't open audio file for writing: \(why)"
+        case .invalidInputFormat(let why):
+            return "The selected microphone has an invalid audio format: \(why)"
+        case .captureBufferOverflow(let capacity):
+            return "Audio capture couldn't keep up and filled its \(capacity)-buffer queue. The recording was stopped to avoid losing audio."
         }
     }
 }
@@ -27,17 +34,21 @@ enum AudioRecorderError: LocalizedError {
 @MainActor
 final class AudioRecorder {
     private let engine = AVAudioEngine()
-    private let fileWriter = MonoFLACBufferWriter()
     private let levelThrottler = LevelUpdateThrottler(interval: 1.0 / 20.0)
-    private let runningState = AudioRecorderRunningState()
+    private var pipeline: AudioCapturePipeline?
     private var currentURL: URL?
     private var configChangeObserver: NSObjectProtocol?
     private var isRunning = false
+    private var tapInstalled = false
 
     /// Called on the main thread with normalized [0..1] RMS values.
     var onLevel: (@MainActor (Float) -> Void)?
     /// Called on the main thread if the audio config changes mid-recording.
     var onConfigurationChanged: (@MainActor () -> Void)?
+    /// Called after capture has been stopped because a bounded pipeline error
+    /// made the recording incomplete. Incomplete audio is never returned.
+    var onCaptureFailure: (@MainActor (AudioRecorderError) -> Void)?
+
     func start(pcmHandler: ((AVAudioPCMBuffer) -> Void)? = nil) async throws -> URL {
         guard await Self.ensureMicrophonePermission() else {
             throw AudioRecorderError.permissionDenied
@@ -45,22 +56,47 @@ final class AudioRecorder {
 
         let input = engine.inputNode
         let format = input.outputFormat(forBus: 0)
+        try AudioInputFormatValidator.validate(format)
 
         let audioURL = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("typeforme-\(UUID().uuidString).flac")
+        let fileWriter = MonoFLACBufferWriter()
         try fileWriter.begin(url: audioURL)
 
-        let writer = fileWriter
-        let levelHandler = onLevel
+        let levelHandler: (@MainActor (Float) -> Void)?
+        if onLevel == nil {
+            levelHandler = nil
+        } else {
+            levelHandler = { [weak self] level in
+                guard let self, self.isRunning else { return }
+                self.onLevel?(level)
+            }
+        }
         let levelThrottler = levelThrottler
         levelThrottler.reset()
-        runningState.setRunning(false)
+        let pipeline: AudioCapturePipeline
+        do {
+            pipeline = try AudioCapturePipeline(
+                inputFormat: format,
+                writer: fileWriter,
+                pcmHandler: pcmHandler,
+                levelHandler: levelHandler,
+                levelThrottler: levelThrottler,
+                failureHandler: { [weak self] error in
+                    Task { @MainActor [weak self] in
+                        await self?.stopAfterCaptureFailure(error)
+                    }
+                }
+            )
+        } catch {
+            fileWriter.cancel()
+            throw error
+        }
+        self.pipeline = pipeline
+        currentURL = audioURL
+        pipeline.start()
         let tapHandler = makeAudioRecorderTapHandler(
-            writer: writer,
-            pcmHandler: pcmHandler,
-            levelHandler: levelHandler,
-            levelThrottler: levelThrottler,
-            runningState: runningState
+            pipeline: pipeline
         )
         input.installTap(
             onBus: 0,
@@ -68,6 +104,7 @@ final class AudioRecorder {
             format: format,
             block: tapHandler
         )
+        tapInstalled = true
 
         configChangeObserver = NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange,
@@ -80,51 +117,76 @@ final class AudioRecorder {
                 if let h = self.onConfigurationChanged {
                     h()
                 } else {
-                    _ = self.stop()
+                    await self.discard()
                 }
             }
         }
 
         do {
-            runningState.setRunning(true)
             try engine.start()
         } catch {
-            // Clean up everything we set up before throwing — otherwise the
-            // tap stays installed, the observer stays registered, and the
-            // temp file leaks into NSTemporaryDirectory().
-            runningState.setRunning(false)
-            engine.inputNode.removeTap(onBus: 0)
-            engine.stop()
-            removeObserver()
-            try? FileManager.default.removeItem(at: audioURL)
-            fileWriter.cancel()
+            await discard()
             throw AudioRecorderError.engineFailedToStart(error.localizedDescription)
         }
 
-        currentURL = audioURL
         isRunning = true
         return audioURL
     }
 
     @discardableResult
-    func stop() -> URL? {
-        guard isRunning else { return nil }
-        isRunning = false
-        runningState.setRunning(false)
-        engine.inputNode.removeTap(onBus: 0)
-        engine.stop()
-        removeObserver()
+    func stop() async throws -> URL? {
+        guard let pipeline else { return nil }
+        stopCaptureDevice()
         let url = currentURL
-        currentURL = nil
-        guard let url else { return nil }
         do {
-            try fileWriter.finish()
+            try await pipeline.finish()
+            guard self.pipeline === pipeline else { return nil }
+            self.pipeline = nil
+            currentURL = nil
+            guard let url else { return nil }
             return url
         } catch {
+            if self.pipeline === pipeline {
+                self.pipeline = nil
+                currentURL = nil
+            }
             Log.audio.notice("Mac recorder FLAC write failed: \(error.localizedDescription, privacy: .public)")
-            try? FileManager.default.removeItem(at: url)
-            return nil
+            if let url {
+                try? FileManager.default.removeItem(at: url)
+            }
+            throw error
         }
+    }
+
+    /// Abandons the current recording. Unlike `stop()`, this never drains
+    /// queued PCM into FLAC or live-preview consumers. It can also upgrade a
+    /// normal stop that is already waiting for its pipeline to finish.
+    func discard() async {
+        stopCaptureDevice()
+        let pipeline = pipeline
+        let url = currentURL
+        self.pipeline = nil
+        currentURL = nil
+        await pipeline?.cancel()
+        if let url {
+            try? FileManager.default.removeItem(at: url)
+        }
+    }
+
+    private func stopAfterCaptureFailure(_ error: AudioRecorderError) async {
+        guard isRunning else { return }
+        await discard()
+        onCaptureFailure?(error)
+    }
+
+    private func stopCaptureDevice() {
+        isRunning = false
+        if tapInstalled {
+            engine.inputNode.removeTap(onBus: 0)
+            tapInstalled = false
+        }
+        engine.stop()
+        removeObserver()
     }
 
     private func removeObserver() {
@@ -145,57 +207,207 @@ final class AudioRecorder {
 }
 
 private func makeAudioRecorderTapHandler(
-    writer: MonoFLACBufferWriter,
-    pcmHandler: ((AVAudioPCMBuffer) -> Void)?,
-    levelHandler: (@MainActor (Float) -> Void)?,
-    levelThrottler: LevelUpdateThrottler,
-    runningState: AudioRecorderRunningState
+    pipeline: AudioCapturePipeline
 ) -> AVAudioNodeTapBlock {
     { buffer, _ in
-        writer.write(buffer)
-        // Fan the same buffer out to any live-preview consumer. The handler is
-        // snapshotted at install-time so a late attach is a no-op for the
-        // current recording.
-        pcmHandler?(buffer)
-        if let levelHandler, levelThrottler.shouldPublish() {
-            let rms = normalizedAudioRMS(buffer)
-            Task { @MainActor in
-                guard runningState.isRunning else { return }
-                levelHandler(rms)
-            }
+        pipeline.appendFromAudioTap(buffer)
+    }
+}
+
+enum AudioInputFormatValidator {
+    static func validate(_ format: AVAudioFormat) throws {
+        try validate(
+            sampleRate: format.sampleRate,
+            channelCount: format.channelCount,
+            commonFormat: format.commonFormat
+        )
+    }
+
+    static func validate(
+        sampleRate: Double,
+        channelCount: AVAudioChannelCount,
+        commonFormat: AVAudioCommonFormat
+    ) throws {
+        guard sampleRate.isFinite, sampleRate > 0 else {
+            throw AudioRecorderError.invalidInputFormat("sample rate is zero or non-finite")
+        }
+        guard channelCount > 0 else {
+            throw AudioRecorderError.invalidInputFormat("no input channels are available")
+        }
+        guard commonFormat == .pcmFormatFloat32 || commonFormat == .pcmFormatInt16 else {
+            throw AudioRecorderError.invalidInputFormat("unsupported PCM format \(commonFormat.rawValue)")
         }
     }
 }
 
-private func normalizedAudioRMS(_ buffer: AVAudioPCMBuffer) -> Float {
-    guard let chans = buffer.floatChannelData else { return 0 }
-    let frames = Int(buffer.frameLength)
-    let channel = chans[0]
-    var sumSq: Float = 0
-    for i in 0..<frames {
-        let s = channel[i]
-        sumSq += s * s
+struct AudioCaptureQueuePlan: Equatable, Sendable {
+    static let maximumQueuedPCMBytes = 16 * 1_024 * 1_024
+    static let maximumBufferedDuration: TimeInterval = 3
+    static let maximumBufferCount = 256
+    private static let preferredBufferDuration: TimeInterval = 0.1
+    private static let minimumFrameCapacity = 4_096
+
+    let frameCapacity: AVAudioFrameCount
+    let bufferCount: Int
+    let bytesPerBuffer: Int
+    let totalBytes: Int
+    let bufferedDuration: TimeInterval
+
+    static func make(
+        sampleRate: Double,
+        channelCount: AVAudioChannelCount,
+        commonFormat: AVAudioCommonFormat
+    ) throws -> AudioCaptureQueuePlan {
+        try AudioInputFormatValidator.validate(
+            sampleRate: sampleRate,
+            channelCount: channelCount,
+            commonFormat: commonFormat
+        )
+
+        let bytesPerSample: Int
+        switch commonFormat {
+        case .pcmFormatFloat32:
+            bytesPerSample = MemoryLayout<Float>.size
+        case .pcmFormatInt16:
+            bytesPerSample = MemoryLayout<Int16>.size
+        default:
+            throw AudioRecorderError.invalidInputFormat("unsupported PCM format \(commonFormat.rawValue)")
+        }
+
+        let requestedFrames = max(
+            Double(Self.minimumFrameCapacity),
+            ceil(sampleRate * Self.preferredBufferDuration)
+        )
+        guard requestedFrames <= Double(AVAudioFrameCount.max) else {
+            throw AudioRecorderError.invalidInputFormat("sample rate is too large for the capture queue")
+        }
+        let frameCapacity = Int(requestedFrames)
+        let (bytesPerFrame, frameByteOverflow) = Int(channelCount)
+            .multipliedReportingOverflow(by: bytesPerSample)
+        let (bytesPerBuffer, bufferByteOverflow) = frameCapacity
+            .multipliedReportingOverflow(by: bytesPerFrame)
+        guard !frameByteOverflow,
+              !bufferByteOverflow,
+              bytesPerBuffer > 0,
+              bytesPerBuffer <= Self.maximumQueuedPCMBytes
+        else {
+            throw AudioRecorderError.invalidInputFormat("one capture buffer exceeds the PCM memory budget")
+        }
+
+        let byteBound = Self.maximumQueuedPCMBytes / bytesPerBuffer
+        let durationBound = Int(floor(
+            Self.maximumBufferedDuration * sampleRate / Double(frameCapacity)
+        ))
+        let bufferCount = min(Self.maximumBufferCount, byteBound, durationBound)
+        guard bufferCount > 0 else {
+            throw AudioRecorderError.invalidInputFormat("one capture buffer exceeds the queue duration budget")
+        }
+        let totalBytes = bytesPerBuffer * bufferCount
+        let bufferedDuration = Double(frameCapacity * bufferCount) / sampleRate
+        return AudioCaptureQueuePlan(
+            frameCapacity: AVAudioFrameCount(frameCapacity),
+            bufferCount: bufferCount,
+            bytesPerBuffer: bytesPerBuffer,
+            totalBytes: totalBytes,
+            bufferedDuration: bufferedDuration
+        )
     }
-    let rms = sqrt(sumSq / Float(max(1, frames)))
-    // Square-root compression + scale; clamps loud speech to ~1.0.
-    return min(1, sqrt(rms) * 2.5)
 }
 
-private final class AudioRecorderRunningState: @unchecked Sendable {
-    private let lock = NSLock()
-    private var running = false
+struct AudioCapturePipelineState {
+    var readIndex = 0
+    var writeIndex = 0
+    var queuedCount = 0
+    var workerOwnsReadBuffer = false
+    var accepting = true
+    var cancelRequested = false
+    var terminalError: AudioRecorderError?
+    var failureReported = false
+    var completion: Result<Void, AudioRecorderError>?
+    var waiters: [CheckedContinuation<Void, any Error>] = []
 
-    var isRunning: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return running
+    var isReadyToTerminate: Bool {
+        !accepting && queuedCount == 0 && !workerOwnsReadBuffer
     }
 
-    func setRunning(_ value: Bool) {
-        lock.lock()
-        running = value
-        lock.unlock()
+    @discardableResult
+    mutating func requestDiscard() -> Int {
+        accepting = false
+        cancelRequested = true
+        return discardPendingBuffers()
     }
+
+    @discardableResult
+    mutating func discardPendingBuffers() -> Int {
+        let retainedBufferCount = workerOwnsReadBuffer && queuedCount > 0 ? 1 : 0
+        let discardedBufferCount = max(0, queuedCount - retainedBufferCount)
+        queuedCount = retainedBufferCount
+        if !workerOwnsReadBuffer {
+            readIndex = writeIndex
+        }
+        return discardedBufferCount
+    }
+
+    mutating func releaseReadBuffer(bufferCount: Int) {
+        guard workerOwnsReadBuffer else { return }
+        workerOwnsReadBuffer = false
+        if cancelRequested || terminalError != nil {
+            queuedCount = 0
+            readIndex = writeIndex
+        } else {
+            readIndex = (readIndex + 1) % bufferCount
+            queuedCount = max(0, queuedCount - 1)
+        }
+    }
+}
+
+func normalizedAudioRMS(_ buffer: AVAudioPCMBuffer) -> Float {
+    let frameCount = Int(buffer.frameLength)
+    let channelCount = Int(buffer.format.channelCount)
+    guard frameCount > 0, channelCount > 0 else { return 0 }
+
+    let sampleCount = frameCount * channelCount
+    var sumSquares: Double = 0
+
+    switch buffer.format.commonFormat {
+    case .pcmFormatFloat32:
+        guard let channelData = buffer.floatChannelData else { return 0 }
+        if buffer.format.isInterleaved {
+            for index in 0..<sampleCount {
+                let sample = Double(channelData[0][index])
+                sumSquares += sample * sample
+            }
+        } else {
+            for channelIndex in 0..<channelCount {
+                for frameIndex in 0..<frameCount {
+                    let sample = Double(channelData[channelIndex][frameIndex])
+                    sumSquares += sample * sample
+                }
+            }
+        }
+    case .pcmFormatInt16:
+        guard let channelData = buffer.int16ChannelData else { return 0 }
+        let scale = 1.0 / Double(Int16.max)
+        if buffer.format.isInterleaved {
+            for index in 0..<sampleCount {
+                let sample = Double(channelData[0][index]) * scale
+                sumSquares += sample * sample
+            }
+        } else {
+            for channelIndex in 0..<channelCount {
+                for frameIndex in 0..<frameCount {
+                    let sample = Double(channelData[channelIndex][frameIndex]) * scale
+                    sumSquares += sample * sample
+                }
+            }
+        }
+    default:
+        return 0
+    }
+
+    let rms = Float(sqrt(sumSquares / Double(sampleCount)))
+    // Square-root compression + scale; clamps loud speech to ~1.0.
+    return min(1, sqrt(rms) * 2.5)
 }
 
 private final class LevelUpdateThrottler: @unchecked Sendable {
@@ -219,6 +431,315 @@ private final class LevelUpdateThrottler: @unchecked Sendable {
         guard now - lastUpdateAt >= interval else { return false }
         lastUpdateAt = now
         return true
+    }
+}
+
+/// A single-producer/single-consumer capture pipeline. The audio tap only
+/// copies into preallocated buffers and signals the worker; format conversion,
+/// FLAC I/O, live-preview fan-out, and level calculation all run in order on
+/// the worker queue. The queue is deliberately bounded: once it fills, the
+/// recording fails instead of silently dropping or reordering audio.
+private final class AudioCapturePipeline: @unchecked Sendable {
+    private let inputFormat: AVAudioFormat
+    private let buffers: [AVAudioPCMBuffer]
+    private let state = OSAllocatedUnfairLock(initialState: AudioCapturePipelineState())
+    private let wakeup = DispatchSemaphore(value: 0)
+    private let workerQueue = DispatchQueue(
+        label: "typeforme.audio.capture-writer",
+        qos: .userInitiated
+    )
+    private let writer: MonoFLACBufferWriter
+    private let pcmHandler: ((AVAudioPCMBuffer) -> Void)?
+    private let levelHandler: (@MainActor (Float) -> Void)?
+    private let levelThrottler: LevelUpdateThrottler
+    private let failureHandler: @Sendable (AudioRecorderError) -> Void
+
+    init(
+        inputFormat: AVAudioFormat,
+        writer: MonoFLACBufferWriter,
+        pcmHandler: ((AVAudioPCMBuffer) -> Void)?,
+        levelHandler: (@MainActor (Float) -> Void)?,
+        levelThrottler: LevelUpdateThrottler,
+        failureHandler: @escaping @Sendable (AudioRecorderError) -> Void
+    ) throws {
+        try AudioInputFormatValidator.validate(inputFormat)
+        self.inputFormat = inputFormat
+        self.writer = writer
+        self.pcmHandler = pcmHandler
+        self.levelHandler = levelHandler
+        self.levelThrottler = levelThrottler
+        self.failureHandler = failureHandler
+
+        let queuePlan = try AudioCaptureQueuePlan.make(
+            sampleRate: inputFormat.sampleRate,
+            channelCount: inputFormat.channelCount,
+            commonFormat: inputFormat.commonFormat
+        )
+        var allocated: [AVAudioPCMBuffer] = []
+        allocated.reserveCapacity(queuePlan.bufferCount)
+        for _ in 0..<queuePlan.bufferCount {
+            guard let buffer = AVAudioPCMBuffer(
+                pcmFormat: inputFormat,
+                frameCapacity: queuePlan.frameCapacity
+            ) else {
+                throw AudioRecorderError.fileSetupFailed("Could not allocate the capture buffer queue")
+            }
+            allocated.append(buffer)
+        }
+        buffers = allocated
+    }
+
+    func start() {
+        workerQueue.async { [self] in
+            runWorker()
+        }
+    }
+
+    /// Called directly by AVAudioEngine's real-time tap.
+    func appendFromAudioTap(_ source: AVAudioPCMBuffer) {
+        let sendableSource = UncheckedAudioPCMBuffer(source)
+        let outcome = state.withLock { state -> (accepted: Bool, failure: AudioRecorderError?) in
+            let source = sendableSource.value
+            guard state.accepting else { return (false, nil) }
+            guard source.format.isEqual(inputFormat) else {
+                let failure = markFailedLocked(
+                    &state,
+                    error: .invalidInputFormat("input format changed while recording")
+                )
+                return (false, failure)
+            }
+            guard source.frameLength <= buffers[state.writeIndex].frameCapacity else {
+                let failure = markFailedLocked(
+                    &state,
+                    error: .invalidInputFormat(
+                        "input buffer has \(source.frameLength) frames; capacity is \(buffers[state.writeIndex].frameCapacity)"
+                    )
+                )
+                return (false, failure)
+            }
+            guard state.queuedCount < buffers.count else {
+                let failure = markFailedLocked(
+                    &state,
+                    error: .captureBufferOverflow(capacity: buffers.count)
+                )
+                return (false, failure)
+            }
+
+            let destination = buffers[state.writeIndex]
+            guard Self.copy(source, to: destination) else {
+                let failure = markFailedLocked(
+                    &state,
+                    error: .invalidInputFormat("could not copy the microphone buffer")
+                )
+                return (false, failure)
+            }
+            state.writeIndex = (state.writeIndex + 1) % buffers.count
+            state.queuedCount += 1
+            return (true, nil)
+        }
+        if outcome.accepted || outcome.failure != nil {
+            wakeup.signal()
+        }
+        if let failure = outcome.failure {
+            failureHandler(failure)
+        }
+    }
+
+    func finish() async throws {
+        try await withCheckedThrowingContinuation { continuation in
+            let immediate = state.withLock { state -> Result<Void, AudioRecorderError>? in
+                if let completion = state.completion {
+                    return completion
+                }
+                state.accepting = false
+                state.waiters.append(continuation)
+                return nil
+            }
+            if let immediate {
+                Self.resume(continuation, with: immediate)
+            } else {
+                wakeup.signal()
+            }
+        }
+    }
+
+    func cancel() async {
+        _ = try? await withCheckedThrowingContinuation { continuation in
+            let immediate = state.withLock { state -> Result<Void, AudioRecorderError>? in
+                if let completion = state.completion {
+                    return completion
+                }
+                state.requestDiscard()
+                state.waiters.append(continuation)
+                return nil
+            }
+            if let immediate {
+                Self.resume(continuation, with: immediate)
+            } else {
+                wakeup.signal()
+            }
+        }
+    }
+
+    private func runWorker() {
+        while true {
+            wakeup.wait()
+            while let buffer = takeNextBuffer() {
+                guard shouldProcessCurrentBuffer() else {
+                    releaseReadBuffer()
+                    continue
+                }
+                do {
+                    try writer.write(buffer)
+                    guard shouldProcessCurrentBuffer() else {
+                        releaseReadBuffer()
+                        continue
+                    }
+                    pcmHandler?(buffer)
+                    if shouldProcessCurrentBuffer(),
+                       let levelHandler,
+                       levelThrottler.shouldPublish() {
+                        let rms = normalizedAudioRMS(buffer)
+                        Task { @MainActor in
+                            levelHandler(rms)
+                        }
+                    }
+                    releaseReadBuffer()
+                } catch {
+                    releaseReadBuffer()
+                    recordWorkerFailure(.fileSetupFailed(error.localizedDescription))
+                    break
+                }
+            }
+
+            guard let terminal = terminalActionIfReady() else { continue }
+            let result: Result<Void, AudioRecorderError>
+            if terminal.cancelRequested {
+                writer.cancel()
+                result = .success(())
+            } else if let error = terminal.error {
+                writer.cancel()
+                result = .failure(error)
+            } else {
+                do {
+                    try writer.finish()
+                    result = .success(())
+                } catch {
+                    result = .failure(.fileSetupFailed(error.localizedDescription))
+                }
+            }
+            complete(with: result)
+            return
+        }
+    }
+
+    private func takeNextBuffer() -> AVAudioPCMBuffer? {
+        let index = state.withLock { state -> Int? in
+            if state.cancelRequested || state.terminalError != nil {
+                state.discardPendingBuffers()
+                return nil
+            }
+            guard state.queuedCount > 0, !state.workerOwnsReadBuffer else { return nil }
+            state.workerOwnsReadBuffer = true
+            return state.readIndex
+        }
+        return index.map { buffers[$0] }
+    }
+
+    private func releaseReadBuffer() {
+        state.withLock { state in
+            state.releaseReadBuffer(bufferCount: buffers.count)
+        }
+    }
+
+    private func shouldProcessCurrentBuffer() -> Bool {
+        state.withLock { state in
+            !state.cancelRequested && state.terminalError == nil
+        }
+    }
+
+    private func recordWorkerFailure(_ error: AudioRecorderError) {
+        let failureToReport = state.withLock { state in
+            markFailedLocked(&state, error: error)
+        }
+        if let failureToReport {
+            failureHandler(failureToReport)
+        }
+        wakeup.signal()
+    }
+
+    private func markFailedLocked(
+        _ state: inout AudioCapturePipelineState,
+        error: AudioRecorderError
+    ) -> AudioRecorderError? {
+        guard state.terminalError == nil, !state.cancelRequested else { return nil }
+        state.accepting = false
+        state.terminalError = error
+        state.discardPendingBuffers()
+        guard !state.failureReported else { return nil }
+        state.failureReported = true
+        return error
+    }
+
+    private func terminalActionIfReady() -> (cancelRequested: Bool, error: AudioRecorderError?)? {
+        state.withLock { state in
+            guard !state.accepting else { return nil }
+            if state.cancelRequested || state.terminalError != nil {
+                state.discardPendingBuffers()
+            }
+            guard state.isReadyToTerminate else { return nil }
+            return (state.cancelRequested, state.terminalError)
+        }
+    }
+
+    private func complete(with result: Result<Void, AudioRecorderError>) {
+        let waiters = state.withLock { state -> [CheckedContinuation<Void, any Error>] in
+            guard state.completion == nil else { return [] }
+            state.completion = result
+            let waiters = state.waiters
+            state.waiters.removeAll(keepingCapacity: false)
+            return waiters
+        }
+        for waiter in waiters {
+            Self.resume(waiter, with: result)
+        }
+    }
+
+    private static func resume(
+        _ continuation: CheckedContinuation<Void, any Error>,
+        with result: Result<Void, AudioRecorderError>
+    ) {
+        switch result {
+        case .success:
+            continuation.resume()
+        case .failure(let error):
+            continuation.resume(throwing: error)
+        }
+    }
+
+    private static func copy(_ source: AVAudioPCMBuffer, to destination: AVAudioPCMBuffer) -> Bool {
+        destination.frameLength = source.frameLength
+        let sourceBuffers = UnsafeMutableAudioBufferListPointer(source.mutableAudioBufferList)
+        let destinationBuffers = UnsafeMutableAudioBufferListPointer(destination.mutableAudioBufferList)
+        guard sourceBuffers.count == destinationBuffers.count else { return false }
+        for index in sourceBuffers.indices {
+            let sourceBuffer = sourceBuffers[index]
+            let byteCount = Int(sourceBuffer.mDataByteSize)
+            guard byteCount <= Int(destinationBuffers[index].mDataByteSize),
+                  let sourceData = sourceBuffer.mData,
+                  let destinationData = destinationBuffers[index].mData
+            else { return false }
+            memcpy(destinationData, sourceData, byteCount)
+        }
+        return true
+    }
+}
+
+private struct UncheckedAudioPCMBuffer: @unchecked Sendable {
+    let value: AVAudioPCMBuffer
+
+    init(_ value: AVAudioPCMBuffer) {
+        self.value = value
     }
 }
 
@@ -268,11 +789,13 @@ private final class MonoFLACBufferWriter: @unchecked Sendable {
         lock.unlock()
     }
 
-    func write(_ buffer: AVAudioPCMBuffer) {
+    func write(_ buffer: AVAudioPCMBuffer) throws {
         let frameLength = Int(buffer.frameLength)
         guard frameLength > 0 else { return }
 
-        guard let inputBuffer = Self.makeMonoFloatBuffer(from: buffer) else { return }
+        guard let inputBuffer = Self.makeMonoFloatBuffer(from: buffer) else {
+            throw AudioRecorderError.fileSetupFailed("Could not downmix the microphone buffer")
+        }
 
         lock.lock()
         defer { lock.unlock() }
@@ -295,6 +818,7 @@ private final class MonoFLACBufferWriter: @unchecked Sendable {
             frameCount += AVAudioFramePosition(writeBuffer.frameLength)
         } catch {
             writeError = error
+            throw error
         }
     }
 

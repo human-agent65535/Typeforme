@@ -92,6 +92,7 @@ enum BridgeAPIEndpoint {
     static let jobEventsTemplate = BridgeAPIRoute(method: "WS", path: "/v1/jobs/:jobID/events")
     static let livePreviewSocketTemplate = BridgeAPIRoute(method: "WS", path: "/v1/live-preview/:sessionID/socket")
     static let livePreviewFinishTemplate = BridgeAPIRoute(method: "POST", path: "/v1/live-preview/:sessionID/finish")
+    static let livePreviewCancelTemplate = BridgeAPIRoute(method: "POST", path: "/v1/live-preview/:sessionID/cancel")
 
     static func jobEvents(jobID: String) -> BridgeAPIRoute {
         BridgeAPIRoute(method: "WS", path: "/v1/jobs/\(jobID)/events")
@@ -103,6 +104,10 @@ enum BridgeAPIEndpoint {
 
     static func livePreviewFinish(sessionID: String) -> BridgeAPIRoute {
         BridgeAPIRoute(method: "POST", path: "/v1/live-preview/\(sessionID)/finish")
+    }
+
+    static func livePreviewCancel(sessionID: String) -> BridgeAPIRoute {
+        BridgeAPIRoute(method: "POST", path: "/v1/live-preview/\(sessionID)/cancel")
     }
 }
 

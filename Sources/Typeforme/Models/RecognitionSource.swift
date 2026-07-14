@@ -27,17 +27,35 @@ extension RecognitionSource {
 }
 
 extension Notification.Name {
-    static let appleSpeechLanguageSupportDidChange = Notification.Name("TypeformeAppleSpeechLanguageSupportDidChange")
+    static let appleSpeechLanguageSupportDidChange = Notification.Name("typeformeAppleSpeechLanguageSupportDidChange")
 }
 
 enum AppleSpeechLanguageSupport {
+    enum ResolutionState: Sendable, Equatable {
+        case unresolved
+        case refreshing
+        case resolved
+    }
+
     private struct Cache: Sendable {
         var supportedLanguageIDs: Set<String>?
         var localeIDsByLanguageID: [String: String] = [:]
+        var unsupportedLanguageIDs: Set<String> = []
         var isRefreshing = false
     }
 
     private static let cache = OSAllocatedUnfairLock(initialState: Cache())
+    private static let supportedRecognizerLocaleIdentifiers = SFSpeechRecognizer
+        .supportedLocales()
+        .map(\.identifier)
+        .sorted()
+
+    static var resolutionState: ResolutionState {
+        cache.withLock { state in
+            if state.supportedLanguageIDs != nil { return .resolved }
+            return state.isRefreshing ? .refreshing : .unresolved
+        }
+    }
 
     static var supportedLanguages: [ASRLanguageOption] {
         if let supported = cache.withLock({ $0.supportedLanguageIDs }) {
@@ -62,10 +80,16 @@ enum AppleSpeechLanguageSupport {
     }
 
     private static func resolveBestSupportedLocaleIdentifier(for languageIDs: [String]) -> (languageID: String, localeID: String)? {
-        for languageID in ASRLanguageSelection.validatedIDs(languageIDs) {
+        for languageID in ASRLanguageSelection.validatedIDsForTranscription(
+            languageIDs,
+            sources: [.appleSpeech]
+        ) {
             guard let option = ASRLanguageSelection.option(for: languageID) else { continue }
             if let cached = cachedLocaleIdentifier(for: option.id) {
                 return (languageID, cached)
+            }
+            if resolutionKnownUnsupported(for: option.id) {
+                continue
             }
             if let localeID = resolveAndCacheBestLocaleIdentifier(for: option) {
                 return (languageID, localeID)
@@ -79,6 +103,9 @@ enum AppleSpeechLanguageSupport {
         if let cached = cachedLocaleIdentifier(for: option.id) {
             return cached
         }
+        if resolutionKnownUnsupported(for: option.id) {
+            return nil
+        }
         guard !Thread.isMainThread else {
             refreshInBackgroundIfNeeded()
             return nil
@@ -87,12 +114,14 @@ enum AppleSpeechLanguageSupport {
     }
 
     private static func resolveAndCacheBestLocaleIdentifier(for option: ASRLanguageOption) -> String? {
-        guard let localeID = resolveBestLocaleIdentifier(for: option) else { return nil }
+        let localeID = resolveBestLocaleIdentifier(for: option)
         cache.withLock { state in
-            state.localeIDsByLanguageID[option.id] = localeID
-            var supported = state.supportedLanguageIDs ?? []
-            supported.insert(option.id)
-            state.supportedLanguageIDs = supported
+            if let localeID {
+                state.localeIDsByLanguageID[option.id] = localeID
+                state.unsupportedLanguageIDs.remove(option.id)
+            } else {
+                state.unsupportedLanguageIDs.insert(option.id)
+            }
         }
         return localeID
     }
@@ -127,7 +156,9 @@ enum AppleSpeechLanguageSupport {
             let resolvedLocaleIDsByLanguageID = localeIDsByLanguageID
             cache.withLock { state in
                 state.supportedLanguageIDs = resolvedSupportedLanguageIDs
-                state.localeIDsByLanguageID.merge(resolvedLocaleIDsByLanguageID) { _, new in new }
+                state.localeIDsByLanguageID = resolvedLocaleIDsByLanguageID
+                state.unsupportedLanguageIDs = Set(ASRLanguageSelection.all.map(\.id))
+                    .subtracting(resolvedSupportedLanguageIDs)
                 state.isRefreshing = false
             }
             await MainActor.run {
@@ -142,8 +173,20 @@ enum AppleSpeechLanguageSupport {
         }
     }
 
+    private static func resolutionKnownUnsupported(for languageID: String) -> Bool {
+        cache.withLock { state in
+            if let supportedLanguageIDs = state.supportedLanguageIDs {
+                return !supportedLanguageIDs.contains(languageID)
+            }
+            return state.unsupportedLanguageIDs.contains(languageID)
+        }
+    }
+
     private static func resolveBestLocaleIdentifier(for option: ASRLanguageOption) -> String? {
-        for localeID in candidateLocaleIdentifiers(for: option) {
+        for localeID in candidateLocaleIdentifiers(
+            for: option,
+            supportedLocaleIdentifiers: supportedRecognizerLocaleIdentifiers
+        ) {
             guard let recognizer = SFSpeechRecognizer(locale: Locale(identifier: localeID)),
                   recognizerMatchesRequestedLanguage(recognizer, option: option, localeID: localeID),
                   recognizer.supportsOnDeviceRecognition
@@ -169,18 +212,30 @@ enum AppleSpeechLanguageSupport {
         return localeLanguageCode(recognizer.locale) == option.languageCode
     }
 
-    private static func candidateLocaleIdentifiers(for option: ASRLanguageOption) -> [String] {
+    static func candidateLocaleIdentifiers(
+        for option: ASRLanguageOption,
+        supportedLocaleIdentifiers: [String]
+    ) -> [String] {
         var candidates: [String] = []
-        appendUnique(option.id, to: &candidates)
-        appendUnique(option.id.replacingOccurrences(of: "-", with: "_"), to: &candidates)
-        appendUnique(option.languageCode, to: &candidates)
+
+        func appendSupportedMatch(_ requestedIdentifier: String) {
+            let requested = normalizedLocaleIdentifier(requestedIdentifier)
+            guard let actual = supportedLocaleIdentifiers.first(where: {
+                normalizedLocaleIdentifier($0) == requested
+            }) else { return }
+            appendUnique(actual, to: &candidates)
+        }
+
+        appendSupportedMatch(option.id)
+        appendSupportedMatch(option.id.replacingOccurrences(of: "-", with: "_"))
+        appendSupportedMatch(option.languageCode)
         for identifier in preferredLocaleIdentifiersByLanguageID[option.id] ?? [] {
-            appendUnique(identifier, to: &candidates)
+            appendSupportedMatch(identifier)
         }
         for identifier in preferredLocaleIdentifiersByLanguageCode[option.languageCode] ?? [] {
-            appendUnique(identifier, to: &candidates)
+            appendSupportedMatch(identifier)
         }
-        for identifier in Locale.availableIdentifiers {
+        for identifier in supportedLocaleIdentifiers {
             let locale = Locale(identifier: identifier)
             if normalizedLocaleIdentifier(identifier) == normalizedLocaleIdentifier(option.id) ||
                 localeLanguageCode(locale) == option.languageCode {

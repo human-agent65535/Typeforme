@@ -62,7 +62,16 @@ struct RemoteBridgeClient {
     static func resolvedFromSettings(
         probeAllEndpoints: Bool = false
     ) async throws -> (client: RemoteBridgeClient, routeStatus: BridgeRouteResolutionStatus) {
-        let config = ClientBridgeConfiguration.current
+        try await resolved(
+            config: ClientBridgeConfiguration.current,
+            probeAllEndpoints: probeAllEndpoints
+        )
+    }
+
+    static func resolved(
+        config: ClientBridgeConfiguration,
+        probeAllEndpoints: Bool = false
+    ) async throws -> (client: RemoteBridgeClient, routeStatus: BridgeRouteResolutionStatus) {
         guard config.hasAnyBridgeURL else { throw RemoteBridgeClientError.missingURL }
         guard !config.token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw RemoteBridgeClientError.missingToken
@@ -283,6 +292,22 @@ struct RemoteBridgeClient {
         }
         let endpoint = BridgeAPIEndpoint.livePreviewFinish(sessionID: encodedSessionID)
         return try await request(
+            path: endpoint.path,
+            method: endpoint.method,
+            body: Optional<Data>.none,
+            timeout: timeout
+        )
+    }
+
+    func cancelLivePreview(
+        sessionID: String,
+        timeout: TimeInterval = 5
+    ) async throws {
+        guard let encodedSessionID = sessionID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) else {
+            throw RemoteBridgeClientError.invalidURL
+        }
+        let endpoint = BridgeAPIEndpoint.livePreviewCancel(sessionID: encodedSessionID)
+        let _: BridgeLivePreviewCancelResponse = try await request(
             path: endpoint.path,
             method: endpoint.method,
             body: Optional<Data>.none,

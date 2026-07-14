@@ -14,6 +14,20 @@ typealias ExternalLLMModelIDFetcher = @Sendable (
     _ timeout: TimeInterval
 ) async throws -> [String]
 
+typealias ExternalOpenAICompletion = @Sendable (
+    _ endpoint: URL,
+    _ request: OpenAIChatCompletionRequest,
+    _ apiKey: String,
+    _ timeoutMs: Int
+) async throws -> String
+
+typealias ExternalAnthropicCompletion = @Sendable (
+    _ endpoint: URL,
+    _ request: AnthropicMessagesRequest,
+    _ apiKey: String,
+    _ timeoutMs: Int
+) async throws -> String
+
 enum ExternalLLMAPIKind: Sendable {
     case openAI
     case anthropic
@@ -34,14 +48,38 @@ enum ExternalLLMAPIKind: Sendable {
 }
 
 final class ExternalCompatibleCorrectorService: CorrectorService {
-    let kind: CorrectionBackendKind
+    let configuration: ExternalCompatibleCorrectorConfiguration
+    private let openAICompletion: ExternalOpenAICompletion
+    private let anthropicCompletion: ExternalAnthropicCompletion
+
+    var kind: CorrectionBackendKind { configuration.kind }
 
     static let minimumRequestTimeoutMs = 100
     private static let configurationCheckTimeout: TimeInterval = 5
     private static let invalidAPIKeyProbePrefix = "typeforme-invalid-external-llm-token-"
 
-    init(kind: CorrectionBackendKind) {
-        self.kind = kind
+    init(
+        configuration: ExternalCompatibleCorrectorConfiguration,
+        openAICompletion: @escaping ExternalOpenAICompletion = { endpoint, request, apiKey, timeoutMs in
+            try await OpenAICompatibleClient.chatCompletionContent(
+                endpoint: endpoint,
+                request: request,
+                apiKey: apiKey,
+                timeoutMs: timeoutMs
+            )
+        },
+        anthropicCompletion: @escaping ExternalAnthropicCompletion = { endpoint, request, apiKey, timeoutMs in
+            try await AnthropicCompatibleClient.messageContent(
+                endpoint: endpoint,
+                request: request,
+                apiKey: apiKey,
+                timeoutMs: timeoutMs
+            )
+        }
+    ) {
+        self.configuration = configuration
+        self.openAICompletion = openAICompletion
+        self.anthropicCompletion = anthropicCompletion
     }
 
     func correct(_ request: CorrectionRequest, timeoutMs: Int) async throws -> CorrectorOutput {
@@ -55,13 +93,13 @@ final class ExternalCompatibleCorrectorService: CorrectorService {
     }
 
     func complete(system: String, messages: [CorrectorChatMessage], timeoutMs: Int) async throws -> String {
-        let model = AppSettings.externalLLMModel
+        let model = configuration.model
         guard !model.isEmpty else {
             throw CorrectorError.unavailable("Set the external model identifier in Settings")
         }
 
         let apiKind = try Self.apiKind(for: kind)
-        let endpoint = try Self.completionsEndpoint(baseURL: AppSettings.externalLLMBaseURL, apiKind: apiKind)
+        let endpoint = try Self.completionsEndpoint(baseURL: configuration.baseURL, apiKind: apiKind)
         let requestTimeoutMs = Self.effectiveTimeoutMs(timeoutMs)
 
         do {
@@ -71,28 +109,18 @@ final class ExternalCompatibleCorrectorService: CorrectorService {
                     model: model,
                     system: system,
                     messages: messages,
-                    maxTokens: AppSettings.correctionMaxTokens,
-                    baseURL: AppSettings.externalLLMBaseURL
+                    maxTokens: configuration.maxTokens,
+                    baseURL: configuration.baseURL
                 )
-                return try await OpenAICompatibleClient.chatCompletionContent(
-                    endpoint: endpoint,
-                    request: body,
-                    apiKey: AppSettings.externalLLMAPIKey,
-                    timeoutMs: requestTimeoutMs
-                )
+                return try await openAICompletion(endpoint, body, configuration.apiKey, requestTimeoutMs)
             case .anthropic:
                 let body = AnthropicMessagesRequest(
                     model: model,
-                    maxTokens: AppSettings.correctionMaxTokens,
+                    maxTokens: configuration.maxTokens,
                     system: system,
                     messages: messages.map { AnthropicMessage(role: $0.role, content: $0.content) }
                 )
-                return try await AnthropicCompatibleClient.messageContent(
-                    endpoint: endpoint,
-                    request: body,
-                    apiKey: AppSettings.externalLLMAPIKey,
-                    timeoutMs: requestTimeoutMs
-                )
+                return try await anthropicCompletion(endpoint, body, configuration.apiKey, requestTimeoutMs)
             }
         } catch let error as OpenAICompatibleClientError {
             throw error.correctorError

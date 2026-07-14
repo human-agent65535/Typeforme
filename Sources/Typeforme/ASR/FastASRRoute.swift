@@ -21,10 +21,9 @@ struct FastASRRoute: Sendable {
                 "Fast ASR source is not ready: \(readiness.reason)"
             )
         }
-        let supportedOptions = requestedSource.supportedLanguages()
         let languageIDs = normalizedFastLanguageIDs(
             requestedLanguageIDs,
-            supportedOptions: supportedOptions
+            for: requestedSource
         )
         guard !languageIDs.isEmpty else {
             throw ASRAudioSupportError.httpStatus(
@@ -40,7 +39,7 @@ struct FastASRRoute: Sendable {
 
     static func readinessReport(
         for source: RecognitionSource = AppSettings.fastASRSource,
-        languageIDs requestedLanguageIDs: [String] = AppSettings.asrLanguageIDs,
+        languageIDs requestedLanguageIDs: [String] = AppSettings.asrCanonicalLanguageIDs,
         enabledSources: [RecognitionSource] = AppSettings.configuredRecognitionSources
     ) -> BridgeSourceAvailability {
         guard enabledSources.contains(source) else {
@@ -51,8 +50,13 @@ struct FastASRRoute: Sendable {
                 reason: "\(source.displayName) is not enabled."
             )
         }
-        let supportedOptions = source.supportedLanguages()
-        guard !normalizedFastLanguageIDs(requestedLanguageIDs, supportedOptions: supportedOptions).isEmpty else {
+        if source == .appleSpeech {
+            // The async language cache is allowed to be cold here. The
+            // availability report resolves the selected locale synchronously
+            // and also owns permission/on-device readiness checks.
+            return AppleSpeechAvailability.sourceAvailability(languageIDs: requestedLanguageIDs)
+        }
+        guard !normalizedFastLanguageIDs(requestedLanguageIDs, for: source).isEmpty else {
             return BridgeSourceAvailability(
                 canEnable: false,
                 ready: false,
@@ -82,10 +86,17 @@ struct FastASRRoute: Sendable {
         }
     }
 
-    private static func normalizedFastLanguageIDs(
+    static func normalizedFastLanguageIDs(
         _ requestedLanguageIDs: [String],
-        supportedOptions: [ASRLanguageOption]
+        for source: RecognitionSource
     ) -> [String] {
+        if source == .appleSpeech {
+            return ASRLanguageSelection.validatedIDsForTranscription(
+                requestedLanguageIDs,
+                sources: [.appleSpeech]
+            )
+        }
+        let supportedOptions = source.supportedLanguages()
         guard !supportedOptions.isEmpty else { return [] }
         let filtered = ASRLanguageSelection.filteredIDs(
             requestedLanguageIDs,

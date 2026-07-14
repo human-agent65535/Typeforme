@@ -2,6 +2,12 @@ import AVFoundation
 import Foundation
 
 final class RemoteBridgeLivePreviewStreamer: @unchecked Sendable {
+    private enum Phase: Equatable {
+        case active
+        case finishing
+        case terminated
+    }
+
     private static let outputSampleRate = 16_000.0
     private static let outputFormat = AVAudioFormat(
         commonFormat: .pcmFormatFloat32,
@@ -28,8 +34,7 @@ final class RemoteBridgeLivePreviewStreamer: @unchecked Sendable {
     private var pendingPacketHeadIndex = 0
     private var pendingPacketBytes = 0
     private var startInFlight = false
-    private var finished = false
-    private var suppressSocketResult = false
+    private var phase = Phase.active
     private var webSocketTask: URLSessionWebSocketTask?
     private var receiveTask: Task<Void, Never>?
     private var sendInFlight = false
@@ -50,6 +55,7 @@ final class RemoteBridgeLivePreviewStreamer: @unchecked Sendable {
     private var finishWaiters: [CheckedContinuation<String?, Never>] = []
     private var finishResultText: String?
     private var finishDidResolve = false
+    private var cancelRequestSent = false
 
     init(
         client: RemoteBridgeClient,
@@ -120,8 +126,11 @@ final class RemoteBridgeLivePreviewStreamer: @unchecked Sendable {
             case .completed(let text):
                 return text
             case .timedOut:
-                self.audioQueue.async {
-                    self.resolveFinishWaitersOnAudioQueue(text: nil)
+                await withCheckedContinuation { continuation in
+                    self.audioQueue.async {
+                        self.handleFinishTimeoutOnAudioQueue()
+                        continuation.resume()
+                    }
                 }
                 return nil
             }
@@ -135,7 +144,7 @@ final class RemoteBridgeLivePreviewStreamer: @unchecked Sendable {
     }
 
     private func startOnAudioQueue() {
-        guard !startInFlight, sessionID == nil, !finished else { return }
+        guard !startInFlight, sessionID == nil, phase == .active else { return }
         startInFlight = true
         startedAt = Date()
         startRequestStartedAt = startedAt
@@ -178,11 +187,10 @@ final class RemoteBridgeLivePreviewStreamer: @unchecked Sendable {
         Log.bridge.notice(
             "Mac client live preview start response session=\(self.logSessionID, privacy: .public) start_ms=\(Self.elapsedMS(since: self.startRequestStartedAt), privacy: .public) queued_audio_ms=\(self.queuedAudioMS, privacy: .public)"
         )
-        guard !finished else {
-            if suppressSocketResult {
+        guard phase == .active else {
+            if phase == .terminated {
                 clearPendingPackets(keepingCapacity: false)
-                let client = self.client
-                Task { try? await client.finishLivePreview(sessionID: response.sessionID) }
+                sendCancelOnAudioQueue()
                 return
             }
             startWebSocketOnAudioQueue(sessionID: response.sessionID, allowAfterFinish: true)
@@ -194,7 +202,7 @@ final class RemoteBridgeLivePreviewStreamer: @unchecked Sendable {
     }
 
     private func appendOnAudioQueue(_ buffer: AVAudioPCMBuffer) {
-        guard !finished else { return }
+        guard phase == .active else { return }
         guard let mono = Self.makeMonoBuffer(from: buffer),
               let output = resample(mono),
               let samples = output.floatChannelData?[0]
@@ -221,14 +229,14 @@ final class RemoteBridgeLivePreviewStreamer: @unchecked Sendable {
                 finishWaiters.append(waiter)
             }
         }
-        guard !finished else { return }
+        guard phase == .active else { return }
         do {
             queuePacketsOnAudioQueue(try opusEncoder.finish())
         } catch {
             handleFailureOnAudioQueue(message: error.localizedDescription)
             return
         }
-        finished = true
+        phase = .finishing
         Log.bridge.notice(
             "Mac client live preview finish requested session=\(self.logSessionID, privacy: .public) queued_audio_ms=\(self.queuedAudioMS, privacy: .public) sent_audio_ms=\(self.sentAudioMS, privacy: .public) pending_bytes=\(self.pendingPacketBytes, privacy: .public) elapsed_ms=\(self.elapsedMS, privacy: .public)"
         )
@@ -240,15 +248,10 @@ final class RemoteBridgeLivePreviewStreamer: @unchecked Sendable {
     }
 
     private func cancelOnAudioQueue() {
-        guard !finished else { return }
-        finished = true
-        suppressSocketResult = true
+        guard phase != .terminated else { return }
+        phase = .terminated
         clearPendingPackets(keepingCapacity: false)
-        if webSocketTask != nil {
-            queueControlOnAudioQueue(.cancel)
-        } else {
-            sendCancelOnAudioQueue()
-        }
+        terminateRemoteSessionOnAudioQueue()
     }
 
     private func queuePacketsOnAudioQueue(_ packets: [RemoteLivePreviewOpusPacket]) {
@@ -301,23 +304,38 @@ final class RemoteBridgeLivePreviewStreamer: @unchecked Sendable {
     }
 
     private func handleFailureOnAudioQueue(message: String) {
-        if finished {
-            resolveFinishWaitersOnAudioQueue(text: nil)
+        if phase != .active {
+            phase = .terminated
+            clearPendingPackets(keepingCapacity: false)
+            terminateRemoteSessionOnAudioQueue()
             return
         }
-        finished = true
-        suppressSocketResult = true
+        phase = .terminated
         clearPendingPackets(keepingCapacity: false)
         startInFlight = false
-        closeWebSocketOnAudioQueue()
-        sendCancelOnAudioQueue()
+        terminateRemoteSessionOnAudioQueue()
         Log.bridge.notice("Mac client live preview stopped: \(message, privacy: .public)")
         onFailure(message)
     }
 
+    private func handleFinishTimeoutOnAudioQueue() {
+        phase = .terminated
+        clearPendingPackets(keepingCapacity: false)
+        terminateRemoteSessionOnAudioQueue()
+        Log.bridge.notice(
+            "Mac client live preview finish timed out session=\(self.logSessionID, privacy: .public) elapsed_ms=\(self.elapsedMS, privacy: .public)"
+        )
+    }
+
+    private func terminateRemoteSessionOnAudioQueue() {
+        resolveFinishWaitersOnAudioQueue(text: nil)
+        closeWebSocketOnAudioQueue()
+        sendCancelOnAudioQueue()
+    }
+
     private func startWebSocketOnAudioQueue(sessionID: String, allowAfterFinish: Bool = false) {
         guard webSocketTask == nil,
-              !finished || allowAfterFinish
+              phase == .active || (allowAfterFinish && phase == .finishing)
         else { return }
         do {
             let task = try client.livePreviewWebSocketTask(sessionID: sessionID)
@@ -333,17 +351,20 @@ final class RemoteBridgeLivePreviewStreamer: @unchecked Sendable {
     }
 
     private func startReceiveLoopOnAudioQueue(task: URLSessionWebSocketTask) {
-        receiveTask = Task { [task] in
+        receiveTask = Task { [weak self, task] in
             do {
                 while !Task.isCancelled {
                     let event = try Self.decodeLivePreviewEvent(try await task.receive())
+                    guard let self else { return }
                     self.handleLivePreviewEvent(event)
                     if event.isFinal { return }
                 }
             } catch is CancellationError {
                 return
             } catch {
-                self.audioQueue.async {
+                guard let self else { return }
+                self.audioQueue.async { [weak self] in
+                    guard let self else { return }
                     self.handleWebSocketReceiveFailureOnAudioQueue(message: error.localizedDescription)
                 }
             }
@@ -363,10 +384,12 @@ final class RemoteBridgeLivePreviewStreamer: @unchecked Sendable {
             let sampleCount = packet.sampleCount
             let sendStartedAt = Date()
             sendInFlight = true
-            Task {
+            Task { [weak self, task, data, sampleCount, byteCount, sendStartedAt] in
                 do {
                     try await task.send(.data(data))
-                    self.audioQueue.async {
+                    guard let self else { return }
+                    self.audioQueue.async { [weak self] in
+                        guard let self else { return }
                         self.handleWebSocketSendCompletionOnAudioQueue(
                             sentControl: nil,
                             sentAudioSamples: sampleCount,
@@ -375,8 +398,9 @@ final class RemoteBridgeLivePreviewStreamer: @unchecked Sendable {
                         )
                     }
                 } catch {
-                    self.audioQueue.async {
-                        self.handleWebSocketSendFailureOnAudioQueue(message: error.localizedDescription)
+                    guard let self else { return }
+                    self.audioQueue.async { [weak self] in
+                        self?.handleWebSocketSendFailureOnAudioQueue(message: error.localizedDescription)
                     }
                 }
             }
@@ -387,14 +411,16 @@ final class RemoteBridgeLivePreviewStreamer: @unchecked Sendable {
         sendInFlight = true
         let payload = BridgeLivePreviewSocketControl(type: control)
         let sendStartedAt = Date()
-        Task {
+        Task { [weak self, task, payload, control, sendStartedAt] in
             do {
                 let data = try JSONEncoder().encode(payload)
                 guard let text = String(data: data, encoding: .utf8) else {
                     throw RemoteBridgeClientError.invalidResponse
                 }
                 try await task.send(.string(text))
-                self.audioQueue.async {
+                guard let self else { return }
+                self.audioQueue.async { [weak self] in
+                    guard let self else { return }
                     self.handleWebSocketSendCompletionOnAudioQueue(
                         sentControl: control,
                         sentAudioSamples: 0,
@@ -403,8 +429,9 @@ final class RemoteBridgeLivePreviewStreamer: @unchecked Sendable {
                     )
                 }
             } catch {
-                self.audioQueue.async {
-                    self.handleWebSocketSendFailureOnAudioQueue(message: error.localizedDescription)
+                guard let self else { return }
+                self.audioQueue.async { [weak self] in
+                    self?.handleWebSocketSendFailureOnAudioQueue(message: error.localizedDescription)
                 }
             }
         }
@@ -434,18 +461,20 @@ final class RemoteBridgeLivePreviewStreamer: @unchecked Sendable {
 
     private func handleWebSocketSendFailureOnAudioQueue(message: String) {
         sendInFlight = false
-        if finished {
-            resolveFinishWaitersOnAudioQueue(text: nil)
-            closeWebSocketOnAudioQueue()
+        if phase != .active {
+            phase = .terminated
+            clearPendingPackets(keepingCapacity: false)
+            terminateRemoteSessionOnAudioQueue()
             return
         }
         handleFailureOnAudioQueue(message: message)
     }
 
     private func handleWebSocketReceiveFailureOnAudioQueue(message: String) {
-        if finished {
-            resolveFinishWaitersOnAudioQueue(text: nil)
-            closeWebSocketOnAudioQueue()
+        if phase != .active {
+            phase = .terminated
+            clearPendingPackets(keepingCapacity: false)
+            terminateRemoteSessionOnAudioQueue()
             return
         }
         handleFailureOnAudioQueue(message: message)
@@ -458,29 +487,46 @@ final class RemoteBridgeLivePreviewStreamer: @unchecked Sendable {
             return
         }
         let client = self.client
-        Task {
+        let onTranscript = self.onTranscript
+        Task { [weak self, client, onTranscript, sessionID] in
             var finalText: String?
-            if let response = try? await client.finishLivePreview(
-                sessionID: sessionID,
-                timeout: Self.finishRequestTimeout
-            ) {
+            let requestSucceeded: Bool
+            do {
+                let response = try await client.finishLivePreview(
+                    sessionID: sessionID,
+                    timeout: Self.finishRequestTimeout
+                )
+                requestSucceeded = true
                 let text = response.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
                 if !text.isEmpty {
                     finalText = text
-                    self.onTranscript(text)
+                    onTranscript(text)
                 }
+            } catch {
+                requestSucceeded = false
             }
-            self.audioQueue.async {
-                self.resolveFinishWaitersOnAudioQueue(text: finalText)
-                self.closeWebSocketOnAudioQueue()
+            let resolvedText = finalText
+            guard let self else { return }
+            self.audioQueue.async { [weak self, requestSucceeded, resolvedText] in
+                guard let self else { return }
+                if requestSucceeded {
+                    self.phase = .terminated
+                    self.resolveFinishWaitersOnAudioQueue(text: resolvedText)
+                    self.closeWebSocketOnAudioQueue()
+                } else {
+                    self.phase = .terminated
+                    self.clearPendingPackets(keepingCapacity: false)
+                    self.terminateRemoteSessionOnAudioQueue()
+                }
             }
         }
     }
 
     private func sendCancelOnAudioQueue() {
-        guard let sessionID else { return }
+        guard let sessionID, !cancelRequestSent else { return }
+        cancelRequestSent = true
         let client = self.client
-        Task { try? await client.finishLivePreview(sessionID: sessionID) }
+        Task { try? await client.cancelLivePreview(sessionID: sessionID) }
     }
 
     private func handleLivePreviewEvent(_ event: BridgeLivePreviewEvent) {
@@ -495,7 +541,7 @@ final class RemoteBridgeLivePreviewStreamer: @unchecked Sendable {
         Log.bridge.debug(
             "Mac client live preview event session=\(self.logSessionID, privacy: .public) final=\(event.isFinal, privacy: .public) event_count=\(self.eventCount, privacy: .public) text_chars=\(event.text?.count ?? 0, privacy: .public) sent_audio_ms=\(self.sentAudioMS, privacy: .public) server_age_ms=\(Self.serverAgeMS(event.updatedAt), privacy: .public) elapsed_ms=\(self.elapsedMS, privacy: .public)"
         )
-        if !suppressSocketResult,
+        if phase != .terminated,
            let text = event.text?.trimmingCharacters(in: .whitespacesAndNewlines),
            !text.isEmpty,
            event.isFinal || text != lastTranscript {
@@ -503,6 +549,7 @@ final class RemoteBridgeLivePreviewStreamer: @unchecked Sendable {
             onTranscript(text)
         }
         if event.isFinal {
+            phase = .terminated
             resolveFinishWaitersOnAudioQueue(text: event.text)
             closeWebSocketOnAudioQueue()
         }

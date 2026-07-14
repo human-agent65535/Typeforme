@@ -21,9 +21,9 @@
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-	<string>0.1.253</string>
+	<string>0.1.254</string>
     <key>CFBundleVersion</key>
-	<string>260</string>
+	<string>261</string>
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>
     <key>LSMultipleInstancesProhibited</key>
@@ -40,12 +40,12 @@
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
     <key>NSMicrophoneUsageDescription</key>
-    <string>Typeforme 通过麦克风录制你的口述；语音会在本机处理，或在 Client 模式下发送到你配置的 Typeforme Bridge 进行识别与文本整理。</string>
+    <string>Typeforme records your dictation through the microphone. Audio is processed on this Mac or sent to your configured Typeforme Bridge in Client mode.</string>
     <key>NSLocalNetworkUsageDescription</key>
-    <string>Typeforme 需要连接你配置的局域网 Bridge 或兼容外部 LLM 服务。</string>
+    <string>Typeforme connects to the local Typeforme Bridge or compatible external LLM service that you configure.</string>
     <key>NSAppleEventsUsageDescription</key>
-    <string>Typeforme 需要把整理后的文本插入当前 App。</string>
+    <string>Typeforme inserts the resulting text into the app you are using.</string>
     <key>NSSpeechRecognitionUsageDescription</key>
-    <string>Typeforme 在启用 Apple Speech 识别源或预览源时使用 Apple 语音识别。仅对支持设备端识别的语言开启，音频不会离开本机。</string>
+    <string>Typeforme uses Apple Speech when you enable it as a recognition or preview source. It is limited to languages that support on-device recognition.</string>
 </dict>
 </plist>

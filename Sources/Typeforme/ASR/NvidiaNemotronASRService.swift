@@ -1,7 +1,85 @@
 import Foundation
 
+struct NvidiaNemotronASRConfiguration: Sendable, Equatable {
+    let modelID: String
+    let requestTimeoutSeconds: TimeInterval
+    let runtimeStatus: NvidiaNemotronASRRuntimeStatus
+    let runtimeIdentity: String
+
+    var isInstalledAtCapture: Bool { runtimeStatus.isReady }
+    var unavailableReason: String? {
+        runtimeStatus.isReady ? nil : runtimeStatus.errorDetail
+    }
+
+    init(
+        modelID: String,
+        requestTimeoutSeconds: TimeInterval,
+        runtimeStatus: NvidiaNemotronASRRuntimeStatus,
+        fileManager: FileManager = .default
+    ) {
+        self.modelID = modelID
+        self.requestTimeoutSeconds = requestTimeoutSeconds
+        self.runtimeStatus = runtimeStatus
+        self.runtimeIdentity = Self.makeRuntimeIdentity(
+            modelID: modelID,
+            runtimeStatus: runtimeStatus,
+            fileManager: fileManager
+        )
+    }
+
+    @MainActor
+    static func capture(requestTimeoutSeconds: TimeInterval) -> NvidiaNemotronASRConfiguration {
+        let modelID = AppSettings.asrNvidiaNemotronModelID
+        return NvidiaNemotronASRConfiguration(
+            modelID: modelID,
+            requestTimeoutSeconds: requestTimeoutSeconds,
+            runtimeStatus: NvidiaNemotronASRService.bundledRuntimeStatus(modelID: modelID)
+        )
+    }
+
+    func reuseKey(languageIDs: [String]) -> String {
+        [
+            runtimeIdentity,
+            "target=\(NvidiaNemotronASRService.targetLanguage(for: languageIDs))",
+            "languages=\(languageIDs.joined(separator: ","))",
+        ].joined(separator: "|")
+    }
+
+    private static func makeRuntimeIdentity(
+        modelID: String,
+        runtimeStatus: NvidiaNemotronASRRuntimeStatus,
+        fileManager: FileManager
+    ) -> String {
+        let runnerIdentity = runtimeStatus.runnerURL.map {
+            RuntimeFileIdentity.capture($0, fileManager: fileManager)
+        } ?? "missing"
+        let modelIdentity = runtimeStatus.modelFiles.map { file in
+            "\(file.spec.id)=\(file.installed):\(RuntimeFileIdentity.capture(file.url, fileManager: fileManager))"
+        }.joined(separator: ",")
+        return [
+            modelID,
+            "runner=\(runtimeStatus.runnerReady):\(runnerIdentity)",
+            "models=\(modelIdentity)",
+        ].joined(separator: "|")
+    }
+
+}
+
 final class NvidiaNemotronASRService: ASRService {
+    let configuration: NvidiaNemotronASRConfiguration
+
+    init(configuration: NvidiaNemotronASRConfiguration) {
+        self.configuration = configuration
+    }
+
     func transcribe(audioFileURL: URL, languageIDs: [String]) async throws -> String {
+        guard configuration.isInstalledAtCapture else {
+            throw ASRAudioSupportError.httpStatus(
+                503,
+                configuration.unavailableReason
+                    ?? "NVIDIA Nemotron ASR runtime is unavailable"
+            )
+        }
         let supportedLanguageIDs = ASRLanguageSelection.effectiveIDs(languageIDs, for: .nvidiaNemotron)
         guard !supportedLanguageIDs.isEmpty else {
             throw ASRAudioSupportError.httpStatus(
@@ -18,45 +96,47 @@ final class NvidiaNemotronASRService: ASRService {
         }
 
         let diagnosticID = "asr-\(UUID().uuidString)"
-        let session = try await MainActor.run {
-            try NvidiaNemotronWarmPool.shared.takeOrStart(
-                languageIDs: supportedLanguageIDs,
-                diagnosticID: diagnosticID,
-                onTranscript: { _ in }
-            )
-        }
+        let session = try await NvidiaNemotronWarmPool.shared.takeOrStart(
+            configuration: configuration,
+            languageIDs: supportedLanguageIDs,
+            diagnosticID: diagnosticID,
+            onTranscript: { _ in }
+        )
         var returnedToPool = false
         var failureHandled = false
         do {
             try Task.checkCancellation()
             try session.appendAudioFile(uploadURL)
             let completed = await session.finishInputAndWaitForFinal(
-                timeout: AppSettings.asrTimeoutSeconds
+                timeout: configuration.requestTimeoutSeconds
             )
             try Task.checkCancellation()
             guard completed else {
-                session.terminate(reason: "asr_timeout")
-                await MainActor.run {
-                    NvidiaNemotronWarmPool.shared.preload(languageIDs: supportedLanguageIDs)
-                }
-                failureHandled = true
-                throw ASRAudioSupportError.timeout(seconds: AppSettings.asrTimeoutSeconds)
-            }
-            let text = session.currentTranscript()?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            await MainActor.run {
-                NvidiaNemotronWarmPool.shared.returnIdle(
+                await NvidiaNemotronWarmPool.shared.discardAndPreload(
                     session,
                     languageIDs: supportedLanguageIDs,
-                    reason: "asr_finished"
+                    reason: "asr_timeout"
                 )
+                failureHandled = true
+                throw ASRAudioSupportError.timeout(seconds: configuration.requestTimeoutSeconds)
             }
+            let text = session.currentTranscript()?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            await NvidiaNemotronWarmPool.shared.returnIdle(
+                session,
+                configuration: configuration,
+                languageIDs: supportedLanguageIDs,
+                reason: "asr_finished"
+            )
             returnedToPool = true
             guard !text.isEmpty else {
                 throw ASRAudioSupportError.emptyTranscript
             }
             return LocaleTextNormalizer.normalize(text, languageIDs: supportedLanguageIDs)
         } catch is CancellationError {
-            await session.terminateAndWait(reason: "asr_task_cancelled")
+            await NvidiaNemotronWarmPool.shared.discard(
+                session,
+                reason: "asr_task_cancelled"
+            )
             throw CancellationError()
         } catch {
             if returnedToPool || failureHandled {
@@ -64,18 +144,18 @@ final class NvidiaNemotronASRService: ASRService {
             }
             let reset = await session.cancelInputAndWaitForReset(timeout: 2)
             if reset {
-                await MainActor.run {
-                    NvidiaNemotronWarmPool.shared.returnIdle(
-                        session,
-                        languageIDs: supportedLanguageIDs,
-                        reason: "asr_error_reset"
-                    )
-                }
+                await NvidiaNemotronWarmPool.shared.returnIdle(
+                    session,
+                    configuration: configuration,
+                    languageIDs: supportedLanguageIDs,
+                    reason: "asr_error_reset"
+                )
             } else {
-                session.terminate(reason: "asr_error")
-                await MainActor.run {
-                    NvidiaNemotronWarmPool.shared.preload(languageIDs: supportedLanguageIDs)
-                }
+                await NvidiaNemotronWarmPool.shared.discardAndPreload(
+                    session,
+                    languageIDs: supportedLanguageIDs,
+                    reason: "asr_error"
+                )
             }
             throw error
         }
@@ -93,10 +173,14 @@ final class NvidiaNemotronASRService: ASRService {
     }
 
     static func bundledRuntimeStatus() -> NvidiaNemotronASRRuntimeStatus {
+        bundledRuntimeStatus(modelID: AppSettings.asrNvidiaNemotronModelID)
+    }
+
+    static func bundledRuntimeStatus(modelID: String) -> NvidiaNemotronASRRuntimeStatus {
         runtimeStatus(
             runnerURL: AppPaths.bundledNvidiaNemotronRunner,
             modelFiles: NvidiaNemotronASRModelCatalog
-                .spec(for: AppSettings.asrNvidiaNemotronModelID)
+                .spec(for: modelID)
                 .files
                 .map { file in
                     NvidiaNemotronASRModelFileStatus(
@@ -280,7 +364,7 @@ private struct NvidiaASRCommand: Sendable {
     let arguments: [String]
 }
 
-struct NvidiaNemotronASRRuntimeStatus: Equatable {
+struct NvidiaNemotronASRRuntimeStatus: Equatable, Sendable {
     let runnerURL: URL?
     let runnerReady: Bool
     let modelFiles: [NvidiaNemotronASRModelFileStatus]
@@ -326,7 +410,7 @@ struct NvidiaNemotronASRRuntimeStatus: Equatable {
     }
 }
 
-struct NvidiaNemotronASRModelFileStatus: Equatable {
+struct NvidiaNemotronASRModelFileStatus: Equatable, Sendable {
     let spec: NvidiaNemotronASRFileSpec
     let url: URL
     var installed: Bool = false

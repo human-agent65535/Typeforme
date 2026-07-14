@@ -37,17 +37,83 @@ private struct BridgeSession {
     let createdAt: Date
 }
 
+/// The WebSocket audio loop is intentionally not MainActor-bound. Holding the
+/// lock through each synchronous append makes deactivation a hard boundary:
+/// once `deactivate()` returns, an old socket cannot write into a reset or
+/// subsequently reused recognizer session.
+final class BridgeLivePreviewInputGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var process: (any ASRLivePreviewSession)?
+    private var lastAppendAt: Date
+
+    init(process: any ASRLivePreviewSession, createdAt: Date = Date()) {
+        self.process = process
+        self.lastAppendAt = createdAt
+    }
+
+    @discardableResult
+    func append(_ data: Data, at date: Date = Date()) -> Bool {
+        lock.withLock {
+            guard let process else { return false }
+            process.appendPCM16kMonoFloat32Data(data)
+            lastAppendAt = date
+            return true
+        }
+    }
+
+    func deactivate() {
+        lock.withLock {
+            process = nil
+        }
+    }
+
+    var lastActivityAt: Date {
+        lock.withLock { lastAppendAt }
+    }
+}
+
 @MainActor
-private final class BridgeLivePreviewSession {
+protocol BridgeLivePreviewLeaseProviding {
+    func take(
+        source: VoiceLivePreviewSource,
+        requestedLanguageIDs: [String],
+        diagnosticID: String,
+        onTranscript: @escaping (String) -> Void
+    ) async throws -> ASRLivePreviewLease
+}
+
+@MainActor
+struct DefaultBridgeLivePreviewLeaseProvider: BridgeLivePreviewLeaseProviding {
+    func take(
+        source: VoiceLivePreviewSource,
+        requestedLanguageIDs: [String],
+        diagnosticID: String,
+        onTranscript: @escaping (String) -> Void
+    ) async throws -> ASRLivePreviewLease {
+        try await ASRLivePreviewLeaseFactory.take(
+            source: source,
+            requestedLanguageIDs: requestedLanguageIDs,
+            diagnosticID: diagnosticID,
+            onTranscript: onTranscript
+        )
+    }
+}
+
+@MainActor
+final class BridgeLivePreviewSession {
     let id: String
     let lease: ASRLivePreviewLease
     let createdAt: Date
     var updatedAt: Date
     var lastTranscript: String?
+    let inputGate: BridgeLivePreviewInputGate
+    private var finishTask: Task<BridgeLivePreviewFinishOperationResult, Never>?
+    private var teardownTask: Task<Void, Never>?
 
     var provider: String { lease.provider }
     var languageIDs: [String] { lease.languageIDs }
-    var process: any ASRLivePreviewSession { lease.session }
+    private var process: any ASRLivePreviewSession { lease.session }
+    var lastActivityAt: Date { max(updatedAt, inputGate.lastActivityAt) }
 
     init(
         id: String,
@@ -58,17 +124,97 @@ private final class BridgeLivePreviewSession {
         self.lease = lease
         self.createdAt = createdAt
         self.updatedAt = createdAt
+        self.inputGate = BridgeLivePreviewInputGate(
+            process: lease.session,
+            createdAt: createdAt
+        )
     }
 
-    @MainActor
-    func returnIdle(reason: String) {
-        lease.returnIdle(reason: reason)
+    func beginFinish(timeout: TimeInterval) -> Task<BridgeLivePreviewFinishOperationResult, Never> {
+        inputGate.deactivate()
+        if let finishTask {
+            return finishTask
+        }
+        let process = self.process
+        let session = self
+        let task = Task { @MainActor [weak session] in
+            let completed = await process.finishInputAndWaitForFinal(timeout: timeout)
+            let wasCancelled = Task.isCancelled
+            if !completed && !wasCancelled {
+                process.terminate(reason: "bridge_finish_timeout")
+            }
+            return BridgeLivePreviewFinishOperationResult(
+                completed: completed,
+                wasCancelled: wasCancelled,
+                transcript: process.currentTranscript() ?? session?.lastTranscript,
+                finishedAt: Date()
+            )
+        }
+        finishTask = task
+        return task
     }
 
-    @MainActor
-    func preloadReplacement() {
-        lease.preloadReplacement()
+    /// Cancellation owns teardown once requested. If finalization is already
+    /// running, it is cancelled and joined before reset touches the process.
+    /// This prevents finish/reset from racing and guarantees one lease return.
+    func cancelAndTeardown() -> Task<Void, Never> {
+        inputGate.deactivate()
+        if let teardownTask {
+            return teardownTask
+        }
+        let finishTask = self.finishTask
+        finishTask?.cancel()
+        let process = self.process
+        let lease = self.lease
+        let task = Task { @MainActor in
+            if let finishTask {
+                _ = await finishTask.value
+            }
+            let reset = await process.cancelInputAndWaitForReset(timeout: 2)
+            if reset {
+                await lease.returnIdle(reason: "bridge_cancelled")
+            } else {
+                process.terminate(reason: "bridge_cancel_timeout")
+                await lease.preloadReplacement()
+            }
+        }
+        teardownTask = task
+        return task
     }
+
+    func finishAndTeardown(completed: Bool) -> Task<Void, Never> {
+        inputGate.deactivate()
+        if let teardownTask {
+            return teardownTask
+        }
+        let lease = self.lease
+        let task = Task { @MainActor in
+            if completed {
+                await lease.returnIdle(reason: "bridge_finished")
+            } else {
+                await lease.preloadReplacement()
+            }
+        }
+        teardownTask = task
+        return task
+    }
+}
+
+struct BridgeLivePreviewFinishOperationResult: Sendable {
+    let completed: Bool
+    let wasCancelled: Bool
+    let transcript: String?
+    let finishedAt: Date
+}
+
+private struct BridgeCompletedLivePreview {
+    let response: BridgeLivePreviewFinishResponse
+    let completedAt: Date
+}
+
+private struct BridgePendingLivePreviewStart {
+    let token: UUID
+    let task: Task<BridgeLivePreviewStartResponse, Error>
 }
 
 private struct BridgeCorrectionOutput {
@@ -82,9 +228,16 @@ private struct BridgeCorrectionOutput {
 final class BridgeService {
     private let dictionary: UserDictionaryStore
     private let textEditService: TextEditService
+    private let livePreviewLeaseProvider: any BridgeLivePreviewLeaseProviding
+    private let livePreviewRecognitionSourcesProvider: @MainActor () -> [RecognitionSource]
     private var sessions: [String: BridgeSession] = [:]
     private var livePreviewSessions: [String: BridgeLivePreviewSession] = [:]
+    private var pendingLivePreviewStarts: [String: BridgePendingLivePreviewStart] = [:]
+    private var completedLivePreviews: [String: BridgeCompletedLivePreview] = [:]
+    private var inFlightLivePreviewTeardowns: [UUID: Task<Void, Never>] = [:]
     private var livePreviewPruneTask: Task<Void, Never>?
+    private var livePreviewStartsOpen = true
+    private var livePreviewListenerRunID: UUID?
 
     private static let sessionTTL: TimeInterval = 15 * 60
     private static let maxSessions = 128
@@ -92,10 +245,20 @@ final class BridgeService {
     private static var livePreviewFinishTimeout: TimeInterval { AppSettings.asrTimeoutSeconds }
     private static let livePreviewPruneIntervalNanoseconds: UInt64 = 30 * 1_000_000_000
     private static let maxLivePreviewSessions = 8
+    private static let completedLivePreviewTTL: TimeInterval = 60
+    private static let maxCompletedLivePreviews = 32
 
-    init(dictionary: UserDictionaryStore) {
+    init(
+        dictionary: UserDictionaryStore,
+        livePreviewLeaseProvider: any BridgeLivePreviewLeaseProviding = DefaultBridgeLivePreviewLeaseProvider(),
+        livePreviewRecognitionSourcesProvider: @escaping @MainActor () -> [RecognitionSource] = {
+            AppSettings.enabledRecognitionSources
+        }
+    ) {
         self.dictionary = dictionary
         self.textEditService = TextEditService(dictionary: dictionary)
+        self.livePreviewLeaseProvider = livePreviewLeaseProvider
+        self.livePreviewRecognitionSourcesProvider = livePreviewRecognitionSourcesProvider
         self.livePreviewPruneTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: Self.livePreviewPruneIntervalNanoseconds)
@@ -121,7 +284,9 @@ final class BridgeService {
     }
 
     func settings() -> BridgeSettingsPayload {
-        NvidiaNemotronWarmPool.shared.preloadForCurrentSettings()
+        Task { @MainActor in
+            await ASRFactory.shared.preloadNvidiaNemotron()
+        }
         return BridgeSettingsPayload.current(userDictionary: dictionary.sortedSnapshot())
     }
 
@@ -136,11 +301,13 @@ final class BridgeService {
         }
 
         let oldSources = AppSettings.configuredRecognitionSources
-        let oldQwenASRModelID = AppSettings.asrQwenLlamaModelID
         let sources = try resolveRecognitionSources(request.enabledRecognitionSources) ?? oldSources
         let settingsFastASRSource = try resolveFastASRSource(request.fastASRSource) ?? AppSettings.fastASRSource
         let settingsCorrectionMode = try resolveSettingsCorrectionMode(request.correctionMode) ?? AppSettings.correctionMode
-        try validateEnabledRecognitionSources(sources, languageIDs: request.languageIDs ?? AppSettings.asrLanguageIDs)
+        try Self.validateEnabledRecognitionSources(
+            sources,
+            languageIDs: request.languageIDs ?? AppSettings.asrCanonicalLanguageIDs
+        )
         let requestedLivePreviewSource: VoiceLivePreviewSource?
         if let rawLivePreviewSource = request.livePreviewSource {
             requestedLivePreviewSource = try resolveLivePreviewSource(
@@ -162,7 +329,7 @@ final class BridgeService {
             )
         } else {
             languageIDs = ASRLanguageSelection.validatedIDs(
-                AppSettings.asrLanguageIDs,
+                AppSettings.asrCanonicalLanguageIDs,
                 supportedOptions: supportedLanguages
             )
         }
@@ -306,65 +473,127 @@ final class BridgeService {
         }
 
         UserDefaults.standard.synchronize()
-        let newSources = AppSettings.configuredRecognitionSources
-        let newQwenASRModelID = AppSettings.asrQwenLlamaModelID
         startDownloadsForCurrentServerSettings()
         Task { @MainActor in
-            if (oldSources.contains(.qwen) && !newSources.contains(.qwen))
-                || oldQwenASRModelID != newQwenASRModelID {
-                await ASRFactory.shared.stopQwenLlama()
-            }
             await ASRFactory.shared.preloadCachedActiveModel()
             _ = await CorrectorFactory.shared.preloadActiveModels()
         }
         return BridgeSettingsPayload.current(userDictionary: dictionary.sortedSnapshot())
     }
 
-    func startLivePreview(_ request: BridgeLivePreviewStartRequest) async throws -> BridgeLivePreviewStartResponse {
+    func startLivePreview(
+        _ request: BridgeLivePreviewStartRequest,
+        listenerRunID: UUID? = nil
+    ) async throws -> BridgeLivePreviewStartResponse {
+        guard livePreviewStartsOpen,
+              listenerRunID == nil || listenerRunID == livePreviewListenerRunID
+        else {
+            throw BridgeServiceError.invalidRequest("Bridge listener is stopping")
+        }
         pruneExpiredLivePreviewSessions()
         let correctionMode = try resolveCorrectionMode(request.correctionMode)
-        guard livePreviewSessions.count < Self.maxLivePreviewSessions else {
-            throw BridgeServiceError.invalidRequest("Too many active live preview sessions")
-        }
-
         let id = UUID().uuidString
         let requestedLanguageIDs = resolveLivePreviewLanguageIDs(ids: request.languageIDs, mode: request.languageMode)
         let previewSource = try resolveLivePreviewSource(
             request.livePreviewSource,
-            sources: AppSettings.enabledRecognitionSources,
+            sources: livePreviewRecognitionSourcesProvider(),
             correctionMode: correctionMode
         )
         guard previewSource != .off else {
             throw BridgeServiceError.invalidRequest("Live preview is off")
         }
+        guard livePreviewSessions.count + pendingLivePreviewStarts.count < Self.maxLivePreviewSessions else {
+            throw BridgeServiceError.invalidRequest("Too many active live preview sessions")
+        }
+        let requestStartedAt = Date()
         Log.bridge.notice(
             "Bridge live preview start session=\(Self.logID(id), privacy: .public) source=\(previewSource.rawValue, privacy: .public)"
         )
-        let lease: ASRLivePreviewLease
-        do {
-            lease = try ASRLivePreviewLeaseFactory.take(
+        let leaseProvider = livePreviewLeaseProvider
+        let transcriptHandler: (String) -> Void = { [weak self] text in
+            Task { @MainActor [weak self] in
+                self?.recordLivePreviewTranscript(sessionID: id, text: text)
+            }
+        }
+        let token = UUID()
+        let task = Task { @MainActor [weak self] () throws -> BridgeLivePreviewStartResponse in
+            guard let self else { throw CancellationError() }
+            return try await self.completeLivePreviewStart(
+                sessionID: id,
+                token: token,
+                listenerRunID: listenerRunID,
                 source: previewSource,
                 requestedLanguageIDs: requestedLanguageIDs,
-                diagnosticID: id
-            ) { [weak self] text in
-                Task { @MainActor [weak self] in
-                    self?.recordLivePreviewTranscript(sessionID: id, text: text)
-                }
+                requestStartedAt: requestStartedAt,
+                leaseProvider: leaseProvider,
+                transcriptHandler: transcriptHandler
+            )
+        }
+        pendingLivePreviewStarts[id] = BridgePendingLivePreviewStart(
+            token: token,
+            task: task
+        )
+        defer {
+            if pendingLivePreviewStarts[id]?.token == token {
+                pendingLivePreviewStarts.removeValue(forKey: id)
             }
+        }
+        return try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
+        }
+    }
+
+    private func completeLivePreviewStart(
+        sessionID: String,
+        token: UUID,
+        listenerRunID: UUID?,
+        source: VoiceLivePreviewSource,
+        requestedLanguageIDs: [String],
+        requestStartedAt: Date,
+        leaseProvider: any BridgeLivePreviewLeaseProviding,
+        transcriptHandler: @escaping (String) -> Void
+    ) async throws -> BridgeLivePreviewStartResponse {
+        let lease: ASRLivePreviewLease
+        do {
+            lease = try await leaseProvider.take(
+                source: source,
+                requestedLanguageIDs: requestedLanguageIDs,
+                diagnosticID: sessionID,
+                onTranscript: transcriptHandler
+            )
         } catch {
+            guard livePreviewStartIsCurrent(
+                sessionID: sessionID,
+                token: token,
+                listenerRunID: listenerRunID
+            ), !Task.isCancelled else { throw CancellationError() }
+            if error is CancellationError {
+                throw CancellationError()
+            }
             throw BridgeServiceError.invalidRequest(error.localizedDescription)
         }
+
+        guard livePreviewStartIsCurrent(
+            sessionID: sessionID,
+            token: token,
+            listenerRunID: listenerRunID
+        ), !Task.isCancelled else {
+            await lease.returnIdle(reason: "bridge_start_cancelled")
+            throw CancellationError()
+        }
         let createdAt = Date()
-        livePreviewSessions[id] = BridgeLivePreviewSession(
-            id: id,
+        livePreviewSessions[sessionID] = BridgeLivePreviewSession(
+            id: sessionID,
             lease: lease,
             createdAt: createdAt
         )
         Log.bridge.notice(
-            "Bridge live preview started session=\(Self.logID(id), privacy: .public) provider=\(lease.provider, privacy: .public) languages=\(lease.languageIDs.joined(separator: ","), privacy: .public) elapsed_ms=\(self.elapsedMs(since: createdAt), privacy: .public)"
+            "Bridge live preview started session=\(Self.logID(sessionID), privacy: .public) provider=\(lease.provider, privacy: .public) languages=\(lease.languageIDs.joined(separator: ","), privacy: .public) elapsed_ms=\(self.elapsedMs(since: requestStartedAt), privacy: .public)"
         )
         return BridgeLivePreviewStartResponse(
-            sessionID: id,
+            sessionID: sessionID,
             provider: lease.provider,
             languageIDs: lease.languageIDs,
             audioFormat: BridgeLivePreviewStartResponse.audioFormat,
@@ -372,21 +601,30 @@ final class BridgeService {
         )
     }
 
-    func livePreviewAudioProcess(sessionID: String) throws -> any ASRLivePreviewSession {
+    private func livePreviewStartIsCurrent(
+        sessionID: String,
+        token: UUID,
+        listenerRunID: UUID?
+    ) -> Bool {
+        livePreviewStartsOpen
+            && pendingLivePreviewStarts[sessionID]?.token == token
+            && (listenerRunID == nil || listenerRunID == livePreviewListenerRunID)
+    }
+
+    func livePreviewInputGate(sessionID: String) throws -> BridgeLivePreviewInputGate {
         pruneExpiredLivePreviewSessions()
         guard let session = livePreviewSessions[sessionID] else {
             throw BridgeServiceError.missingSession
         }
         session.updatedAt = Date()
-        return session.process
-    }
-
-    func touchLivePreviewSession(sessionID: String) {
-        livePreviewSessions[sessionID]?.updatedAt = Date()
+        return session.inputGate
     }
 
     func finishLivePreview(sessionID: String) async throws -> BridgeLivePreviewFinishResponse {
         pruneExpiredLivePreviewSessions()
+        if let completed = completedLivePreviews[sessionID] {
+            return completed.response
+        }
         guard let session = livePreviewSessions[sessionID] else {
             throw BridgeServiceError.missingSession
         }
@@ -394,35 +632,89 @@ final class BridgeService {
         Log.bridge.notice(
             "Bridge live preview finish session=\(Self.logID(sessionID), privacy: .public) elapsed_ms=\(self.elapsedMs(since: session.createdAt), privacy: .public)"
         )
-        let completed = await session.process.finishInputAndWaitForFinal(
-            timeout: Self.livePreviewFinishTimeout
-        )
-        if !completed {
-            session.process.terminate(reason: "bridge_finish_timeout")
+        let finishTask = session.beginFinish(timeout: Self.livePreviewFinishTimeout)
+        let result = await finishTask.value
+        if let completed = completedLivePreviews[sessionID] {
+            return completed.response
         }
-        let transcript = session.process.currentTranscript() ?? session.lastTranscript
-        publishLivePreviewEvent(session: session, text: transcript, isFinal: true)
-        livePreviewSessions.removeValue(forKey: sessionID)
-        if completed {
-            session.returnIdle(reason: "bridge_finished")
-        } else {
-            session.preloadReplacement()
+        guard livePreviewSessions[sessionID] === session else {
+            throw BridgeServiceError.missingSession
         }
-        let finishedAt = Date()
-        Log.bridge.notice(
-            "Bridge live preview finished session=\(Self.logID(sessionID), privacy: .public) completed=\(completed, privacy: .public) text_chars=\(transcript?.count ?? 0, privacy: .public) elapsed_ms=\(self.elapsedMs(since: session.createdAt), privacy: .public)"
-        )
-        return BridgeLivePreviewFinishResponse(
+        let response = BridgeLivePreviewFinishResponse(
             sessionID: session.id,
             provider: session.provider,
-            text: transcript,
-            finishedAt: finishedAt.timeIntervalSince1970
+            text: result.transcript,
+            finishedAt: result.finishedAt.timeIntervalSince1970
         )
+        completedLivePreviews[sessionID] = BridgeCompletedLivePreview(
+            response: response,
+            completedAt: result.finishedAt
+        )
+        publishLivePreviewEvent(session: session, text: result.transcript, isFinal: true)
+        livePreviewSessions.removeValue(forKey: sessionID)
+        pruneCompletedLivePreviews()
+        let teardownTask = trackLivePreviewTeardown(
+            session.finishAndTeardown(completed: result.completed)
+        )
+        await teardownTask.value
+        Log.bridge.notice(
+            "Bridge live preview finished session=\(Self.logID(sessionID), privacy: .public) completed=\(result.completed, privacy: .public) text_chars=\(result.transcript?.count ?? 0, privacy: .public) elapsed_ms=\(self.elapsedMs(since: session.createdAt), privacy: .public)"
+        )
+        return response
     }
 
-    func cancelLivePreview(sessionID: String) {
+    func cancelLivePreview(sessionID: String) async -> BridgeLivePreviewCancelResponse {
         pruneExpiredLivePreviewSessions()
-        removeLivePreviewSession(id: sessionID)
+        if let teardownTask = removeLivePreviewSession(id: sessionID) {
+            await teardownTask.value
+        }
+        return BridgeLivePreviewCancelResponse(sessionID: sessionID)
+    }
+
+    func beginAcceptingLivePreviews(listenerRunID: UUID) {
+        livePreviewStartsOpen = true
+        livePreviewListenerRunID = listenerRunID
+    }
+
+    func beginCancelAllLivePreviewsIfOwned(
+        listenerRunID: UUID
+    ) -> Task<Void, Never>? {
+        guard livePreviewListenerRunID == listenerRunID else { return nil }
+        return beginCancelAllLivePreviews()
+    }
+
+    /// Establishes the stop boundary synchronously on the main actor, then
+    /// joins every start task and active teardown. Each start task owns its
+    /// acquired lease until it either registers a session or returns it.
+    func beginCancelAllLivePreviews() -> Task<Void, Never> {
+        livePreviewStartsOpen = false
+        livePreviewListenerRunID = nil
+
+        let pendingStarts = Array(pendingLivePreviewStarts.values)
+        pendingLivePreviewStarts.removeAll()
+        for pendingStart in pendingStarts {
+            pendingStart.task.cancel()
+        }
+
+        let activeIDs = Array(livePreviewSessions.keys)
+        for id in activeIDs {
+            _ = removeLivePreviewSession(id: id)
+        }
+        let teardownTasks = Array(inFlightLivePreviewTeardowns.values)
+        completedLivePreviews.removeAll()
+
+        return Task { @MainActor in
+            for pendingStart in pendingStarts {
+                _ = await pendingStart.task.result
+            }
+            for teardownTask in teardownTasks {
+                await teardownTask.value
+            }
+        }
+    }
+
+    func cancelAllLivePreviewsAndWait() async {
+        await beginCancelAllLivePreviews().value
     }
 
     func dictate(_ request: BridgeDictateRequest) async throws -> BridgeDictateResponse {
@@ -453,6 +745,26 @@ final class BridgeService {
             throw BridgeServiceError.invalidRequest("No ASR source enabled")
         }
         let languageIDs = fastRoute?.languageIDs ?? requestedLanguageIDs
+        let numberOutputPreference = AppSettings.numberOutputPreference
+        let punctuationPreference = AppSettings.punctuationPreference
+        let correctionTimeoutMs = AppSettings.correctionTimeoutMs
+        let userDictionary = dictionary.sortedSnapshot()
+        let correctionConfiguration: CorrectionSessionConfiguration?
+        if correctionMode.usesRefine {
+            let correctorConfiguration = CorrectorConfigurationSnapshot.capture()
+            correctionConfiguration = CorrectionSessionConfiguration(
+                corrector: CorrectorFactory.shared.make(configuration: correctorConfiguration),
+                numberOutputPreference: numberOutputPreference,
+                punctuationPreference: punctuationPreference,
+                timeoutMs: correctionTimeoutMs,
+                userDictionary: userDictionary
+            )
+        } else {
+            correctionConfiguration = nil
+        }
+        let asrService = fastRoute.map { route in
+            ASRFactory.shared.getInstalled(source: route.source)
+        } ?? ASRFactory.shared.get(sources: transcriptionSources)
         let audioURL = try await writeAudio(request)
         audioURLToCleanup = audioURL
         let audioDurationMs = ASRAudioSupport.audioDurationMilliseconds(for: audioURL)
@@ -485,9 +797,6 @@ final class BridgeService {
                 stage: .transcribing,
                 message: "Transcribing audio"
             )
-            let asrService = fastRoute.map { route in
-                ASRFactory.shared.getInstalled(source: route.source)
-            } ?? ASRFactory.shared.get(sources: transcriptionSources)
             let asrProgressHandler: ASRTranscriptionProgressHandler? = {
                 guard let jobID else { return nil }
                 return { progress in
@@ -587,7 +896,10 @@ final class BridgeService {
             audioDurationMs: audioDurationMs,
             alternateTranscripts: combinedAlternateTranscripts,
             asrHypotheses: asrHypotheses,
-            sourceHypotheses: asrSourceHypotheses
+            sourceHypotheses: asrSourceHypotheses,
+            numberOutputPreference: numberOutputPreference,
+            punctuationPreference: punctuationPreference,
+            userDictionary: userDictionary
         )
 
         if !correctionMode.usesRefine {
@@ -602,7 +914,7 @@ final class BridgeService {
                 latencyMs: correctionLatencyMs,
                 request: editRequest,
                 debugTrace: correction.debugTrace,
-                timeoutMs: AppSettings.correctionTimeoutMs
+                timeoutMs: correctionTimeoutMs
             )
             let sessionID = UUID().uuidString
             storeSession(BridgeSession(
@@ -645,9 +957,10 @@ final class BridgeService {
         }
 
         let correctionStarted = Date()
-        let correction: BridgeCorrectionOutput
-        let correctionLatencyMs: Int
-        do {
+        let correction = try await Self.withCorrectionFailureFallback {
+            guard let correctionConfiguration else {
+                throw CorrectorError.unavailable("Correction backend is no longer available")
+            }
             await publishJobStatus(
                 jobID: jobID,
                 stage: .refining,
@@ -655,7 +968,7 @@ final class BridgeService {
                 rawTranscriptLength: trimmed.count,
                 transcriptionLatencyMs: transcriptionLatencyMs
             )
-            correction = try await correct(
+            return try await correct(
                 rawTranscript: trimmed,
                 languageIDs: languageIDs,
                 correctionMode: correctionMode,
@@ -667,19 +980,19 @@ final class BridgeService {
                 audioDurationMs: audioDurationMs,
                 alternateTranscripts: combinedAlternateTranscripts,
                 asrHypotheses: asrHypotheses,
-                sourceHypotheses: asrSourceHypotheses
+                sourceHypotheses: asrSourceHypotheses,
+                configuration: correctionConfiguration
             )
-            correctionLatencyMs = elapsedMs(since: correctionStarted)
-        } catch {
-            let latencyMs = elapsedMs(since: correctionStarted)
-            correction = fallbackCorrectionOutput(
+        } fallback: { error in
+            fallbackCorrectionOutput(
                 rawTranscript: trimmed,
                 languageIDs: languageIDs,
                 correctionMode: correctionMode,
+                punctuationPreference: punctuationPreference,
                 error: error
             )
-            correctionLatencyMs = latencyMs
         }
+        let correctionLatencyMs = elapsedMs(since: correctionStarted)
         DebugLogStore.recordCorrection(
             debugLog,
             mode: correctionMode,
@@ -689,7 +1002,7 @@ final class BridgeService {
             latencyMs: correctionLatencyMs,
             request: editRequest,
             debugTrace: correction.debugTrace,
-            timeoutMs: AppSettings.correctionTimeoutMs
+            timeoutMs: correctionTimeoutMs
         )
 
         let sessionID = UUID().uuidString
@@ -760,6 +1073,23 @@ final class BridgeService {
             bundleID: bundleID,
             defaultCategory: session?.appCategory ?? .unknown
         )
+        let numberOutputPreference = AppSettings.numberOutputPreference
+        let punctuationPreference = AppSettings.punctuationPreference
+        let correctionTimeoutMs = AppSettings.correctionTimeoutMs
+        let userDictionary = dictionary.sortedSnapshot()
+        let correctionConfiguration: CorrectionSessionConfiguration?
+        if correctionMode.usesRefine {
+            let correctorConfiguration = CorrectorConfigurationSnapshot.capture()
+            correctionConfiguration = CorrectionSessionConfiguration(
+                corrector: CorrectorFactory.shared.make(configuration: correctorConfiguration),
+                numberOutputPreference: numberOutputPreference,
+                punctuationPreference: punctuationPreference,
+                timeoutMs: correctionTimeoutMs,
+                userDictionary: userDictionary
+            )
+        } else {
+            correctionConfiguration = nil
+        }
         let editRequest = correctionRequest(
             rawTranscript: rawTranscript,
             languageIDs: languageIDs,
@@ -768,7 +1098,10 @@ final class BridgeService {
             bundleID: bundleID,
             appCategory: appCategory,
             contextBefore: contextBefore,
-            contextAfter: contextAfter
+            contextAfter: contextAfter,
+            numberOutputPreference: numberOutputPreference,
+            punctuationPreference: punctuationPreference,
+            userDictionary: userDictionary
         )
         let debugLog = DebugLogStore.beginRefine(
             source: "bridge_refine",
@@ -787,7 +1120,7 @@ final class BridgeService {
                 latencyMs: 0,
                 request: editRequest,
                 debugTrace: correction.debugTrace,
-                timeoutMs: AppSettings.correctionTimeoutMs
+                timeoutMs: correctionTimeoutMs
             )
             let sessionID = session?.id ?? UUID().uuidString
             storeSession(BridgeSession(
@@ -826,16 +1159,17 @@ final class BridgeService {
         }
 
         let correctionStarted = Date()
-        let correction: BridgeCorrectionOutput
-        let correctionLatencyMs: Int
-        do {
+        let correction = try await Self.withCorrectionFailureFallback {
+            guard let correctionConfiguration else {
+                throw CorrectorError.unavailable("Correction backend is no longer available")
+            }
             await publishJobStatus(
                 jobID: jobID,
                 stage: .refining,
                 message: "Refining text",
                 rawTranscriptLength: rawTranscript.count
             )
-            correction = try await correct(
+            return try await correct(
                 rawTranscript: rawTranscript,
                 languageIDs: languageIDs,
                 correctionMode: correctionMode,
@@ -843,19 +1177,19 @@ final class BridgeService {
                 bundleID: bundleID,
                 appCategory: appCategory,
                 contextBefore: contextBefore,
-                contextAfter: contextAfter
+                contextAfter: contextAfter,
+                configuration: correctionConfiguration
             )
-            correctionLatencyMs = elapsedMs(since: correctionStarted)
-        } catch {
-            let latencyMs = elapsedMs(since: correctionStarted)
-            correction = fallbackCorrectionOutput(
+        } fallback: { error in
+            fallbackCorrectionOutput(
                 rawTranscript: rawTranscript,
                 languageIDs: languageIDs,
                 correctionMode: correctionMode,
+                punctuationPreference: punctuationPreference,
                 error: error
             )
-            correctionLatencyMs = latencyMs
         }
+        let correctionLatencyMs = elapsedMs(since: correctionStarted)
         DebugLogStore.recordCorrection(
             debugLog,
             mode: correctionMode,
@@ -865,7 +1199,7 @@ final class BridgeService {
             latencyMs: correctionLatencyMs,
             request: editRequest,
             debugTrace: correction.debugTrace,
-            timeoutMs: AppSettings.correctionTimeoutMs
+            timeoutMs: correctionTimeoutMs
         )
         let sessionID = session?.id ?? UUID().uuidString
         storeSession(BridgeSession(
@@ -908,6 +1242,20 @@ final class BridgeService {
         isCorrectionTimeout(error) ? "refine_timeout" : "refine_error"
     }
 
+    static func withCorrectionFailureFallback<Value>(
+        _ operation: () async throws -> Value,
+        fallback: (Error) -> Value
+    ) async throws -> Value {
+        do {
+            return try await operation()
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            try Task.checkCancellation()
+            return fallback(error)
+        }
+    }
+
     private static func isCorrectionTimeout(_ error: Error) -> Bool {
         if let correctorError = error as? CorrectorError, correctorError == .timeout {
             return true
@@ -946,12 +1294,14 @@ final class BridgeService {
         rawTranscript: String,
         languageIDs: [String],
         correctionMode: CorrectionMode,
+        punctuationPreference: PunctuationOutputPreference,
         error: Error
     ) -> BridgeCorrectionOutput {
         let fallbackResult = normalize(
             CorrectionResult(action: .commit, text: rawTranscript, risk: .medium),
             languageIDs: languageIDs,
-            correctionMode: correctionMode
+            correctionMode: correctionMode,
+            punctuationPreference: punctuationPreference
         )
         return BridgeCorrectionOutput(
             result: fallbackResult,
@@ -976,6 +1326,9 @@ final class BridgeService {
             throw BridgeServiceError.invalidRequest("spoken_instruction is required")
         }
 
+        let correctionConfiguration = CorrectionSessionConfiguration.capture(
+            userDictionary: dictionary.sortedSnapshot()
+        )
         let languageIDs = resolveLanguageIDs(ids: request.languageIDs, mode: request.languageMode)
         let appCategory = resolveAppCategory(rawValue: request.appCategory, bundleID: request.bundleID)
         let debugLog = DebugLogStore.beginTextEdit(
@@ -992,7 +1345,8 @@ final class BridgeService {
             languageIDs: languageIDs,
             appName: request.appName,
             bundleID: request.bundleID,
-            appCategory: appCategory
+            appCategory: appCategory,
+            configuration: correctionConfiguration
         )
         await publishJobStatus(
             jobID: jobID,
@@ -1004,7 +1358,10 @@ final class BridgeService {
         let result: TextEditResult
         let editLatencyMs: Int
         do {
-            result = try await textEditService.edit(editRequest)
+            result = try await textEditService.edit(
+                editRequest,
+                configuration: correctionConfiguration
+            )
             editLatencyMs = elapsedMs(since: editStarted)
             DebugLogStore.recordTextEdit(
                 debugLog,
@@ -1013,7 +1370,7 @@ final class BridgeService {
                 status: "ok",
                 latencyMs: editLatencyMs,
                 request: editRequest,
-                timeoutMs: AppSettings.correctionTimeoutMs
+                timeoutMs: correctionConfiguration.timeoutMs
             )
         } catch {
             let latencyMs = elapsedMs(since: editStarted)
@@ -1025,7 +1382,7 @@ final class BridgeService {
                 error: error.localizedDescription,
                 latencyMs: latencyMs,
                 request: editRequest,
-                timeoutMs: AppSettings.correctionTimeoutMs
+                timeoutMs: correctionConfiguration.timeoutMs
             )
             await publishJobStatus(
                 jobID: jobID,
@@ -1070,7 +1427,8 @@ final class BridgeService {
         audioDurationMs: Int? = nil,
         alternateTranscripts: [String] = [],
         asrHypotheses: [String] = [],
-        sourceHypotheses: [ASRSourceHypothesis] = []
+        sourceHypotheses: [ASRSourceHypothesis] = [],
+        configuration: CorrectionSessionConfiguration
     ) async throws -> BridgeCorrectionOutput {
         let request = correctionRequest(
             rawTranscript: rawTranscript,
@@ -1084,15 +1442,23 @@ final class BridgeService {
             audioDurationMs: audioDurationMs,
             alternateTranscripts: alternateTranscripts,
             asrHypotheses: asrHypotheses,
-            sourceHypotheses: sourceHypotheses
+            sourceHypotheses: sourceHypotheses,
+            numberOutputPreference: configuration.numberOutputPreference,
+            punctuationPreference: configuration.punctuationPreference,
+            userDictionary: configuration.userDictionary
         )
 
-        let output = try await CorrectorFactory.shared.make().correct(
+        let output = try await configuration.corrector.correct(
             request,
-            timeoutMs: AppSettings.correctionTimeoutMs
+            timeoutMs: configuration.timeoutMs
         )
         var result = output.result
-        result = normalize(result, languageIDs: languageIDs, correctionMode: correctionMode)
+        result = normalize(
+            result,
+            languageIDs: languageIDs,
+            correctionMode: correctionMode,
+            punctuationPreference: configuration.punctuationPreference
+        )
         guard !result.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return BridgeCorrectionOutput(result: result, status: "empty", error: nil, debugTrace: output.debugTrace)
         }
@@ -1111,7 +1477,10 @@ final class BridgeService {
         audioDurationMs: Int? = nil,
         alternateTranscripts: [String] = [],
         asrHypotheses: [String] = [],
-        sourceHypotheses: [ASRSourceHypothesis] = []
+        sourceHypotheses: [ASRSourceHypothesis] = [],
+        numberOutputPreference: NumberOutputPreference,
+        punctuationPreference: PunctuationOutputPreference,
+        userDictionary: [DictionaryEntry]
     ) -> CorrectionRequest {
         CorrectionRequest(
             correctionMode: correctionMode,
@@ -1122,9 +1491,9 @@ final class BridgeService {
             rawTranscript: rawTranscript,
             contextBefore: contextBefore,
             contextAfter: contextAfter,
-            numberOutputPreference: AppSettings.numberOutputPreference,
-            punctuationPreference: AppSettings.punctuationPreference,
-            userDictionary: dictionary.sortedSnapshot(),
+            numberOutputPreference: numberOutputPreference,
+            punctuationPreference: punctuationPreference,
+            userDictionary: userDictionary,
             audioDurationMs: audioDurationMs,
             alternateTranscripts: alternateTranscripts,
             asrHypotheses: asrHypotheses,
@@ -1149,7 +1518,8 @@ final class BridgeService {
     private func normalize(
         _ result: CorrectionResult,
         languageIDs: [String],
-        correctionMode: CorrectionMode
+        correctionMode: CorrectionMode,
+        punctuationPreference: PunctuationOutputPreference
     ) -> CorrectionResult {
         var normalized = result
         normalized.text = LocaleTextNormalizer.normalize(result.text, languageIDs: languageIDs)
@@ -1157,7 +1527,7 @@ final class BridgeService {
             normalized.text,
             languageIDs: languageIDs,
             preserveLineBreaks: correctionMode == .structurePlus,
-            punctuationPreference: AppSettings.punctuationPreference
+            punctuationPreference: punctuationPreference
         )
         return normalized
     }
@@ -1191,7 +1561,7 @@ final class BridgeService {
         }
         let url = try await Task.detached(priority: .utility) {
             try AppPaths.ensureDirectories()
-            let url = AppPaths.bridgeDir.appendingPathComponent("\(UUID().uuidString).\(ext)")
+            let url = BridgeMultipart.makeAudioFileURL(in: AppPaths.bridgeDir, fileExtension: ext)
             try data.write(to: url, options: .atomic)
             return url
         }.value
@@ -1225,7 +1595,7 @@ final class BridgeService {
                 return BridgeServiceError.invalidAudio
             case .emptyTranscript:
                 return BridgeServiceError.emptyTranscript
-            case .requestBodyFailed, .httpStatus, .timeout, .unsupportedBridgeAudioExtension:
+            case .requestBodyFailed, .invalidResponse, .httpStatus, .timeout, .unsupportedBridgeAudioExtension:
                 return error
             }
         }
@@ -1254,7 +1624,7 @@ final class BridgeService {
         _ mode: CorrectionMode,
         sources: [RecognitionSource] = AppSettings.configuredRecognitionSources,
         fastASRSource: RecognitionSource = AppSettings.fastASRSource,
-        languageIDs: [String] = AppSettings.asrLanguageIDs
+        languageIDs: [String] = AppSettings.asrCanonicalLanguageIDs
     ) throws {
         guard mode == .fast else { return }
         let readiness = FastASRRoute.readinessReport(
@@ -1269,7 +1639,12 @@ final class BridgeService {
 
     private func recognitionSources(for correctionMode: CorrectionMode) throws -> [RecognitionSource] {
         if correctionMode == .fast {
-            return [try FastASRRoute.resolve(languageIDs: AppSettings.asrLanguageIDs).source]
+            let sources = AppSettings.enabledRecognitionSources
+            let languageIDs = ASRLanguageSelection.validatedIDsForTranscription(
+                AppSettings.asrCanonicalLanguageIDs,
+                sources: sources
+            )
+            return [try FastASRRoute.resolve(languageIDs: languageIDs).source]
         }
         return AppSettings.enabledRecognitionSources
     }
@@ -1313,19 +1688,24 @@ final class BridgeService {
         mode: String?,
         sources: [RecognitionSource] = AppSettings.enabledRecognitionSources
     ) -> [String] {
-        let supportedOptions = ASRLanguageSelection.supportedOptions(for: sources)
         if let ids, !ids.isEmpty {
-            return ASRLanguageSelection.validatedIDs(ids, supportedOptions: supportedOptions)
+            return ASRLanguageSelection.validatedIDsForTranscription(ids, sources: sources)
         }
         switch mode?.lowercased() {
         case "zh", "zh-cn", "chinese", "chinese_simplified":
-            return ASRLanguageSelection.validatedIDs(["zh-CN"], supportedOptions: supportedOptions)
+            return ASRLanguageSelection.validatedIDsForTranscription(["zh-CN"], sources: sources)
         case "en", "en-us", "english":
-            return ASRLanguageSelection.validatedIDs(["en-US"], supportedOptions: supportedOptions)
+            return ASRLanguageSelection.validatedIDsForTranscription(["en-US"], sources: sources)
         case "mixed", "multi", "multilingual", "zh-en":
-            return ASRLanguageSelection.validatedIDs(["zh-CN", "en-US"], supportedOptions: supportedOptions)
+            return ASRLanguageSelection.validatedIDsForTranscription(
+                ["zh-CN", "en-US"],
+                sources: sources
+            )
         default:
-            return ASRLanguageSelection.validatedIDs(AppSettings.asrLanguageIDs, supportedOptions: supportedOptions)
+            return ASRLanguageSelection.validatedIDsForTranscription(
+                AppSettings.asrCanonicalLanguageIDs,
+                sources: sources
+            )
         }
     }
 
@@ -1341,7 +1721,7 @@ final class BridgeService {
         case "mixed", "multi", "multilingual", "zh-en":
             return ["zh-CN", "en-US"]
         default:
-            return AppSettings.asrLanguageIDs
+            return AppSettings.asrCanonicalLanguageIDs
         }
     }
 
@@ -1374,11 +1754,20 @@ final class BridgeService {
         return source
     }
 
-    private func validateEnabledRecognitionSources(
+    static func validateEnabledRecognitionSources(
         _ sources: [RecognitionSource],
         languageIDs: [String]
     ) throws {
+        guard !sources.isEmpty else {
+            throw BridgeServiceError.invalidRequest("Enable at least one ASR source")
+        }
         guard sources.contains(.appleSpeech) else { return }
+        guard AppleSpeechLanguageSupport.resolutionState == .resolved else {
+            AppleSpeechLanguageSupport.refreshInBackgroundIfNeeded()
+            throw BridgeServiceError.invalidRequest(
+                "Apple Speech language support is still loading; retry after it finishes"
+            )
+        }
         let report = AppleSpeechAvailability.report(languageIDs: languageIDs)
         guard report.ready else {
             throw BridgeServiceError.invalidRequest(report.reason)
@@ -1590,21 +1979,41 @@ final class BridgeService {
     }
 
     private func pruneExpiredLivePreviewSessions() {
+        pruneCompletedLivePreviews()
         let cutoff = Date().addingTimeInterval(-Self.livePreviewSessionTTL)
         let expiredIDs = livePreviewSessions.values
-            .filter { $0.updatedAt < cutoff }
+            .filter { $0.lastActivityAt < cutoff }
             .map(\.id)
         for id in expiredIDs {
-            removeLivePreviewSession(id: id)
+            _ = removeLivePreviewSession(id: id)
         }
         guard livePreviewSessions.count > Self.maxLivePreviewSessions else { return }
         let overflow = livePreviewSessions.count - Self.maxLivePreviewSessions
         let overflowIDs = livePreviewSessions.values
-            .sorted { $0.updatedAt < $1.updatedAt }
+            .sorted { $0.lastActivityAt < $1.lastActivityAt }
             .prefix(overflow)
             .map(\.id)
         for id in overflowIDs {
-            removeLivePreviewSession(id: id)
+            _ = removeLivePreviewSession(id: id)
+        }
+    }
+
+    private func pruneCompletedLivePreviews() {
+        let cutoff = Date().addingTimeInterval(-Self.completedLivePreviewTTL)
+        completedLivePreviews = completedLivePreviews.filter { $0.value.completedAt >= cutoff }
+        guard completedLivePreviews.count > Self.maxCompletedLivePreviews else { return }
+        let overflow = completedLivePreviews.count - Self.maxCompletedLivePreviews
+        let expiredIDs = completedLivePreviews
+            .sorted {
+                if $0.value.completedAt == $1.value.completedAt {
+                    return $0.key < $1.key
+                }
+                return $0.value.completedAt < $1.value.completedAt
+            }
+            .prefix(overflow)
+            .map(\.key)
+        for id in expiredIDs {
+            completedLivePreviews.removeValue(forKey: id)
         }
     }
 
@@ -1618,21 +2027,29 @@ final class BridgeService {
         publishLivePreviewEvent(session: session, text: text, isFinal: false)
     }
 
-    private func removeLivePreviewSession(id: String) {
-        guard let session = livePreviewSessions.removeValue(forKey: id) else { return }
-        Task { @MainActor in
-            let reset = await session.process.cancelInputAndWaitForReset(timeout: 2)
-            if reset {
-                session.returnIdle(reason: "bridge_cancelled")
-            } else {
-                session.process.terminate(reason: "bridge_cancel_timeout")
-                session.preloadReplacement()
-            }
-        }
+    private func removeLivePreviewSession(id: String) -> Task<Void, Never>? {
+        guard let session = livePreviewSessions.removeValue(forKey: id) else { return nil }
+        let teardownTask = trackLivePreviewTeardown(session.cancelAndTeardown())
         Log.bridge.notice(
             "Bridge live preview removed session=\(Self.logID(id), privacy: .public) text_chars=\(session.lastTranscript?.count ?? 0, privacy: .public) elapsed_ms=\(self.elapsedMs(since: session.createdAt), privacy: .public)"
         )
         publishLivePreviewEvent(session: session, text: session.lastTranscript, isFinal: true)
+        return teardownTask
+    }
+
+    /// Removing a session from the externally addressable map does not end
+    /// Bridge ownership. Keep its teardown task registered until the lease has
+    /// actually been returned or replaced, so a later stop can join it.
+    private func trackLivePreviewTeardown(
+        _ teardownTask: Task<Void, Never>
+    ) -> Task<Void, Never> {
+        let teardownID = UUID()
+        inFlightLivePreviewTeardowns[teardownID] = teardownTask
+        Task { @MainActor [weak self] in
+            await teardownTask.value
+            self?.inFlightLivePreviewTeardowns.removeValue(forKey: teardownID)
+        }
+        return teardownTask
     }
 
     private func publishLivePreviewEvent(

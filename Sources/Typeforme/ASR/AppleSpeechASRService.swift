@@ -2,6 +2,8 @@ import Foundation
 @preconcurrency import Speech
 
 struct AppleSpeechASRService: ASRService {
+    let addsPunctuation: Bool
+
     func transcribe(audioFileURL: URL, languageIDs: [String]) async throws -> String {
         let recognitionURL = try await ASRAudioSupport.wavUploadableAudioURL(for: audioFileURL)
         defer {
@@ -33,7 +35,7 @@ struct AppleSpeechASRService: ASRService {
         request.requiresOnDeviceRecognition = true
         request.taskHint = .dictation
         if #available(macOS 13.0, *) {
-            request.addsPunctuation = AppSettings.punctuationPreference != .spaces
+            request.addsPunctuation = addsPunctuation
         }
 
         let text: String

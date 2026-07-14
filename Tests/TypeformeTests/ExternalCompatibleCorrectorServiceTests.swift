@@ -94,6 +94,52 @@ struct ExternalCompatibleCorrectorServiceTests {
         #expect(ExternalCompatibleCorrectorService.effectiveTimeoutMs(45_000) == 45_000)
     }
 
+    @Test func completionUsesConfigurationCapturedWhenServiceWasCreated() async throws {
+        let recorder = ExternalOpenAICompletionRecorder()
+        var currentConfiguration = ExternalCompatibleCorrectorConfiguration(
+            kind: .externalOpenAICompatible,
+            baseURL: "https://first.example.com/custom",
+            model: "model-a",
+            apiKey: "key-a",
+            maxTokens: 321
+        )
+        let service = ExternalCompatibleCorrectorService(
+            configuration: currentConfiguration,
+            openAICompletion: { endpoint, request, apiKey, timeoutMs in
+                await recorder.record(
+                    endpoint: endpoint,
+                    request: request,
+                    apiKey: apiKey,
+                    timeoutMs: timeoutMs
+                )
+                return "captured"
+            }
+        )
+
+        currentConfiguration = ExternalCompatibleCorrectorConfiguration(
+            kind: .externalOpenAICompatible,
+            baseURL: "https://second.example.com/v1",
+            model: "model-b",
+            apiKey: "key-b",
+            maxTokens: 999
+        )
+
+        let output = try await service.complete(
+            system: "system",
+            messages: [.user("user")],
+            timeoutMs: 777
+        )
+        let call = try #require(await recorder.snapshot())
+
+        #expect(currentConfiguration.model == "model-b")
+        #expect(output == "captured")
+        #expect(call.endpoint.absoluteString == "https://first.example.com/custom/v1/chat/completions")
+        #expect(call.request.model == "model-a")
+        #expect(call.request.maxTokens == 321)
+        #expect(call.apiKey == "key-a")
+        #expect(call.timeoutMs == 777)
+    }
+
     @Test func selectsFirstAvailableModelWhenCurrentDisappears() {
         #expect(ExternalCompatibleCorrectorService.modelSelectionAfterRefresh(
             current: "qwen3.5-old",
@@ -328,6 +374,35 @@ private actor APIKeyRecorder {
 
     func snapshot() -> [(apiKind: ExternalLLMAPIKind, apiKey: String?)] {
         calls
+    }
+}
+
+private actor ExternalOpenAICompletionRecorder {
+    struct Call: Sendable {
+        let endpoint: URL
+        let request: OpenAIChatCompletionRequest
+        let apiKey: String
+        let timeoutMs: Int
+    }
+
+    private var call: Call?
+
+    func record(
+        endpoint: URL,
+        request: OpenAIChatCompletionRequest,
+        apiKey: String,
+        timeoutMs: Int
+    ) {
+        call = Call(
+            endpoint: endpoint,
+            request: request,
+            apiKey: apiKey,
+            timeoutMs: timeoutMs
+        )
+    }
+
+    func snapshot() -> Call? {
+        call
     }
 }
 

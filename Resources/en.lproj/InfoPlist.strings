@@ -1,0 +1,4 @@
+"NSMicrophoneUsageDescription" = "Typeforme records your dictation through the microphone. Audio is processed on this Mac or sent to your configured Typeforme Bridge in Client mode.";
+"NSLocalNetworkUsageDescription" = "Typeforme connects to the local Typeforme Bridge or compatible external LLM service that you configure.";
+"NSAppleEventsUsageDescription" = "Typeforme inserts the resulting text into the app you are using.";
+"NSSpeechRecognitionUsageDescription" = "Typeforme uses Apple Speech when you enable it as a recognition or preview source. It is limited to languages that support on-device recognition.";

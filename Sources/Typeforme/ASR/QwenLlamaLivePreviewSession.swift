@@ -5,35 +5,26 @@ final class QwenLlamaLivePreviewTaskRegistry: @unchecked Sendable {
     static let shared = QwenLlamaLivePreviewTaskRegistry()
 
     private let lock = NSLock()
-    private var reservedIDs = Set<UUID>()
     private var tasks: [UUID: Task<Void, Never>] = [:]
-    private var cancelledIDs = Set<UUID>()
 
-    func reserve(id: UUID) {
+    func start(
+        id: UUID,
+        priority: TaskPriority? = .utility,
+        operation: @escaping @Sendable () async -> Void
+    ) -> Task<Void, Never> {
         lock.lock()
-        reservedIDs.insert(id)
-        lock.unlock()
-    }
-
-    @discardableResult
-    func install(_ task: Task<Void, Never>, id: UUID) -> Bool {
-        lock.lock()
-        reservedIDs.remove(id)
-        if cancelledIDs.remove(id) != nil {
-            lock.unlock()
-            task.cancel()
-            return false
+        let task = Task(priority: priority) { [weak self] in
+            await operation()
+            self?.unregister(id: id)
         }
         tasks[id] = task
         lock.unlock()
-        return true
+        return task
     }
 
-    func unregister(id: UUID) {
+    private func unregister(id: UUID) {
         lock.lock()
-        reservedIDs.remove(id)
         tasks.removeValue(forKey: id)
-        cancelledIDs.remove(id)
         lock.unlock()
     }
 
@@ -48,14 +39,21 @@ final class QwenLlamaLivePreviewTaskRegistry: @unchecked Sendable {
         return hadRequests
     }
 
+    /// Cancels preview work without joining it. Canonical transcription uses
+    /// this path so optional preview cleanup can never become an ASR latency
+    /// dependency.
+    func cancelAllWithoutWaiting() -> Bool {
+        let (hadRequests, taskList) = cancelAllSnapshot()
+        for task in taskList {
+            task.cancel()
+        }
+        return hadRequests
+    }
+
     private func cancelAllSnapshot() -> (Bool, [Task<Void, Never>]) {
         lock.lock()
-        let taskIDs = Set(tasks.keys)
         let taskList = Array(tasks.values)
-        let hadRequests = !reservedIDs.isEmpty || !taskList.isEmpty
-        cancelledIDs.formUnion(reservedIDs)
-        cancelledIDs.formUnion(taskIDs)
-        reservedIDs.removeAll()
+        let hadRequests = !taskList.isEmpty
         tasks.removeAll()
         lock.unlock()
         return (hadRequests, taskList)
@@ -118,9 +116,7 @@ final class QwenLlamaLivePreviewSession: ASRLivePreviewSession, @unchecked Senda
                 "Qwen3-ASR does not support the selected live preview languages"
             )
         }
-        guard FileManager.default.fileExists(atPath: AppSettings.asrQwenLlamaModelPath),
-              FileManager.default.fileExists(atPath: AppSettings.asrQwenLlamaMMProjPath)
-        else {
+        guard service.configuration.isInstalledAtCapture else {
             throw ASRAudioSupportError.httpStatus(503, "Qwen3-ASR model files are not installed")
         }
         let session = QwenLlamaLivePreviewSession(
@@ -179,7 +175,7 @@ final class QwenLlamaLivePreviewSession: ASRLivePreviewSession, @unchecked Senda
                 snapshot.fullPCM,
                 languageIDs: snapshot.languageIDs,
                 timeout: timeout,
-                maxTokens: AppSettings.asrQwenLlamaMaxTokens
+                maxTokens: snapshot.service.configuration.maxTokens
             ).trimmingCharacters(in: .whitespacesAndNewlines)
             guard Self.hasUsableCanonicalFinal(text) else { return false }
             let handler = storeTranscriptAndGetHandler(text)
@@ -301,16 +297,13 @@ final class QwenLlamaLivePreviewSession: ASRLivePreviewSession, @unchecked Senda
         let startedAt = self.startedAt
         let isFirst = !firstRequestLogged
         firstRequestLogged = true
-        QwenLlamaLivePreviewTaskRegistry.shared.reserve(id: requestID)
-        let startGate = QwenLivePreviewStartGate()
-
-        let task = Task(priority: .utility) { [weak self, audio, languageIDs, service, logID, startedAt, startGate] in
-            defer {
-                QwenLlamaLivePreviewTaskRegistry.shared.unregister(id: requestID)
-            }
-            await startGate.wait()
+        let task = QwenLlamaLivePreviewTaskRegistry.shared.start(id: requestID) {
+            [weak self, audio, languageIDs, service, logID, startedAt] in
             do {
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled else {
+                    self?.handlePreviewCompletion(requestID: requestID)
+                    return
+                }
                 let text = try await service.transcribeLivePreviewPCM16kMonoFloat32Data(
                     audio,
                     languageIDs: languageIDs,
@@ -335,13 +328,6 @@ final class QwenLlamaLivePreviewSession: ASRLivePreviewSession, @unchecked Senda
         }
         inFlightTask = task
         inFlightTaskID = requestID
-        let installed = QwenLlamaLivePreviewTaskRegistry.shared.install(task, id: requestID)
-        Task {
-            await startGate.open()
-        }
-        if !installed {
-            handlePreviewCompletion(requestID: requestID)
-        }
         Log.asr.debug(
             "Qwen3-ASR live preview request session=\(logID, privacy: .public) first=\(isFirst, privacy: .public) window_start_ms=\(windowStart * 1_000 / 16_000, privacy: .public) input_audio_ms=\(totalSamples * 1_000 / 16_000, privacy: .public) elapsed_ms=\(Self.elapsedMS(since: startedAt), privacy: .public)"
         )
@@ -648,32 +634,6 @@ private final class QwenLivePreviewSendablePCMBuffer: @unchecked Sendable {
 
     init(_ buffer: AVAudioPCMBuffer) {
         self.buffer = buffer
-    }
-}
-
-private actor QwenLivePreviewStartGate {
-    private var isOpen = false
-    private var waiters: [CheckedContinuation<Void, Never>] = []
-
-    func wait() async {
-        guard !isOpen else { return }
-        await withCheckedContinuation { continuation in
-            if isOpen {
-                continuation.resume()
-            } else {
-                waiters.append(continuation)
-            }
-        }
-    }
-
-    func open() {
-        guard !isOpen else { return }
-        isOpen = true
-        let continuations = waiters
-        waiters.removeAll()
-        for continuation in continuations {
-            continuation.resume()
-        }
     }
 }
 
