@@ -118,4 +118,10 @@ final class KeyboardTextLayoutPolicyTests: XCTestCase {
         XCTAssertFalse(KeyboardReturnKeyPolicy.isEnabled(enablesAutomatically: true, hasText: false))
         XCTAssertTrue(KeyboardReturnKeyPolicy.isEnabled(enablesAutomatically: true, hasText: true))
     }
+
+    func testReturnAutomaticEnablementCanBeReevaluatedAfterSend() {
+        XCTAssertFalse(KeyboardReturnKeyPolicy.isEnabled(enablesAutomatically: true, hasText: false))
+        XCTAssertTrue(KeyboardReturnKeyPolicy.isEnabled(enablesAutomatically: true, hasText: true))
+        XCTAssertFalse(KeyboardReturnKeyPolicy.isEnabled(enablesAutomatically: true, hasText: false))
+    }
 }

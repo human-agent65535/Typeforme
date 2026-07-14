@@ -1110,7 +1110,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             applyRimeState(rimeInput.processKeyCode(0xFF08))
             return
         }
-        textDocumentProxy.deleteBackward()
+        deleteDocumentTextBackward()
     }
 
     fileprivate func cancelKeyboardTouchTarget(_ target: KeyboardTouchTarget, point: CGPoint) {
@@ -1992,6 +1992,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         discardRimeInputIfDocumentChanged()
         refreshTextKeyboardLayoutForCurrentInputTraits()
         refreshInputModeSwitchKeyVisibility()
+        refreshReturnKeyTitle()
+        refreshEnglishLetterCasingIfNeeded()
+    }
+
+    override func selectionDidChange(_ textInput: UITextInput?) {
+        super.selectionDidChange(textInput)
+        discardRimeInputIfDocumentChanged()
         refreshReturnKeyTitle()
         refreshEnglishLetterCasingIfNeeded()
     }
@@ -3135,7 +3142,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
               !isStartRequestInFlight
         else { return }
         clearRefineUndoStateForManualEdit()
-        textDocumentProxy.insertText("\n")
+        insertDocumentText("\n")
         lightHaptic()
     }
 
@@ -4579,6 +4586,53 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         textReturnKeyButton.isEnabled = nextEnabled
         configureTextKeyButton(textReturnKeyButton, title: next, image: nextImage, weight: nextWeight)
         textReturnKeyButton.accessibilityLabel = returnKeyAccessibilityLabel
+    }
+
+    private func refreshReturnKeyEnabledState() {
+        guard let textReturnKeyButton else { return }
+        let nextEnabled = isReturnKeyEnabled
+        guard nextEnabled != lastReturnKeyEnabled else { return }
+        lastReturnKeyEnabled = nextEnabled
+        textReturnKeyButton.isEnabled = nextEnabled
+    }
+
+    private func insertDocumentText(_ text: String) {
+        textDocumentProxy.insertText(text)
+        documentTextDidMutateLocally()
+    }
+
+    private func deleteDocumentTextBackward(characterCount: Int = 1) {
+        guard characterCount > 0 else { return }
+        for _ in 0..<characterCount {
+            textDocumentProxy.deleteBackward()
+        }
+        documentTextDidMutateLocally()
+    }
+
+    private func setDocumentMarkedText(_ text: String, selectedRange: NSRange) {
+        textDocumentProxy.setMarkedText(text, selectedRange: selectedRange)
+        documentTextDidMutateLocally()
+    }
+
+    private func commitDocumentMarkedText(_ text: String, selectedRange: NSRange) {
+        textDocumentProxy.setMarkedText(text, selectedRange: selectedRange)
+        textDocumentProxy.unmarkText()
+        documentTextDidMutateLocally()
+    }
+
+    private func clearDocumentMarkedText() {
+        textDocumentProxy.setMarkedText("", selectedRange: NSRange(location: 0, length: 0))
+        textDocumentProxy.unmarkText()
+        documentTextDidMutateLocally()
+    }
+
+    /// Host-driven document changes are reconciled through the text-input
+    /// delegate callbacks. Mutations initiated by this keyboard are already
+    /// known here, so update document-dependent UI immediately instead of
+    /// depending on a second notification from the host. In both paths,
+    /// `UITextDocumentProxy.hasText` remains the source of truth.
+    private func documentTextDidMutateLocally() {
+        refreshReturnKeyEnabledState()
     }
 
     private var spaceKeyTitle: String {
@@ -7227,7 +7281,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         if textDocumentProxy.selectedText == target.text,
            currentBefore == target.contextBefore,
            currentAfter.hasPrefix(target.contextAfter) {
-            textDocumentProxy.insertText(text)
+            insertDocumentText(text)
             return true
         }
 
@@ -7277,8 +7331,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             || contextAfter.hasPrefix(currentAfter)
         guard afterStillCompatible else { return false }
 
-        deleteBackward(characterCount: target.count)
-        textDocumentProxy.insertText(replacement)
+        deleteDocumentTextBackward(characterCount: target.count)
+        insertDocumentText(replacement)
         return true
     }
 
@@ -7303,7 +7357,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 kbLog.notice("selection replacement skipped: selected text matched but context changed")
                 return false
             }
-            textDocumentProxy.insertText(text)
+            insertDocumentText(text)
             return true
         }
 
@@ -7342,26 +7396,19 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         guard currentBefore.hasSuffix(target) else { return false }
         let expectedPrefix = String(currentBefore.dropLast(target.count))
 
-        deleteBackward(characterCount: target.count)
+        deleteDocumentTextBackward(characterCount: target.count)
         var afterDelete = textDocumentProxy.documentContextBeforeInput ?? ""
         if afterDelete != expectedPrefix {
             guard afterDelete.hasPrefix(expectedPrefix) else { return false }
             let leftover = String(afterDelete.dropFirst(expectedPrefix.count))
             guard !leftover.isEmpty, target.hasPrefix(leftover) else { return false }
-            deleteBackward(characterCount: leftover.count)
+            deleteDocumentTextBackward(characterCount: leftover.count)
             afterDelete = textDocumentProxy.documentContextBeforeInput ?? ""
         }
 
         guard afterDelete == expectedPrefix else { return false }
-        textDocumentProxy.insertText(replacement)
+        insertDocumentText(replacement)
         return true
-    }
-
-    private func deleteBackward(characterCount: Int) {
-        guard characterCount > 0 else { return }
-        for _ in 0..<characterCount {
-            textDocumentProxy.deleteBackward()
-        }
     }
 
     private func correctionModeButtonConfiguration(title: String, selected: Bool) -> UIButton.Configuration {
@@ -7819,7 +7866,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
         if isRenderedNumericTextKeyboard {
             clearRefineUndoStateForManualEdit()
-            textDocumentProxy.insertText(character)
+            insertDocumentText(character)
             renderRefineSuggestionsIfIdle()
             return true
         }
@@ -7834,7 +7881,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 : character
             let consumesAutoCapSuppression = isAlphabetic && isTextAutoCapitalizationSuppressed
             clearRefineUndoStateForManualEdit()
-            textDocumentProxy.insertText(output)
+            insertDocumentText(output)
             if consumesAutoCapSuppression {
                 isTextAutoCapitalizationSuppressed = false
             }
@@ -8001,7 +8048,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             applyRimeState(state)
             guard !queuedDirectText.isEmpty else { return }
             clearRefineUndoStateForManualEdit()
-            textDocumentProxy.insertText(queuedDirectText)
+            insertDocumentText(queuedDirectText)
             if !resetShiftIfSticky() {
                 refreshEnglishLetterCasingIfNeeded()
             }
@@ -8037,7 +8084,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 applyRimeState(replayState)
             }
             clearRefineUndoStateForManualEdit()
-            textDocumentProxy.insertText(queuedDirectText)
+            insertDocumentText(queuedDirectText)
             if !resetShiftIfSticky() {
                 refreshEnglishLetterCasingIfNeeded()
             }
@@ -8053,7 +8100,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                   currentBridgeStatus?.state != .sending
             else { return }
             clearRefineUndoStateForManualEdit()
-            textDocumentProxy.deleteBackward()
+            deleteDocumentTextBackward()
             return
         }
         // Recording locks regular keys; only space (stop-and-send) is live.
@@ -8104,7 +8151,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             beginTextTouchCorrectionFromBackspace(compositionActive: false)
             replaceMarkedText("")
             clearRefineUndoStateForManualEdit()
-            textDocumentProxy.deleteBackward()
+            deleteDocumentTextBackward()
             if !resetShiftIfSticky() {
                 refreshEnglishLetterCasingIfNeeded()
             }
@@ -8118,7 +8165,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                   currentBridgeStatus?.state != .sending
             else { return }
             clearRefineUndoStateForManualEdit()
-            textDocumentProxy.insertText(" ")
+            insertDocumentText(" ")
             return
         }
 
@@ -8145,7 +8192,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         if usesEnglishTextInputForCurrentTraits {
             commitDisplayedRimeCompositionIfNeeded()
             clearRefineUndoStateForManualEdit()
-            textDocumentProxy.insertText(" ")
+            insertDocumentText(" ")
             if !resetShiftIfSticky() {
                 refreshEnglishLetterCasingIfNeeded()
             }
@@ -8169,7 +8216,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         applyRimeState(state)
         if !result.wasComposing, state.commitText.isEmpty, !state.isComposing {
             clearRefineUndoStateForManualEdit()
-            textDocumentProxy.insertText(" ")
+            insertDocumentText(" ")
         }
         resetShiftIfSticky()
     }
@@ -8179,7 +8226,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             if currentBridgeStatus?.state == .recording { return }
             if currentBridgeStatus?.state == .sending { return }
             clearRefineUndoStateForManualEdit()
-            textDocumentProxy.insertText("\n")
+            insertDocumentText("\n")
             return
         }
         if currentBridgeStatus?.state == .recording { return }
@@ -8196,7 +8243,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 applyRimeState(rimeInput.clearComposition())
             }
             clearRefineUndoStateForManualEdit()
-            textDocumentProxy.insertText("\n")
+            insertDocumentText("\n")
             if !resetShiftIfSticky() {
                 refreshEnglishLetterCasingIfNeeded()
             }
@@ -8207,7 +8254,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         applyRimeState(state)
         if state.commitText.isEmpty {
             clearRefineUndoStateForManualEdit()
-            textDocumentProxy.insertText("\n")
+            insertDocumentText("\n")
         }
         if !resetShiftIfSticky() {
             refreshEnglishLetterCasingIfNeeded()
@@ -9300,13 +9347,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 || activeMarkedTextSelectionLocation != nextSelectionLocation
         else { return }
         if !text.isEmpty {
-            textDocumentProxy.setMarkedText(
+            setDocumentMarkedText(
                 text,
                 selectedRange: NSRange(location: nextSelectionLocation, length: 0)
             )
         } else if !activeMarkedText.isEmpty {
-            textDocumentProxy.setMarkedText("", selectedRange: NSRange(location: 0, length: 0))
-            textDocumentProxy.unmarkText()
+            clearDocumentMarkedText()
         }
         activeMarkedText = text
         activeMarkedTextOwner = nextOwner
@@ -9353,13 +9399,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     ) {
         switch plan {
         case .plainInsert:
-            textDocumentProxy.insertText(text)
+            insertDocumentText(text)
         case .ownedMarked(let owner):
             commitOwnedMarkedText(text, owner: owner, reason: reason, plan: plan)
         case .staleMarkedState:
             let staleMarkedCount = activeMarkedText.count
             clearLocalMarkedTextState()
-            textDocumentProxy.insertText(text)
+            insertDocumentText(text)
             kbLog.notice(
                 "marked text commit applied plan=\(plan.logName, privacy: .public) reason=\(reason.rawValue, privacy: .public) stale_marked_chars=\(staleMarkedCount, privacy: .public) commit_chars=\(text.count, privacy: .public)"
             )
@@ -9374,8 +9420,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     ) {
         let markedCount = activeMarkedText.count
         let cursor = (text as NSString).length
-        textDocumentProxy.setMarkedText(text, selectedRange: NSRange(location: cursor, length: 0))
-        textDocumentProxy.unmarkText()
+        commitDocumentMarkedText(text, selectedRange: NSRange(location: cursor, length: 0))
         clearLocalMarkedTextState()
         kbLog.notice(
             "marked text commit applied plan=\(plan.logName, privacy: .public) reason=\(reason.rawValue, privacy: .public) owner=\(owner.logName, privacy: .public) marked_chars=\(markedCount, privacy: .public) commit_chars=\(text.count, privacy: .public)"
@@ -9385,8 +9430,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private func commitLivePartialMarkedTextAsPreview(_ preview: String, commandID: String?) {
         guard !preview.isEmpty else { return }
         let cursor = (preview as NSString).length
-        textDocumentProxy.setMarkedText(preview, selectedRange: NSRange(location: cursor, length: 0))
-        textDocumentProxy.unmarkText()
+        commitDocumentMarkedText(preview, selectedRange: NSRange(location: cursor, length: 0))
         kbLog.notice(
             "live partial preview committed by stop refine command_id=\(commandID ?? "none", privacy: .public) preview_chars=\(preview.count, privacy: .public)"
         )
@@ -9738,8 +9782,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     ) -> Bool {
         let markedText = activeMarkedText
         let cursor = (finalText as NSString).length
-        textDocumentProxy.setMarkedText(finalText, selectedRange: NSRange(location: cursor, length: 0))
-        textDocumentProxy.unmarkText()
+        commitDocumentMarkedText(finalText, selectedRange: NSRange(location: cursor, length: 0))
         clearLocalMarkedTextState()
         kbLog.notice(
             "live preview final commit applied plan=\(plan.logName, privacy: .public) command_id=\(preview.commandID, privacy: .public) marked_chars=\(markedText.count, privacy: .public) preview_chars=\(preview.text.count, privacy: .public) final_chars=\(finalText.count, privacy: .public)"
@@ -10023,7 +10066,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             replaceMarkedText("")
         }
         clearRefineUndoStateForManualEdit()
-        textDocumentProxy.insertText(directText)
+        insertDocumentText(directText)
         resetShiftIfSticky()
         renderRefineSuggestionsIfIdle()
     }
@@ -10259,7 +10302,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             applyRimeState(rimeInput.commitComposition())
         }
         clearRefineUndoStateForManualEdit()
-        textDocumentProxy.insertText(text)
+        insertDocumentText(text)
         if !resetShiftIfSticky() {
             refreshEnglishLetterCasingIfNeeded()
         }
