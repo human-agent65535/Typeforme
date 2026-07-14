@@ -42,13 +42,10 @@ enum TextEditTargetCapture {
             Log.textCommit.notice("edit target capture unavailable reason=no_frontmost_app")
             return nil
         }
-        let app = AXUIElementCreateApplication(appSnapshot.pid)
-        AXUIElementSetMessagingTimeout(app, 0.25)
-        guard let focused = focusedElement(in: app) else {
+        guard let focused = currentFocusedElement(in: appSnapshot) else {
             Log.textCommit.notice("edit target capture unavailable reason=no_focused_element pid=\(appSnapshot.pid)")
             return nil
         }
-        AXUIElementSetMessagingTimeout(focused, 0.25)
         guard !isSecureTextElement(focused) else {
             Log.textCommit.notice("edit target capture unavailable reason=secure_input pid=\(appSnapshot.pid)")
             return nil
@@ -96,10 +93,7 @@ enum TextEditTargetCapture {
     static func currentSelection(in appSnapshot: FrontmostAppSnapshot?) -> (text: String, range: CFRange?)? {
         guard AppPermissions.accessibilityTrusted else { return nil }
         guard let appSnapshot else { return nil }
-        let app = AXUIElementCreateApplication(appSnapshot.pid)
-        AXUIElementSetMessagingTimeout(app, 0.25)
-        guard let focused = focusedElement(in: app) else { return nil }
-        AXUIElementSetMessagingTimeout(focused, 0.25)
+        guard let focused = currentFocusedElement(in: appSnapshot) else { return nil }
         guard !isSecureTextElement(focused) else { return nil }
         guard let text = stringAttribute(kAXSelectedTextAttribute, from: focused) else { return nil }
         return (text, selectedRange(in: focused))
@@ -107,13 +101,24 @@ enum TextEditTargetCapture {
 
     @MainActor
     static func insertionTarget(in appSnapshot: FrontmostAppSnapshot?) -> TextInsertionTargetSnapshot? {
-        guard AppPermissions.accessibilityTrusted else { return nil }
-        guard let appSnapshot else { return nil }
-        let app = AXUIElementCreateApplication(appSnapshot.pid)
-        AXUIElementSetMessagingTimeout(app, 0.25)
-        guard let focused = focusedElement(in: app) else { return nil }
-        AXUIElementSetMessagingTimeout(focused, 0.25)
-        guard !isSecureTextElement(focused) else { return nil }
+        guard AppPermissions.accessibilityTrusted else {
+            Log.textCommit.notice("insertion target capture unavailable reason=accessibility_not_trusted")
+            return nil
+        }
+        guard let appSnapshot else {
+            Log.textCommit.notice("insertion target capture unavailable reason=no_frontmost_app")
+            return nil
+        }
+        guard let focused = currentFocusedElement(in: appSnapshot) else {
+            Log.textCommit.notice(
+                "insertion target capture unavailable reason=no_focused_element pid=\(appSnapshot.pid) bundle=\(appSnapshot.bundleID ?? "unknown", privacy: .public)"
+            )
+            return nil
+        }
+        guard !isSecureTextElement(focused) else {
+            Log.textCommit.notice("insertion target capture unavailable reason=secure_input pid=\(appSnapshot.pid)")
+            return nil
+        }
         let context = contextAroundSelection(in: focused)
         return TextInsertionTargetSnapshot(
             element: focused,
@@ -203,10 +208,7 @@ enum TextEditTargetCapture {
     static func focusedTextContext(in appSnapshot: FrontmostAppSnapshot?) -> (before: String, after: String) {
         guard AppPermissions.accessibilityTrusted else { return ("", "") }
         guard let appSnapshot else { return ("", "") }
-        let app = AXUIElementCreateApplication(appSnapshot.pid)
-        AXUIElementSetMessagingTimeout(app, 0.25)
-        guard let focused = focusedElement(in: app) else { return ("", "") }
-        AXUIElementSetMessagingTimeout(focused, 0.25)
+        guard let focused = currentFocusedElement(in: appSnapshot) else { return ("", "") }
         guard !isSecureTextElement(focused) else { return ("", "") }
         return contextAroundSelection(in: focused) ?? ("", "")
     }
@@ -238,9 +240,16 @@ enum TextEditTargetCapture {
     }
 
     private static func currentFocusedElement(in appSnapshot: FrontmostAppSnapshot) -> AXUIElement? {
-        let app = AXUIElementCreateApplication(appSnapshot.pid)
-        AXUIElementSetMessagingTimeout(app, 0.25)
-        guard let focused = focusedElement(in: app) else { return nil }
+        // The system-wide AX object is the source of truth for keyboard focus.
+        // Some apps do not publish AXFocusedUIElement on their application
+        // object even while one of their controls owns the system focus.
+        let systemWide = AXUIElementCreateSystemWide()
+        AXUIElementSetMessagingTimeout(systemWide, 0.25)
+        guard let focused = focusedElement(in: systemWide) else { return nil }
+        var focusedPID = pid_t()
+        guard AXUIElementGetPid(focused, &focusedPID) == .success,
+              focusedPID == appSnapshot.pid
+        else { return nil }
         AXUIElementSetMessagingTimeout(focused, 0.25)
         return focused
     }

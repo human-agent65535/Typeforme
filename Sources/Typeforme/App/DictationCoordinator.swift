@@ -223,7 +223,7 @@ final class DictationCoordinator: ObservableObject {
         activeCorrectionConfiguration = nil
         guard captureDictationContextAndTarget(intent: intent) else {
             let message = intent == .command
-                ? "Wand needs selected or existing text. Use Dictate for an empty text field."
+                ? "Wand needs selected or existing text."
                 : "Focus a text field first"
             reportError(message)
             scheduleAutoReset(after: Self.errorResetDelay)

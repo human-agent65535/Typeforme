@@ -33,7 +33,7 @@ final class HUDWindowController {
     private static let previewMaxHeight: CGFloat = 420
     private static let previewWidth: CGFloat = 620
     private static let degradedSuccessWidth: CGFloat = 220
-    private static let voicePreviewBarSize = NSSize(width: 600, height: 48)
+    private static let voicePreviewBarSize = NSSize(width: 488, height: 48)
     private static let bottomMargin: CGFloat = 80
     private static let entranceLift: CGFloat = 14
     private static let edgePadding: CGFloat = 8

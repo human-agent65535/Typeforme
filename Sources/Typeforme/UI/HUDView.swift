@@ -3,7 +3,7 @@ import KeyboardShortcuts
 
 /// Bottom-centered glass HUD. Idle collapses to a mic pip; clicking it (or
 /// starting a dictation) opens the expanded layout: live transcript text on
-/// top, action bar below. The bar morphs by state — Dictate, Wand, and style chips at
+/// top, action bar below. The bar morphs by state — Wand and style chips at
 /// idle, pulsing dot + waveform + elapsed timer while recording, processing
 /// label while transcribing/refining — and ✕ stays live as Cancel. Brief
 /// terminal states (inserting/success/error) use a compact capsule.
@@ -317,7 +317,7 @@ struct HUDView: View {
         let combo = KeyboardShortcuts.getShortcut(for: .toggleDictation)?.description ?? "⌘⇧Space"
         let hold = AppSettings.holdModifier
         guard hold != .none else { return combo }
-        let format = NSLocalizedString("double-tap %@", comment: "Idle hint when hold-to-talk is configured")
+        let format = NSLocalizedString("tap, then hold %@", comment: "Idle hint when hold-to-talk is configured")
         return String(format: format, shortHoldName(hold))
     }
 
@@ -558,17 +558,6 @@ private struct VoicePreviewActionBar: View {
 
     private var idleCluster: some View {
         HStack(spacing: 4) {
-            VoicePreviewBarButton(
-                title: "Dictate",
-                systemImage: "mic.fill",
-                help: "Start normal dictation in the focused text field"
-            ) {
-                Task { await coordinator.toggleDictation() }
-            }
-
-            Divider()
-                .frame(height: 18)
-
             VoicePreviewBarButton(
                 title: "Wand",
                 systemImage: "wand.and.stars",
