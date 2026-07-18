@@ -582,6 +582,10 @@ for signature in (
 interruption_began = block(app, "private func handleAudioSessionInterruptionBegan(")
 for required in (
     'event: "audio_session_interruption_began"',
+    '"command_id": activeKeyboardRecordingCommandID ?? keyboardBridgeStatus.commandID ?? "none"',
+    '"application_state": applicationState',
+    '"reason": interruptionReason',
+    '"reason_raw": rawReason.map(String.init) ?? "missing"',
     "pipDictationCoordinator.refreshContentAfterInterruption()",
     "if hadCapture",
     "failKeyboardCommand(",
@@ -598,6 +602,9 @@ for required in (
         raise AssertionError(f"PiP interruption recovery lost invariant: {required}")
 if "func refreshContentAfterInterruption()" not in pip:
     raise AssertionError("PiP content cannot be explicitly repainted after a system interruption")
+interruption_observer = block(app, "private func installLifecycleObservers(")
+if "AVAudioSessionInterruptionReasonKey" not in interruption_observer:
+    raise AssertionError("audio interruption observer does not preserve the system reason")
 for event in (
     "pip_will_start",
     "pip_did_start",

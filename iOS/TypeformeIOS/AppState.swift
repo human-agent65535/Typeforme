@@ -5774,10 +5774,15 @@ final class AppState {
             object: AVAudioSession.sharedInstance(),
             queue: .main
         ) { [weak self] notification in
-            let rawType = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt
-            let rawOptions = notification.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
+            let rawType = (notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? NSNumber)?.uintValue
+            let rawOptions = (notification.userInfo?[AVAudioSessionInterruptionOptionKey] as? NSNumber)?.uintValue ?? 0
+            let rawReason = (notification.userInfo?[AVAudioSessionInterruptionReasonKey] as? NSNumber)?.uintValue
             Task { @MainActor [weak self] in
-                self?.handleAudioSessionInterruption(rawType: rawType, rawOptions: rawOptions)
+                self?.handleAudioSessionInterruption(
+                    rawType: rawType,
+                    rawOptions: rawOptions,
+                    rawReason: rawReason
+                )
             }
         })
         lifecycleObservers.append(center.addObserver(
@@ -5791,23 +5796,27 @@ final class AppState {
         })
     }
 
-    private func handleAudioSessionInterruption(rawType: UInt?, rawOptions: UInt) {
+    private func handleAudioSessionInterruption(
+        rawType: UInt?,
+        rawOptions: UInt,
+        rawReason: UInt?
+    ) {
         guard let rawType,
               let type = AVAudioSession.InterruptionType(rawValue: rawType)
         else { return }
 
         switch type {
         case .began:
-            handleAudioSessionInterruptionBegan()
+            handleAudioSessionInterruptionBegan(rawReason: rawReason)
         case .ended:
             let options = AVAudioSession.InterruptionOptions(rawValue: rawOptions)
             handleAudioSessionInterruptionEnded(shouldResume: options.contains(.shouldResume))
         @unknown default:
-            handleAudioSessionInterruptionBegan()
+            handleAudioSessionInterruptionBegan(rawReason: rawReason)
         }
     }
 
-    private func handleAudioSessionInterruptionBegan() {
+    private func handleAudioSessionInterruptionBegan(rawReason: UInt?) {
         let hadRecorderCapture = recorder.isRecording
         let hadKeyboardCapture = keyboardAudioSession.isRecording
         let hadInputStandby = keyboardAudioSession.isActive
@@ -5823,6 +5832,14 @@ final class AppState {
             || wasPreparing
         guard affectedAudioSession || hadActivePiP else { return }
 
+        let interruptionReason = Self.audioSessionInterruptionReasonName(rawReason)
+        let applicationState: String
+        switch UIApplication.shared.applicationState {
+        case .active: applicationState = "active"
+        case .inactive: applicationState = "inactive"
+        case .background: applicationState = "background"
+        @unknown default: applicationState = "unknown"
+        }
         audioSessionInterruptionActive = true
         KeyboardDiagnosticEventLog.record(
             source: "host-app",
@@ -5834,13 +5851,17 @@ final class AppState {
                 "input_standby": "\(hadInputStandby)",
                 "silent_standby": "\(hadSilentStandby)",
                 "phase": phase.label,
+                "command_id": activeKeyboardRecordingCommandID ?? keyboardBridgeStatus.commandID ?? "none",
+                "application_state": applicationState,
+                "reason": interruptionReason,
+                "reason_raw": rawReason.map(String.init) ?? "missing",
             ]
         )
         pipDictationCoordinator.refreshContentAfterInterruption()
         guard affectedAudioSession else { return }
 
         keyboardAudioUnavailableMessage = "Microphone is in use by another app."
-        appLog.notice("audio session interruption began; ending keyboard audio session")
+        appLog.notice("audio session interruption began reason=\(interruptionReason, privacy: .public); ending keyboard audio session")
 
         hostAudioSessionExpiryTask?.cancel()
         hostAudioSessionExpiryTask = nil
@@ -5927,6 +5948,25 @@ final class AppState {
         guard !keyboardAudioSession.isRecording, !recorder.isRecording else { return }
         keyboardAudioUnavailableMessage = nil
         scheduleKeyboardStandbyRefresh(delay: shouldResume ? 0.5 : 1.0)
+    }
+
+    private static func audioSessionInterruptionReasonName(_ rawValue: UInt?) -> String {
+        guard let rawValue else { return "missing" }
+        if rawValue == AVAudioSession.InterruptionReason.default.rawValue {
+            return "default"
+        }
+        // Apple stopped emitting the suspended reason on iOS 16, but retain
+        // its raw value so a delayed system notification is still legible.
+        if rawValue == 1 {
+            return "app_was_suspended"
+        }
+        if rawValue == AVAudioSession.InterruptionReason.builtInMicMuted.rawValue {
+            return "built_in_mic_muted"
+        }
+        if rawValue == AVAudioSession.InterruptionReason.routeDisconnected.rawValue {
+            return "route_disconnected"
+        }
+        return "unknown_\(rawValue)"
     }
 
     private func handleMediaServicesReset() async {
