@@ -5,7 +5,7 @@ This runbook publishes the current iOS host app and keyboard extension to TestFl
 ## Rules
 
 - Keep the iOS host and keyboard build numbers in lockstep in `iOS/TypeformeIOS.xcodeproj/project.pbxproj`.
-- The current TestFlight marketing version is `0.1.523`. Do not bump `MARKETING_VERSION` for TestFlight-only builds; increment `CURRENT_PROJECT_VERSION` only.
+- The fixed iOS marketing version is `0.1.523`. Routine iOS updates must not change `MARKETING_VERSION`; increment `CURRENT_PROJECT_VERSION` only. Change the marketing version only when the user explicitly requests it.
 - Do not reuse a build number that App Store Connect has already accepted.
 - Do not create new TestFlight groups. Use the existing `External` group.
 - Do not create a new App Store Connect version group unless the user explicitly asks for a marketing-version change.

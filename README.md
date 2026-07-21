@@ -80,6 +80,12 @@ macOS build profiles are intentionally separate:
 - `github-release`: self-signed app in `dist/mac/github-release/` for GitHub
   artifacts that should not expose Apple Developer identity metadata.
 
+Routine app updates increment only the build number: `CFBundleVersion` on
+macOS and `CURRENT_PROJECT_VERSION` on iOS. Marketing versions stay fixed
+unless a marketing-version change is explicitly requested. The iOS host and
+keyboard extension both use `MARKETING_VERSION = 0.1.523` and must remain in
+lockstep.
+
 Build, install, and launch the local debug app:
 
 ```sh
@@ -99,7 +105,8 @@ checks that do not need Gatekeeper acceptance.
 Build a release-config app that Gatekeeper treats as an unidentified developer
 without exposing Apple Developer signing identity metadata. This profile
 intentionally ignores root `.env` so local signing settings do not leak into the
-public artifact:
+public artifact. GitHub Releases must use this profile; never upload the
+Developer ID artifact produced by `scripts/build-mac-release.sh` to GitHub:
 
 ```sh
 IDENTITY="Typeforme Unidentified" scripts/create-signing-identity.sh
