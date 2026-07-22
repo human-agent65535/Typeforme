@@ -11,15 +11,14 @@ final class HUDWindowController {
     private var cancellables: Set<AnyCancellable> = []
     /// The panel is permanently on screen once shown (idle collapses it to a
     /// pip instead of hiding). Guarding here keeps `show()` a no-op if called
-    /// again so the entrance animation can't clobber an in-flight width
-    /// animation from `applyWidth`.
+    /// again so the entrance fade remains a one-time presentation effect.
     private var isShown = false
     /// User-anchored bottom-center of the panel. The HUD grows UPWARD from
     /// this point as state changes, so the bottom edge stays put and never
     /// flies off the bottom of the screen when the preview wraps to multiple
     /// lines. `nil` until the user drags — then we use the default position.
     private var anchorBottomCenter: NSPoint?
-    /// Set while we're moving the panel ourselves (entrance / width change);
+    /// Set while we're moving the panel ourselves (entrance / layout change);
     /// suppresses the user-drag observer so we don't treat it as a manual move.
     private var isProgrammaticallyMoving = false
     private var isUserDragging = false
@@ -35,7 +34,6 @@ final class HUDWindowController {
     private static let degradedSuccessWidth: CGFloat = 220
     private static let voicePreviewBarSize = NSSize(width: 488, height: 48)
     private static let bottomMargin: CGFloat = 80
-    private static let entranceLift: CGFloat = 14
     private static let edgePadding: CGFloat = 8
     /// Chrome around the preview text inside the panel:
     ///   top padding (14) + bottom padding (6) + VStack spacing (12) + inline action row (~36) + safety buffer (6).
@@ -93,7 +91,7 @@ final class HUDWindowController {
         )
         .receive(on: DispatchQueue.main)
         .sink { [weak self] state, _, _, _ in
-            self?.applyWidth(for: state, animated: true)
+            self?.applyLayout(for: state)
         }
         .store(in: &cancellables)
 
@@ -101,7 +99,7 @@ final class HUDWindowController {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 guard let self else { return }
-                self.applyWidth(for: self.coordinator.state, animated: true)
+                self.applyLayout(for: self.coordinator.state)
             }
             .store(in: &cancellables)
 
@@ -136,21 +134,15 @@ final class HUDWindowController {
         let size = self.size(for: coordinator.state)
         let finalOrigin = origin(for: coordinator.state, size: size)
         panel.manualDragRegionHeight = dragRegionHeight(for: coordinator.state, size: size)
-        // Slide-up entrance: start a few points below the target and fade in.
-        let startOrigin = NSPoint(x: finalOrigin.x, y: finalOrigin.y - Self.entranceLift)
         isProgrammaticallyMoving = true
-        panel.setFrame(NSRect(origin: startOrigin, size: size), display: false)
+        panel.setFrame(NSRect(origin: finalOrigin, size: size), display: false)
+        isProgrammaticallyMoving = false
         panel.alphaValue = 0
         panel.orderFrontRegardless()
         NSAnimationContext.runAnimationGroup({ ctx in
             ctx.duration = 0.22
             ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
-            panel.animator().setFrame(NSRect(origin: finalOrigin, size: size), display: true)
             panel.animator().alphaValue = 1
-        }, completionHandler: { [weak self] in
-            Task { @MainActor in
-                self?.isProgrammaticallyMoving = false
-            }
         })
     }
 
@@ -161,13 +153,13 @@ final class HUDWindowController {
         UserDefaults.standard.removeObject(forKey: Self.anchorXKey)
         UserDefaults.standard.removeObject(forKey: Self.anchorYKey)
         if isShown {
-            applyWidth(for: coordinator.state, animated: true)
+            applyLayout(for: coordinator.state)
         }
     }
 
     // MARK: - Adaptive width
 
-    private func applyWidth(for state: DictationState, animated: Bool) {
+    private func applyLayout(for state: DictationState) {
         panel.allowsKeyFocus = state == .success && !voicePreviewText(for: state).isEmpty
         guard isShown, !isUserDragging else { return }
 
@@ -176,21 +168,12 @@ final class HUDWindowController {
         panel.manualDragRegionHeight = dragRegionHeight(for: state, size: size)
         guard !Self.frameApproximatelyEqual(panel.frame, frame) else { return }
         isProgrammaticallyMoving = true
-        let release: @Sendable () -> Void = { [weak self] in
-            Task { @MainActor in
-                self?.isProgrammaticallyMoving = false
-            }
-        }
-        if animated {
-            NSAnimationContext.runAnimationGroup({ ctx in
-                ctx.duration = 0.28
-                ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-                panel.animator().setFrame(frame, display: true)
-            }, completionHandler: release)
-        } else {
-            panel.setFrame(frame, display: true)
-            release()
-        }
+        // State changes can happen back-to-back (error → idle → error) in one
+        // hotkey gesture. Applying the one current frame synchronously avoids
+        // competing NSWindow animations leaving the hosting view at an
+        // intermediate width while SwiftUI lays out the final state.
+        panel.setFrame(frame, display: true)
+        isProgrammaticallyMoving = false
     }
 
     // MARK: - Anchor
@@ -302,13 +285,13 @@ final class HUDWindowController {
 
         switch state {
         case .idle:
-            return NSSize(width: Self.idleSize, height: Self.idleSize)
+            return Self.compactSize(for: state)
         case .inserting:
             return livePartialSize() ?? NSSize(width: Self.width(for: state), height: Self.compactHeight)
         case .success where coordinator.lastWarning?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false:
             return NSSize(width: Self.degradedSuccessWidth, height: Self.compactHeight)
         default:
-            return NSSize(width: Self.width(for: state), height: Self.compactHeight)
+            return Self.compactSize(for: state)
         }
     }
 
@@ -410,6 +393,13 @@ final class HUDWindowController {
         case .success:                       return 100
         case .error:                         return 380
         }
+    }
+
+    static func compactSize(for state: DictationState) -> NSSize {
+        if state == .idle {
+            return NSSize(width: idleSize, height: idleSize)
+        }
+        return NSSize(width: width(for: state), height: compactHeight)
     }
 }
 

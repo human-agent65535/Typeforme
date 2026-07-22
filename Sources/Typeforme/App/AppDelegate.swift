@@ -106,6 +106,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         commandTextEditHotkey.install()
 
         // Double-tap modifier → hold-to-talk
+        holdMonitor.onHoldCandidate = { [weak self] in
+            self?.coordinator.prepareHoldDictationStart()
+        }
         holdMonitor.onHoldStart = { [weak self] in self?.handleHoldStart() }
         holdMonitor.onHoldEnd   = { [weak self] in self?.handleHoldEnd() }
         holdMonitor.onModifierTap = { [weak self] in self?.handleHoldModifierTap() }
@@ -115,7 +118,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .removeDuplicates()
             .sink { [weak self] state in
                 guard state == .idle else { return }
-                self?.holdMonitor.resetGestureState()
+                self?.holdMonitor.resetGestureStateIfModifierReleased()
             }
             .store(in: &cancellables)
 
@@ -339,19 +342,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func handleHoldStart() {
         Task { @MainActor in
             guard coordinator.acceptsNewUserOperations else { return }
-            // Mirror toggleDictation's terminal-state handling: a fresh
-            // double-tap-hold while the preview / wand toolbar is still on
-            // screen must reset and start a new dictation, otherwise the
-            // hotkey appears dead and the user has to press Esc first.
-            switch coordinator.state {
-            case .idle:
-                await coordinator.startDictation()
-            case .success, .error:
-                coordinator.reset()
-                await coordinator.startDictation()
-            default:
-                break
-            }
+            await coordinator.startPreparedHoldDictation()
         }
     }
 
@@ -366,6 +357,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func handleHoldModifierTap() {
+        coordinator.cancelPreparedHoldDictationStart()
         Task { @MainActor in
             guard coordinator.isRecordingCommandTextEdit else { return }
             await coordinator.stopDictation()

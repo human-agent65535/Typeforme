@@ -77,6 +77,10 @@ final class DoubleTapModifierMonitor {
 
     var onHoldStart: (() -> Void)?
     var onHoldEnd:   (() -> Void)?
+    /// Fired on the second press, before the short hold-confirmation delay.
+    /// Callers use this moment to preserve the focused input another app's
+    /// own double-modifier shortcut might otherwise replace.
+    var onHoldCandidate: (() -> Void)?
     var onModifierTap: (() -> Void)?
 
     func install(modifier: HoldModifier) {
@@ -95,11 +99,18 @@ final class DoubleTapModifierMonitor {
         guard modifier != .none else { return }
 
         globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
-            // Global monitor callbacks aren't main-actor-isolated; bounce back.
-            Task { @MainActor in self?.handle(event) }
+            // AppKit guarantees event-monitor handlers run on the main thread,
+            // but the closure type does not carry MainActor isolation. Handle
+            // the second press synchronously so focus capture is not delayed
+            // behind another main-queue turn.
+            MainActor.assumeIsolated {
+                self?.handle(event)
+            }
         }
         localMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
-            Task { @MainActor in self?.handle(event) }
+            MainActor.assumeIsolated {
+                self?.handle(event)
+            }
             return event
         }
         Log.hotkey.info("hold monitor installed for \(modifier.rawValue, privacy: .public)")
@@ -125,7 +136,11 @@ final class DoubleTapModifierMonitor {
         lastReleaseAt = nil
     }
 
-    func resetGestureState() {
+    func resetGestureStateIfModifierReleased() {
+        let mask = modifier.deviceFlagMask
+        guard mask == 0 || (NSEvent.modifierFlags.rawValue & mask) == 0 else {
+            return
+        }
         pendingHoldTask?.cancel()
         pendingHoldTask = nil
         if isHolding {
@@ -152,6 +167,7 @@ final class DoubleTapModifierMonitor {
                 // double taps that would otherwise create empty recordings.
                 lastReleaseAt = nil
                 pendingHoldTask?.cancel()
+                onHoldCandidate?()
                 pendingHoldTask = Task { [weak self] in
                     try? await Task.sleep(nanoseconds: Self.holdStartDelay)
                     guard !Task.isCancelled else { return }

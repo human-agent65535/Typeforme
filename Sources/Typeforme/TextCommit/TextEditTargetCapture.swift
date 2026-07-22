@@ -86,10 +86,12 @@ enum TextEditTargetCapture {
         )
     }
 
+    @MainActor
     static func currentSelectedText(in appSnapshot: FrontmostAppSnapshot?) -> String? {
         currentSelection(in: appSnapshot)?.text
     }
 
+    @MainActor
     static func currentSelection(in appSnapshot: FrontmostAppSnapshot?) -> (text: String, range: CFRange?)? {
         guard AppPermissions.accessibilityTrusted else { return nil }
         guard let appSnapshot else { return nil }
@@ -119,6 +121,13 @@ enum TextEditTargetCapture {
             Log.textCommit.notice("insertion target capture unavailable reason=secure_input pid=\(appSnapshot.pid)")
             return nil
         }
+        guard hasEditableTextEvidence(focused) else {
+            let role = stringAttribute(kAXRoleAttribute, from: focused) ?? "unknown"
+            Log.textCommit.notice(
+                "insertion target capture unavailable reason=not_editable_text pid=\(appSnapshot.pid) role=\(role, privacy: .public)"
+            )
+            return nil
+        }
         let context = contextAroundSelection(in: focused)
         return TextInsertionTargetSnapshot(
             element: focused,
@@ -128,6 +137,7 @@ enum TextEditTargetCapture {
         )
     }
 
+    @MainActor
     static func insertionTargetStillMatches(
         _ target: TextInsertionTargetSnapshot,
         in appSnapshot: FrontmostAppSnapshot?
@@ -178,6 +188,7 @@ enum TextEditTargetCapture {
         }
     }
 
+    @MainActor
     static func selectionStillMatches(_ target: TextEditTargetSnapshot, in appSnapshot: FrontmostAppSnapshot?) -> Bool {
         guard AppPermissions.accessibilityTrusted else { return false }
         guard let appSnapshot else { return false }
@@ -193,6 +204,7 @@ enum TextEditTargetCapture {
         return true
     }
 
+    @MainActor
     static func focusedValueStillMatches(_ target: TextEditTargetSnapshot, in appSnapshot: FrontmostAppSnapshot?) -> Bool {
         guard AppPermissions.accessibilityTrusted else { return false }
         guard let appSnapshot else { return false }
@@ -239,19 +251,40 @@ enum TextEditTargetCapture {
         return range
     }
 
+    @MainActor
     private static func currentFocusedElement(in appSnapshot: FrontmostAppSnapshot) -> AXUIElement? {
-        // The system-wide AX object is the source of truth for keyboard focus.
-        // Some apps do not publish AXFocusedUIElement on their application
-        // object even while one of their controls owns the system focus.
+        // Apple defines AXFocusedApplication as the application currently
+        // accepting keyboard input, and AXFocusedUIElement as that
+        // application's focused control. Verify the application PID, then
+        // trust the element returned by that application even when a bridged
+        // editor implements the element in a renderer process.
+        guard FrontmostAppCapture.isFrontmost(appSnapshot) else { return nil }
         let systemWide = AXUIElementCreateSystemWide()
         AXUIElementSetMessagingTimeout(systemWide, 0.25)
-        guard let focused = focusedElement(in: systemWide) else { return nil }
-        var focusedPID = pid_t()
-        guard AXUIElementGetPid(focused, &focusedPID) == .success,
-              focusedPID == appSnapshot.pid
+        guard let focusedApplication = elementAttribute(
+            kAXFocusedApplicationAttribute,
+            from: systemWide
+        ) else { return nil }
+
+        var focusedApplicationPID = pid_t()
+        guard AXUIElementGetPid(focusedApplication, &focusedApplicationPID) == .success,
+              focusedApplicationPID == appSnapshot.pid,
+              FrontmostAppCapture.isFrontmost(appSnapshot),
+              let focused = focusedElement(in: focusedApplication)
         else { return nil }
+
         AXUIElementSetMessagingTimeout(focused, 0.25)
         return focused
+    }
+
+    private static func hasEditableTextEvidence(_ element: AXUIElement) -> Bool {
+        guard selectedRange(in: element) != nil else { return false }
+        var rangeIsSettable = DarwinBoolean(false)
+        return AXUIElementIsAttributeSettable(
+            element,
+            kAXSelectedTextRangeAttribute as CFString,
+            &rangeIsSettable
+        ) == .success && rangeIsSettable.boolValue
     }
 
     private static func sameElement(_ lhs: AXUIElement, _ rhs: AXUIElement) -> Bool {
@@ -276,8 +309,12 @@ enum TextEditTargetCapture {
     }
 
     private static func focusedElement(in app: AXUIElement) -> AXUIElement? {
+        elementAttribute(kAXFocusedUIElementAttribute, from: app)
+    }
+
+    private static func elementAttribute(_ attribute: String, from element: AXUIElement) -> AXUIElement? {
         var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(app, kAXFocusedUIElementAttribute as CFString, &value) == .success else {
+        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else {
             return nil
         }
         guard let value, CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }

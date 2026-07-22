@@ -51,6 +51,16 @@ final class DictationCoordinator: ObservableObject {
         let task: Task<Void, Never>
     }
 
+    /// Input ownership captured on the second modifier press. The 90 ms hold
+    /// confirmation is intentionally separate: another app may handle the
+    /// same double-modifier gesture immediately and replace its focused view
+    /// before Typeforme knows the user meant to hold.
+    private struct PreparedHoldStart {
+        let frontmostSnapshot: FrontmostAppSnapshot?
+        let insertionTarget: TextInsertionTargetSnapshot?
+        let accessibilityWasTrusted: Bool
+    }
+
     @Published private(set) var state: DictationState = .idle
     @Published private(set) var presentationError: DictationPresentationError?
     @Published private(set) var lastWarning: String?
@@ -84,6 +94,7 @@ final class DictationCoordinator: ObservableObject {
     private var activeBridgeDictateJobID: String?
     private var activeTextEditTarget: TextEditTargetSnapshot?
     private var activeInsertionTarget: TextInsertionTargetSnapshot?
+    private var preparedHoldStart: PreparedHoldStart?
     private var activeTextEditIntent: TextEditIntent?
     private var activeDictationContextBefore = ""
     private var activeDictationContextAfter = ""
@@ -188,7 +199,57 @@ final class DictationCoordinator: ObservableObject {
         }
     }
 
+    func prepareHoldDictationStart() {
+        guard acceptsNewUserOperations, activeStartOperation == nil else {
+            preparedHoldStart = nil
+            return
+        }
+        switch state {
+        case .idle, .success, .error:
+            break
+        default:
+            preparedHoldStart = nil
+            return
+        }
+
+        let snapshot = FrontmostAppCapture.snapshot()
+        let accessibilityWasTrusted = AppPermissions.accessibilityTrusted
+        preparedHoldStart = PreparedHoldStart(
+            frontmostSnapshot: snapshot,
+            insertionTarget: TextEditTargetCapture.insertionTarget(in: snapshot),
+            accessibilityWasTrusted: accessibilityWasTrusted
+        )
+    }
+
+    func cancelPreparedHoldDictationStart() {
+        preparedHoldStart = nil
+    }
+
+    func startPreparedHoldDictation() async {
+        guard acceptsNewUserOperations else { return }
+        let prepared = preparedHoldStart
+        preparedHoldStart = nil
+
+        switch state {
+        case .idle:
+            break
+        case .success, .error:
+            reset()
+        default:
+            return
+        }
+
+        await startDictation(intent: nil, preparedHoldStart: prepared)
+    }
+
     func startDictation(intent: TextEditIntent? = nil) async {
+        await startDictation(intent: intent, preparedHoldStart: nil)
+    }
+
+    private func startDictation(
+        intent: TextEditIntent?,
+        preparedHoldStart: PreparedHoldStart?
+    ) async {
         guard acceptsNewUserOperations,
               state == .idle,
               activeStartOperation == nil
@@ -197,7 +258,10 @@ final class DictationCoordinator: ObservableObject {
         let operationID = UUID()
         let task = Task { @MainActor [weak self] in
             guard let self else { return }
-            await self.performStartDictation(intent: intent)
+            await self.performStartDictation(
+                intent: intent,
+                preparedHoldStart: preparedHoldStart
+            )
         }
         activeStartOperation = StartOperation(id: operationID, task: task)
         await task.value
@@ -206,7 +270,10 @@ final class DictationCoordinator: ObservableObject {
         }
     }
 
-    private func performStartDictation(intent: TextEditIntent?) async {
+    private func performStartDictation(
+        intent: TextEditIntent?,
+        preparedHoldStart: PreparedHoldStart?
+    ) async {
         guard acceptsNewUserOperations, state == .idle else { return }
         if !AppPermissions.accessibilityTrusted {
             AppPermissions.requestAccessibility()
@@ -222,11 +289,17 @@ final class DictationCoordinator: ObservableObject {
         activeBridgeDictateJobID = Self.bridgeJobID(prefix: "mac_dictate", sessionID: sessionID)
         stopAfterStart = false
         resetTask?.cancel(); resetTask = nil
-        captureFrontmost()
         activeTextEditIntent = intent
         activeFastASRRoute = nil
         activeCorrectionConfiguration = nil
-        guard captureDictationContextAndTarget(intent: intent) else {
+        let targetCaptured: Bool
+        if let preparedHoldStart, intent == nil {
+            targetCaptured = applyPreparedHoldStart(preparedHoldStart)
+        } else {
+            captureFrontmost()
+            targetCaptured = captureDictationContextAndTarget(intent: intent)
+        }
+        guard targetCaptured else {
             let message = intent == .command
                 ? "Wand needs selected or existing text."
                 : "Focus a text field first"
@@ -321,6 +394,16 @@ final class DictationCoordinator: ObservableObject {
         // concrete non-secure focused control so a later insertion can prove it
         // still owns the original target.
         return activeInsertionTarget != nil || !AppPermissions.accessibilityTrusted
+    }
+
+    private func applyPreparedHoldStart(_ prepared: PreparedHoldStart) -> Bool {
+        clearTextEditRequest()
+        clearDictationContext()
+        frontmostSnapshot = prepared.frontmostSnapshot
+        activeInsertionTarget = prepared.insertionTarget
+        activeDictationContextBefore = prepared.insertionTarget?.contextBefore ?? ""
+        activeDictationContextAfter = prepared.insertionTarget?.contextAfter ?? ""
+        return prepared.insertionTarget != nil || !prepared.accessibilityWasTrusted
     }
 
     func toggleCommandTextEdit() async {
@@ -890,6 +973,7 @@ final class DictationCoordinator: ObservableObject {
 
     private func clearDictationContext() {
         activeInsertionTarget = nil
+        preparedHoldStart = nil
         activeDictationContextBefore = ""
         activeDictationContextAfter = ""
     }

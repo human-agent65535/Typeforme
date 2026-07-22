@@ -4,6 +4,17 @@ import Testing
 
 @Suite("HUD placement")
 struct HUDPlacementTests {
+    @Test @MainActor func errorCapsuleKeepsReadableDimensions() {
+        #expect(
+            HUDWindowController.compactSize(for: .error)
+                == NSSize(width: 380, height: 52)
+        )
+        #expect(
+            HUDWindowController.compactSize(for: .idle)
+                == NSSize(width: 40, height: 40)
+        )
+    }
+
     @Test @MainActor func clampsToScreenContainingPersistedAnchor() {
         let screens = [
             (frame: NSRect(x: 0, y: 0, width: 1_920, height: 1_080),
