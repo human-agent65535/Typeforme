@@ -7,6 +7,12 @@ struct KeyboardMarkedTextOwnershipPolicyTests {
     @Test("Inline editing is limited to unconverted ASCII Rime input")
     func inlineEditingRequiresRawComposition() {
         #expect(KeyboardRimeInlineEditPolicy.supports(rawInput: "niho", preedit: "ni ho"))
+        #expect(KeyboardRimeInlineEditPolicy.supports(rawInput: "nv", preedit: "nü"))
+        #expect(KeyboardRimeInlineEditPolicy.supports(rawInput: "nue", preedit: "nüe"))
+        #expect(KeyboardRimeInlineEditPolicy.supports(rawInput: "lue", preedit: "lüe"))
+        #expect(KeyboardRimeInlineEditPolicy.supports(rawInput: "jv", preedit: "ju"))
+        #expect(KeyboardRimeInlineEditPolicy.supports(rawInput: "xi'an", preedit: "xi'an"))
+        #expect(KeyboardRimeInlineEditPolicy.supports(rawInput: "c'laude", preedit: "c'lau de"))
         #expect(!KeyboardRimeInlineEditPolicy.supports(rawInput: "niho", preedit: "你ho"))
         #expect(!KeyboardRimeInlineEditPolicy.supports(rawInput: "", preedit: ""))
     }
@@ -19,6 +25,15 @@ struct KeyboardMarkedTextOwnershipPolicyTests {
         #expect(KeyboardRimeInlineEditPolicy.inserting("a", in: "niho", at: 3) == "nihao")
         #expect(KeyboardRimeInlineEditPolicy.deletingCharacter(before: 3, in: "nihao") == "niao")
         #expect(KeyboardRimeInlineEditPolicy.deletingCharacter(before: 0, in: "nihao") == nil)
+    }
+
+    @Test("Pinyin apostrophe stays inside an active Rime composition")
+    func pinyinSeparatorRouting() {
+        #expect(KeyboardRimeCompositionPolicy.isPinyinSeparatorContinuation("'", rawInput: "xi"))
+        #expect(KeyboardRimeCompositionPolicy.isPinyinSeparatorContinuation("'", rawInput: "xi'an"))
+        #expect(!KeyboardRimeCompositionPolicy.isPinyinSeparatorContinuation("'", rawInput: ""))
+        #expect(!KeyboardRimeCompositionPolicy.isPinyinSeparatorContinuation("'", rawInput: "http:"))
+        #expect(!KeyboardRimeCompositionPolicy.isPinyinSeparatorContinuation(",", rawInput: "xi"))
     }
 
     @Test("Moving after a partial candidate commits its confirmed prefix and keeps the raw suffix editable")
@@ -59,6 +74,190 @@ struct KeyboardMarkedTextOwnershipPolicyTests {
             preeditSelectionStart: 3,
             preeditSelectionEnd: 5
         ) == nil)
+        #expect(KeyboardRimeInlineEditPolicy.partialCompositionSplit(
+            rawInput: "ninue",
+            preedit: "你nüe",
+            preeditSelectionStart: 3,
+            preeditSelectionEnd: 7
+        ) == KeyboardRimeInlineEditPolicy.PartialCompositionSplit(
+            committedPrefix: "你",
+            remainingRawInput: "nue"
+        ))
+        #expect(KeyboardRimeInlineEditPolicy.partialCompositionSplit(
+            rawInput: "nijv",
+            preedit: "你ju",
+            preeditSelectionStart: 3,
+            preeditSelectionEnd: 5
+        ) == KeyboardRimeInlineEditPolicy.PartialCompositionSplit(
+            committedPrefix: "你",
+            remainingRawInput: "jv"
+        ))
+        #expect(KeyboardRimeInlineEditPolicy.partialCompositionSplit(
+            rawInput: "nixi'an",
+            preedit: "你xi'an",
+            preeditSelectionStart: 3,
+            preeditSelectionEnd: 8
+        ) == KeyboardRimeInlineEditPolicy.PartialCompositionSplit(
+            committedPrefix: "你",
+            remainingRawInput: "xi'an"
+        ))
+    }
+
+    @Test("Committing Rime never leaks display-only pinyin transforms")
+    func compositionCommitSeparatesConfirmedTextFromRawPinyin() {
+        #expect(KeyboardRimeCompositionPolicy.committableText(
+            rawInput: "nihao",
+            preedit: "ni hao",
+            preeditSelectionStart: 0,
+            preeditSelectionEnd: 6
+        ) == "nihao")
+        #expect(KeyboardRimeCompositionPolicy.committableText(
+            rawInput: "nv",
+            preedit: "nü",
+            preeditSelectionStart: 0,
+            preeditSelectionEnd: 3
+        ) == "nv")
+        #expect(KeyboardRimeCompositionPolicy.committableText(
+            rawInput: "nue",
+            preedit: "nüe",
+            preeditSelectionStart: 0,
+            preeditSelectionEnd: 4
+        ) == "nue")
+        #expect(KeyboardRimeCompositionPolicy.committableText(
+            rawInput: "lue",
+            preedit: "lüe",
+            preeditSelectionStart: 0,
+            preeditSelectionEnd: 4
+        ) == "lue")
+        #expect(KeyboardRimeCompositionPolicy.committableText(
+            rawInput: "nihao",
+            preedit: "你hao",
+            preeditSelectionStart: 3,
+            preeditSelectionEnd: 6
+        ) == "你hao")
+        #expect(KeyboardRimeCompositionPolicy.committableText(
+            rawInput: "ninue",
+            preedit: "你nüe",
+            preeditSelectionStart: 3,
+            preeditSelectionEnd: 7
+        ) == "你nue")
+    }
+
+    @Test("Pending Rime transaction keeps engine and literal input in tap order")
+    func pendingRimeInputBoundaryCommit() {
+        var pending = KeyboardPendingRimeInput()
+        pending.appendEngineCharacter("n")
+        pending.appendEngineCharacter("i")
+        #expect(pending.operations == [.engineCharacters(["n", "i"])])
+        #expect(pending.activeEngineInput == "ni")
+        #expect(pending.flattenedLiteralText(appending: " ") == "ni ")
+
+        pending.appendLiteralText(",")
+        pending.appendEngineCharacter("h")
+        pending.appendEngineCharacter("a")
+        pending.appendEngineCharacter("o")
+        #expect(pending.operations == [
+            .engineCharacters(["n", "i"]),
+            .literalTextKeys([","]),
+            .engineCharacters(["h", "a", "o"]),
+        ])
+        #expect(pending.activeEngineInput == "hao")
+        #expect(pending.flattenedLiteralText() == "ni,hao")
+
+        #expect(pending.removeLast() == "o")
+        #expect(pending.removeLast() == "a")
+        #expect(pending.removeLast() == "h")
+        #expect(pending.activeEngineInput == nil)
+        #expect(pending.removeLast() == ",")
+        #expect(pending.activeEngineInput == "ni")
+        pending.consumeAfterSuccessfulReplay()
+        #expect(pending.isEmpty)
+        #expect(pending.flattenedLiteralText() == nil)
+        pending.consumeAfterSuccessfulReplay()
+        #expect(pending.isEmpty)
+    }
+
+    @Test("Pending literal shortcut remains one reversible tap boundary")
+    func pendingRimeLiteralShortcutRemoval() {
+        var pending = KeyboardPendingRimeInput()
+        pending.appendEngineCharacter("w")
+        pending.appendEngineCharacter("w")
+        pending.appendEngineCharacter("w")
+        pending.appendLiteralText(".com")
+        pending.appendLiteralText("/")
+
+        #expect(pending.operations == [
+            .engineCharacters(["w", "w", "w"]),
+            .literalTextKeys([".com", "/"]),
+        ])
+        #expect(pending.flattenedLiteralText() == "www.com/")
+        #expect(pending.removeLast() == "/")
+        #expect(pending.removeLast() == ".com")
+        #expect(pending.flattenedLiteralText() == "www")
+    }
+
+    @Test("Pending Space and Return preserve normal Rime key semantics")
+    func pendingRimeSemanticBoundaries() {
+        var select = KeyboardPendingRimeInput()
+        select.appendEngineCharacter("n")
+        select.appendEngineCharacter("i")
+        select.appendSpaceKey()
+        #expect(select.operations == [
+            .engineCharacters(["n", "i"]),
+            .spaceKey,
+        ])
+        #expect(select.flattenedLiteralText() == "ni ")
+
+        var rawReturn = KeyboardPendingRimeInput()
+        rawReturn.appendEngineCharacter("n")
+        rawReturn.appendEngineCharacter("i")
+        rawReturn.appendReturnKey()
+        #expect(rawReturn.flattenedLiteralText() == "ni")
+
+        var newlineAfterSelection = select
+        newlineAfterSelection.appendReturnKey()
+        #expect(newlineAfterSelection.flattenedLiteralText() == "ni \n")
+
+        var repeatedReturn = rawReturn
+        repeatedReturn.appendReturnKey()
+        #expect(repeatedReturn.operations.suffix(2) == [.returnKey, .returnKey])
+        #expect(repeatedReturn.flattenedLiteralText() == "ni\n")
+
+        var repeatedSpace = select
+        repeatedSpace.appendSpaceKey()
+        #expect(repeatedSpace.flattenedLiteralText() == "ni  ")
+
+        var literalBoundary = KeyboardPendingRimeInput()
+        for character in "github" {
+            literalBoundary.appendEngineCharacter(String(character))
+        }
+        literalBoundary.appendRawLiteralBoundary(" ")
+        #expect(literalBoundary.operations == [
+            .engineCharacters(["g", "i", "t", "h", "u", "b"]),
+            .rawLiteralBoundary(" "),
+        ])
+        #expect(literalBoundary.flattenedLiteralText() == "github ")
+        #expect(literalBoundary.removeLast() == " ")
+        #expect(literalBoundary.removeLast() == "b")
+    }
+
+    @Test("Observing not-ready input never consumes or reshapes its transaction")
+    func pendingRimeInputSurvivesRepeatedNotReadyObservations() {
+        var pending = KeyboardPendingRimeInput()
+        pending.appendEngineCharacter("n")
+        pending.appendEngineCharacter("i")
+        pending.appendLiteralText(",")
+        pending.appendEngineCharacter("h")
+        let original = pending
+
+        for _ in 0..<3 {
+            let replaySnapshot = pending
+            #expect(replaySnapshot == original)
+            #expect(pending == original)
+        }
+
+        pending.consumeAfterSuccessfulReplay()
+        #expect(pending.isEmpty)
     }
 
     @Test("Rime composition remains current only in its captured document")
@@ -72,6 +271,30 @@ struct KeyboardMarkedTextOwnershipPolicyTests {
             capturedDocumentIdentifier: captured,
             currentDocumentIdentifier: UUID()
         ))
+    }
+
+    @Test("External host callbacks finish only at the captured document")
+    func rimeCompositionUsesDelegateBoundary() {
+        #expect(KeyboardRimeCompositionPolicy.externalHostChangeResolution(
+            hasRimeMarkedTextOwner: true,
+            localMutationInProgress: false,
+            targetIsCurrent: true
+        ) == .finishAtCurrentTarget)
+        #expect(KeyboardRimeCompositionPolicy.externalHostChangeResolution(
+            hasRimeMarkedTextOwner: true,
+            localMutationInProgress: false,
+            targetIsCurrent: false
+        ) == .discardStaleTarget)
+        #expect(KeyboardRimeCompositionPolicy.externalHostChangeResolution(
+            hasRimeMarkedTextOwner: true,
+            localMutationInProgress: true,
+            targetIsCurrent: true
+        ) == .ignore)
+        #expect(KeyboardRimeCompositionPolicy.externalHostChangeResolution(
+            hasRimeMarkedTextOwner: false,
+            localMutationInProgress: false,
+            targetIsCurrent: true
+        ) == .ignore)
     }
 
     @Test("Voice partial ownership is command and document scoped")

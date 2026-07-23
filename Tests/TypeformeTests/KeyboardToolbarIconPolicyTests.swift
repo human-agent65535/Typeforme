@@ -32,4 +32,26 @@ final class KeyboardToolbarIconPolicyTests: XCTestCase {
         XCTAssertGreaterThan(KeyboardToolbarIconPolicy.disabledOpacity, 0.35)
         XCTAssertLessThan(KeyboardToolbarIconPolicy.disabledOpacity, 0.5)
     }
+
+    func testInteractionRefreshPreservesLatestSemanticAppearance() {
+        var state = KeyboardToolbarIconState(
+            role: .keyboardMode,
+            imageName: "keyboard"
+        )
+
+        state.updateSemanticAppearance(
+            role: .keyboardMode,
+            imageName: "mic.fill",
+            tone: .destructive,
+            showsRestingFill: true
+        )
+        state.updateInteraction(isHighlighted: true)
+        state.updateInteraction(isHighlighted: false)
+
+        XCTAssertEqual(state.role, .keyboardMode)
+        XCTAssertEqual(state.imageName, "mic.fill")
+        XCTAssertEqual(state.tone, .destructive)
+        XCTAssertTrue(state.showsRestingFill)
+        XCTAssertFalse(state.isHighlighted)
+    }
 }

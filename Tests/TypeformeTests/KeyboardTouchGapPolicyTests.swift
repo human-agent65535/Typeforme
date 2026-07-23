@@ -3,6 +3,10 @@ import Testing
 
 @Suite("KeyboardTouchGapPolicy")
 struct KeyboardTouchGapPolicyTests {
+    @Test func coldStartKeepsTheGeometricBoundary() {
+        #expect(KeyboardTouchGapPolicy.decide(left: nil, right: nil) == nil)
+    }
+
     @Test func assignsWholeGapToLeftWhenLeftInwardBiasWins() {
         let decision = KeyboardTouchGapPolicy.decide(
             left: .init(sampleCount: 24, meanX: 0.18),
