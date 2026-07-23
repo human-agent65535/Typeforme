@@ -16,6 +16,52 @@ enum KeyboardToolbarSymbolWeight: Equatable, Sendable {
     case medium
 }
 
+enum KeyboardToolbarIconTone: Equatable, Sendable {
+    case normal
+    case destructive
+}
+
+/// The current semantic appearance of one toolbar icon. Interaction state is
+/// updated independently so a UIKit configuration refresh cannot restore an
+/// image or tone that belonged to an earlier product state.
+struct KeyboardToolbarIconState: Equatable, Sendable {
+    private(set) var role: KeyboardToolbarIconRole
+    private(set) var imageName: String
+    private(set) var tone: KeyboardToolbarIconTone
+    private(set) var showsRestingFill: Bool
+    private(set) var isHighlighted: Bool
+
+    init(
+        role: KeyboardToolbarIconRole,
+        imageName: String,
+        tone: KeyboardToolbarIconTone = .normal,
+        showsRestingFill: Bool = false,
+        isHighlighted: Bool = false
+    ) {
+        self.role = role
+        self.imageName = imageName
+        self.tone = tone
+        self.showsRestingFill = showsRestingFill
+        self.isHighlighted = isHighlighted
+    }
+
+    mutating func updateSemanticAppearance(
+        role: KeyboardToolbarIconRole,
+        imageName: String,
+        tone: KeyboardToolbarIconTone,
+        showsRestingFill: Bool
+    ) {
+        self.role = role
+        self.imageName = imageName
+        self.tone = tone
+        self.showsRestingFill = showsRestingFill
+    }
+
+    mutating func updateInteraction(isHighlighted: Bool) {
+        self.isHighlighted = isHighlighted
+    }
+}
+
 struct KeyboardToolbarIconMetrics: Equatable, Sendable {
     let pointSize: Double
     let weight: KeyboardToolbarSymbolWeight

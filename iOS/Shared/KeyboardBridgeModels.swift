@@ -421,7 +421,7 @@ enum KeyboardChinesePunctuationStyle: String, CaseIterable, Identifiable, Codabl
     }
 }
 
-enum KeyboardRimeDictionaryTier: String, CaseIterable, Identifiable, Codable {
+enum KeyboardRimeDictionaryTier: String, CaseIterable, Identifiable, Codable, Sendable {
     case standard
     case extended
     case large

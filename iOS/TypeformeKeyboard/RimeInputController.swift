@@ -4,36 +4,70 @@ import LibrimeKit
 import OSLog
 
 private let rimeLog = Logger(subsystem: TypeformeBundleConfiguration.keyboardBundleIdentifier, category: "rime")
+private let rimePerformanceLog = OSLog(
+    subsystem: TypeformeBundleConfiguration.keyboardBundleIdentifier,
+    category: "rime-performance"
+)
 
 struct RimeKeyboardCandidate {
-    static let literalSelectionIndex = -1
-
     let text: String
-    let comment: String
     let selectionIndex: Int
-    let commitsLiteralInput: Bool
 
-    init(text: String, comment: String, selectionIndex: Int, commitsLiteralInput: Bool = false) {
+    init(text: String, selectionIndex: Int) {
         self.text = text
-        self.comment = comment
         self.selectionIndex = selectionIndex
-        self.commitsLiteralInput = commitsLiteralInput
     }
 }
 
-struct RimeKeyboardState {
+struct RimeCompositionSnapshot {
+    struct Identity: Equatable {
+        let isComposing: Bool
+        let input: String
+        let preedit: String
+        let preeditSelectionStart: Int
+        let preeditSelectionEnd: Int
+
+        static let unavailable = Identity(
+            isComposing: false,
+            input: "",
+            preedit: "",
+            preeditSelectionStart: 0,
+            preeditSelectionEnd: 0
+        )
+    }
+
+    let revision: UInt64
     let isReady: Bool
     let isComposing: Bool
     let input: String
     let preedit: String
     let preeditSelectionStart: Int
     let preeditSelectionEnd: Int
-    let candidates: [RimeKeyboardCandidate]
-    let candidateOffset: Int
-    let hasPreviousPage: Bool
-    let hasNextPage: Bool
-    let commitText: String
+    /// Persistent engine availability error for this projection. Keeping it
+    /// with the composition avoids a second UI-side cache when candidates are
+    /// replaced independently by scrolling.
     let errorMessage: String?
+
+    static let unavailable = RimeCompositionSnapshot(
+        revision: 0,
+        isReady: false,
+        isComposing: false,
+        input: "",
+        preedit: "",
+        preeditSelectionStart: 0,
+        preeditSelectionEnd: 0,
+        errorMessage: nil
+    )
+
+    var identity: Identity {
+        Identity(
+            isComposing: isComposing,
+            input: input,
+            preedit: preedit,
+            preeditSelectionStart: preeditSelectionStart,
+            preeditSelectionEnd: preeditSelectionEnd
+        )
+    }
 
     func visibleCompositionText(preferRawInput: Bool = false) -> String {
         guard isComposing else { return "" }
@@ -43,52 +77,103 @@ struct RimeKeyboardState {
         return preedit.isEmpty ? input : preedit
     }
 
-    /// Text to COMMIT when flushing a still-visible composition. The displayed
-    /// preedit carries rime's syllable-segmentation separators ("ni hao",
-    /// "c laude"); space can never be typed *into* a composition (space
-    /// commits), so any separator in the preedit is display-only and must not
-    /// leak into the document. Unconverted compositions commit the raw input
-    /// verbatim; partially converted ones commit the preedit with separators
-    /// stripped.
+    /// Text to commit when a UI boundary ends the marked-text session. Rime's
+    /// preedit is presentation (syllable spacing and u/v -> ü included), so
+    /// the shared policy takes only a confirmed prefix from it and preserves
+    /// the active suffix as raw input.
     func committableCompositionText(preferRawInput: Bool = false) -> String {
         guard isComposing else { return "" }
-        if preferRawInput {
-            return input
-        }
-        guard !preedit.isEmpty else { return input }
-        let hasConvertedText = preedit.unicodeScalars.contains { $0.value > 0x7F }
-        guard hasConvertedText else { return input }
-        let stripped = preedit
-            .replacingOccurrences(of: " ", with: "")
-            .replacingOccurrences(of: "'", with: "")
-        return stripped.isEmpty ? input : stripped
+        return KeyboardRimeCompositionPolicy.committableText(
+            rawInput: input,
+            preedit: preedit,
+            preeditSelectionStart: preeditSelectionStart,
+            preeditSelectionEnd: preeditSelectionEnd,
+            preferRawInput: preferRawInput
+        )
+    }
+
+}
+
+struct RimeCandidateWindow {
+    let revision: UInt64
+    /// Identity of the composition that produced this candidate projection.
+    /// Candidate-only expansion must match it before appending a suffix.
+    let compositionIdentity: RimeCompositionSnapshot.Identity
+    let candidates: [RimeKeyboardCandidate]
+    /// Candidate prefix before display filtering, retained so scrolling can
+    /// append only the missing Rime suffix instead of rebuilding from zero.
+    let retainedCandidates: [RimeKeyboardCandidate]
+    let offset: Int
+    let pageSize: Int
+    /// Absolute Rime candidate index immediately after this window. Display
+    /// filtering never changes this cursor or any candidate selection index.
+    let endIndex: Int
+    /// Rime generates candidates lazily and exposes no authoritative total.
+    /// `true` means another bounded prefix request may produce more candidates.
+    let mayHaveMore: Bool
+    let hasPreviousPage: Bool
+    let hasNextPage: Bool
+
+    var loadedCandidateCount: Int {
+        max(0, endIndex - offset)
+    }
+
+    static let unavailable = RimeCandidateWindow.empty(revision: 0)
+
+    static func empty(
+        revision: UInt64,
+        compositionIdentity: RimeCompositionSnapshot.Identity = .unavailable
+    ) -> RimeCandidateWindow {
+        RimeCandidateWindow(
+            revision: revision,
+            compositionIdentity: compositionIdentity,
+            candidates: [],
+            retainedCandidates: [],
+            offset: 0,
+            pageSize: 1,
+            endIndex: 0,
+            mayHaveMore: false,
+            hasPreviousPage: false,
+            hasNextPage: false
+        )
     }
 }
 
-enum RimeCharacterProcessResult {
-    case processed(RimeKeyboardState)
-    case notReady(RimeKeyboardState)
+/// One mutation result. Composition and candidates are projections of the same
+/// engine capture; commits are ordered events drained after each processed key.
+struct RimeKeyboardUpdate {
+    let composition: RimeCompositionSnapshot
+    let candidateWindow: RimeCandidateWindow
+    let committedTexts: [String]
+    var errorMessage: String? { composition.errorMessage }
+
+    init(
+        composition: RimeCompositionSnapshot,
+        candidateWindow: RimeCandidateWindow,
+        committedTexts: [String]
+    ) {
+        precondition(
+            composition.revision == candidateWindow.revision,
+            "Rime composition and candidate projections must share a revision"
+        )
+        self.composition = composition
+        self.candidateWindow = candidateWindow
+        self.committedTexts = committedTexts
+    }
+
+}
+
+enum RimeInputProcessResult {
+    case processed(RimeKeyboardUpdate)
+    case notReady(RimeKeyboardUpdate)
 }
 
 struct RimeKeyCodeProcessResult {
     let wasComposing: Bool
-    let state: RimeKeyboardState
+    let update: RimeKeyboardUpdate
 }
 
-/// Result of probing a candidate next letter against the live composition.
-enum RimeProbeValidity {
-    /// The letter cleanly extended the current segment (e.g. typing "i" after
-    /// "zh" to form "zhi"). Strong evidence the user intended this letter.
-    case extend
-    /// The letter forced a segment break (e.g. typing "b" after "zh" yielding
-    /// "zh|b" or "zh'b"). Strong evidence the user did not intend this letter.
-    case split
-    /// Probe could not produce a useful signal (rime not ready, input empty,
-    /// commit happened, schema mismatch). Caller should fall back to geometry.
-    case unknown
-}
-
-struct RimeKeyboardProfile: Equatable {
+struct RimeKeyboardProfile: Equatable, Sendable {
     var dictionaryTier: KeyboardRimeDictionaryTier = .standard
     var learningEnabled: Bool = true
     var correctionEnabled: Bool = false
@@ -137,11 +222,27 @@ final class RimeInputController: @unchecked Sendable {
         }
     }
 
-    private enum StartupState {
-        case idle
-        case starting
-        case ready
-        case failed
+    /// Values that require a schema/session activation. Live input options are
+    /// intentionally excluded: toggling ASCII mode or punctuation on an
+    /// existing session must not invalidate composition ownership.
+    private struct DesiredRimeActivationConfiguration: Equatable, Sendable {
+        let profile: RimeKeyboardProfile
+        let userPhraseContent: String
+        let userPhraseSignature: String
+        let resetUserDataGeneration: Int
+    }
+
+    /// Queue-owned identity of the live main session. The effective profile is
+    /// resolved only at an actual session/schema boundary and remains pinned
+    /// for that session even if a persisted fallback later expires.
+    private struct ActiveSessionConfiguration {
+        let requestedProfile: RimeKeyboardProfile
+        let effectiveProfile: RimeKeyboardProfile
+    }
+
+    private struct ActivationAttemptResult {
+        let succeeded: Bool
+        let errorMessage: String?
     }
 
     private static let appName = "rime.typeforme"
@@ -149,16 +250,6 @@ final class RimeInputController: @unchecked Sendable {
     private static let distributionCodeName = "typeforme"
     private static let dataVersion = "typeforme-pinyin-v2"
     private static let customPhraseFileName = "typeforme_custom_phrase.txt"
-    // 60 candidates × 5-column grid = up to 12 rows of 42pt = 504pt of
-    // content versus ~226pt of grid scroll-view height. That's ~280pt of
-    // meaningful vertical scroll when the user taps the expand chevron.
-    // The same pool feeds the horizontal candidate bar, which is fine — the
-    // bar already scrolls horizontally and shows as many as the user pans
-    // through.
-    private static let candidateLimit: Int32 = 60
-    private static let englishCompletionMinimumInputLength = 4
-    private static let englishCompletionDisplayLimit = 1
-    private static let shortLiteralLatinMaximumInputLength = 6
     private static let startupRetryInterval: TimeInterval = 2.0
     private static let startupAttemptDefaultsKey = "rime.startupAttempt.v1"
     private static let startupFallbackDefaultsKey = "rime.startupFallback.v1"
@@ -170,7 +261,6 @@ final class RimeInputController: @unchecked Sendable {
         30 * 60,
         2 * 60 * 60,
     ]
-    private static let compactEnglishCodesFileName = "typeforme_english.codes.txt"
     private static let globalLifecycle = GlobalLifecycle()
 
     private struct StartupAttemptMarker: Codable {
@@ -221,123 +311,327 @@ final class RimeInputController: @unchecked Sendable {
     private let api = IRimeAPI()
     private let rimeQueue = DispatchQueue(label: "\(TypeformeBundleConfiguration.keyboardBundleIdentifier).rime", qos: .userInitiated)
     private let stateLock = NSLock()
-    private var startupState: StartupState = .idle
+    private var activationPolicy: KeyboardRimeActivationPolicy<DesiredRimeActivationConfiguration>
+    /// Protected by stateLock. These options are applied as serialized live
+    /// session mutations; they never advance the activation generation.
+    private var desiredInputOptions = KeyboardRimeInputOptions(
+        asciiMode: false,
+        asciiPunctuation: false
+    )
+    private var lastErrorMessage: String?
+    /// Accessed only on rimeQueue.
     private var selectedSchemaID: String?
     private var session: RimeSessionId = 0
-    private var probeSession: RimeSessionId = 0
-    private var lastErrorMessage: String?
-    private var lastStartupAttemptAt: TimeInterval = 0
-    private var desiredProfile = RimeKeyboardProfile()
-    private var desiredAsciiMode = false
-    private var desiredAsciiPunctuation = false
-    private var desiredUserPhraseContent = RimeInputController.customPhraseFileContent(from: [])
-    private var desiredUserPhraseSignature = RimeInputController.customPhraseSignature(RimeInputController.customPhraseFileContent(from: []))
+    /// Queue-owned last-issued value for the two live session switches.
+    /// Desired options may be observed on every key, but librime is mutated
+    /// only when their complete value actually changes.
+    private var appliedInputOptions: KeyboardRimeInputOptions?
+    private var activeSessionConfiguration: ActiveSessionConfiguration?
     private var appliedUserPhraseSignature: String?
-    private var runtimeSharedSupportURL: URL?
-    private var englishWordCodes: Set<String>?
+    private var appliedResetUserDataGeneration: Int
+    /// Accessed only on rimeQueue. Every engine mutation finishes by replacing
+    /// this projection, so pre-mutation behavior need not query Rime twice.
+    private var latestCompositionOnQueue = RimeCompositionSnapshot.unavailable
+    /// Protected by stateLock. Revision zero is reserved for static unavailable
+    /// projections; every controller-issued projection advances this value.
+    private var lastIssuedRevision: UInt64 = 0
+    /// Protected by stateLock. Rebinding the keyboard UI can replay this stable
+    /// lifecycle projection without touching the Rime queue; revision ordering
+    /// discards it if a newer key projection is already visible.
+    private var latestActivationPublication: (
+        target: KeyboardRimeActivationPolicy<DesiredRimeActivationConfiguration>.Snapshot,
+        update: RimeKeyboardUpdate
+    )?
 
-    var onStateChange: ((RimeKeyboardState) -> Void)?
+    var onActivation: ((RimeKeyboardUpdate) -> Void)?
+    /// Kept separate from UI projection delivery so a reset that finishes while
+    /// the keyboard is disappearing is still durably acknowledged exactly once.
+    var onResetUserDataApplied: ((Int) -> Void)?
+
+    init(acknowledgedResetUserDataGeneration: Int = 0) {
+        let initialPhraseContent = Self.customPhraseFileContent(from: [])
+        let initialConfiguration = DesiredRimeActivationConfiguration(
+            profile: RimeKeyboardProfile(),
+            userPhraseContent: initialPhraseContent,
+            userPhraseSignature: Self.customPhraseSignature(initialPhraseContent),
+            resetUserDataGeneration: max(0, acknowledgedResetUserDataGeneration)
+        )
+        activationPolicy = KeyboardRimeActivationPolicy(
+            initialConfiguration: initialConfiguration
+        )
+        appliedResetUserDataGeneration = max(0, acknowledgedResetUserDataGeneration)
+    }
 
     var isReady: Bool {
         stateLock.lock()
         defer { stateLock.unlock() }
-        let expectedProfile = Self.activeEffectiveProfile(for: desiredProfile, now: Date().timeIntervalSince1970)
-        return startupState == .ready
-            && session != 0
-            && selectedSchemaID == expectedProfile.schemaID
-            && lastErrorMessage == nil
+        return activationPolicy.isReady && lastErrorMessage == nil
     }
 
     @discardableResult
     func startIfNeeded(bundle: Bundle = .main) -> Bool {
-        if isReady { return true }
         let now = Date().timeIntervalSince1970
         stateLock.lock()
-        if startupState == .starting {
+        if activationPolicy.isReady, lastErrorMessage == nil {
             stateLock.unlock()
-            return false
+            return true
         }
-        if startupState == .failed {
-            guard now - lastStartupAttemptAt >= Self.startupRetryInterval else {
-                stateLock.unlock()
-                return false
-            }
+        let target = activationPolicy.requestActivation(
+            now: now,
+            retryInterval: Self.startupRetryInterval
+        )
+        if target != nil {
             lastErrorMessage = nil
         }
-        let requestedProfile = desiredProfile
-        let effectiveProfile = Self.effectiveStartupProfile(for: requestedProfile, now: now)
-        if effectiveProfile != requestedProfile {
-            lastErrorMessage = nil
-        }
-        let requestedSchemaID = effectiveProfile.schemaID
-        startupState = .starting
-        lastStartupAttemptAt = now
         stateLock.unlock()
 
-        Self.recordStartupAttempt(profile: effectiveProfile, now: now)
-        let startedAt = Date()
-        rimeLog.notice("Rime startup scheduled schema=\(requestedSchemaID, privacy: .public)")
-        rimeQueue.async { [weak self] in
-            guard let self else {
-                Self.clearStartupAttempt()
-                return
-            }
-            let didStart = self.startOnQueue(bundle: bundle)
-            Self.clearStartupAttempt()
-            let elapsedMS = Date().timeIntervalSince(startedAt) * 1000
-            if didStart {
-                rimeLog.notice("Rime startup ready in \(elapsedMS, privacy: .public) ms")
-            } else {
-                rimeLog.error("Rime startup failed in \(elapsedMS, privacy: .public) ms")
-            }
-            let nextState = self.stateOnQueue()
-            DispatchQueue.main.async { [weak self] in
-                self?.onStateChange?(nextState)
-            }
-        }
+        guard let target else { return false }
+        scheduleActivationFlight(target, bundle: bundle)
         return false
     }
 
-    private func startOnQueue(bundle: Bundle = .main) -> Bool {
-        if isReadyOnQueue && appliedUserPhraseSignature == desiredUserPhraseSignatureOnQueue {
-            return true
+    /// Applies session-local options without entering activation. The queued
+    /// mutation either updates the current session or becomes a no-op while a
+    /// replacement is in progress; the replacement reads the same desired
+    /// option snapshot before it publishes ready.
+    func applyInputOptions(
+        asciiPunctuation: Bool,
+        asciiMode: Bool
+    ) {
+        setDesiredOptions(
+            asciiPunctuation: asciiPunctuation,
+            asciiMode: asciiMode
+        )
+        applyDesiredOptionsToLiveSession()
+    }
+
+    /// The caller must end pending/live marked-text ownership before invoking
+    /// this session/schema replacement entrypoint.
+    func activateDesiredConfigurationAfterTextBoundary() {
+        _ = startIfNeeded()
+    }
+
+    /// Stores one complete host settings snapshot without touching the live
+    /// session. Cold launch calls this before `startIfNeeded`; a live refresh
+    /// follows it with `activateDesiredConfigurationAfterTextBoundary` after
+    /// ending any destructive text ownership boundary.
+    func setDesiredConfiguration(
+        profile: RimeKeyboardProfile,
+        asciiPunctuation: Bool,
+        asciiMode: Bool,
+        userPhrases: [String],
+        userPhrasesRevision: String?,
+        resetUserDataGeneration: Int
+    ) {
+        let content = Self.customPhraseFileContent(from: userPhrases)
+        let configuration = DesiredRimeActivationConfiguration(
+            profile: profile,
+            userPhraseContent: content,
+            userPhraseSignature: Self.customPhraseSignature(
+                content,
+                revision: userPhrasesRevision
+            ),
+            resetUserDataGeneration: max(0, resetUserDataGeneration)
+        )
+        stateLock.lock()
+        if activationPolicy.replaceDesiredConfiguration(configuration) {
+            lastErrorMessage = nil
         }
+        desiredInputOptions = KeyboardRimeInputOptions(
+            asciiMode: asciiMode,
+            asciiPunctuation: asciiPunctuation
+        )
+        stateLock.unlock()
+    }
+
+    private func scheduleActivationFlight(
+        _ initialTarget: KeyboardRimeActivationPolicy<DesiredRimeActivationConfiguration>.Snapshot,
+        bundle: Bundle
+    ) {
+        rimeQueue.async { [weak self] in
+            self?.drainActivationFlight(initialTarget: initialTarget, bundle: bundle)
+        }
+    }
+
+    private func drainActivationFlight(
+        initialTarget: KeyboardRimeActivationPolicy<DesiredRimeActivationConfiguration>.Snapshot,
+        bundle: Bundle
+    ) {
+        var target = initialTarget
+        while true {
+            let startedAt = Date()
+            let result = activateOnQueue(configuration: target.configuration, bundle: bundle)
+            let elapsedMS = Date().timeIntervalSince(startedAt) * 1000
+            if result.succeeded {
+                rimeLog.notice(
+                    "Rime activation ready generation=\(target.generation, privacy: .public) attempt=\(target.attempt, privacy: .public) in \(elapsedMS, privacy: .public) ms"
+                )
+            } else {
+                rimeLog.error(
+                    "Rime activation failed generation=\(target.generation, privacy: .public) attempt=\(target.attempt, privacy: .public) in \(elapsedMS, privacy: .public) ms"
+                )
+            }
+
+            stateLock.lock()
+            let completion = activationPolicy.complete(
+                target,
+                succeeded: result.succeeded,
+                now: Date().timeIntervalSince1970
+            )
+            switch completion {
+            case .continueWith:
+                break
+            case .publish:
+                lastErrorMessage = result.errorMessage
+            case .discard:
+                break
+            }
+            stateLock.unlock()
+
+            switch completion {
+            case .continueWith(let latestTarget):
+                target = latestTarget
+                continue
+            case .discard:
+                return
+            case .publish:
+                let update = captureUpdateOnQueue()
+                stateLock.lock()
+                let shouldPublish = activationPolicy.shouldDeliverPublication(for: target)
+                if shouldPublish {
+                    latestActivationPublication = (target, update)
+                }
+                stateLock.unlock()
+                guard shouldPublish else { return }
+                DispatchQueue.main.async { [weak self] in
+                    guard let self,
+                          self.shouldDeliverActivationPublication(for: target)
+                    else { return }
+                    self.onActivation?(update)
+                }
+                return
+            }
+        }
+    }
+
+    private func shouldDeliverActivationPublication(
+        for target: KeyboardRimeActivationPolicy<DesiredRimeActivationConfiguration>.Snapshot
+    ) -> Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return activationPolicy.shouldDeliverPublication(for: target)
+    }
+
+    /// Replays only the last stable activation result. This is used when UIKit
+    /// recreates/re-presents the keyboard after the original main callback was
+    /// intentionally detached in `viewWillDisappear`.
+    func publishCurrentActivationIfAvailable() {
+        stateLock.lock()
+        let publication = latestActivationPublication.flatMap { publication in
+            activationPolicy.shouldDeliverPublication(for: publication.target)
+                ? publication
+                : nil
+        }
+        stateLock.unlock()
+        guard let publication else { return }
+        onActivation?(publication.update)
+    }
+
+    private func activateOnQueue(
+        configuration: DesiredRimeActivationConfiguration,
+        bundle: Bundle
+    ) -> ActivationAttemptResult {
+        let mutationPlan = KeyboardRimeSessionMutationPlan.make(
+            desiredPhraseSignature: configuration.userPhraseSignature,
+            appliedPhraseSignature: appliedUserPhraseSignature,
+            desiredResetGeneration: configuration.resetUserDataGeneration,
+            appliedResetGeneration: appliedResetUserDataGeneration,
+            hasSession: session != 0
+        )
+        let effectiveProfile = KeyboardRimeSessionProfilePolicy.effectiveProfile(
+            requestedProfile: configuration.profile,
+            activeRequestedProfile: activeSessionConfiguration?.requestedProfile,
+            activeEffectiveProfile: activeSessionConfiguration?.effectiveProfile,
+            hasSession: session != 0,
+            requiresSessionReplacement: mutationPlan.requiresSessionReplacement
+        ) {
+            Self.effectiveStartupProfile(
+                for: configuration.profile,
+                now: Date().timeIntervalSince1970
+            )
+        }
+        let requiresSchemaActivation = selectedSchemaID != effectiveProfile.schemaID
+        let recordsStartupAttempt = mutationPlan.requiresSessionReplacement
+            || activeSessionConfiguration?.requestedProfile != configuration.profile
+            || requiresSchemaActivation
+        let activationStartedAt = Date().timeIntervalSince1970
+        if recordsStartupAttempt {
+            Self.recordStartupAttempt(profile: effectiveProfile, now: activationStartedAt)
+        }
+        defer {
+            if recordsStartupAttempt {
+                Self.clearStartupAttempt()
+            }
+        }
+
+        // A profile/schema change can reuse the live session and its pinned
+        // fallback profile when phrases and user data are unchanged. The UI
+        // has already ended its old marked-text transaction at this boundary.
+        if !mutationPlan.requiresSessionReplacement, session != 0 {
+            if requiresSchemaActivation {
+                api.cleanComposition(session)
+                guard api.selectSchema(session, andSchameId: effectiveProfile.schemaID) else {
+                    return failActivationOnQueue(errorMessage: "中文数据不可用")
+                }
+                selectedSchemaID = effectiveProfile.schemaID
+                appliedInputOptions = nil
+            }
+            applyDesiredOptionsOnQueue()
+            activeSessionConfiguration = ActiveSessionConfiguration(
+                requestedProfile: configuration.profile,
+                effectiveProfile: effectiveProfile
+            )
+            return ActivationAttemptResult(succeeded: true, errorMessage: nil)
+        }
+
         guard let sharedSupportURL = bundle.resourceURL?.appendingPathComponent("RimeSharedSupport", isDirectory: true),
               FileManager.default.fileExists(atPath: sharedSupportURL.path)
         else {
-            runtimeSharedSupportURL = nil
-            finishStartupOnQueue(.failed, errorMessage: "中文数据缺失")
             rimeLog.error("RimeSharedSupport is missing from the keyboard bundle")
-            return false
+            return failActivationOnQueue(errorMessage: "中文数据缺失")
         }
 
         let prebuiltDataURL = sharedSupportURL.appendingPathComponent("build", isDirectory: true)
         guard FileManager.default.fileExists(atPath: prebuiltDataURL.appendingPathComponent("default.yaml").path) else {
-            runtimeSharedSupportURL = nil
-            finishStartupOnQueue(.failed, errorMessage: "中文数据未编译")
             rimeLog.error("Rime prebuilt data is missing from RimeSharedSupport/build")
-            return false
+            return failActivationOnQueue(errorMessage: "中文数据未编译")
         }
-        runtimeSharedSupportURL = sharedSupportURL
-        rimeLog.notice("Rime startup resources ready schema=\(self.effectiveDesiredProfileOnQueue.schemaID, privacy: .public)")
+        rimeLog.notice(
+            "Rime activation resources ready schema=\(effectiveProfile.schemaID, privacy: .public)"
+        )
 
         do {
             // The keyboard extension must only open prebuilt Rime data. Do not
             // run librime maintenance or deployment synchronously here: first
             // launch has to stay inside the extension watchdog budget.
-            let userDataURL = try ensureUserDataDirectory()
-            let (customPhraseContent, customPhraseSignature) = desiredUserPhraseSnapshotOnQueue
-            if session != 0, appliedUserPhraseSignature != customPhraseSignature {
-                api.cleanAllSession()
-                session = 0
-                probeSession = 0
-                selectedSchemaID = nil
+            if mutationPlan.shouldResetUserData {
+                try resetUserDataOnQueue()
+                appliedResetUserDataGeneration = configuration.resetUserDataGeneration
+                let appliedGeneration = appliedResetUserDataGeneration
+                DispatchQueue.main.async { [weak self] in
+                    self?.onResetUserDataApplied?(appliedGeneration)
+                }
+            } else if session != 0, mutationPlan.shouldWriteUserPhrases {
+                resetAllSessionsOnQueue()
             }
-            try applyCustomPhrasesOnQueue(
-                content: customPhraseContent,
-                signature: customPhraseSignature,
-                userDataURL: userDataURL
-            )
+            let userDataURL = try ensureUserDataDirectory()
+            if mutationPlan.shouldWriteUserPhrases {
+                try applyCustomPhrasesOnQueue(
+                    content: configuration.userPhraseContent,
+                    signature: configuration.userPhraseSignature,
+                    userDataURL: userDataURL
+                )
+            }
             let traits = IRimeTraits()
             traits.sharedDataDir = sharedSupportURL.path
             traits.userDataDir = userDataURL.path
@@ -352,211 +646,129 @@ final class RimeInputController: @unchecked Sendable {
             if session == 0 {
                 session = api.createSession()
                 guard session != 0 else {
-                    finishStartupOnQueue(.failed, errorMessage: "中文输入暂不可用")
-                    return false
+                    return failActivationOnQueue(errorMessage: "中文输入暂不可用")
                 }
             }
-            let schemaID = effectiveDesiredProfileOnQueue.schemaID
+            let schemaID = effectiveProfile.schemaID
             if selectedSchemaID != schemaID {
                 let didSelectSchema = api.selectSchema(session, andSchameId: schemaID)
                 if !didSelectSchema {
-                    finishStartupOnQueue(.failed, errorMessage: "中文数据不可用")
-                    return false
+                    return failActivationOnQueue(errorMessage: "中文数据不可用")
                 }
                 selectedSchemaID = schemaID
+                appliedInputOptions = nil
             }
 
             applyDesiredOptionsOnQueue()
-            ensureProbeSessionOnQueue()
-            finishStartupOnQueue(.ready, errorMessage: nil)
-            return true
+            activeSessionConfiguration = ActiveSessionConfiguration(
+                requestedProfile: configuration.profile,
+                effectiveProfile: effectiveProfile
+            )
+            return ActivationAttemptResult(succeeded: true, errorMessage: nil)
         } catch {
-            finishStartupOnQueue(.failed, errorMessage: "中文数据不可用")
             rimeLog.error("Failed to prepare Rime user data: \(error.localizedDescription, privacy: .public)")
-            return false
+            let message = mutationPlan.shouldResetUserData
+                ? "中文学习数据无法重置"
+                : "中文数据不可用"
+            return failActivationOnQueue(errorMessage: message)
         }
     }
 
-    func setAsciiMode(_ enabled: Bool) -> RimeKeyboardState {
-        stateLock.lock()
-        desiredAsciiMode = enabled
-        stateLock.unlock()
-        guard startIfNeeded() else { return notReadyState() }
-        return rimeQueue.sync {
-            _ = api.setOption(session, andOption: "ascii_mode", andValue: enabled)
-            return stateOnQueue()
+    private func resetAllSessionsOnQueue() {
+        if session != 0 {
+            api.cleanAllSession()
         }
+        session = 0
+        selectedSchemaID = nil
+        appliedInputOptions = nil
+        activeSessionConfiguration = nil
+        latestCompositionOnQueue = .unavailable
     }
 
-    func setAsciiPunctuation(_ enabled: Bool) -> RimeKeyboardState {
-        stateLock.lock()
-        desiredAsciiPunctuation = enabled
-        stateLock.unlock()
-        guard startIfNeeded() else { return notReadyState() }
-        return rimeQueue.sync {
-            _ = api.setOption(session, andOption: "ascii_punct", andValue: enabled)
-            return stateOnQueue()
+    private func resetUserDataOnQueue() throws {
+        resetAllSessionsOnQueue()
+        let userDataURL = try ensureUserDataDirectory()
+        let contents = try FileManager.default.contentsOfDirectory(
+            at: userDataURL,
+            includingPropertiesForKeys: nil
+        )
+        for url in contents {
+            try FileManager.default.removeItem(at: url)
         }
+        try FileManager.default.createDirectory(at: userDataURL, withIntermediateDirectories: true)
+        appliedUserPhraseSignature = nil
     }
 
-    func applyOptions(asciiPunctuation: Bool, asciiMode: Bool) -> RimeKeyboardState {
+    private func failActivationOnQueue(errorMessage: String) -> ActivationAttemptResult {
+        resetAllSessionsOnQueue()
+        return ActivationAttemptResult(succeeded: false, errorMessage: errorMessage)
+    }
+
+    /// Replays queued input as one engine transaction. Literal operations end
+    /// the preceding composition and become ordered document commits; a later
+    /// engine operation starts a fresh composition. The reusable projection is
+    /// captured only once after the complete transaction.
+    func processInputIfReady(
+        _ input: KeyboardPendingRimeInput,
+        asciiPunctuation: Bool,
+        asciiMode: Bool
+    ) -> RimeInputProcessResult {
         setDesiredOptions(asciiPunctuation: asciiPunctuation, asciiMode: asciiMode)
-        guard startIfNeeded() else { return notReadyState() }
+        guard startIfNeeded() else { return .notReady(notReadyUpdate()) }
         return rimeQueue.sync {
+            guard isReadyOnQueue else { return .notReady(notReadyUpdate()) }
             applyOptionsOnQueue(asciiMode: asciiMode, asciiPunctuation: asciiPunctuation)
-            return stateOnQueue()
-        }
-    }
-
-    func setProfile(_ profile: RimeKeyboardProfile) -> RimeKeyboardState {
-        stateLock.lock()
-        desiredProfile = profile
-        stateLock.unlock()
-        guard startIfNeeded() else { return notReadyState() }
-        return rimeQueue.sync {
-            let targetProfile = effectiveDesiredProfileOnQueue
-            if selectedSchemaID != targetProfile.schemaID {
-                api.cleanComposition(session)
-                let didSelectSchema = api.selectSchema(session, andSchameId: targetProfile.schemaID)
-                guard didSelectSchema else {
-                    finishStartupOnQueue(.failed, errorMessage: "中文数据不可用")
-                    return notReadyState()
-                }
-                selectedSchemaID = targetProfile.schemaID
-                if probeSession != 0 {
-                    api.cleanComposition(probeSession)
-                    if !api.selectSchema(probeSession, andSchameId: targetProfile.schemaID) {
-                        probeSession = 0
+            var committedTexts: [String] = []
+            for operation in input.operations {
+                switch operation {
+                case .engineCharacters(let characters):
+                    for character in characters {
+                        guard let scalar = character.unicodeScalars.first else { continue }
+                        _ = api.processKeyCode(Int32(scalar.value), modifier: 0, andSession: session)
+                        drainCommit(into: &committedTexts)
+                    }
+                case .literalTextKeys(let keys):
+                    _ = api.commitComposition(session)
+                    drainCommit(into: &committedTexts)
+                    committedTexts.append(contentsOf: keys.filter { !$0.isEmpty })
+                case .spaceKey:
+                    let hasComposition = !(api.getInput(session) ?? "").isEmpty
+                        || api.getStatus(session)?.isComposing == true
+                    if hasComposition {
+                        _ = api.processKeyCode(32, modifier: 0, andSession: session)
+                        drainCommit(into: &committedTexts)
+                    } else {
+                        committedTexts.append(" ")
+                    }
+                case .rawLiteralBoundary(let text):
+                    let rawInput = api.getInput(session) ?? ""
+                    api.cleanComposition(session)
+                    if !rawInput.isEmpty {
+                        committedTexts.append(rawInput)
+                    }
+                    committedTexts.append(text)
+                case .returnKey:
+                    let rawInput = api.getInput(session) ?? ""
+                    api.cleanComposition(session)
+                    if !rawInput.isEmpty {
+                        committedTexts.append(rawInput)
+                    } else {
+                        committedTexts.append("\n")
                     }
                 }
-                if probeSession == 0 {
-                    ensureProbeSessionOnQueue()
-                }
-                applyDesiredOptionsOnQueue()
             }
-            return stateOnQueue()
+            return .processed(captureUpdateOnQueue(committedTexts: committedTexts))
         }
     }
 
-    func setUserPhrases(
-        _ phrases: [String],
-        revision: String?,
-        reloadIfNeeded: Bool = true
-    ) -> RimeKeyboardState {
-        let content = Self.customPhraseFileContent(from: phrases)
-        let signature = Self.customPhraseSignature(content, revision: revision)
-        stateLock.lock()
-        let changed = desiredUserPhraseSignature != signature
-        desiredUserPhraseContent = content
-        desiredUserPhraseSignature = signature
-        stateLock.unlock()
-
-        guard reloadIfNeeded else {
-            return notReadyState()
-        }
-        guard changed else {
-            return state()
-        }
-
-        let resetState = rimeQueue.sync {
-            if session != 0 {
-                api.cleanAllSession()
-                session = 0
-                probeSession = 0
-            }
-            selectedSchemaID = nil
-            stateLock.lock()
-            startupState = .idle
-            lastErrorMessage = nil
-            stateLock.unlock()
-            return notReadyState()
-        }
-        _ = startIfNeeded()
-        return resetState
-    }
-
-    func resetUserData() -> RimeKeyboardState {
-        let resetState = rimeQueue.sync {
-            if session != 0 {
-                api.cleanAllSession()
-                session = 0
-                probeSession = 0
-            }
-            selectedSchemaID = nil
-            stateLock.lock()
-            startupState = .idle
-            lastErrorMessage = nil
-            stateLock.unlock()
-            do {
-                let userDataURL = try ensureUserDataDirectory()
-                appliedUserPhraseSignature = nil
-                let contents = try FileManager.default.contentsOfDirectory(
-                    at: userDataURL,
-                    includingPropertiesForKeys: nil
-                )
-                for url in contents {
-                    try FileManager.default.removeItem(at: url)
-                }
-                try FileManager.default.createDirectory(at: userDataURL, withIntermediateDirectories: true)
-            } catch {
-                finishStartupOnQueue(.failed, errorMessage: "中文学习数据无法重置")
-                rimeLog.error("Failed to reset Rime user data: \(error.localizedDescription, privacy: .public)")
-            }
-            return notReadyState()
-        }
-        _ = startIfNeeded()
-        return resetState
-    }
-
-    func processCharacter(_ character: String) -> RimeKeyboardState {
-        guard startIfNeeded(),
-              let scalar = character.unicodeScalars.first
-        else { return notReadyState() }
+    func processKeyCode(_ code: Int32) -> RimeKeyboardUpdate {
+        guard startIfNeeded() else { return notReadyUpdate() }
         return rimeQueue.sync {
-            _ = api.setOption(session, andOption: "ascii_mode", andValue: false)
-            _ = api.processKeyCode(Int32(scalar.value), modifier: 0, andSession: session)
-            return stateOnQueue(commitText: drainCommit())
-        }
-    }
-
-    func processCharacter(
-        _ character: String,
-        asciiPunctuation: Bool,
-        asciiMode: Bool
-    ) -> RimeKeyboardState {
-        setDesiredOptions(asciiPunctuation: asciiPunctuation, asciiMode: asciiMode)
-        guard startIfNeeded(),
-              let scalar = character.unicodeScalars.first
-        else { return notReadyState() }
-        return rimeQueue.sync {
-            applyOptionsOnQueue(asciiMode: asciiMode, asciiPunctuation: asciiPunctuation)
-            _ = api.processKeyCode(Int32(scalar.value), modifier: 0, andSession: session)
-            return stateOnQueue(commitText: drainCommit())
-        }
-    }
-
-    func processCharacterIfReady(
-        _ character: String,
-        asciiPunctuation: Bool,
-        asciiMode: Bool
-    ) -> RimeCharacterProcessResult {
-        setDesiredOptions(asciiPunctuation: asciiPunctuation, asciiMode: asciiMode)
-        guard startIfNeeded(),
-              let scalar = character.unicodeScalars.first
-        else { return .notReady(notReadyState()) }
-        return rimeQueue.sync {
-            guard isReadyOnQueue else { return .notReady(notReadyState()) }
-            applyOptionsOnQueue(asciiMode: asciiMode, asciiPunctuation: asciiPunctuation)
-            _ = api.processKeyCode(Int32(scalar.value), modifier: 0, andSession: session)
-            return .processed(stateOnQueue(commitText: drainCommit()))
-        }
-    }
-
-    func processKeyCode(_ code: Int32) -> RimeKeyboardState {
-        guard startIfNeeded() else { return notReadyState() }
-        return rimeQueue.sync {
+            guard isReadyOnQueue else { return notReadyUpdate() }
             _ = api.processKeyCode(code, modifier: 0, andSession: session)
-            return stateOnQueue(commitText: drainCommit())
+            var committedTexts: [String] = []
+            drainCommit(into: &committedTexts)
+            return captureUpdateOnQueue(committedTexts: committedTexts)
         }
     }
 
@@ -564,19 +776,19 @@ final class RimeInputController: @unchecked Sendable {
         _ input: String,
         asciiPunctuation: Bool,
         asciiMode: Bool
-    ) -> RimeKeyboardState {
+    ) -> RimeKeyboardUpdate {
         setDesiredOptions(asciiPunctuation: asciiPunctuation, asciiMode: asciiMode)
-        guard startIfNeeded() else { return notReadyState() }
+        guard startIfNeeded() else { return notReadyUpdate() }
         return rimeQueue.sync {
-            guard isReadyOnQueue else { return notReadyState() }
+            guard isReadyOnQueue else { return notReadyUpdate() }
             applyOptionsOnQueue(asciiMode: asciiMode, asciiPunctuation: asciiPunctuation)
             api.cleanComposition(session)
-            var committedText = ""
+            var committedTexts: [String] = []
             for scalar in input.unicodeScalars {
                 _ = api.processKeyCode(Int32(scalar.value), modifier: 0, andSession: session)
-                committedText += drainCommit()
+                drainCommit(into: &committedTexts)
             }
-            return stateOnQueue(commitText: committedText)
+            return captureUpdateOnQueue(committedTexts: committedTexts)
         }
     }
 
@@ -587,102 +799,229 @@ final class RimeInputController: @unchecked Sendable {
     ) -> RimeKeyCodeProcessResult {
         setDesiredOptions(asciiPunctuation: asciiPunctuation, asciiMode: asciiMode)
         guard startIfNeeded() else {
-            return RimeKeyCodeProcessResult(wasComposing: false, state: notReadyState())
+            return RimeKeyCodeProcessResult(wasComposing: false, update: notReadyUpdate())
         }
         return rimeQueue.sync {
             guard isReadyOnQueue else {
-                return RimeKeyCodeProcessResult(wasComposing: false, state: notReadyState())
+                return RimeKeyCodeProcessResult(wasComposing: false, update: notReadyUpdate())
             }
             applyOptionsOnQueue(asciiMode: asciiMode, asciiPunctuation: asciiPunctuation)
-            let wasComposing = isComposingOnQueue()
+            let wasComposing = latestCompositionOnQueue.isComposing
             _ = api.processKeyCode(code, modifier: 0, andSession: session)
+            var committedTexts: [String] = []
+            drainCommit(into: &committedTexts)
             return RimeKeyCodeProcessResult(
                 wasComposing: wasComposing,
-                state: stateOnQueue(commitText: drainCommit())
+                update: captureUpdateOnQueue(committedTexts: committedTexts)
             )
         }
     }
 
-    func selectCandidate(at index: Int) -> RimeKeyboardState {
-        guard startIfNeeded() else { return notReadyState() }
+    func selectCandidate(at index: Int) -> RimeKeyboardUpdate {
+        guard startIfNeeded() else { return notReadyUpdate() }
         return rimeQueue.sync {
+            guard isReadyOnQueue else { return notReadyUpdate() }
             _ = api.selectCandidate(session, andIndex: Int32(index))
-            return stateOnQueue(commitText: drainCommit())
+            var committedTexts: [String] = []
+            drainCommit(into: &committedTexts)
+            return captureUpdateOnQueue(committedTexts: committedTexts)
         }
     }
 
-    func commitComposition() -> RimeKeyboardState {
-        guard startIfNeeded() else { return notReadyState() }
+    func commitComposition() -> RimeKeyboardUpdate {
+        guard startIfNeeded() else { return notReadyUpdate() }
         return rimeQueue.sync {
+            guard isReadyOnQueue else { return notReadyUpdate() }
             _ = api.commitComposition(session)
-            return stateOnQueue(commitText: drainCommit())
+            var committedTexts: [String] = []
+            drainCommit(into: &committedTexts)
+            return captureUpdateOnQueue(committedTexts: committedTexts)
         }
     }
 
-    func commitRawInput() -> RimeKeyboardState {
-        guard startIfNeeded() else { return notReadyState() }
+    func commitRawInput() -> RimeKeyboardUpdate {
+        guard startIfNeeded() else { return notReadyUpdate() }
         return rimeQueue.sync {
+            guard isReadyOnQueue else { return notReadyUpdate() }
             let rawInput = api.getInput(session) ?? ""
             api.cleanComposition(session)
-            return stateOnQueue(commitText: rawInput)
+            return captureUpdateOnQueue(committedTexts: rawInput.isEmpty ? [] : [rawInput])
         }
     }
 
-    func commitVisibleComposition(_ text: String) -> RimeKeyboardState {
-        guard startIfNeeded() else { return notReadyState(commitText: text) }
+    func commitVisibleComposition(_ text: String) -> RimeKeyboardUpdate {
+        guard startIfNeeded() else {
+            return notReadyUpdate(committedTexts: text.isEmpty ? [] : [text])
+        }
         return rimeQueue.sync {
+            guard isReadyOnQueue else {
+                return notReadyUpdate(committedTexts: text.isEmpty ? [] : [text])
+            }
             api.cleanComposition(session)
-            return stateOnQueue(commitText: text)
+            return captureUpdateOnQueue(committedTexts: text.isEmpty ? [] : [text])
         }
     }
 
-    func clearComposition() -> RimeKeyboardState {
-        guard startIfNeeded() else { return notReadyState() }
+    func clearComposition() -> RimeKeyboardUpdate {
+        guard startIfNeeded() else { return notReadyUpdate() }
         return rimeQueue.sync {
+            guard isReadyOnQueue else { return notReadyUpdate() }
             api.cleanComposition(session)
-            return stateOnQueue()
+            return captureUpdateOnQueue()
         }
     }
 
-    func state(commitText: String = "") -> RimeKeyboardState {
-        guard startIfNeeded() else { return notReadyState(commitText: commitText) }
+    /// Extends only the candidate projection for an already-rendered revision.
+    /// It cannot produce commits or rewrite the composition projection.
+    func expandedCandidateWindow(
+        upTo candidateCount: Int,
+        matching expectedWindow: RimeCandidateWindow
+    ) -> RimeCandidateWindow? {
+        guard candidateCount > expectedWindow.loadedCandidateCount else {
+            return expectedWindow
+        }
+        guard expectedWindow.mayHaveMore else { return expectedWindow }
+        guard isLatestRevision(expectedWindow.revision) else { return nil }
+        guard startIfNeeded() else { return nil }
+
         return rimeQueue.sync {
-            stateOnQueue(commitText: commitText)
+            guard isLatestRevision(expectedWindow.revision) else { return nil }
+            let signpostID = OSSignpostID(log: rimePerformanceLog)
+            os_signpost(
+                .begin,
+                log: rimePerformanceLog,
+                name: "RimeCandidateWindowExtension",
+                signpostID: signpostID,
+                "requested=%{public}d",
+                candidateCount - expectedWindow.loadedCandidateCount
+            )
+            var loadedCandidateCount = 0
+            defer {
+                os_signpost(
+                    .end,
+                    log: rimePerformanceLog,
+                    name: "RimeCandidateWindowExtension",
+                    signpostID: signpostID,
+                    "loaded=%{public}d",
+                    loadedCandidateCount
+                )
+            }
+
+            guard isReadyOnQueue,
+                  let status = api.getStatus(session),
+                  let context = api.getContext(session)
+            else { return nil }
+
+            let input = api.getInput(session) ?? ""
+            let composition = context.composition
+            let preedit = composition?.preedit ?? input
+            let pageSize = max(Int(context.menu?.pageSize ?? 0), 1)
+            let pageNo = max(Int(context.menu?.pageNo ?? 0), 0)
+            let candidateOffset = pageSize * pageNo
+            let liveIdentity = RimeCompositionSnapshot.Identity(
+                isComposing: status.isComposing || !input.isEmpty,
+                input: input,
+                preedit: preedit,
+                preeditSelectionStart: Int(composition?.selStart ?? 0),
+                preeditSelectionEnd: Int(composition?.selEnd ?? 0)
+            )
+            guard liveIdentity == expectedWindow.compositionIdentity,
+                  candidateOffset == expectedWindow.offset
+            else { return nil }
+
+            let missingCount = candidateCount - expectedWindow.loadedCandidateCount
+            let additionalCandidates = api.getCandidateWith(
+                Int32(expectedWindow.endIndex),
+                andCount: Int32(missingCount),
+                andSession: session
+            ) ?? []
+            loadedCandidateCount = additionalCandidates.count
+            let additionalRawCandidates = makeKeyboardCandidates(
+                from: additionalCandidates,
+                absoluteStartIndex: expectedWindow.endIndex
+            )
+            var rawCandidates = expectedWindow.retainedCandidates
+            rawCandidates.append(contentsOf: additionalRawCandidates)
+            var displayCandidates = rawCandidates
+            if displayCandidates.isEmpty,
+               let preview = context.commitTextPreview,
+               !preview.isEmpty,
+               preview != input {
+                displayCandidates = [RimeKeyboardCandidate(text: preview, selectionIndex: 0)]
+            }
+            let candidateWindowEndIndex = expectedWindow.endIndex
+                + additionalCandidates.count
+
+            return RimeCandidateWindow(
+                revision: expectedWindow.revision,
+                compositionIdentity: expectedWindow.compositionIdentity,
+                candidates: displayCandidates,
+                retainedCandidates: rawCandidates,
+                offset: candidateOffset,
+                pageSize: pageSize,
+                endIndex: candidateWindowEndIndex,
+                mayHaveMore: !(context.menu?.isLastPage ?? true)
+                    && additionalCandidates.count >= missingCount,
+                hasPreviousPage: pageNo > 0,
+                hasNextPage: !(context.menu?.isLastPage ?? true)
+            )
         }
     }
 
     private var isReadyOnQueue: Bool {
-        session != 0 && selectedSchemaID == effectiveDesiredProfileOnQueue.schemaID && lastErrorMessage == nil
+        stateLock.lock()
+        let lifecycleIsReady = activationPolicy.isReady && lastErrorMessage == nil
+        stateLock.unlock()
+        guard lifecycleIsReady,
+              session != 0,
+              let activeSessionConfiguration
+        else { return false }
+        return selectedSchemaID == activeSessionConfiguration.effectiveProfile.schemaID
     }
 
-    private var desiredProfileOnQueue: RimeKeyboardProfile {
+    private func issueProjectionRevision() -> (revision: UInt64, errorMessage: String?) {
         stateLock.lock()
         defer { stateLock.unlock() }
-        return desiredProfile
+        lastIssuedRevision += 1
+        return (lastIssuedRevision, lastErrorMessage)
     }
 
-    private var effectiveDesiredProfileOnQueue: RimeKeyboardProfile {
-        Self.activeEffectiveProfile(for: desiredProfileOnQueue, now: Date().timeIntervalSince1970)
-    }
-
-    private var desiredUserPhraseSignatureOnQueue: String {
+    private func isLatestRevision(_ revision: UInt64) -> Bool {
         stateLock.lock()
         defer { stateLock.unlock() }
-        return desiredUserPhraseSignature
+        return revision != 0 && revision == lastIssuedRevision
     }
 
-    private var desiredUserPhraseSnapshotOnQueue: (content: String, signature: String) {
-        stateLock.lock()
-        defer { stateLock.unlock() }
-        return (desiredUserPhraseContent, desiredUserPhraseSignature)
-    }
+    private func captureUpdateOnQueue(committedTexts: [String] = []) -> RimeKeyboardUpdate {
+        let signpostID = OSSignpostID(log: rimePerformanceLog)
+        os_signpost(
+            .begin,
+            log: rimePerformanceLog,
+            name: "RimeCandidateSnapshot",
+            signpostID: signpostID
+        )
+        var loadedCandidateCount = 0
+        defer {
+            os_signpost(
+                .end,
+                log: rimePerformanceLog,
+                name: "RimeCandidateSnapshot",
+                signpostID: signpostID,
+                "loaded=%{public}d",
+                loadedCandidateCount
+            )
+        }
 
-    private func stateOnQueue(commitText: String = "") -> RimeKeyboardState {
+        let projection = issueProjectionRevision()
         guard isReadyOnQueue,
               let status = api.getStatus(session),
               let context = api.getContext(session)
         else {
-            return notReadyState(commitText: commitText)
+            return unavailableUpdate(
+                revision: projection.revision,
+                errorMessage: projection.errorMessage,
+                committedTexts: committedTexts
+            )
         }
 
         let input = api.getInput(session) ?? ""
@@ -693,317 +1032,163 @@ final class RimeInputController: @unchecked Sendable {
         let pageSize = max(Int(context.menu?.pageSize ?? 0), 1)
         let pageNo = max(Int(context.menu?.pageNo ?? 0), 0)
         let candidateOffset = pageSize * pageNo
-        let fetchedCandidates = api.getCandidateWith(
-            Int32(candidateOffset),
-            andCount: Self.candidateLimit,
-            andSession: session
-        )
         let menuCandidates = context.menu?.candidates ?? []
-        let rawCandidates: [IRimeCandidate]
-        let effectiveCandidateOffset: Int
-        if let fetchedCandidates, !fetchedCandidates.isEmpty {
-            rawCandidates = fetchedCandidates
-            effectiveCandidateOffset = candidateOffset
-        } else {
-            rawCandidates = candidateOffset == 0 ? menuCandidates : []
-            effectiveCandidateOffset = 0
+        let isLastPage = context.menu?.isLastPage ?? true
+        let requestedCount = min(
+            KeyboardCandidateWindowPolicy.initialEngineCount(
+                menuCount: menuCandidates.count,
+                pageSize: pageSize,
+                isLastPage: isLastPage
+            ),
+            Int(Int32.max)
+        )
+        var rawCandidates = Array(menuCandidates.prefix(requestedCount))
+        let missingCount = requestedCount - rawCandidates.count
+        if missingCount > 0,
+           let additionalCandidates = api.getCandidateWith(
+               Int32(candidateOffset + rawCandidates.count),
+               andCount: Int32(missingCount),
+               andSession: session
+           ) {
+            rawCandidates.append(contentsOf: additionalCandidates.prefix(missingCount))
         }
-        let candidates = rawCandidates.prefix(Int(Self.candidateLimit))
-            .enumerated()
-            .compactMap { rawIndex, candidate -> RimeKeyboardCandidate? in
-                guard let text = candidate.text, !text.isEmpty else { return nil }
-                return RimeKeyboardCandidate(
-                    text: text,
-                    comment: candidate.comment ?? "",
-                    selectionIndex: effectiveCandidateOffset + rawIndex
-                )
-            }
-        var displayCandidates = displayCandidates(from: candidates, input: input, preedit: preedit)
+        loadedCandidateCount = rawCandidates.count
+        let candidates = makeKeyboardCandidates(
+            from: rawCandidates,
+            absoluteStartIndex: candidateOffset
+        )
+        var displayCandidates = candidates
         if displayCandidates.isEmpty,
            let preview = context.commitTextPreview,
            !preview.isEmpty,
            preview != input {
-            displayCandidates = [RimeKeyboardCandidate(text: preview, comment: "", selectionIndex: 0)]
+            displayCandidates = [RimeKeyboardCandidate(text: preview, selectionIndex: 0)]
         }
 
-        return RimeKeyboardState(
+        let compositionSnapshot = RimeCompositionSnapshot(
+            revision: projection.revision,
             isReady: true,
             isComposing: status.isComposing || !input.isEmpty,
             input: input,
             preedit: preedit,
             preeditSelectionStart: preeditSelectionStart,
             preeditSelectionEnd: preeditSelectionEnd,
-            candidates: displayCandidates,
-            candidateOffset: effectiveCandidateOffset,
-            hasPreviousPage: pageNo > 0,
-            hasNextPage: !(context.menu?.isLastPage ?? true),
-            commitText: commitText,
             errorMessage: nil
+        )
+        let candidateWindow = RimeCandidateWindow(
+            revision: projection.revision,
+            compositionIdentity: compositionSnapshot.identity,
+            candidates: displayCandidates,
+            retainedCandidates: candidates,
+            offset: candidateOffset,
+            pageSize: pageSize,
+            endIndex: candidateOffset + rawCandidates.count,
+            mayHaveMore: requestedCount > 0
+                && !isLastPage
+                && rawCandidates.count >= requestedCount,
+            hasPreviousPage: pageNo > 0,
+            hasNextPage: !isLastPage
+        )
+        latestCompositionOnQueue = compositionSnapshot
+        return RimeKeyboardUpdate(
+            composition: compositionSnapshot,
+            candidateWindow: candidateWindow,
+            committedTexts: committedTexts
         )
     }
 
-    private func isComposingOnQueue() -> Bool {
-        guard isReadyOnQueue,
-              let status = api.getStatus(session)
-        else { return false }
-        let input = api.getInput(session) ?? ""
-        return status.isComposing || !input.isEmpty
-    }
-
-    private func displayCandidates(
-        from candidates: [RimeKeyboardCandidate],
-        input: String,
-        preedit: String
+    private func makeKeyboardCandidates(
+        from candidates: [IRimeCandidate],
+        absoluteStartIndex: Int
     ) -> [RimeKeyboardCandidate] {
-        var englishCompletionCount = 0
-        let inputLength = input.unicodeScalars.count
-        var filteredCandidates = candidates.filter { candidate in
-            guard Self.isEnglishCompletionCandidate(candidate) else { return true }
-            guard inputLength >= Self.englishCompletionMinimumInputLength else { return false }
-            guard englishCompletionCount < Self.englishCompletionDisplayLimit else { return false }
-            englishCompletionCount += 1
-            return true
-        }
-        if let placement = literalEnglishCandidatePlacement(input: input, preedit: preedit, candidates: filteredCandidates) {
-            let literal = RimeKeyboardCandidate(
-                text: input,
-                comment: "",
-                selectionIndex: RimeKeyboardCandidate.literalSelectionIndex,
-                commitsLiteralInput: true
+        candidates.enumerated().compactMap { rawIndex, candidate in
+            guard let text = candidate.text, !text.isEmpty else { return nil }
+            return RimeKeyboardCandidate(
+                text: text,
+                selectionIndex: KeyboardCandidateWindowPolicy.absoluteSelectionIndex(
+                    candidateOffset: absoluteStartIndex,
+                    rawIndex: rawIndex
+                )
             )
-            switch placement {
-            case .first:
-                filteredCandidates.insert(literal, at: 0)
-            case .afterBestChinese:
-                filteredCandidates.insert(literal, at: min(1, filteredCandidates.count))
-            }
-        }
-        return filteredCandidates
-    }
-
-    private static func isEnglishCompletionCandidate(_ candidate: RimeKeyboardCandidate) -> Bool {
-        candidate.comment.hasPrefix("~")
-            && candidate.text.unicodeScalars.contains { scalar in
-                scalar.value <= 0x7F && CharacterSet.letters.contains(scalar)
-            }
-    }
-
-    private enum LiteralEnglishPlacement {
-        case first
-        case afterBestChinese
-    }
-
-    /// Mirrors mainstream pinyin IME mixed-input behavior: Chinese candidates
-    /// stay primary unless we have strong evidence of literal Latin. Long
-    /// pinyin-like runs with a single stray consonant ("xian z kai ...") are
-    /// usually unfinished Chinese/jianpin, not English, so they must not put a
-    /// wide raw-letter candidate first. Known English words remain available
-    /// after the best Chinese candidate; short v-containing tokens such as
-    /// stock tickers ("nvda") surface literal first because pinyin treats `v`
-    /// as `ü`, which otherwise corrupts the intended Latin token.
-    private func literalEnglishCandidatePlacement(
-        input: String,
-        preedit: String,
-        candidates: [RimeKeyboardCandidate]
-    ) -> LiteralEnglishPlacement? {
-        let code = input.lowercased()
-        guard Self.isEnglishWordLookupCode(code),
-              !candidates.contains(where: { $0.text.lowercased() == code && Self.isEnglishWordLookupCode($0.text.lowercased()) }),
-              preedit != input,
-              Self.containsRimeSegmentDelimiter(preedit)
-        else { return nil }
-        let isKnownEnglishWord = englishWordCodesOnQueue().contains(code)
-        if code.unicodeScalars.count >= Self.englishCompletionMinimumInputLength,
-           Self.containsNonTrailingStrandedConsonantSegment(preedit) {
-            if Self.isShortLiteralLatinToken(code) {
-                return .first
-            }
-            return isKnownEnglishWord ? .afterBestChinese : nil
-        }
-        if isKnownEnglishWord {
-            return .afterBestChinese
-        }
-        return nil
-    }
-
-    private static func isShortLiteralLatinToken(_ code: String) -> Bool {
-        let length = code.unicodeScalars.count
-        guard length >= 2, length <= shortLiteralLatinMaximumInputLength else { return false }
-        return code.contains("v")
-    }
-
-    private static func containsNonTrailingStrandedConsonantSegment(_ preedit: String) -> Bool {
-        preedit
-            .split(whereSeparator: { character in
-                character == "'" || character == "\\" || character == " " || character == "|" || character == "`"
-            })
-            .dropLast()
-            .contains { segment in
-                guard segment.count == 1,
-                      let scalar = segment.unicodeScalars.first,
-                      scalar.value >= 0x61, scalar.value <= 0x7A
-                else { return false }
-                return !"aeo".unicodeScalars.contains(scalar)
-            }
-    }
-
-    private static func isEnglishWordLookupCode(_ code: String) -> Bool {
-        guard code.count >= 2 else { return false }
-        return code.unicodeScalars.allSatisfy { scalar in
-            scalar.value >= 0x61 && scalar.value <= 0x7A
         }
     }
 
-    private static func containsRimeSegmentDelimiter(_ text: String) -> Bool {
-        text.contains { character in
-            character == "'" || character == "\\" || character == " " || character == "|" || character == "`"
-        }
+    private func notReadyUpdate(committedTexts: [String] = []) -> RimeKeyboardUpdate {
+        let projection = issueProjectionRevision()
+        return unavailableUpdate(
+            revision: projection.revision,
+            errorMessage: projection.errorMessage,
+            committedTexts: committedTexts
+        )
     }
 
-    private func notReadyState(commitText: String = "") -> RimeKeyboardState {
-        stateLock.lock()
-        let errorMessage = lastErrorMessage
-        stateLock.unlock()
-        return RimeKeyboardState(
+    private func unavailableUpdate(
+        revision: UInt64,
+        errorMessage: String?,
+        committedTexts: [String]
+    ) -> RimeKeyboardUpdate {
+        let composition = RimeCompositionSnapshot(
+            revision: revision,
             isReady: false,
             isComposing: false,
             input: "",
             preedit: "",
             preeditSelectionStart: 0,
             preeditSelectionEnd: 0,
-            candidates: [],
-            candidateOffset: 0,
-            hasPreviousPage: false,
-            hasNextPage: false,
-            commitText: commitText,
             errorMessage: errorMessage
         )
-    }
-
-    private func finishStartupOnQueue(_ nextState: StartupState, errorMessage: String?) {
-        if nextState == .failed {
-            if session != 0 {
-                api.cleanAllSession()
-                session = 0
-                probeSession = 0
-            }
-            selectedSchemaID = nil
-        }
-        stateLock.lock()
-        startupState = nextState
-        lastErrorMessage = errorMessage
-        stateLock.unlock()
-    }
-
-    private func ensureProbeSessionOnQueue() {
-        guard probeSession == 0 else { return }
-        let created = api.createSession()
-        guard created != 0 else {
-            rimeLog.error("Rime probe session creation failed")
-            return
-        }
-        let schemaID = effectiveDesiredProfileOnQueue.schemaID
-        guard api.selectSchema(created, andSchameId: schemaID) else {
-            rimeLog.error("Rime probe schema select failed")
-            return
-        }
-        _ = api.setOption(created, andOption: "ascii_mode", andValue: false)
-        _ = api.setOption(created, andOption: "ascii_punct", andValue: false)
-        probeSession = created
-    }
-
-    /// Ask librime whether `left` and `right` candidate letters cleanly extend
-    /// the current main-session composition or force a segment split. Used by
-    /// the keyboard's hit-test to resolve gutter taps in favour of the
-    /// linguistically valid pinyin continuation.
-    ///
-    /// Runs synchronously on the rime serial queue. Total cost is roughly
-    /// `(len(input) + 2) * 2` processKey calls — typically under 2 ms.
-    /// Returns `(.unknown, .unknown)` whenever the probe cannot give a useful
-    /// signal so the caller can fall back to geometric midpoint resolution.
-    func probeGutterValidity(left: Character, right: Character) -> (left: RimeProbeValidity, right: RimeProbeValidity) {
-        guard isReady, probeSession != 0 else {
-            return (.unknown, .unknown)
-        }
-        return rimeQueue.sync {
-            guard isReadyOnQueue, probeSession != 0 else {
-                return (.unknown, .unknown)
-            }
-            let input = api.getInput(session) ?? ""
-            guard !input.isEmpty else {
-                return (.unknown, .unknown)
-            }
-            api.cleanComposition(probeSession)
-            for scalar in input.unicodeScalars {
-                _ = api.processKeyCode(Int32(scalar.value), modifier: 0, andSession: probeSession)
-            }
-            let baselinePreedit = api.getContext(probeSession)?.composition?.preedit ?? input
-            let baselineInput = api.getInput(probeSession) ?? input
-            let leftValidity = probeCandidateOnQueue(
-                letter: left,
-                baselineInput: baselineInput,
-                baselinePreedit: baselinePreedit
-            )
-            let rightValidity = probeCandidateOnQueue(
-                letter: right,
-                baselineInput: baselineInput,
-                baselinePreedit: baselinePreedit
-            )
-            return (leftValidity, rightValidity)
-        }
-    }
-
-    private func probeCandidateOnQueue(
-        letter: Character,
-        baselineInput: String,
-        baselinePreedit: String
-    ) -> RimeProbeValidity {
-        guard let scalar = letter.unicodeScalars.first else { return .unknown }
-        _ = api.processKeyCode(Int32(scalar.value), modifier: 0, andSession: probeSession)
-        let inputAfter = api.getInput(probeSession) ?? ""
-        let preeditAfter = api.getContext(probeSession)?.composition?.preedit ?? ""
-        // Restore probe to the baseline before returning so the next candidate
-        // sees the same starting state.
-        api.cleanComposition(probeSession)
-        for scalar in baselineInput.unicodeScalars {
-            _ = api.processKeyCode(Int32(scalar.value), modifier: 0, andSession: probeSession)
-        }
-        // The character must have appended cleanly to the input buffer. Any
-        // other transition (commit, schema-driven rewrite) is treated as
-        // unknown so we do not overweight strange Rime states.
-        guard inputAfter.count == baselineInput.count + 1 else {
-            return .unknown
-        }
-        // Rime emits a segment delimiter — usually `'` or space — into the
-        // preedit when an incoming letter cannot continue the current
-        // syllable. Defensively detect any of the common delimiter glyphs.
-        let delimiters: Set<Character> = ["'", "\\", " ", "|", "`"]
-        let baselineDelimiters = baselinePreedit.filter { delimiters.contains($0) }.count
-        let afterDelimiters = preeditAfter.filter { delimiters.contains($0) }.count
-        if afterDelimiters > baselineDelimiters {
-            return .split
-        }
-        return .extend
-    }
-
-    private func applyDesiredOptionsOnQueue() {
-        stateLock.lock()
-        let asciiMode = desiredAsciiMode
-        let asciiPunctuation = desiredAsciiPunctuation
-        stateLock.unlock()
-        applyOptionsOnQueue(asciiMode: asciiMode, asciiPunctuation: asciiPunctuation)
+        return RimeKeyboardUpdate(
+            composition: composition,
+            candidateWindow: .empty(
+                revision: revision,
+                compositionIdentity: composition.identity
+            ),
+            committedTexts: committedTexts
+        )
     }
 
     private func setDesiredOptions(asciiPunctuation: Bool, asciiMode: Bool) {
         stateLock.lock()
-        desiredAsciiMode = asciiMode
-        desiredAsciiPunctuation = asciiPunctuation
+        desiredInputOptions = KeyboardRimeInputOptions(
+            asciiMode: asciiMode,
+            asciiPunctuation: asciiPunctuation
+        )
         stateLock.unlock()
     }
 
+    private func desiredInputOptionsSnapshot() -> KeyboardRimeInputOptions {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return desiredInputOptions
+    }
+
+    /// Preference-only changes are serialized with key mutations, but never
+    /// enter the activation lifecycle. If startup is still running, that
+    /// activation reads the same desired snapshot before publishing ready.
+    private func applyDesiredOptionsToLiveSession() {
+        rimeQueue.async { [weak self] in
+            guard let self, self.isReadyOnQueue else { return }
+            self.applyDesiredOptionsOnQueue()
+        }
+    }
+
+    private func applyDesiredOptionsOnQueue() {
+        let options = desiredInputOptionsSnapshot()
+        applyOptionsOnQueue(
+            asciiMode: options.asciiMode,
+            asciiPunctuation: options.asciiPunctuation
+        )
+    }
+
     private func applyOptionsOnQueue(asciiMode: Bool, asciiPunctuation: Bool) {
+        let options = KeyboardRimeInputOptions(
+            asciiMode: asciiMode,
+            asciiPunctuation: asciiPunctuation
+        )
+        guard appliedInputOptions != options else { return }
         _ = api.setOption(session, andOption: "ascii_mode", andValue: asciiMode)
         _ = api.setOption(session, andOption: "ascii_punct", andValue: asciiPunctuation)
+        appliedInputOptions = options
     }
 
     private func applyCustomPhrasesOnQueue(
@@ -1020,8 +1205,9 @@ final class RimeInputController: @unchecked Sendable {
         appliedUserPhraseSignature = signature
     }
 
-    private func drainCommit() -> String {
-        api.getCommit(session) ?? ""
+    private func drainCommit(into committedTexts: inout [String]) {
+        guard let text = api.getCommit(session), !text.isEmpty else { return }
+        committedTexts.append(text)
     }
 
     private func ensureUserDataDirectory() throws -> URL {
@@ -1037,73 +1223,6 @@ final class RimeInputController: @unchecked Sendable {
         return userDataURL
     }
 
-    private func englishWordCodesOnQueue() -> Set<String> {
-        if let englishWordCodes {
-            return englishWordCodes
-        }
-        guard let runtimeSharedSupportURL else {
-            englishWordCodes = []
-            return []
-        }
-        loadEnglishWordCodesOnQueue(from: runtimeSharedSupportURL)
-        return englishWordCodes ?? []
-    }
-
-    private func loadEnglishWordCodesOnQueue(from sharedSupportURL: URL) {
-        guard englishWordCodes == nil else { return }
-        let startedAt = Date()
-        if loadCompactEnglishWordCodesOnQueue(from: sharedSupportURL, startedAt: startedAt) {
-            return
-        }
-        let url = sharedSupportURL.appendingPathComponent("typeforme_english.dict.yaml")
-        guard let content = try? String(contentsOf: url, encoding: .utf8) else {
-            englishWordCodes = []
-            rimeLog.error("English Rime dictionary is missing from shared support")
-            return
-        }
-
-        var codes = Set<String>()
-        codes.reserveCapacity(80_000)
-        var inEntries = false
-        content.enumerateLines { line, _ in
-            if line == "..." {
-                inEntries = true
-                return
-            }
-            guard inEntries,
-                  !line.isEmpty,
-                  !line.hasPrefix("#")
-            else { return }
-
-            let fields = line.split(separator: "\t", omittingEmptySubsequences: false)
-            guard fields.count >= 2 else { return }
-            let code = String(fields[1]).lowercased()
-            guard Self.isEnglishWordLookupCode(code) else { return }
-            codes.insert(code)
-        }
-        englishWordCodes = codes
-        let elapsedMS = Date().timeIntervalSince(startedAt) * 1000
-        rimeLog.notice("English word code cache loaded count=\(codes.count, privacy: .public) elapsedMs=\(elapsedMS, privacy: .public)")
-    }
-
-    private func loadCompactEnglishWordCodesOnQueue(from sharedSupportURL: URL, startedAt: Date) -> Bool {
-        let url = sharedSupportURL.appendingPathComponent(Self.compactEnglishCodesFileName)
-        guard let content = try? String(contentsOf: url, encoding: .utf8) else {
-            return false
-        }
-        var codes = Set<String>()
-        codes.reserveCapacity(80_000)
-        content.enumerateLines { line, _ in
-            let code = line.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            guard Self.isEnglishWordLookupCode(code) else { return }
-            codes.insert(code)
-        }
-        englishWordCodes = codes
-        let elapsedMS = Date().timeIntervalSince(startedAt) * 1000
-        rimeLog.notice("Compact English word code cache loaded count=\(codes.count, privacy: .public) elapsedMs=\(elapsedMS, privacy: .public)")
-        return true
-    }
-
     private static func effectiveStartupProfile(
         for profile: RimeKeyboardProfile,
         now: TimeInterval
@@ -1116,25 +1235,9 @@ final class RimeInputController: @unchecked Sendable {
         guard let attempt = unresolvedStartupAttempt(now: now),
               attempt.dictionaryTier == profile.dictionaryTier
         else { return profile }
-        let fallback = saveStartupFallback(dictionaryTier: profile.dictionaryTier, now: now)
-        reportStartupFallbackToHost(
-            dictionaryTier: profile.dictionaryTier,
-            retryAfter: max(0, fallback.expiresAt - now)
-        )
+        _ = saveStartupFallback(dictionaryTier: profile.dictionaryTier, now: now)
+        reportStartupFallbackToHost(dictionaryTier: profile.dictionaryTier)
         return standardFallbackProfile(from: profile, reason: "previous startup did not finish")
-    }
-
-    private static func activeEffectiveProfile(
-        for profile: RimeKeyboardProfile,
-        now: TimeInterval
-    ) -> RimeKeyboardProfile {
-        guard profile.dictionaryTier != .standard,
-              let fallback = activeStartupFallback(now: now),
-              fallback.dictionaryTier == profile.dictionaryTier
-        else { return profile }
-        var effective = profile
-        effective.dictionaryTier = .standard
-        return effective
     }
 
     private static func standardFallbackProfile(
@@ -1229,30 +1332,15 @@ final class RimeInputController: @unchecked Sendable {
     }
 
     private static func reportStartupFallbackToHost(
-        dictionaryTier: KeyboardRimeDictionaryTier,
-        retryAfter: TimeInterval
+        dictionaryTier: KeyboardRimeDictionaryTier
     ) {
-        let retryText = startupFallbackRetryText(retryAfter)
         let issue = KeyboardHostIssueReport(
             commandID: nil,
-            message: "中文词典 \(dictionaryTier.title) 上次启动未完成，已临时切回 Standard，约 \(retryText) 后会自动重试。"
+            message: "中文词典 \(dictionaryTier.title) 上次启动未完成，已临时切回 Standard；后续重新启动输入引擎时会再次尝试。"
         )
         if KeyboardSharedDefaults.saveKeyboardHostIssue(issue) {
             KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.keyboardIssueReported)
         }
-    }
-
-    private static func startupFallbackRetryText(_ interval: TimeInterval) -> String {
-        let seconds = max(1, Int(interval.rounded(.up)))
-        if seconds < 60 {
-            return "\(seconds) 秒"
-        }
-        let minutes = max(1, Int(ceil(Double(seconds) / 60.0)))
-        if minutes < 60 {
-            return "\(minutes) 分钟"
-        }
-        let hours = max(1, Int(ceil(Double(minutes) / 60.0)))
-        return "\(hours) 小时"
     }
 
     private static func customPhraseFileContent(from phrases: [String]) -> String {

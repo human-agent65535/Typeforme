@@ -6,6 +6,10 @@ import OSLog
 import QuartzCore
 
 private let kbLog = Logger(subsystem: TypeformeBundleConfiguration.keyboardBundleIdentifier, category: "ui")
+private let keyboardCandidatePerformanceLog = OSLog(
+    subsystem: TypeformeBundleConfiguration.keyboardBundleIdentifier,
+    category: "candidate-performance"
+)
 
 @MainActor
 private final class KeyboardHostLinkOpener: ObservableObject {
@@ -128,6 +132,62 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private enum KeyboardFocus: String {
         case voice
         case text
+    }
+
+    private struct CandidateGridKey: Equatable {
+        let selectionIndex: Int
+        let text: String
+    }
+
+    private struct CandidateInlineLayoutSignature: Equatable {
+        let viewportWidthInPixels: Int
+        let displayScaleInHundredths: Int
+    }
+
+    private struct CandidateGridLayoutSignature: Equatable {
+        let availableWidthInPixels: Int
+        let displayScaleInHundredths: Int
+        let columnCount: Int
+        let isDark: Bool
+    }
+
+    /// Main-actor render ownership for the expanded candidate surface. A
+    /// stable candidate prefix and geometry may only grow by appending cells;
+    /// changed content or geometry is the sole reason to reflow existing rows.
+    private struct CandidateGridRenderState {
+        let layoutSignature: CandidateGridLayoutSignature
+        var keys: [CandidateGridKey] = []
+        var rows: [UIStackView] = []
+        var tailRow: UIStackView?
+        var tailUsedColumns = 0
+        var tailSpacer: UIView?
+    }
+
+    /// A semantic grid position survives reflow when rotation or trait changes
+    /// alter the number of columns. Pixel offsets alone point at a different
+    /// candidate after the rows are repacked.
+    private struct CandidateGridScrollAnchor {
+        let selectionIndex: Int
+        let offsetFromViewportTop: CGFloat
+    }
+
+    private enum CandidateViewportAxis {
+        case horizontal
+        case vertical
+
+        func leadingEdge(of frame: CGRect) -> CGFloat {
+            switch self {
+            case .horizontal: frame.minX
+            case .vertical: frame.minY
+            }
+        }
+
+        func trailingEdge(of frame: CGRect) -> CGFloat {
+            switch self {
+            case .horizontal: frame.maxX
+            case .vertical: frame.maxY
+            }
+        }
     }
 
     private struct KeyboardFocusPager {
@@ -404,20 +464,31 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private var isChineseInputEnabled = true
     private var isTouchLearningEnabled = true
     private var chinesePunctuationStyle: KeyboardChinesePunctuationStyle = .chinese
-    private let rimeInput = RimeInputController()
+    private lazy var rimeInput = RimeInputController(
+        acknowledgedResetUserDataGeneration: defaults.integer(
+            forKey: rimeLearningResetGenerationKey
+        )
+    )
+    /// The last engine projection accepted on the main actor. Rime updates are
+    /// one-shot events; only these reusable composition/candidate values are
+    /// retained so UI reads never synchronously recapture the engine.
+    private var currentRimeComposition = RimeCompositionSnapshot.unavailable
+    private var currentRimeCandidateWindow = RimeCandidateWindow.unavailable
     private lazy var textTouchLearner = TextKeyTouchLearner(
         defaults: defaults,
         storageKey: textTouchLearningStatsKey
     )
     private let chineseLearningRecorder = ChineseLearningRecorder()
-    private var pendingRimeCharacters: [String] = []
-    private var pendingRimeDirectTextKeys: [String] = []
+    private var pendingRimeInput = KeyboardPendingRimeInput()
     private var rimeCompositionSession: RimeCompositionSession?
     private var isDiscardingStaleRimeInput = false
     private var rimeInlineEditCaretOffset: Int?
     private var activeMarkedText = ""
     private var activeMarkedTextOwner: MarkedTextOwner?
     private var activeMarkedTextSelectionLocation = 0
+    /// Reentrancy guard for UITextInputDelegate callbacks caused by this
+    /// keyboard's own set/unmark operations. It is not lifecycle state.
+    private var isMutatingDocumentMarkedText = false
     private var heightConstraint: NSLayoutConstraint?
     /// While entering Typeforme from the system globe menu, UIKit may retarget
     /// the original selection touch to our globe key. Suppress that activation
@@ -667,11 +738,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private static let textToolbarIdleBottomSurfaceExpansion: CGFloat = 2
     private static let candidateInlineMinimumCellWidth: CGFloat = 41
     private static let candidateInlineCellHorizontalPadding: CGFloat = 20
-    /// Inline candidate strip renders in windows of this many cells. Rime can
-    /// return up to 60 candidates per keystroke but only ~6-8 are visible;
-    /// one chunk covers roughly two screen widths so a normal scroll never
-    /// reaches unrendered area, and the rest materialize on demand.
-    private static let candidateInlineRenderChunkCount = 14
     private static let candidateTextFontSize: CGFloat = 20
     /// The native Chinese expanded candidate panel uses compact 45pt rows and
     /// length-aware cells: short candidates fill six even columns, while long
@@ -772,10 +838,17 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     /// (status labels, notices) can never trigger a deferred append.
     private var pendingInlineCandidates: [RimeKeyboardCandidate] = []
     private var renderedInlineCandidateCount = 0
+    private var candidateInlineLayoutSignature: CandidateInlineLayoutSignature?
+    private var isReconcilingInlineCandidateLayout = false
+    /// Prevents scroll callbacks caused by a synchronous candidate relayout
+    /// from recursively requesting another Rime window.
+    private var isExtendingCandidateWindow = false
     private var reusableCandidateSeparators: [UIView] = []
     private var reusableCandidateStatusLabels: [UILabel] = []
     private var candidateStatusLabelWidthConstraints: [ObjectIdentifier: NSLayoutConstraint] = [:]
     private var isCandidateGridExpanded = false
+    private var candidateGridRenderState: CandidateGridRenderState?
+    private var isReconcilingCandidateGridLayout = false
     private var activeCandidateSeparatorIndex = 0
     private var activeCandidateStatusLabelIndex = 0
     private var keyboardRowConstraints: [NSLayoutConstraint] = []
@@ -817,6 +890,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     /// rendering directly; they must not receive the generic overlay/scale
     /// used by non-toolbar controls.
     private var toolbarIconButtonIDs: Set<ObjectIdentifier> = []
+    private var toolbarIconStates: [ObjectIdentifier: KeyboardToolbarIconState] = [:]
 
     private struct TextKeyboardHitRow {
         weak var row: UIStackView?
@@ -1096,18 +1170,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     /// switching surfaces.
     fileprivate func undoTextKeyCommitForFocusSwipe() {
         pendingTextTouchSample = nil
-        if !pendingRimeDirectTextKeys.isEmpty {
-            pendingRimeDirectTextKeys.removeLast()
-            applyRimeState(rimeInput.state())
+        if !pendingRimeInput.isEmpty {
+            pendingRimeInput.removeLast()
+            renderPendingRimeInput()
             return
         }
-        if !pendingRimeCharacters.isEmpty {
-            pendingRimeCharacters.removeLast()
-            applyRimeState(rimeInput.state())
-            return
-        }
-        if rimeInput.state().isComposing {
-            applyRimeState(rimeInput.processKeyCode(0xFF08))
+        if currentRimeComposition.isComposing {
+            applyRimeUpdate(rimeInput.processKeyCode(0xFF08))
             return
         }
         deleteDocumentTextBackward()
@@ -1240,6 +1309,60 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         return characterBand
     }
 
+    /// Candidate cells and rows are laid out monotonically along their scroll
+    /// axis. Binary-searching the first intersecting frame keeps hit testing,
+    /// overlay painting, and scroll anchoring bounded by the visible window
+    /// even after many lazy engine extensions.
+    private func visibleOrderedCandidateViews<View: UIView>(
+        _ views: [View],
+        count requestedCount: Int? = nil,
+        viewport: CGRect,
+        axis: CandidateViewportAxis
+    ) -> [View] {
+        let count = min(max(0, requestedCount ?? views.count), views.count)
+        guard count > 0, !viewport.isNull, !viewport.isEmpty else { return [] }
+
+        let viewportLeading = axis.leadingEdge(of: viewport)
+        let viewportTrailing = axis.trailingEdge(of: viewport)
+        var lowerBound = 0
+        var upperBound = count
+        while lowerBound < upperBound {
+            let index = lowerBound + (upperBound - lowerBound) / 2
+            if axis.trailingEdge(of: views[index].frame) <= viewportLeading {
+                lowerBound = index + 1
+            } else {
+                upperBound = index
+            }
+        }
+
+        var result: [View] = []
+        var index = lowerBound
+        while index < count,
+              axis.leadingEdge(of: views[index].frame) < viewportTrailing {
+            let candidateView = views[index]
+            if !candidateView.isHidden,
+               candidateView.alpha > 0.01,
+               candidateView.bounds.width > 0,
+               candidateView.bounds.height > 0 {
+                result.append(candidateView)
+            }
+            index += 1
+        }
+        return result
+    }
+
+    private func visibleInlineCandidateButtons(horizontalMargin: CGFloat = 0) -> [UIButton] {
+        let viewport = candidateScrollView
+            .convert(candidateScrollView.bounds, to: candidateStack)
+            .insetBy(dx: -horizontalMargin, dy: 0)
+        return visibleOrderedCandidateViews(
+            reusableCandidateButtons,
+            count: renderedInlineCandidateCount,
+            viewport: viewport,
+            axis: .horizontal
+        )
+    }
+
     private func candidateScrollHitTarget(at point: CGPoint) -> UIButton? {
         guard !candidateScrollView.isHidden,
               !textCandidateGridButton.isHidden
@@ -1247,9 +1370,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
         let scrollFrame = candidateScrollView.convert(candidateScrollView.bounds, to: view)
         guard scrollFrame.insetBy(dx: 0, dy: -Self.candidateStripTouchOverflowY).contains(point) else { return nil }
-        let buttons = candidateStack.arrangedSubviews.compactMap { $0 as? UIButton }
         return horizontalButtonBandTarget(
-            in: buttons,
+            in: visibleInlineCandidateButtons(horizontalMargin: 8),
             at: point,
             leftLimit: scrollFrame.minX,
             rightLimit: scrollFrame.maxX,
@@ -1262,11 +1384,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let gridFrame = candidateGridScrollView.convert(candidateGridScrollView.bounds, to: view)
         guard gridFrame.insetBy(dx: 0, dy: -4).contains(point) else { return nil }
 
-        let rows = candidateGridStack.arrangedSubviews
-            .compactMap { $0 as? UIStackView }
-            .filter { !$0.isHidden && $0.alpha > 0.01 }
-            .sorted { $0.convert($0.bounds, to: view).midY < $1.convert($1.bounds, to: view).midY }
-        for row in rows {
+        for row in visibleCandidateGridRows(verticalMargin: 4) {
             let rowFrame = row.convert(row.bounds, to: view)
             guard rowFrame.insetBy(dx: 0, dy: -4).contains(point) else { continue }
             let buttons = row.arrangedSubviews.compactMap { $0 as? UIButton }
@@ -1501,9 +1619,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func interKeyGapWinner(left: Int, right: Int, buttons: [TextKeyboardHitButton]) -> UIButton? {
-        if let probeWinner = gutterProbeWinner(left: left, right: right, buttons: buttons) {
-            return probeWinner
-        }
         return gutterGapBiasWinner(left: left, right: right, buttons: buttons)
     }
 
@@ -1513,25 +1628,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         buttons: [TextKeyboardHitButton],
         point: CGPoint
     ) -> UIButton? {
-        if let probeWinner = gutterProbeWinner(left: left, right: right, buttons: buttons) {
-            return probeWinner
-        }
         return gutterGaussianWinner(left: left, right: right, buttons: buttons, point: point)
-    }
-
-    private func gutterProbeWinner(left: Int, right: Int, buttons: [TextKeyboardHitButton]) -> UIButton? {
-        guard textInputLanguage == .chinese, !isTextShiftEnabled else { return nil }
-        guard let leftLetter = pinyinProbeLetter(for: buttons[left].button),
-              let rightLetter = pinyinProbeLetter(for: buttons[right].button)
-        else { return nil }
-        let result = rimeInput.probeGutterValidity(left: leftLetter, right: rightLetter)
-        if result.left == .extend && result.right == .split {
-            return buttons[left].button
-        }
-        if result.right == .extend && result.left == .split {
-            return buttons[right].button
-        }
-        return nil
     }
 
     private func gutterGapBiasWinner(
@@ -1598,15 +1695,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         case .right:
             return buttons[right].button
         }
-    }
-
-    private func pinyinProbeLetter(for button: UIButton) -> Character? {
-        guard let value = textKeyCommitCharacters[ObjectIdentifier(button)],
-              value.count == 1,
-              let scalar = value.unicodeScalars.first,
-              scalar.value >= 0x61 && scalar.value <= 0x7A
-        else { return nil }
-        return Character(scalar)
     }
 
     private func learnableTextKeyCharacter(for button: UIButton) -> String? {
@@ -1833,6 +1921,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         refreshKeyboardBackground()
         voiceButton.refreshAppearance(style: keyboardInterfaceStyle)
         updateUI(animated: false)
+        reconcileExpandedCandidateGridLayoutIfNeeded()
     }
 
     override func viewWillAppear(_ animated: Bool) {
@@ -1984,6 +2073,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     override func textWillChange(_ textInput: UITextInput?) {
         super.textWillChange(textInput)
+        resolveRimeInputForExternalHostChange(reason: "host_text_will_change")
         refreshInputModeSwitchKeyVisibility()
     }
 
@@ -1994,6 +2084,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         refreshInputModeSwitchKeyVisibility()
         refreshReturnKeyTitle()
         refreshEnglishLetterCasingIfNeeded()
+    }
+
+    override func selectionWillChange(_ textInput: UITextInput?) {
+        super.selectionWillChange(textInput)
+        resolveRimeInputForExternalHostChange(reason: "host_selection_will_change")
     }
 
     override func selectionDidChange(_ textInput: UITextInput?) {
@@ -2012,7 +2107,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         stopBridgeStatusStream()
         textTouchLearner.flush()
         chineseLearningRecorder.flush()
-        rimeInput.onStateChange = nil
+        rimeInput.onActivation = nil
+        rimeInput.onResetUserDataApplied = nil
         keyboardDarwinObservers.forEach { $0.stopObserving() }
         cancelBridgeCommandTasks()
         styleRewriteTask?.cancel()
@@ -2023,9 +2119,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         super.viewWillDisappear(animated)
         resetAllPressedControlStates(animated: false)
         if keyboardFocus == .text {
-            pendingRimeCharacters.removeAll()
-            pendingRimeDirectTextKeys.removeAll()
-            commitDisplayedRimeCompositionIfNeeded()
+            finishRimeTextTransaction()
             rimeCompositionSession = nil
         }
         textTouchLearner.flush()
@@ -2034,7 +2128,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         clearTextShiftState()
         cancelHostWakeResetTask()
         commitLivePartialBeforeHostReturnIfNeeded()
-        rimeInput.onStateChange = nil
+        rimeInput.onActivation = nil
         deferredStartupWorkItem?.cancel()
         deferredStartupWorkItem = nil
         textToolbarStatusClearTask?.cancel()
@@ -2114,12 +2208,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func applyTextInputOptionsToRime() {
-        _ = rimeInput.setProfile(rimeProfile)
-        applyRimeState(
-            rimeInput.applyOptions(
-                asciiPunctuation: chinesePunctuationStyle == .english,
-                asciiMode: !isChineseInputEnabled || textInputLanguage == .english
-            )
+        rimeInput.applyInputOptions(
+            asciiPunctuation: chinesePunctuationStyle == .english,
+            asciiMode: !isChineseInputEnabled || textInputLanguage == .english
         )
     }
 
@@ -2194,15 +2285,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let hostRimeUserPhrases = payload.rimeUserPhrases
         let hostRimeUserPhrasesRevision = payload.rimeUserPhrasesRevision
         let userPhrasesChanged = hostRimeUserPhrasesRevision != rimeUserPhrasesRevision
-        let userPhraseState = rimeInput.setUserPhrases(
-            hostRimeUserPhrases,
-            revision: hostRimeUserPhrasesRevision,
-            reloadIfNeeded: applyRimeChanges && userPhrasesChanged
-        )
-        if userPhrasesChanged {
-            rimeUserPhrasesRevision = hostRimeUserPhrasesRevision
-            defaults.set(hostRimeUserPhrasesRevision, forKey: rimeUserPhrasesRevisionKey)
-        }
+        let shouldResetRimeLearning = applyRimeChanges
+            && payload.rimeLearningResetGeneration > defaults.integer(forKey: rimeLearningResetGenerationKey)
         let hostDefaultLanguage = payload.defaultTextInputLanguage
         let previousHostDefault = defaults.string(forKey: hostDefaultTextInputLanguageKey)
         let shouldApplyDefault = applyDefaultTextInputLanguageIfNeeded || previousHostDefault != hostDefaultLanguage.rawValue
@@ -2211,7 +2295,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
            shouldApplyDefault,
            let defaultLanguage = textInputLanguage(for: hostDefaultLanguage) {
             if textInputLanguage == .chinese, defaultLanguage == .english {
-                commitDisplayedRimeCompositionIfNeeded()
+                finishRimeTextTransaction()
             }
             textInputLanguage = defaultLanguage
             defaults.set(defaultLanguage.rawValue, forKey: textInputLanguageKey)
@@ -2220,7 +2304,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
         if !isChineseInputEnabled, textInputLanguage != .english {
             if applyRimeChanges {
-                commitDisplayedRimeCompositionIfNeeded()
+                finishRimeTextTransaction()
             }
             textInputLanguage = .english
             defaults.set(TextInputLanguage.english.rawValue, forKey: textInputLanguageKey)
@@ -2228,22 +2312,46 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             clearTextShiftState()
         }
 
+        // Session replacement is a document boundary, not an implementation
+        // detail. End pending/live ownership before a schema, phrase, or reset
+        // snapshot can overtake the visible composition. Punctuation is a live
+        // option and intentionally preserves the current transaction.
+        if applyRimeChanges,
+           userPhrasesChanged
+            || previousRimeProfile != rimeProfile
+            || shouldResetRimeLearning {
+            finishRimeTextTransaction()
+        }
+
+        rimeInput.setDesiredConfiguration(
+            profile: rimeProfile,
+            asciiPunctuation: chinesePunctuationStyle == .english,
+            asciiMode: !isChineseInputEnabled || textInputLanguage == .english,
+            userPhrases: hostRimeUserPhrases,
+            userPhrasesRevision: hostRimeUserPhrasesRevision,
+            resetUserDataGeneration: payload.rimeLearningResetGeneration
+        )
+        if userPhrasesChanged {
+            rimeUserPhrasesRevision = hostRimeUserPhrasesRevision
+            defaults.set(hostRimeUserPhrasesRevision, forKey: rimeUserPhrasesRevisionKey)
+        }
+
+        if applyRimeChanges,
+           userPhrasesChanged
+            || previousRimeProfile != rimeProfile
+            || shouldResetRimeLearning {
+            rimeInput.activateDesiredConfigurationAfterTextBoundary()
+        }
+
         if applyRimeChanges,
            previousChineseInputEnabled != isChineseInputEnabled
             || previousPunctuationStyle != chinesePunctuationStyle
             || previousRimeProfile != rimeProfile
-            || previousTextInputLanguage != textInputLanguage {
+            || previousTextInputLanguage != textInputLanguage
+            || userPhrasesChanged
+            || shouldResetRimeLearning {
             resetQuoteParity()
             applyTextInputOptionsToRime()
-        }
-        if applyRimeChanges, userPhrasesChanged {
-            applyRimeState(userPhraseState)
-        }
-        if applyRimeChanges,
-           payload.rimeLearningResetGeneration > defaults.integer(forKey: rimeLearningResetGenerationKey) {
-            defaults.set(payload.rimeLearningResetGeneration, forKey: rimeLearningResetGenerationKey)
-            applyRimeState(rimeInput.resetUserData())
-            chineseLearningRecorder.reset()
         }
         if payload.touchLearningResetGeneration > defaults.integer(forKey: touchLearningResetGenerationKey) {
             defaults.set(payload.touchLearningResetGeneration, forKey: touchLearningResetGenerationKey)
@@ -2309,6 +2417,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
         candidateTextOverlay.translatesAutoresizingMaskIntoConstraints = true
         candidateTextOverlay.isUserInteractionEnabled = false
+        candidateTextOverlay.isAccessibilityElement = false
+        candidateTextOverlay.accessibilityElementsHidden = true
         candidateTextOverlay.backgroundColor = .clear
         candidateTextOverlay.isOpaque = false
         candidateTextOverlay.clipsToBounds = false
@@ -2658,10 +2768,18 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func configureRimeStateCallback() {
-        rimeInput.onStateChange = { [weak self] state in
+        rimeInput.onActivation = { [weak self] update in
             guard let self else { return }
-            self.applyReadyRimeStateOrRender(state)
+            self.applyReadyRimeUpdateOrRender(update)
         }
+        rimeInput.onResetUserDataApplied = { [weak self] generation in
+            guard let self,
+                  generation > self.defaults.integer(forKey: self.rimeLearningResetGenerationKey)
+            else { return }
+            self.defaults.set(generation, forKey: self.rimeLearningResetGenerationKey)
+            self.chineseLearningRecorder.reset()
+        }
+        rimeInput.publishCurrentActivationIfAvailable()
     }
 
     @discardableResult
@@ -3240,6 +3358,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         keyboardContentView.layoutIfNeeded()
         updateTextBottomRowWidthsForCurrentBounds()
         updateCandidateScrollViewport()
+        reconcileInlineCandidateLayoutIfNeeded()
+        reconcileExpandedCandidateGridLayoutIfNeeded()
         updateCandidateGridCollapseButtonFrame()
         updateKeyboardSurfaceMask()
         updateCandidateTextOverlay()
@@ -3734,20 +3854,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         rootStack.addArrangedSubview(textKeyboardContainer)
 
         rebuildTextKeyboardRows()
-        renderRimeState(RimeKeyboardState(
-            isReady: true,
-            isComposing: false,
-            input: "",
-            preedit: "",
-            preeditSelectionStart: 0,
-            preeditSelectionEnd: 0,
-            candidates: [],
-            candidateOffset: 0,
-            hasPreviousPage: false,
-            hasNextPage: false,
-            commitText: "",
-            errorMessage: nil
-        ))
+        renderIdleCandidateSurface()
     }
 
     private var textKeyboardLayoutKindForCurrentTraits: TextKeyboardLayoutKind {
@@ -3828,10 +3935,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func clearNumericIncompatibleCompositionState() {
-        pendingRimeCharacters.removeAll()
-        pendingRimeDirectTextKeys.removeAll()
+        pendingRimeInput.removeAll()
         clearTextShiftState()
-        applyRimeState(rimeInput.clearComposition())
+        applyRimeUpdate(rimeInput.clearComposition())
     }
 
     private func rebuildTextKeyboardRows(layoutKind explicitLayoutKind: TextKeyboardLayoutKind? = nil) {
@@ -3846,6 +3952,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
         applyTextKeyBlockMetrics(for: layoutKind)
         isCandidateGridExpanded = false
+        clearCandidateGridRenderState()
         textToolbar.isHidden = !layoutKind.isText
         keyRowsStack.isHidden = false
         candidateGridScrollView.isHidden = true
@@ -3929,7 +4036,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             attachNumericTextToolbarControls()
             return
         }
-        updateCandidateToolbarControls(for: rimeInput.state())
+        updateCandidateToolbarControls(
+            isComposing: currentRimeComposition.isComposing,
+            hasCandidates: !currentRimeCandidateWindow.candidates.isEmpty
+        )
     }
 
     private func attachNumericTextToolbarControls() {
@@ -4610,20 +4720,33 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func setDocumentMarkedText(_ text: String, selectedRange: NSRange) {
-        textDocumentProxy.setMarkedText(text, selectedRange: selectedRange)
+        withLocalMarkedTextMutation {
+            textDocumentProxy.setMarkedText(text, selectedRange: selectedRange)
+        }
         documentTextDidMutateLocally()
     }
 
     private func commitDocumentMarkedText(_ text: String, selectedRange: NSRange) {
-        textDocumentProxy.setMarkedText(text, selectedRange: selectedRange)
-        textDocumentProxy.unmarkText()
+        withLocalMarkedTextMutation {
+            textDocumentProxy.setMarkedText(text, selectedRange: selectedRange)
+            textDocumentProxy.unmarkText()
+        }
         documentTextDidMutateLocally()
     }
 
     private func clearDocumentMarkedText() {
-        textDocumentProxy.setMarkedText("", selectedRange: NSRange(location: 0, length: 0))
-        textDocumentProxy.unmarkText()
+        withLocalMarkedTextMutation {
+            textDocumentProxy.setMarkedText("", selectedRange: NSRange(location: 0, length: 0))
+            textDocumentProxy.unmarkText()
+        }
         documentTextDidMutateLocally()
+    }
+
+    private func withLocalMarkedTextMutation(_ mutation: () -> Void) {
+        let wasMutating = isMutatingDocumentMarkedText
+        isMutatingDocumentMarkedText = true
+        defer { isMutatingDocumentMarkedText = wasMutating }
+        mutation()
     }
 
     /// Host-driven document changes are reconciled through the text-input
@@ -4809,36 +4932,40 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         button.titleLabel?.minimumScaleFactor = 0.72
     }
 
-    private enum ToolbarIconTone: Equatable {
-        case normal
-        case destructive
-    }
-
     private func renderToolbarIcon(
         _ button: UIButton,
         role: KeyboardToolbarIconRole,
         image: String,
-        tone: ToolbarIconTone = .normal,
+        tone: KeyboardToolbarIconTone = .normal,
         showsRestingFill: Bool = false
     ) {
-        toolbarIconButtonIDs.insert(ObjectIdentifier(button))
-        button.configurationUpdateHandler = nil
-        button.configuration = toolbarIconConfiguration(
+        let buttonID = ObjectIdentifier(button)
+        toolbarIconButtonIDs.insert(buttonID)
+        var state = toolbarIconStates[buttonID] ?? KeyboardToolbarIconState(
             role: role,
-            image: image,
+            imageName: image,
             tone: tone,
-            isPressed: false,
+            showsRestingFill: showsRestingFill,
+            isHighlighted: button.isHighlighted
+        )
+        state.updateSemanticAppearance(
+            role: role,
+            imageName: image,
+            tone: tone,
             showsRestingFill: showsRestingFill
         )
+        state.updateInteraction(isHighlighted: button.isHighlighted)
+        toolbarIconStates[buttonID] = state
+
+        button.configurationUpdateHandler = nil
+        applyToolbarIconConfiguration(to: button, state: state)
         button.configurationUpdateHandler = { [weak self, weak button] control in
             guard let self, let button else { return }
-            button.configuration = self.toolbarIconConfiguration(
-                role: role,
-                image: image,
-                tone: tone,
-                isPressed: control.isHighlighted,
-                showsRestingFill: showsRestingFill
-            )
+            let buttonID = ObjectIdentifier(button)
+            guard var state = self.toolbarIconStates[buttonID] else { return }
+            state.updateInteraction(isHighlighted: control.isHighlighted)
+            self.toolbarIconStates[buttonID] = state
+            self.applyToolbarIconConfiguration(to: button, state: state)
         }
         button.clipsToBounds = false
         button.imageView?.clipsToBounds = false
@@ -4846,10 +4973,23 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         button.layer.borderWidth = 0
     }
 
+    private func applyToolbarIconConfiguration(
+        to button: UIButton,
+        state: KeyboardToolbarIconState
+    ) {
+        button.configuration = toolbarIconConfiguration(
+            role: state.role,
+            image: state.imageName,
+            tone: state.tone,
+            isPressed: state.isHighlighted,
+            showsRestingFill: state.showsRestingFill
+        )
+    }
+
     private func toolbarIconConfiguration(
         role: KeyboardToolbarIconRole,
         image: String,
-        tone: ToolbarIconTone,
+        tone: KeyboardToolbarIconTone,
         isPressed: Bool,
         showsRestingFill: Bool
     ) -> UIButton.Configuration {
@@ -5299,7 +5439,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
         if isShowingTextRecordingStatus {
             isShowingTextRecordingStatus = false
-            renderRimeState(rimeInput.state())
+            renderCurrentRimeProjection()
             keyboardHaptics.prepareForTextInput()
         }
     }
@@ -6067,9 +6207,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         target: TextRewriteTarget? = nil
     ) {
         kbLog.notice("beginDictationFromKeyboard: sending .start command")
-        if activeMarkedTextOwner == .rimeComposition {
-            _ = commitDisplayedRimeCompositionIfNeeded()
-        }
+        finishRimeTextTransaction()
         isStartRequestInFlight = true
         shouldStopWhenStartCompletes = false
         shouldCancelWhenStartCompletes = false
@@ -6875,7 +7013,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         if keyboardFocus == .text {
             pendingTextTouchCorrection = nil
             acceptPendingTextTouchIfSurvived()
-            commitDisplayedRimeCompositionIfNeeded()
+            finishRimeTextTransaction()
         }
         if activeMarkedTextOwner == .rimeComposition {
             replaceMarkedText("")
@@ -7532,7 +7670,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         guard keyboardFocus != focus else { return }
         resetAllPressedControlStates(animated: false)
         if keyboardFocus == .text {
-            commitDisplayedRimeCompositionIfNeeded()
+            finishRimeTextTransaction()
             resetQuoteParity()
         }
         clearTextShiftState()
@@ -7617,7 +7755,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         textKeyboardContainer.isHidden = !isTextFocus
         updateKeyboardSurfaceMask()
         updateKeyboardOverlayOrdering()
-        keyboardFocusButton.configuration?.image = UIImage(systemName: isTextFocus ? "mic.fill" : "keyboard")
+        renderToolbarIcon(
+            keyboardFocusButton,
+            role: .keyboardMode,
+            image: isTextFocus ? "mic.fill" : "keyboard"
+        )
         keyboardFocusButton.accessibilityLabel = isTextFocus
             ? NSLocalizedString("Show voice input", comment: "Accessibility label for showing voice input")
             : NSLocalizedString("Show keyboard", comment: "Accessibility label for showing the screen keyboard")
@@ -7705,7 +7847,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         guard isChineseInputEnabled else { return }
         clearTransientKeyboardErrorIfShowing()
         if textInputLanguage == .chinese {
-            commitDisplayedRimeCompositionIfNeeded()
+            finishRimeTextTransaction()
             textInputLanguage = .english
         } else {
             textInputLanguage = .chinese
@@ -7888,7 +8030,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
 
         if usesEnglishTextInputForCurrentTraits {
-            commitDisplayedRimeCompositionIfNeeded()
+            finishRimeTextTransaction()
             let isAlphabetic = isAlphabeticTextKey(character)
             let shouldCapitalize = isAlphabetic
                 && effectiveTextShiftActive(autoCap: shouldAutoCapitalizeNextEnglishLetter())
@@ -7928,49 +8070,57 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             }
         }
         prepareRimeCompositionSessionForCurrentDocument()
+        // Pending input owns the engine until the whole ordered transaction is
+        // accepted. A ready engine must not let a newer key bypass an older key
+        // whose startup callback is still queued on the main thread.
+        if !pendingRimeInput.isEmpty {
+            pendingRimeInput.appendEngineCharacter(character)
+            replayPendingRimeInputIfReady()
+            return
+        }
         if let caretOffset = rimeInlineEditCaretOffset {
-            let currentState = rimeInput.state()
             guard let editedInput = KeyboardRimeInlineEditPolicy.inserting(
                 character,
-                in: currentState.input,
+                in: currentRimeComposition.input,
                 at: caretOffset
             ) else {
                 rimeInlineEditCaretOffset = nil
-                applyRimeState(currentState)
+                renderCurrentRimeProjection()
                 return
             }
-            let state = rimeInput.replaceCompositionInput(
+            let update = rimeInput.replaceCompositionInput(
                 editedInput,
                 asciiPunctuation: chinesePunctuationStyle == .english,
                 asciiMode: false
             )
-            if state.commitText.isEmpty,
-               KeyboardRimeInlineEditPolicy.supports(rawInput: state.input, preedit: state.preedit) {
+            if update.committedTexts.isEmpty,
+               KeyboardRimeInlineEditPolicy.supports(
+                   rawInput: update.composition.input,
+                   preedit: update.composition.preedit
+               ) {
                 rimeInlineEditCaretOffset = KeyboardRimeInlineEditPolicy.clampedCaretOffset(
                     caretOffset + character.utf8.count,
-                    in: state.input
+                    in: update.composition.input
                 )
             } else {
                 rimeInlineEditCaretOffset = nil
             }
-            applyRimeState(state)
+            applyRimeUpdate(update)
             return
         }
-        let processResult = rimeInput.processCharacterIfReady(
-            character,
+        var input = KeyboardPendingRimeInput()
+        input.appendEngineCharacter(character)
+        let processResult = rimeInput.processInputIfReady(
+            input,
             asciiPunctuation: chinesePunctuationStyle == .english,
             asciiMode: false
         )
         switch processResult {
-        case .notReady(let state) where state.errorMessage != nil:
-            pendingRimeCharacters.removeAll()
-            pendingRimeDirectTextKeys.removeAll()
-            applyRimeState(state)
-            renderRefineSuggestionsIfIdle()
-        case .notReady(let state):
-            queuePendingRimeCharacter(character, state: state)
-        case .processed(let state):
-            applyRimeState(state)
+        case .notReady(let update):
+            pendingRimeInput.appendEngineCharacter(character)
+            applyPendingRimeUpdate(update)
+        case .processed(let update):
+            applyRimeUpdate(update)
         }
     }
 
@@ -8004,17 +8154,41 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         discardStaleRimeInput(reason: "document_changed")
     }
 
+    /// Host text/selection changes close the current marked-text transaction
+    /// before UIKit moves away from its old insertion target. UIInputViewController
+    /// receives nil text-input arguments here, so the event boundary plus the
+    /// local mutation guard is the complete public signal; context polling is
+    /// intentionally not part of Rime ownership.
+    private func resolveRimeInputForExternalHostChange(reason: String) {
+        let resolution = KeyboardRimeCompositionPolicy.externalHostChangeResolution(
+            hasRimeMarkedTextOwner: activeMarkedTextOwner == .rimeComposition,
+            localMutationInProgress: isMutatingDocumentMarkedText,
+            targetIsCurrent: rimeCompositionSessionIsCurrent()
+        )
+        switch resolution {
+        case .ignore:
+            return
+        case .finishAtCurrentTarget:
+            finishRimeTextTransaction()
+        case .discardStaleTarget:
+            discardStaleRimeInput(reason: reason)
+        }
+    }
+
     private func discardStaleRimeInput(reason: String = "target_changed") {
         guard !isDiscardingStaleRimeInput else { return }
         isDiscardingStaleRimeInput = true
         defer { isDiscardingStaleRimeInput = false }
-        pendingRimeCharacters.removeAll()
-        pendingRimeDirectTextKeys.removeAll()
+        pendingRimeInput.removeAll()
         rimeCompositionSession = nil
         rimeInlineEditCaretOffset = nil
-        let clearedState = rimeInput.clearComposition()
+        let clearedUpdate = rimeInput.clearComposition()
         clearLocalMarkedTextState()
-        renderRimeState(clearedState)
+        if clearedUpdate.composition.revision > currentRimeComposition.revision {
+            currentRimeComposition = clearedUpdate.composition
+            currentRimeCandidateWindow = clearedUpdate.candidateWindow
+        }
+        renderCurrentRimeProjection()
         KeyboardDiagnosticEventLog.record(
             source: "keyboard-ui",
             event: "rime_input_discarded_external_change",
@@ -8030,83 +8204,72 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         return true
     }
 
-    private func queuePendingRimeCharacter(_ character: String, state: RimeKeyboardState) {
-        guard pendingRimeDirectTextKeys.isEmpty else {
-            pendingRimeDirectTextKeys.append(character)
-            applyReadyRimeStateOrRender(state)
-            return
-        }
-        pendingRimeCharacters.append(character)
-        applyRimeState(state)
+    private func queuePendingRimeDirectTextKey(_ text: String) {
+        pendingRimeInput.appendLiteralText(text)
+        replayPendingRimeInputIfReady()
     }
 
-    private func queuePendingRimeDirectTextKey(_ text: String, state: RimeKeyboardState) {
-        pendingRimeDirectTextKeys.append(text)
-        applyReadyRimeStateOrRender(state)
-    }
-
-    private func applyReadyRimeStateOrRender(_ state: RimeKeyboardState) {
-        let hasOwnedInput = !pendingRimeCharacters.isEmpty
-            || !pendingRimeDirectTextKeys.isEmpty
-            || state.isComposing
-            || !state.commitText.isEmpty
+    private func applyReadyRimeUpdateOrRender(_ update: RimeKeyboardUpdate) {
+        let hasOwnedInput = !pendingRimeInput.isEmpty
+            || update.composition.isComposing
+            || !update.committedTexts.isEmpty
             || activeMarkedTextOwner == .rimeComposition
         if hasOwnedInput, !validateRimeDocumentForMutation() {
             return
         }
-        guard state.isReady else {
-            applyRimeState(state)
+        guard !pendingRimeInput.isEmpty else {
+            applyRimeUpdate(update)
             return
         }
-        guard !pendingRimeCharacters.isEmpty else {
-            let queuedDirectText = pendingRimeDirectTextKeys.joined()
-            pendingRimeDirectTextKeys.removeAll()
-            applyRimeState(state)
-            guard !queuedDirectText.isEmpty else { return }
-            clearRefineUndoStateForManualEdit()
-            insertDocumentText(queuedDirectText)
-            if !resetShiftIfSticky() {
-                refreshEnglishLetterCasingIfNeeded()
-            }
-            renderRefineSuggestionsIfIdle()
-            return
-        }
+        replayPendingRimeInputIfReady()
+    }
 
-        let queuedCharacters = pendingRimeCharacters
-        let queuedDirectText = pendingRimeDirectTextKeys.joined()
-        pendingRimeCharacters.removeAll()
-        pendingRimeDirectTextKeys.removeAll()
-        var replayState = state
-        var replayFailed = false
-        for character in queuedCharacters {
-            replayState = rimeInput.processCharacter(
-                character,
-                asciiPunctuation: chinesePunctuationStyle == .english,
-                asciiMode: false
-            )
-            if !replayState.isReady || replayState.errorMessage != nil {
-                replayFailed = true
-                break
-            }
+    /// Pending startup input already belongs to this keyboard, so expose its
+    /// reversible raw form as marked text while Rime is unavailable. UIKit then
+    /// keeps the insertion point attached to the marked range; no per-key host
+    /// context reads or second document-anchor state machine are needed.
+    private func applyPendingRimeUpdate(_ update: RimeKeyboardUpdate) {
+        precondition(update.committedTexts.isEmpty)
+        if update.composition.revision > currentRimeComposition.revision {
+            currentRimeComposition = update.composition
+            currentRimeCandidateWindow = update.candidateWindow
         }
-        guard !replayFailed else {
-            applyRimeState(replayState)
+        renderPendingRimeInput()
+    }
+
+    private func renderPendingRimeInput() {
+        guard let text = pendingRimeInput.flattenedLiteralText(), !text.isEmpty else {
+            clearMarkedText(ifOwnedBy: .rimeComposition)
+            if pendingRimeInput.isEmpty {
+                rimeCompositionSession = nil
+            }
+            renderCurrentRimeProjection()
             return
         }
-        if !queuedDirectText.isEmpty {
-            if replayState.isComposing {
-                applyRimeState(rimeInput.commitComposition())
-            } else {
-                applyRimeState(replayState)
-            }
-            clearRefineUndoStateForManualEdit()
-            insertDocumentText(queuedDirectText)
-            if !resetShiftIfSticky() {
-                refreshEnglishLetterCasingIfNeeded()
-            }
-            renderRefineSuggestionsIfIdle()
-        } else {
-            applyRimeState(replayState)
+        replaceMarkedText(text, owner: .rimeComposition)
+        renderCurrentRimeProjection()
+    }
+
+    /// Consumes the pending value only after Rime confirms that the complete
+    /// ordered transaction was processed. A not-ready result keeps the exact
+    /// operations for the next key or startup callback.
+    private func replayPendingRimeInputIfReady() {
+        guard !pendingRimeInput.isEmpty,
+              validateRimeDocumentForMutation()
+        else { return }
+
+        let input = pendingRimeInput
+        let result = rimeInput.processInputIfReady(
+            input,
+            asciiPunctuation: chinesePunctuationStyle == .english,
+            asciiMode: false
+        )
+        switch result {
+        case .notReady(let update):
+            applyPendingRimeUpdate(update)
+        case .processed(let update):
+            pendingRimeInput.consumeAfterSuccessfulReplay()
+            applyRimeUpdate(update)
         }
     }
 
@@ -8125,42 +8288,40 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         clearTransientKeyboardErrorIfShowing()
         discardRimeInputIfDocumentChanged()
 
-        if !pendingRimeCharacters.isEmpty || !pendingRimeDirectTextKeys.isEmpty {
+        if !pendingRimeInput.isEmpty {
             beginTextTouchCorrectionFromBackspace(compositionActive: true)
-            if !pendingRimeDirectTextKeys.isEmpty {
-                pendingRimeDirectTextKeys.removeLast()
-            } else {
-                pendingRimeCharacters.removeLast()
-            }
-            applyRimeState(rimeInput.state())
+            pendingRimeInput.removeLast()
+            renderPendingRimeInput()
             return
         }
 
-        let currentState = rimeInput.state()
-        if currentState.isComposing {
+        if currentRimeComposition.isComposing {
             beginTextTouchCorrectionFromBackspace(compositionActive: true)
             if let caretOffset = rimeInlineEditCaretOffset {
                 guard let editedInput = KeyboardRimeInlineEditPolicy.deletingCharacter(
                     before: caretOffset,
-                    in: currentState.input
+                    in: currentRimeComposition.input
                 ) else { return }
-                let state = rimeInput.replaceCompositionInput(
+                let update = rimeInput.replaceCompositionInput(
                     editedInput,
                     asciiPunctuation: chinesePunctuationStyle == .english,
                     asciiMode: false
                 )
-                if state.commitText.isEmpty,
-                   KeyboardRimeInlineEditPolicy.supports(rawInput: state.input, preedit: state.preedit) {
+                if update.committedTexts.isEmpty,
+                   KeyboardRimeInlineEditPolicy.supports(
+                       rawInput: update.composition.input,
+                       preedit: update.composition.preedit
+                   ) {
                     rimeInlineEditCaretOffset = KeyboardRimeInlineEditPolicy.clampedCaretOffset(
                         caretOffset - 1,
-                        in: state.input
+                        in: update.composition.input
                     )
                 } else {
                     rimeInlineEditCaretOffset = nil
                 }
-                applyRimeState(state)
+                applyRimeUpdate(update)
             } else {
-                applyRimeState(rimeInput.processKeyCode(0xFF08))
+                applyRimeUpdate(rimeInput.processKeyCode(0xFF08))
             }
             resetShiftIfSticky()
         } else {
@@ -8205,8 +8366,20 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         pendingTextTouchCorrection = nil
         acceptPendingTextTouchIfSurvived()
 
+        if !pendingRimeInput.isEmpty {
+            if pendingRimeSpaceUsesRawLiteralBoundary {
+                pendingRimeInput.appendRawLiteralBoundary(" ")
+            } else {
+                pendingRimeInput.appendSpaceKey()
+            }
+            replayPendingRimeInputIfReady()
+            resetShiftIfSticky()
+            renderRefineSuggestionsIfIdle()
+            return
+        }
+
         if usesEnglishTextInputForCurrentTraits {
-            commitDisplayedRimeCompositionIfNeeded()
+            finishRimeTextTransaction()
             clearRefineUndoStateForManualEdit()
             insertDocumentText(" ")
             if !resetShiftIfSticky() {
@@ -8215,9 +8388,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             return
         }
 
-        let currentState = rimeInput.state()
-        if shouldCommitRawRimeInputBeforeSeparator(currentState) {
-            commitRawRimeInput(currentState.input, appending: " ")
+        if let literalText = latinLiteralCommitTextForBoundary(
+            composition: currentRimeComposition,
+            candidateWindow: currentRimeCandidateWindow
+        ) {
+            commitRawRimeInput(literalText, appending: " ")
             resetShiftIfSticky()
             renderRefineSuggestionsIfIdle()
             return
@@ -8228,13 +8403,26 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             asciiPunctuation: chinesePunctuationStyle == .english,
             asciiMode: false
         )
-        let state = result.state
-        applyRimeState(state)
-        if !result.wasComposing, state.commitText.isEmpty, !state.isComposing {
+        let update = result.update
+        applyRimeUpdate(update)
+        if !result.wasComposing,
+           update.committedTexts.isEmpty,
+           !update.composition.isComposing {
             clearRefineUndoStateForManualEdit()
             insertDocumentText(" ")
         }
         resetShiftIfSticky()
+    }
+
+    /// Mirrors `latinLiteralCommitTextForBoundary` for the startup window,
+    /// before candidates exist. Dedicated literal fields and an already
+    /// explicit URL/email token must preserve the user's raw bytes; ordinary
+    /// mixed English still goes through Rime so product casing can win.
+    private var pendingRimeSpaceUsesRawLiteralBoundary: Bool {
+        guard let input = pendingRimeInput.activeEngineInput else { return false }
+        return isDedicatedLiteralAsciiTextInputContext
+            || isContinuingLiteralAsciiTokenContext
+            || isRawRimeInputLiteralToken(input)
     }
 
     private func handleTextReturn() {
@@ -8251,12 +8439,20 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         clearTransientKeyboardErrorIfShowing()
         discardRimeInputIfDocumentChanged()
 
-        let currentState = rimeInput.state()
         pendingTextTouchCorrection = nil
         acceptPendingTextTouchIfSurvived()
+        if !pendingRimeInput.isEmpty {
+            pendingRimeInput.appendReturnKey()
+            replayPendingRimeInputIfReady()
+            if !resetShiftIfSticky() {
+                refreshEnglishLetterCasingIfNeeded()
+            }
+            return
+        }
+
         if usesEnglishTextInputForCurrentTraits {
-            if currentState.isComposing {
-                applyRimeState(rimeInput.clearComposition())
+            if currentRimeComposition.isComposing {
+                applyRimeUpdate(rimeInput.clearComposition())
             }
             clearRefineUndoStateForManualEdit()
             insertDocumentText("\n")
@@ -8266,9 +8462,14 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             return
         }
 
-        let state = currentState.isComposing ? rimeInput.commitRawInput() : currentState
-        applyRimeState(state)
-        if state.commitText.isEmpty {
+        if currentRimeComposition.isComposing {
+            let update = rimeInput.commitRawInput()
+            applyRimeUpdate(update)
+            if update.committedTexts.isEmpty {
+                clearRefineUndoStateForManualEdit()
+                insertDocumentText("\n")
+            }
+        } else {
             clearRefineUndoStateForManualEdit()
             insertDocumentText("\n")
         }
@@ -8277,30 +8478,41 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
     }
 
-    private func applyRimeState(_ state: RimeKeyboardState) {
-        if !state.commitText.isEmpty
-            || !KeyboardRimeInlineEditPolicy.supports(rawInput: state.input, preedit: state.preedit) {
+    /// Consumes a Rime update exactly once, then retains only its reusable
+    /// composition and candidate projections. Revision ordering prevents a
+    /// delayed startup callback from replaying commits or replacing newer UI.
+    private func applyRimeUpdate(_ update: RimeKeyboardUpdate) {
+        let composition = update.composition
+        guard composition.revision > currentRimeComposition.revision else { return }
+
+        if !update.committedTexts.isEmpty
+            || !KeyboardRimeInlineEditPolicy.supports(
+                rawInput: composition.input,
+                preedit: composition.preedit
+            ) {
             rimeInlineEditCaretOffset = nil
         }
-        let composingText = rimeMarkedText(for: state)
-        let mutatesProxy = !state.commitText.isEmpty
+        let composingText = rimeMarkedText(for: composition)
+        let mutatesProxy = !update.committedTexts.isEmpty
             || !composingText.isEmpty
             || activeMarkedTextOwner == .rimeComposition
         if mutatesProxy, !validateRimeDocumentForMutation() {
             return
         }
-        if !state.commitText.isEmpty {
+
+        if !update.committedTexts.isEmpty {
             acceptPendingTextTouchIfSurvived()
             resetQuoteParity()
             clearRefineUndoStateForManualEdit()
-            commitTextReplacingMarkedText(state.commitText, reason: .rimeCommit)
-            if rimeProfile.learningEnabled {
-                chineseLearningRecorder.recordCommit(state.commitText)
+            for committedText in update.committedTexts where !committedText.isEmpty {
+                commitTextReplacingMarkedText(committedText, reason: .rimeCommit)
+                if rimeProfile.learningEnabled {
+                    chineseLearningRecorder.recordCommit(committedText)
+                }
             }
             if !composingText.isEmpty {
-                // One Rime key can commit the previous segment and begin the
-                // next. The remaining composition is anchored after that
-                // commit, not at the start of the old segment.
+                // One mutation can commit prior segments and begin the next.
+                // The remaining composition starts after every ordered commit.
                 rimeCompositionSession = currentRimeCompositionSession()
             }
         }
@@ -8311,14 +8523,15 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             replaceMarkedText(
                 composingText,
                 owner: .rimeComposition,
-                selectionLocation: rimeMarkedTextSelectionLocation(for: state)
+                selectionLocation: rimeMarkedTextSelectionLocation(for: composition)
             )
         }
 
-        renderRimeState(state)
+        currentRimeComposition = composition
+        currentRimeCandidateWindow = update.candidateWindow
+        renderCurrentRimeProjection()
         if composingText.isEmpty,
-           pendingRimeCharacters.isEmpty,
-           pendingRimeDirectTextKeys.isEmpty {
+           pendingRimeInput.isEmpty {
             rimeCompositionSession = nil
         }
     }
@@ -8331,22 +8544,48 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         clearRefineUndoStateForManualEdit()
         commitTextReplacingMarkedText(text, reason: .rimeRaw)
         clearLocalMarkedTextState()
-        applyRimeState(rimeInput.clearComposition())
+        applyRimeUpdate(rimeInput.clearComposition())
     }
 
+    /// Detaches startup-queued keys before crossing a text ownership boundary.
+    /// The keyboard controller is main-actor isolated, so clearing the queue
+    /// here happens before a queued Rime-ready callback can replay it into a
+    /// voice partial, a newline, or a different keyboard surface.
     @discardableResult
-    private func commitDisplayedRimeCompositionIfNeeded(from currentState: RimeKeyboardState? = nil) -> RimeKeyboardState {
-        let state = currentState ?? rimeInput.state()
-        guard state.isComposing else { return state }
+    private func commitPendingRimeInputAsLiteral(appending suffix: String = "") -> Bool {
+        guard let text = pendingRimeInput.flattenedLiteralText(appending: suffix) else { return false }
+
+        guard rimeCompositionSession != nil, rimeCompositionSessionIsCurrent() else {
+            discardStaleRimeInput(reason: "pending_boundary_target_changed")
+            return true
+        }
+
+        pendingRimeInput.removeAll()
+
+        if currentRimeComposition.isComposing {
+            commitDisplayedRimeCompositionIfNeeded()
+        }
+        commitRawRimeInput(text)
+        return true
+    }
+
+    /// Ends all keyboard-text ownership before language/focus/voice/rewrite
+    /// transitions. Pending startup input and live Rime marked text are one
+    /// transaction even though only the latter is visible through UIKit.
+    private func finishRimeTextTransaction() {
+        guard !commitPendingRimeInputAsLiteral() else { return }
+        commitDisplayedRimeCompositionIfNeeded()
+    }
+
+    private func commitDisplayedRimeCompositionIfNeeded() {
+        guard currentRimeComposition.isComposing else { return }
         // Commit text differs from the DISPLAYED marked text: the preedit's
         // syllable separators ("c laude") are display-only and must not be
         // written into the document.
-        let text = state.committableCompositionText(
-            preferRawInput: shouldUseRawRimeInputAsMarkedText(state.input)
+        let text = currentRimeComposition.committableCompositionText(
+            preferRawInput: shouldUseRawRimeInputAsMarkedText(currentRimeComposition.input)
         )
-        let committedState = rimeInput.commitVisibleComposition(text)
-        applyRimeState(committedState)
-        return committedState
+        applyRimeUpdate(rimeInput.commitVisibleComposition(text))
     }
 
     private func returnToAlphabetKeyboardAfterSymbolInput() {
@@ -8409,21 +8648,23 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
            CharacterSet.decimalDigits.contains(previous) {
             return true
         }
-        let currentInput = rimeInput.state().input
+        let currentInput = currentRimeComposition.input
         let prefix = currentInput.isEmpty ? (literalAsciiTokenPrefixBeforeInput ?? "") : currentInput
         return ["http", "https", "ftp", "mailto"].contains(prefix.lowercased())
     }
 
-    private func rimeMarkedText(for state: RimeKeyboardState) -> String {
+    private func rimeMarkedText(for composition: RimeCompositionSnapshot) -> String {
         guard allowsRimeMarkedText else { return "" }
         if rimeInlineEditCaretOffset != nil {
-            return state.input
+            return composition.input
         }
-        return state.visibleCompositionText(preferRawInput: shouldUseRawRimeInputAsMarkedText(state.input))
+        return composition.visibleCompositionText(
+            preferRawInput: shouldUseRawRimeInputAsMarkedText(composition.input)
+        )
     }
 
-    private func rimeMarkedTextSelectionLocation(for state: RimeKeyboardState) -> Int {
-        let markedText = rimeMarkedText(for: state)
+    private func rimeMarkedTextSelectionLocation(for composition: RimeCompositionSnapshot) -> Int {
+        let markedText = rimeMarkedText(for: composition)
         let markedTextLength = (markedText as NSString).length
         return min(max(rimeInlineEditCaretOffset ?? markedTextLength, 0), markedTextLength)
     }
@@ -8441,17 +8682,19 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         return isLiteralAsciiTextInputContext
             || isContinuingLiteralAsciiTokenContext
             || isRawRimeInputLiteralToken(input)
-            || isShortLiteralLatinComposition(input)
     }
 
-    private func isShortLiteralLatinComposition(_ input: String) -> Bool {
-        let lowercased = input.lowercased()
-        let length = lowercased.unicodeScalars.count
-        guard length >= 2, length <= 6 else { return false }
-        return lowercased.contains("v")
+    private func renderCurrentRimeProjection() {
+        renderRimeProjection(
+            composition: currentRimeComposition,
+            candidateWindow: currentRimeCandidateWindow
+        )
     }
 
-    private func renderRimeState(_ state: RimeKeyboardState) {
+    private func renderRimeProjection(
+        composition: RimeCompositionSnapshot,
+        candidateWindow: RimeCandidateWindow
+    ) {
         // Wrapping in CATransaction + performWithoutAnimation eliminates the
         // perceptible candidate-swap animation, BUT if we run it before the
         // root view has a non-zero size (during the keyboard's initial
@@ -8460,51 +8703,205 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         // Only use the fast path once layout is established.
         if view.bounds.width > 0 {
             performCandidateRefreshWithoutAnimation {
-                renderRimeStateImmediately(state)
+                renderRimeProjectionImmediately(
+                    composition: composition,
+                    candidateWindow: candidateWindow
+                )
             }
         } else {
-            renderRimeStateImmediately(state)
+            renderRimeProjectionImmediately(
+                composition: composition,
+                candidateWindow: candidateWindow
+            )
         }
     }
 
-    private func renderRimeStateImmediately(_ state: RimeKeyboardState) {
-        if !state.isComposing {
-            setCandidateGridExpanded(false, state: state)
+    private func renderRimeProjectionImmediately(
+        composition: RimeCompositionSnapshot,
+        candidateWindow: RimeCandidateWindow
+    ) {
+        if !composition.isComposing || candidateWindow.candidates.isEmpty {
+            setCandidateGridExpanded(false)
         }
 
-        resetCandidateStackForReuse()
-        updateCandidateToolbarControls(for: state)
-        textToolbar.setNeedsLayout()
-        textToolbar.layoutIfNeeded()
-        updateCandidateScrollViewport()
+        updateCandidateToolbarControls(
+            isComposing: composition.isComposing,
+            hasCandidates: !candidateWindow.candidates.isEmpty
+        )
+        if !isCandidateGridExpanded {
+            textToolbar.setNeedsLayout()
+            textToolbar.layoutIfNeeded()
+            updateCandidateScrollViewport()
+        }
 
-        if let errorMessage = state.errorMessage {
+        if let errorMessage = composition.errorMessage {
+            resetCandidateStackForReuse()
             addCandidateStatus(errorMessage, color: .systemOrange)
             return
         }
 
-        if !state.isReady {
+        if !composition.isReady {
+            resetCandidateStackForReuse()
             guard hasPresentedInitialFrame else { return }
             addCandidateStatus(NSLocalizedString("Chinese preparing…", comment: "Rime preparing status"), color: .secondaryLabel)
             return
         }
 
-        guard !state.candidates.isEmpty else {
-            renderCandidateGrid(state)
+        guard !candidateWindow.candidates.isEmpty else {
+            if !isCandidateGridExpanded {
+                resetCandidateStackForReuse()
+            }
+            renderCandidateGrid(
+                composition: composition,
+                candidateWindow: candidateWindow
+            )
             return
         }
 
-        // iOS-native top bar: ALL candidates stay reachable by scrolling, but
-        // only a window is materialized per keystroke. Configuring every cell
-        // (attributed title + width measurement + configuration assignment)
-        // for the full 60-candidate pool made each Chinese keystroke pay for
-        // ~50 cells the user can't see; the remainder appends on demand as
-        // scrolling approaches the rendered edge (scrollViewDidScroll).
-        pendingInlineCandidates = state.candidates
-        renderedInlineCandidateCount = 0
-        appendInlineCandidates(upTo: Self.candidateInlineRenderChunkCount)
+        // The per-key collapsed projection is already the engine's bounded
+        // two-page capture. Only opening the grid is an explicit request for a
+        // larger initial window; inline scrolling extends lazily on gesture.
+        if isCandidateGridExpanded {
+            let availableWidth = candidateGridContentWidth()
+            let initialTarget = KeyboardCandidateWindowPolicy.initialGridCount(
+                viewportHeight: Double(candidateGridScrollView.bounds.height),
+                rowHeight: Double(Self.candidateGridRowHeight),
+                columnCount: candidateGridColumnCount(for: availableWidth),
+                pageSize: candidateWindow.pageSize
+            )
+            let displayWindow = extendedCandidateWindow(
+                from: candidateWindow,
+                upTo: initialTarget
+            ) ?? candidateWindow
+            currentRimeCandidateWindow = displayWindow
+            pendingInlineCandidates = displayWindow.candidates
+            renderedInlineCandidateCount = 0
+            renderCandidateGrid(
+                composition: composition,
+                candidateWindow: displayWindow
+            )
+        } else {
+            currentRimeCandidateWindow = candidateWindow
+            renderInlineCandidateWindow(candidateWindow)
+        }
+    }
+
+    private func renderInlineCandidateWindow(_ window: RimeCandidateWindow) {
+        resetCandidateStackForReuse()
+        pendingInlineCandidates = window.candidates
+        let viewportWidth = candidateInlineViewportWidth()
+        candidateInlineLayoutSignature = makeCandidateInlineLayoutSignature(
+            viewportWidth: viewportWidth
+        )
+        appendInlineCandidates(
+            upTo: KeyboardCandidateWindowPolicy.initialInlineRenderCount(
+                viewportWidth: Double(viewportWidth),
+                minimumCellWidth: Double(Self.candidateInlineMinimumCellWidth),
+                pageSize: window.pageSize
+            )
+        )
         candidateScrollView.setContentOffset(.zero, animated: false)
-        renderCandidateGrid(state)
+    }
+
+    private func candidateInlineViewportWidth() -> CGFloat {
+        if candidateScrollView.bounds.width > 0 {
+            return candidateScrollView.bounds.width
+        }
+        return max(
+            0,
+            view.bounds.width
+                - Self.rootHorizontalInset * 2
+                - Self.candidateExpandButtonWidth
+        )
+    }
+
+    private func makeCandidateInlineLayoutSignature(
+        viewportWidth: CGFloat
+    ) -> CandidateInlineLayoutSignature {
+        let displayScale = view.window?.screen.scale ?? UIScreen.main.scale
+        return CandidateInlineLayoutSignature(
+            viewportWidthInPixels: Int((viewportWidth * displayScale).rounded()),
+            displayScaleInHundredths: Int((displayScale * 100).rounded())
+        )
+    }
+
+    /// Width is part of the inline surface's projection. Reconcile once per
+    /// concrete width, but only materialize candidates already captured by
+    /// Rime. A user's scroll gesture is the explicit boundary that may extend
+    /// the engine window, keeping rotation and every-key layout off that path.
+    private func reconcileInlineCandidateLayoutIfNeeded() {
+        guard keyboardFocus == .text,
+              !isCandidateGridExpanded,
+              !isReconcilingInlineCandidateLayout,
+              currentRimeComposition.isComposing,
+              !currentRimeCandidateWindow.candidates.isEmpty,
+              !candidateScrollView.isHidden,
+              candidateScrollView.bounds.width > 0
+        else { return }
+
+        let viewportWidth = candidateInlineViewportWidth()
+        let nextSignature = makeCandidateInlineLayoutSignature(
+            viewportWidth: viewportWidth
+        )
+        guard nextSignature != candidateInlineLayoutSignature else { return }
+
+        isReconcilingInlineCandidateLayout = true
+        defer { isReconcilingInlineCandidateLayout = false }
+        // Publish the accepted geometry before forcing layout below so a
+        // nested layout pass remains a no-op rather than a second flight.
+        candidateInlineLayoutSignature = nextSignature
+
+        let currentWindow = currentRimeCandidateWindow
+        let prefixIsStable = adoptCandidateWindow(currentWindow)
+        let renderTarget = max(
+            renderedInlineCandidateCount,
+            KeyboardCandidateWindowPolicy.initialInlineRenderCount(
+                viewportWidth: Double(viewportWidth),
+                minimumCellWidth: Double(Self.candidateInlineMinimumCellWidth),
+                pageSize: currentWindow.pageSize
+            )
+        )
+
+        performCandidateRefreshWithoutAnimation {
+            if prefixIsStable {
+                appendInlineCandidates(upTo: renderTarget)
+            } else {
+                rebuildInlineCandidateCellsPreservingOffset(upTo: renderTarget)
+            }
+        }
+    }
+
+    /// Requests a longer immutable prefix. The controller returns only a
+    /// candidate window, so scrolling cannot be routed into the marked-text
+    /// update path by mistake.
+    private func extendedCandidateWindow(
+        from window: RimeCandidateWindow,
+        upTo targetCount: Int
+    ) -> RimeCandidateWindow? {
+        guard targetCount > window.loadedCandidateCount,
+              window.mayHaveMore
+        else { return window }
+        guard let extended = rimeInput.expandedCandidateWindow(
+            upTo: targetCount,
+            matching: window
+        ),
+            extended.revision == window.revision,
+            extended.compositionIdentity == window.compositionIdentity,
+            extended.endIndex > window.endIndex || !extended.mayHaveMore
+        else { return nil }
+        return extended
+    }
+
+    /// Makes a candidate-only snapshot the source for both surfaces. The
+    /// return value tells the caller whether already-rendered inline buttons
+    /// still represent the same text and absolute selection indices.
+    @discardableResult
+    private func adoptCandidateWindow(_ window: RimeCandidateWindow) -> Bool {
+        guard window.revision == currentRimeComposition.revision else { return false }
+        let inlinePrefixIsStable = inlineCandidatePrefixIsStable(in: window.candidates)
+        currentRimeCandidateWindow = window
+        pendingInlineCandidates = window.candidates
+        return inlinePrefixIsStable
     }
 
     private func performCandidateRefreshWithoutAnimation(_ updates: () -> Void) {
@@ -8512,17 +8909,22 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         CATransaction.setDisableActions(true)
         UIView.performWithoutAnimation {
             updates()
-            candidateStack.setNeedsLayout()
-            candidateStack.layoutIfNeeded()
-            candidateScrollView.setNeedsLayout()
-            candidateScrollView.layoutIfNeeded()
-            candidateGridStack.setNeedsLayout()
-            candidateGridStack.layoutIfNeeded()
-            candidateGridScrollView.setNeedsLayout()
-            candidateGridScrollView.layoutIfNeeded()
-            textToolbar.setNeedsLayout()
-            textToolbar.layoutIfNeeded()
-            updateCandidateScrollViewport()
+            if isCandidateGridExpanded {
+                candidateGridStack.setNeedsLayout()
+                candidateGridStack.layoutIfNeeded()
+                candidateGridScrollView.setNeedsLayout()
+                candidateGridScrollView.layoutIfNeeded()
+            } else {
+                candidateStack.setNeedsLayout()
+                candidateStack.layoutIfNeeded()
+                candidateScrollView.setNeedsLayout()
+                candidateScrollView.layoutIfNeeded()
+                if !textToolbar.isHidden {
+                    textToolbar.setNeedsLayout()
+                    textToolbar.layoutIfNeeded()
+                }
+                updateCandidateScrollViewport()
+            }
             updateKeyboardSurfaceMask()
             updateCandidateTextOverlay()
             removeCandidateRefreshAnimations()
@@ -8531,26 +8933,18 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func removeCandidateRefreshAnimations() {
-        let containers: [UIView] = [
-            candidateStack,
-            candidateScrollView,
-            candidateGridStack,
-            candidateGridScrollView,
-            textCandidateGridButton,
-            candidateGridCollapseButton,
-            candidateTrailingSpacer,
-            candidateTextOverlay,
-            textToolbar,
-        ]
-        for container in containers {
-            removeAnimationsRecursively(from: container)
+        let roots: [UIView] = isCandidateGridExpanded
+            ? [candidateGridScrollView, candidateGridStack, candidateTextOverlay]
+            : [candidateScrollView, candidateStack, candidateTextOverlay]
+        for root in roots {
+            root.layer.removeAllAnimations()
         }
-    }
-
-    private func removeAnimationsRecursively(from view: UIView) {
-        view.layer.removeAllAnimations()
-        for subview in view.subviews {
-            removeAnimationsRecursively(from: subview)
+        // Overlay labels are the only visible candidate descendants whose
+        // frames are rewritten. Bound this cleanup to the active viewport;
+        // walking the full candidate hierarchy would turn lazy append back
+        // into O(total loaded candidates).
+        for label in reusableCandidateTextOverlayLabels where !label.isHidden {
+            label.layer.removeAllAnimations()
         }
     }
 
@@ -8559,6 +8953,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         activeCandidateStatusLabelIndex = 0
         pendingInlineCandidates.removeAll()
         renderedInlineCandidateCount = 0
+        candidateInlineLayoutSignature = nil
         candidateStack.arrangedSubviews.forEach { view in
             candidateStack.removeArrangedSubview(view)
             view.isHidden = true
@@ -8573,6 +8968,23 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private func appendInlineCandidates(upTo targetCount: Int) {
         let target = min(targetCount, pendingInlineCandidates.count)
         guard target > renderedInlineCandidateCount else { return }
+        let signpostID = OSSignpostID(log: keyboardCandidatePerformanceLog)
+        os_signpost(
+            .begin,
+            log: keyboardCandidatePerformanceLog,
+            name: "CandidateInlineRender",
+            signpostID: signpostID,
+            "count=%{public}d",
+            target - renderedInlineCandidateCount
+        )
+        defer {
+            os_signpost(
+                .end,
+                log: keyboardCandidatePerformanceLog,
+                name: "CandidateInlineRender",
+                signpostID: signpostID
+            )
+        }
         candidateStack.removeArrangedSubview(candidateTrailingSpacer)
         candidateTrailingSpacer.isHidden = true
         for index in renderedInlineCandidateCount..<target {
@@ -8595,21 +9007,114 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             appendInlineCandidatesForScrollPositionIfNeeded()
             updateCandidateTextOverlay()
         } else if scrollView === candidateGridScrollView {
+            appendGridCandidatesForScrollPositionIfNeeded()
             updateCandidateTextOverlay()
         }
     }
 
+    func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+        // A wide inline strip can display the full two-page hot-path window,
+        // leaving no content overflow to generate an initial scroll callback.
+        // `alwaysBounceHorizontal` still reports the user's drag intent here,
+        // which is the correct boundary for requesting the next Rime window.
+        if scrollView === candidateScrollView {
+            appendInlineCandidatesForScrollPositionIfNeeded()
+        }
+    }
+
     private func appendInlineCandidatesForScrollPositionIfNeeded() {
-        guard renderedInlineCandidateCount < pendingInlineCandidates.count else { return }
+        guard !isExtendingCandidateWindow,
+              !isReconcilingInlineCandidateLayout,
+              candidateScrollView.bounds.width > 0
+        else { return }
         let visibleTrailingEdge = candidateScrollView.contentOffset.x + candidateScrollView.bounds.width
         // One extra screen of headroom so a fling decelerates into rendered
         // cells instead of blank track.
         guard visibleTrailingEdge + candidateScrollView.bounds.width >= candidateScrollView.contentSize.width else {
             return
         }
-        performCandidateRefreshWithoutAnimation {
-            appendInlineCandidates(upTo: renderedInlineCandidateCount + Self.candidateInlineRenderChunkCount)
+
+        isExtendingCandidateWindow = true
+        defer { isExtendingCandidateWindow = false }
+
+        if renderedInlineCandidateCount < pendingInlineCandidates.count {
+            let renderIncrement = KeyboardCandidateWindowPolicy.inlineExpansionCount(
+                viewportWidth: Double(candidateInlineViewportWidth()),
+                minimumCellWidth: Double(Self.candidateInlineMinimumCellWidth),
+                pageSize: currentRimeCandidateWindow.pageSize
+            )
+            performCandidateRefreshWithoutAnimation {
+                appendInlineCandidates(upTo: renderedInlineCandidateCount + renderIncrement)
+            }
+            return
         }
+
+        let currentWindow = currentRimeCandidateWindow
+        guard currentWindow.revision == currentRimeComposition.revision,
+              currentWindow.mayHaveMore
+        else { return }
+        let expansionCount = KeyboardCandidateWindowPolicy.inlineExpansionCount(
+            viewportWidth: Double(candidateInlineViewportWidth()),
+            minimumCellWidth: Double(Self.candidateInlineMinimumCellWidth),
+            pageSize: currentWindow.pageSize
+        )
+        guard let extended = extendedCandidateWindow(
+            from: currentWindow,
+            upTo: currentWindow.loadedCandidateCount + expansionCount
+        ) else { return }
+
+        let prefixIsStable = adoptCandidateWindow(extended)
+        performCandidateRefreshWithoutAnimation {
+            if prefixIsStable {
+                appendInlineCandidates(upTo: renderedInlineCandidateCount + expansionCount)
+            } else {
+                rebuildInlineCandidateCellsPreservingOffset(
+                    upTo: renderedInlineCandidateCount + expansionCount
+                )
+            }
+        }
+    }
+
+    private func inlineCandidatePrefixIsStable(in candidates: [RimeKeyboardCandidate]) -> Bool {
+        guard candidates.count >= renderedInlineCandidateCount,
+              pendingInlineCandidates.count >= renderedInlineCandidateCount
+        else { return false }
+        for index in 0..<renderedInlineCandidateCount {
+            let previous = pendingInlineCandidates[index]
+            let next = candidates[index]
+            if previous.selectionIndex != next.selectionIndex
+                || previous.text != next.text {
+                return false
+            }
+        }
+        return true
+    }
+
+    private func rebuildInlineCandidateCellsPreservingOffset(upTo targetCount: Int) {
+        let priorOffset = candidateScrollView.contentOffset
+        let priorRenderedCount = renderedInlineCandidateCount
+        renderedInlineCandidateCount = 0
+        candidateStack.arrangedSubviews.forEach { view in
+            candidateStack.removeArrangedSubview(view)
+            view.isHidden = true
+        }
+        // A changed filtered prefix is rare, but rebuilding only the initial
+        // window here would clamp a user who had already scrolled farther back
+        // toward the start. Recreate the materialized prefix plus one
+        // viewport-derived increment so the same offset remains representable.
+        appendInlineCandidates(upTo: max(priorRenderedCount, targetCount))
+        candidateStack.layoutIfNeeded()
+        candidateScrollView.layoutIfNeeded()
+        let maximumX = max(
+            -candidateScrollView.adjustedContentInset.left,
+            candidateScrollView.contentSize.width
+                - candidateScrollView.bounds.width
+                + candidateScrollView.adjustedContentInset.right
+        )
+        candidateScrollView.setContentOffset(
+            CGPoint(x: min(max(priorOffset.x, 0), maximumX), y: priorOffset.y),
+            animated: false
+        )
     }
 
     private func addCandidateArrangedView(_ view: UIView) {
@@ -8617,14 +9122,14 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         candidateStack.addArrangedSubview(view)
     }
 
-    private func updateCandidateToolbarControls(for state: RimeKeyboardState) {
+    private func updateCandidateToolbarControls(
+        isComposing: Bool,
+        hasCandidates: Bool
+    ) {
         guard !isRenderedNumericTextKeyboard else {
             attachNumericTextToolbarControls()
             return
         }
-
-        let isComposing = state.isComposing
-        let hasCandidates = !state.candidates.isEmpty
 
         // Grid expand chevron only when there are candidates to expand.
         textCandidateGridButton.isHidden = !(isComposing && hasCandidates)
@@ -8672,8 +9177,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 hideCandidateTextOverlay()
                 return
             }
-            sourceButtons = candidateGridStack.arrangedSubviews
-                .compactMap { $0 as? UIStackView }
+            sourceButtons = visibleCandidateGridRows()
                 .flatMap { row in row.arrangedSubviews.compactMap { $0 as? UIButton } }
             viewport = candidateGridScrollView.convert(candidateGridScrollView.bounds, to: candidateTextOverlay)
         } else {
@@ -8685,7 +9189,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 hideCandidateTextOverlay()
                 return
             }
-            sourceButtons = candidateStack.arrangedSubviews.compactMap { $0 as? UIButton }
+            sourceButtons = visibleInlineCandidateButtons(horizontalMargin: 2)
             viewport = candidateScrollView.convert(candidateScrollView.bounds, to: candidateTextOverlay)
         }
 
@@ -8789,12 +9293,18 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     @objc private func toggleCandidateGrid() {
-        let state = rimeInput.state()
-        guard state.isComposing, !state.candidates.isEmpty else {
-            setCandidateGridExpanded(false, state: state)
+        if isCandidateGridExpanded {
+            setCandidateGridExpanded(false)
+            lightHaptic()
             return
         }
-        setCandidateGridExpanded(!isCandidateGridExpanded, state: state)
+        guard currentRimeComposition.isComposing,
+              !currentRimeCandidateWindow.candidates.isEmpty
+        else {
+            setCandidateGridExpanded(false)
+            return
+        }
+        setCandidateGridExpanded(true)
         lightHaptic()
     }
 
@@ -8872,91 +9382,201 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         view.bringSubviewToFront(keyPreviewBubble)
     }
 
-    private func setCandidateGridExpanded(_ expanded: Bool, state: RimeKeyboardState? = nil) {
-        let next = expanded && (state?.isComposing ?? rimeInput.state().isComposing)
+    private func setCandidateGridExpanded(_ expanded: Bool) {
+        let next = expanded && currentRimeComposition.isComposing
         guard isCandidateGridExpanded != next else {
-            if next, let state {
-                renderCandidateGrid(state)
+            if next {
+                renderCandidateGrid(
+                    composition: currentRimeComposition,
+                    candidateWindow: currentRimeCandidateWindow,
+                    resetScrollPosition: false
+                )
                 updateCandidateGridCollapseButtonFrame()
+            } else {
+                clearCandidateGridRenderState()
             }
             updateKeyboardOverlayOrdering()
             return
         }
         isCandidateGridExpanded = next
+        if next {
+            resetCandidateStackForReuse()
+        }
         textToolbar.isHidden = next
         keyRowsStack.isHidden = next
         candidateGridScrollView.isHidden = !next
         candidateGridCollapseButton.isHidden = !next
+        if !next {
+            clearCandidateGridRenderState()
+        }
         configureCandidateExpandButton(isExpanded: next)
         configureCandidateGridCollapseButton(isExpanded: next)
         textCandidateGridButton.accessibilityLabel = next
             ? NSLocalizedString("Hide candidates", comment: "Accessibility label for collapsing candidate list")
             : NSLocalizedString("Show more candidates", comment: "Accessibility label for expanding candidate list")
         candidateGridCollapseButton.accessibilityLabel = textCandidateGridButton.accessibilityLabel
-        if next, let state {
-            renderCandidateGrid(state)
-        }
         // Force a layout pass so candidateGridScrollView.bounds is populated
         // before we compute the collapse button's frame. Otherwise the
         // `bounds.width > 0` guard in updateCandidateGridCollapseButtonFrame
         // hides the button on the same frame the user expanded, leaving them
         // looking at a grid with no visible way out.
         view.layoutIfNeeded()
+        if next {
+            let availableWidth = candidateGridContentWidth()
+            let columnCount = candidateGridColumnCount(for: availableWidth)
+            let initialCount = KeyboardCandidateWindowPolicy.initialGridCount(
+                viewportHeight: Double(candidateGridScrollView.bounds.height),
+                rowHeight: Double(Self.candidateGridRowHeight),
+                columnCount: columnCount,
+                pageSize: currentRimeCandidateWindow.pageSize
+            )
+            let gridWindow = extendedCandidateWindow(
+                from: currentRimeCandidateWindow,
+                upTo: KeyboardCandidateWindowPolicy.nonShrinkingTarget(
+                    initialCount: initialCount,
+                    loadedCount: currentRimeCandidateWindow.loadedCandidateCount
+                )
+            ) ?? currentRimeCandidateWindow
+            _ = adoptCandidateWindow(gridWindow)
+            renderCandidateGrid(
+                composition: currentRimeComposition,
+                candidateWindow: gridWindow
+            )
+            view.layoutIfNeeded()
+        } else if currentRimeComposition.isComposing,
+                  !currentRimeCandidateWindow.candidates.isEmpty {
+            renderInlineCandidateWindow(currentRimeCandidateWindow)
+        }
         updateCandidateGridCollapseButtonFrame()
         updateKeyboardSurfaceMask()
         updateCandidateTextOverlay()
         updateKeyboardOverlayOrdering()
     }
 
-    private func renderCandidateGrid(_ state: RimeKeyboardState) {
-        candidateGridStack.arrangedSubviews.forEach { row in
-            candidateGridStack.removeArrangedSubview(row)
-            row.removeFromSuperview()
+    private func renderCandidateGrid(
+        composition: RimeCompositionSnapshot,
+        candidateWindow: RimeCandidateWindow,
+        resetScrollPosition: Bool = true
+    ) {
+        guard isCandidateGridExpanded else { return }
+        guard composition.isComposing,
+              !candidateWindow.candidates.isEmpty
+        else {
+            clearCandidateGridRenderState()
+            return
         }
-        guard isCandidateGridExpanded, state.isComposing, !state.candidates.isEmpty else { return }
 
-        // iOS-native expanded panel: compact length-aware rows with
-        // single-line labels. The list starts from the first candidate so the
-        // selection index sent to Rime matches displayed absolute index.
         let availableWidth = candidateGridContentWidth()
         let columnCount = candidateGridColumnCount(for: availableWidth)
-        let columnWidth = availableWidth / CGFloat(columnCount)
-        var currentRow: UIStackView?
-        var usedColumns = 0
-        var didAddRow = false
-
-        func finishCurrentRow() {
-            guard let row = currentRow else { return }
-            if usedColumns < columnCount {
-                addCandidateGridTrailingSpacer(to: row)
-            }
-            currentRow = nil
-            usedColumns = 0
+        let priorContentOffset = candidateGridScrollView.contentOffset
+        let layoutSignature = candidateGridLayoutSignature(
+            availableWidth: availableWidth,
+            columnCount: columnCount
+        )
+        let nextKeys = candidateWindow.candidates.map {
+            CandidateGridKey(selectionIndex: $0.selectionIndex, text: $0.text)
+        }
+        let canAppendToExistingState = candidateGridRenderState.map { state in
+            KeyboardCandidateWindowPolicy.canAppendRenderedPrefix(
+                existingKeys: state.keys,
+                nextKeys: nextKeys,
+                layoutIsStable: state.layoutSignature == layoutSignature
+            )
+        } ?? false
+        let priorScrollAnchor = !resetScrollPosition && !canAppendToExistingState
+            ? candidateGridScrollAnchor()
+            : nil
+        if !canAppendToExistingState {
+            clearCandidateGridRenderState()
+            candidateGridRenderState = CandidateGridRenderState(
+                layoutSignature: layoutSignature
+            )
         }
 
-        for index in state.candidates.indices {
-            let candidate = state.candidates[index]
+        guard var renderState = candidateGridRenderState else { return }
+        let appendStartIndex = renderState.keys.count
+        let appendedCount = max(0, nextKeys.count - appendStartIndex)
+        if appendedCount > 0 {
+            let signpostID = OSSignpostID(log: keyboardCandidatePerformanceLog)
+            os_signpost(
+                .begin,
+                log: keyboardCandidatePerformanceLog,
+                name: "CandidateGridRender",
+                signpostID: signpostID,
+                "count=%{public}d",
+                appendedCount
+            )
+            appendCandidateGridCells(
+                candidates: candidateWindow.candidates,
+                startingAt: appendStartIndex,
+                availableWidth: availableWidth,
+                columnCount: columnCount,
+                renderState: &renderState
+            )
+            os_signpost(
+                .end,
+                log: keyboardCandidatePerformanceLog,
+                name: "CandidateGridRender",
+                signpostID: signpostID
+            )
+            candidateGridRenderState = renderState
+        }
+
+        if resetScrollPosition {
+            candidateGridScrollView.setContentOffset(.zero, animated: false)
+        } else if appendedCount > 0 || !canAppendToExistingState {
+            layoutCandidateGridAndRestoreOffset(
+                priorContentOffset,
+                semanticAnchor: canAppendToExistingState ? nil : priorScrollAnchor
+            )
+        }
+    }
+
+    private func appendCandidateGridCells(
+        candidates: [RimeKeyboardCandidate],
+        startingAt startIndex: Int,
+        availableWidth: CGFloat,
+        columnCount: Int,
+        renderState: inout CandidateGridRenderState
+    ) {
+        guard startIndex < candidates.count else { return }
+        let columnWidth = availableWidth / CGFloat(columnCount)
+        var currentRow = renderState.tailRow
+        var usedColumns = renderState.tailUsedColumns
+
+        if let tailSpacer = renderState.tailSpacer {
+            currentRow?.removeArrangedSubview(tailSpacer)
+            tailSpacer.removeFromSuperview()
+            renderState.tailSpacer = nil
+        }
+
+        for index in startIndex..<candidates.count {
+            let candidate = candidates[index]
             let columnSpan = candidateGridColumnSpan(
                 for: candidateGridNaturalCellWidth(for: candidate),
                 columnWidth: columnWidth,
                 columnCount: columnCount
             )
-            if currentRow != nil,
+            if let row = currentRow,
                usedColumns + columnSpan > columnCount {
-                finishCurrentRow()
+                if usedColumns < columnCount {
+                    _ = addCandidateGridTrailingSpacer(to: row)
+                }
+                currentRow = nil
+                usedColumns = 0
             }
             if currentRow == nil {
-                if didAddRow {
+                if !renderState.rows.isEmpty {
                     addCandidateGridRowSeparator(width: availableWidth)
                 }
-                let nextRow = makeTextKeyRow()
-                nextRow.spacing = 0
-                nextRow.distribution = .fill
-                nextRow.alignment = .fill
-                nextRow.widthAnchor.constraint(equalToConstant: availableWidth).isActive = true
-                candidateGridStack.addArrangedSubview(nextRow)
-                currentRow = nextRow
-                didAddRow = true
+                let row = makeTextKeyRow()
+                row.spacing = 0
+                row.distribution = .fill
+                row.alignment = .fill
+                row.widthAnchor.constraint(equalToConstant: availableWidth).isActive = true
+                candidateGridStack.addArrangedSubview(row)
+                renderState.rows.append(row)
+                currentRow = row
             }
             let button = makeCandidateGridButton(
                 candidate: candidate,
@@ -8964,16 +9584,178 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 width: columnWidth * CGFloat(columnSpan)
             )
             currentRow?.addArrangedSubview(button)
+            renderState.keys.append(
+                CandidateGridKey(
+                    selectionIndex: candidate.selectionIndex,
+                    text: candidate.text
+                )
+            )
             usedColumns += columnSpan
             if usedColumns >= columnCount {
-                finishCurrentRow()
+                currentRow = nil
+                usedColumns = 0
             }
         }
 
-        // Partial final rows stay left-aligned; full rows already occupy all
-        // grid columns exactly.
-        finishCurrentRow()
-        candidateGridScrollView.setContentOffset(.zero, animated: false)
+        renderState.tailRow = currentRow
+        renderState.tailUsedColumns = usedColumns
+        if let currentRow, usedColumns < columnCount {
+            renderState.tailSpacer = addCandidateGridTrailingSpacer(to: currentRow)
+        } else {
+            renderState.tailSpacer = nil
+        }
+    }
+
+    private func clearCandidateGridRenderState() {
+        candidateGridRenderState = nil
+        candidateGridStack.arrangedSubviews.forEach { view in
+            candidateGridStack.removeArrangedSubview(view)
+            view.removeFromSuperview()
+        }
+    }
+
+    private func candidateGridLayoutSignature(
+        availableWidth: CGFloat,
+        columnCount: Int
+    ) -> CandidateGridLayoutSignature {
+        let displayScale = view.window?.screen.scale ?? UIScreen.main.scale
+        return CandidateGridLayoutSignature(
+            availableWidthInPixels: Int((availableWidth * displayScale).rounded()),
+            displayScaleInHundredths: Int((displayScale * 100).rounded()),
+            columnCount: columnCount,
+            isDark: isKeyboardDark
+        )
+    }
+
+    /// Layout and trait changes reconcile the one expanded surface only when
+    /// its geometry signature changed. Normal layout passes remain a no-op.
+    private func reconcileExpandedCandidateGridLayoutIfNeeded() {
+        guard isCandidateGridExpanded,
+              !isReconcilingCandidateGridLayout,
+              let renderState = candidateGridRenderState,
+              currentRimeComposition.isComposing,
+              !currentRimeCandidateWindow.candidates.isEmpty
+        else { return }
+        let availableWidth = candidateGridContentWidth()
+        let columnCount = candidateGridColumnCount(for: availableWidth)
+        let signature = candidateGridLayoutSignature(
+            availableWidth: availableWidth,
+            columnCount: columnCount
+        )
+        guard signature != renderState.layoutSignature else { return }
+
+        isReconcilingCandidateGridLayout = true
+        defer { isReconcilingCandidateGridLayout = false }
+        renderCandidateGrid(
+            composition: currentRimeComposition,
+            candidateWindow: currentRimeCandidateWindow,
+            resetScrollPosition: false
+        )
+    }
+
+    private func candidateGridScrollAnchor() -> CandidateGridScrollAnchor? {
+        candidateGridStack.layoutIfNeeded()
+        let viewportTop = candidateGridScrollView.contentOffset.y
+        guard let row = visibleCandidateGridRows().first,
+              let firstCandidate = row.arrangedSubviews.compactMap({ $0 as? UIButton }).first
+        else { return nil }
+        let rowFrame = row.convert(row.bounds, to: candidateGridStack)
+        return CandidateGridScrollAnchor(
+            selectionIndex: firstCandidate.tag,
+            offsetFromViewportTop: rowFrame.minY - viewportTop
+        )
+    }
+
+    private func candidateGridRow(containing selectionIndex: Int) -> UIStackView? {
+        candidateGridRenderState?.rows.first { row in
+            row.arrangedSubviews.contains { view in
+                (view as? UIButton)?.tag == selectionIndex
+            }
+        }
+    }
+
+    private func layoutCandidateGridAndRestoreOffset(
+        _ priorContentOffset: CGPoint,
+        semanticAnchor: CandidateGridScrollAnchor?
+    ) {
+        candidateGridStack.setNeedsLayout()
+        candidateGridStack.layoutIfNeeded()
+        candidateGridScrollView.setNeedsLayout()
+        candidateGridScrollView.layoutIfNeeded()
+        let minimumY = -candidateGridScrollView.adjustedContentInset.top
+        let maximumY = max(
+            minimumY,
+            candidateGridScrollView.contentSize.height
+                - candidateGridScrollView.bounds.height
+                + candidateGridScrollView.adjustedContentInset.bottom
+        )
+        let semanticY = semanticAnchor.flatMap { anchor -> CGFloat? in
+            guard let row = candidateGridRow(containing: anchor.selectionIndex) else {
+                return nil
+            }
+            let rowFrame = row.convert(row.bounds, to: candidateGridStack)
+            return rowFrame.minY - anchor.offsetFromViewportTop
+        }
+        candidateGridScrollView.setContentOffset(
+            CGPoint(
+                x: priorContentOffset.x,
+                y: min(max(semanticY ?? priorContentOffset.y, minimumY), maximumY)
+            ),
+            animated: false
+        )
+    }
+
+    private func visibleCandidateGridRows(verticalMargin: CGFloat = 0) -> [UIStackView] {
+        guard let rows = candidateGridRenderState?.rows,
+              !rows.isEmpty
+        else { return [] }
+        let viewport = candidateGridScrollView
+            .convert(candidateGridScrollView.bounds, to: candidateGridStack)
+            .insetBy(dx: 0, dy: -verticalMargin)
+        return visibleOrderedCandidateViews(
+            rows,
+            viewport: viewport,
+            axis: .vertical
+        )
+    }
+
+    private func appendGridCandidatesForScrollPositionIfNeeded() {
+        guard isCandidateGridExpanded,
+              !isExtendingCandidateWindow,
+              candidateGridScrollView.bounds.height > 0,
+              currentRimeCandidateWindow.revision == currentRimeComposition.revision,
+              currentRimeCandidateWindow.mayHaveMore
+        else { return }
+        let visibleBottom = candidateGridScrollView.contentOffset.y
+            + candidateGridScrollView.bounds.height
+        let prefetchDistance = Self.candidateGridRowHeight * 2
+        guard visibleBottom + prefetchDistance >= candidateGridScrollView.contentSize.height else {
+            return
+        }
+
+        isExtendingCandidateWindow = true
+        defer { isExtendingCandidateWindow = false }
+
+        let availableWidth = candidateGridContentWidth()
+        let columnCount = candidateGridColumnCount(for: availableWidth)
+        let expansionCount = KeyboardCandidateWindowPolicy.gridExpansionCount(
+            viewportHeight: Double(candidateGridScrollView.bounds.height),
+            rowHeight: Double(Self.candidateGridRowHeight),
+            columnCount: columnCount,
+            pageSize: currentRimeCandidateWindow.pageSize
+        )
+        guard let extended = extendedCandidateWindow(
+            from: currentRimeCandidateWindow,
+            upTo: currentRimeCandidateWindow.loadedCandidateCount + expansionCount
+        ) else { return }
+        _ = adoptCandidateWindow(extended)
+        performCandidateRefreshWithoutAnimation {
+            renderCandidateGrid(
+                composition: currentRimeComposition,
+                candidateWindow: extended,
+                resetScrollPosition: false
+            )
+        }
     }
 
     private func candidateGridContentWidth() -> CGFloat {
@@ -9016,12 +9798,14 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         return max(minimumWidth, textWidth + Self.candidateInlineCellHorizontalPadding)
     }
 
-    private func addCandidateGridTrailingSpacer(to row: UIStackView) {
+    @discardableResult
+    private func addCandidateGridTrailingSpacer(to row: UIStackView) -> UIView {
         let spacer = UIView()
         spacer.translatesAutoresizingMaskIntoConstraints = false
         spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
         spacer.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         row.addArrangedSubview(spacer)
+        return spacer
     }
 
     private func addCandidateGridRowSeparator(width: CGFloat) {
@@ -9043,10 +9827,14 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         // Expanded candidate grid cells are visual targets only. The scroll
         // view owns touch delivery so vertical drags always scroll; taps are
         // resolved by candidateGridTapRecognizer using the same row-local
-        // hit bands. Accessibility opts back in so VoiceOver can reach them.
+        // hit bands. Assistive technologies use an explicit activation action
+        // because they do not route through that gesture recognizer.
         button.isUserInteractionEnabled = false
-        button.isAccessibilityElement = true
-        button.accessibilityTraits = .button
+        configureCandidateAccessibility(button) { [weak self] candidateButton in
+            guard let self else { return false }
+            self.candidateGridButtonTapped(candidateButton)
+            return true
+        }
         button.accessibilityLabel = candidate.text
         button.heightAnchor.constraint(equalToConstant: Self.candidateGridRowHeight).isActive = true
         button.widthAnchor.constraint(equalToConstant: width).isActive = true
@@ -9065,12 +9853,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     @objc private func candidateGridButtonTapped(_ sender: UIButton) {
         pendingTextTouchCorrection = nil
         acceptPendingTextTouchIfSurvived()
+        let selectionIndex = sender.tag
         setCandidateGridExpanded(false)
-        if sender.tag == RimeKeyboardCandidate.literalSelectionIndex {
-            commitRawRimeInput(rimeInput.state().input)
-            return
-        }
-        applyRimeState(rimeInput.selectCandidate(at: sender.tag))
+        applyRimeUpdate(rimeInput.selectCandidate(at: selectionIndex))
     }
 
     private func reusableCandidateButton(at index: Int) -> UIButton {
@@ -9085,13 +9870,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         // with the scroll view's pan recognizer.
         let button = UIButton(type: .system)
         button.isUserInteractionEnabled = false
-        // Taps resolve through the scroll view's gesture recognizer, so the
-        // disabled-interaction cells must opt back into accessibility or
-        // VoiceOver users cannot reach candidates at all. VoiceOver's
-        // activation tap lands at the element's center and flows through the
-        // same recognizer path.
-        button.isAccessibilityElement = true
-        button.accessibilityTraits = .button
+        configureCandidateAccessibility(button) { [weak self] candidateButton in
+            guard let self else { return false }
+            self.candidateButtonTapped(candidateButton)
+            return true
+        }
         button.heightAnchor.constraint(equalToConstant: Self.candidateToolbarHeight).isActive = true
         let widthConstraint = button.widthAnchor.constraint(equalToConstant: 58)
         widthConstraint.isActive = true
@@ -9100,6 +9883,22 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         reusableCandidateButtons.append(button)
         candidateButtonWidthConstraints.append(widthConstraint)
         return button
+    }
+
+    /// Candidate cells deliberately opt out of UIControl touch tracking so a
+    /// scroll view owns every finger drag. Accessibility has a separate action
+    /// channel and must invoke the same semantic selection method explicitly.
+    private func configureCandidateAccessibility(
+        _ button: UIButton,
+        activation: @escaping (UIButton) -> Bool
+    ) {
+        button.isAccessibilityElement = true
+        button.accessibilityTraits = .button
+        button.accessibilityRespondsToUserInteraction = true
+        button.accessibilityActivateBlock = { [weak button] in
+            guard let button else { return false }
+            return activation(button)
+        }
     }
 
     private func configureCandidateButton(
@@ -9132,11 +9931,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     @objc private func candidateButtonTapped(_ sender: UIButton) {
         pendingTextTouchCorrection = nil
         acceptPendingTextTouchIfSurvived()
-        if sender.tag == RimeKeyboardCandidate.literalSelectionIndex {
-            commitRawRimeInput(rimeInput.state().input)
-            return
-        }
-        applyRimeState(rimeInput.selectCandidate(at: sender.tag))
+        applyRimeUpdate(rimeInput.selectCandidate(at: sender.tag))
     }
 
     private func candidateButtonMinimumWidth(for candidate: RimeKeyboardCandidate) -> CGFloat {
@@ -9181,21 +9976,32 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func renderRefineSuggestionsIfIdle() {
-        guard keyboardFocus == .text else { return }
-        renderRimeState(RimeKeyboardState(
-            isReady: true,
-            isComposing: false,
-            input: "",
-            preedit: "",
-            preeditSelectionStart: 0,
-            preeditSelectionEnd: 0,
-            candidates: [],
-            candidateOffset: 0,
-            hasPreviousPage: false,
-            hasNextPage: false,
-            commitText: "",
-            errorMessage: nil
-        ))
+        guard keyboardFocus == .text,
+              !currentRimeComposition.isComposing
+        else { return }
+        renderIdleCandidateSurface()
+    }
+
+    /// Paints the idle toolbar without fabricating or replacing an engine
+    /// projection. Recording/status overlays can therefore hide and restore
+    /// the same composition and expanded candidate window losslessly.
+    private func renderIdleCandidateSurface() {
+        let updates = {
+            self.setCandidateGridExpanded(false)
+            self.resetCandidateStackForReuse()
+            self.updateCandidateToolbarControls(
+                isComposing: false,
+                hasCandidates: false
+            )
+            self.textToolbar.setNeedsLayout()
+            self.textToolbar.layoutIfNeeded()
+            self.updateCandidateScrollViewport()
+        }
+        if view.bounds.width > 0 {
+            performCandidateRefreshWithoutAnimation(updates)
+        } else {
+            updates()
+        }
     }
 
     private func showMissingCommandTargetError() {
@@ -10056,28 +10862,34 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     private func insertChineseDirectTextKey(_ character: String) {
         discardRimeInputIfDocumentChanged()
-        let currentState = rimeInput.state()
-        if shouldProcessChineseDirectTextKeyInRime(character, state: currentState) {
+        if shouldProcessChineseDirectTextKeyInRime(
+            character,
+            composition: currentRimeComposition
+        ) {
             processChineseRimeTextKey(character)
             resetShiftIfSticky()
             renderRefineSuggestionsIfIdle()
             return
         }
         let directText = chineseDirectText(for: character)
-        if !pendingRimeCharacters.isEmpty || !pendingRimeDirectTextKeys.isEmpty {
-            queuePendingRimeDirectTextKey(directText, state: currentState)
+        if !pendingRimeInput.isEmpty {
+            queuePendingRimeDirectTextKey(directText)
             resetShiftIfSticky()
             renderRefineSuggestionsIfIdle()
             return
         }
-        if currentState.isComposing {
-            if let literalText = latinLiteralCommitTextBeforeDirectKey(currentState, character: character) {
+        if currentRimeComposition.isComposing {
+            if let literalText = latinLiteralCommitTextBeforeDirectKey(
+                composition: currentRimeComposition,
+                candidateWindow: currentRimeCandidateWindow,
+                character: character
+            ) {
                 commitRawRimeInput(literalText, appending: directText)
                 resetShiftIfSticky()
                 renderRefineSuggestionsIfIdle()
                 return
             }
-            applyRimeState(rimeInput.commitComposition())
+            applyRimeUpdate(rimeInput.commitComposition())
         } else {
             replaceMarkedText("")
         }
@@ -10088,47 +10900,61 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func latinLiteralCommitTextBeforeDirectKey(
-        _ state: RimeKeyboardState,
+        composition: RimeCompositionSnapshot,
+        candidateWindow: RimeCandidateWindow,
         character: String
     ) -> String? {
         guard textInputLanguage == .chinese,
-              state.isComposing,
-              isRawLatinInput(state.input),
+              composition.isComposing,
+              isRawLatinInput(composition.input),
               isLiteralAsciiDirectKeyContinuation(character),
               character != "@"
         else { return nil }
 
-        let lowercasedInput = state.input.lowercased()
-        if isLiteralAsciiTextInputContext
-            || isContinuingLiteralAsciiTokenContext
-            || isRawRimeInputLiteralToken(state.input)
-            || (character == "." && lowercasedInput == "www")
+        let lowercasedInput = composition.input.lowercased()
+        if (character == "." && lowercasedInput == "www")
             || (character == ":" && ["http", "https", "ftp", "mailto"].contains(lowercasedInput)) {
-            return state.input
+            return composition.input
         }
 
-        return exactLatinCandidateBeforeNonLatinCandidates(in: state)?.text
+        return latinLiteralCommitTextForBoundary(
+            composition: composition,
+            candidateWindow: candidateWindow
+        )
     }
 
     private func shouldProcessChineseDirectTextKeyInRime(
         _ character: String,
-        state: RimeKeyboardState
+        composition: RimeCompositionSnapshot
     ) -> Bool {
         guard textInputLanguage == .chinese,
               !isRenderedNumericTextKeyboard,
               isLiteralAsciiDirectKeyContinuation(character)
         else { return false }
 
-        if !pendingRimeCharacters.isEmpty,
-           pendingRimeDirectTextKeys.isEmpty {
-            let pendingInput = pendingRimeCharacters.joined()
+        if let pendingInput = pendingRimeInput.activeEngineInput {
+            if KeyboardRimeCompositionPolicy.isPinyinSeparatorContinuation(
+                character,
+                rawInput: pendingInput
+            ) {
+                return true
+            }
             return shouldContinueLiteralAsciiComposition(input: pendingInput, appending: character)
         }
 
-        guard state.isComposing,
-              isRawLatinInput(state.input)
+        guard composition.isComposing,
+              isRawLatinInput(composition.input)
         else { return false }
-        return shouldContinueLiteralAsciiComposition(input: state.input, appending: character)
+        if KeyboardRimeCompositionPolicy.isPinyinSeparatorContinuation(
+            character,
+            rawInput: composition.input
+        ) {
+            return true
+        }
+        return shouldContinueLiteralAsciiComposition(
+            input: composition.input,
+            appending: character
+        )
     }
 
     private func shouldContinueLiteralAsciiComposition(
@@ -10157,9 +10983,15 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         return isASCIIAlphanumeric(scalar) || Self.literalAsciiContinuationScalars.contains(scalar)
     }
 
-    private func exactLatinCandidateBeforeNonLatinCandidates(in state: RimeKeyboardState) -> RimeKeyboardCandidate? {
-        let lowercasedInput = state.input.lowercased()
-        for candidate in state.candidates {
+    private func exactLatinCandidateBeforeNonLatinCandidates(
+        composition: RimeCompositionSnapshot,
+        candidateWindow: RimeCandidateWindow
+    ) -> RimeKeyboardCandidate? {
+        guard candidateWindow.revision == composition.revision,
+              candidateWindow.compositionIdentity == composition.identity
+        else { return nil }
+        let lowercasedInput = composition.input.lowercased()
+        for candidate in candidateWindow.candidates {
             if candidate.text.lowercased() == lowercasedInput,
                isRawLatinInput(candidate.text) {
                 return candidate
@@ -10175,15 +11007,27 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private static let literalURLSchemes: Set<String> = ["http", "https", "ftp", "mailto", "file"]
     private static let literalURLSchemePrefixes = ["http:", "https:", "ftp:", "mailto:", "file:"]
 
-    private func shouldCommitRawRimeInputBeforeSeparator(_ state: RimeKeyboardState) -> Bool {
+    /// Chooses the literal text that ends a Chinese Rime composition. Explicit
+    /// URL/email continuations preserve the user's raw bytes; ordinary mixed
+    /// English adopts Rime's exact candidate so product casing such as
+    /// `GitHub`, `Swift`, and `OpenAI` is not lost at Space or punctuation.
+    private func latinLiteralCommitTextForBoundary(
+        composition: RimeCompositionSnapshot,
+        candidateWindow: RimeCandidateWindow
+    ) -> String? {
         guard textInputLanguage == .chinese,
-              state.isComposing,
-              isRawLatinInput(state.input)
-        else { return false }
-        return isDedicatedLiteralAsciiTextInputContext
+              composition.isComposing,
+              isRawLatinInput(composition.input)
+        else { return nil }
+        if isDedicatedLiteralAsciiTextInputContext
             || isContinuingLiteralAsciiTokenContext
-            || isRawRimeInputLiteralToken(state.input)
-            || exactLatinCandidateBeforeNonLatinCandidates(in: state) != nil
+            || isRawRimeInputLiteralToken(composition.input) {
+            return composition.input
+        }
+        return exactLatinCandidateBeforeNonLatinCandidates(
+            composition: composition,
+            candidateWindow: candidateWindow
+        )?.text
     }
 
     private func isRawLatinInput(_ input: String) -> Bool {
@@ -10307,15 +11151,33 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         pendingTextTouchCorrection = nil
         acceptPendingTextTouchIfSurvived()
 
-        let currentState = rimeInput.state()
-        if !pendingRimeCharacters.isEmpty || !pendingRimeDirectTextKeys.isEmpty {
-            queuePendingRimeDirectTextKey(text, state: currentState)
+        if isLiteralAsciiTextInputContext,
+           commitPendingRimeInputAsLiteral(appending: text) {
+            if !resetShiftIfSticky() {
+                refreshEnglishLetterCasingIfNeeded()
+            }
+            renderRefineSuggestionsIfIdle()
+            return
+        }
+        if !pendingRimeInput.isEmpty {
+            queuePendingRimeDirectTextKey(text)
             resetShiftIfSticky()
             renderRefineSuggestionsIfIdle()
             return
         }
-        if currentState.isComposing {
-            applyRimeState(rimeInput.commitComposition())
+        if currentRimeComposition.isComposing {
+            if let literalText = latinLiteralCommitTextForBoundary(
+                composition: currentRimeComposition,
+                candidateWindow: currentRimeCandidateWindow
+            ) {
+                commitRawRimeInput(literalText, appending: text)
+                if !resetShiftIfSticky() {
+                    refreshEnglishLetterCasingIfNeeded()
+                }
+                renderRefineSuggestionsIfIdle()
+                return
+            }
+            applyRimeUpdate(rimeInput.commitComposition())
         }
         clearRefineUndoStateForManualEdit()
         insertDocumentText(text)
@@ -10362,9 +11224,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         keyView.alpha = 1
         keyView.transform = .identity
         setTextTrackpadMode(false)
-        let state = rimeInput.state()
-        if state.isComposing {
-            renderRimeState(state)
+        if currentRimeComposition.isComposing || !pendingRimeInput.isEmpty {
+            renderCurrentRimeProjection()
         } else {
             renderRefineSuggestionsIfIdle()
         }
@@ -10405,14 +11266,23 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let stepX = Int(deltaX / 8)
         let deltaStepX = stepX - textTrackpadLastStepX
         if deltaStepX != 0 {
-            let state = rimeInput.state()
-            if state.isComposing,
+            let composition = currentRimeComposition
+            // A startup-pending value is already anchored as marked text but
+            // has no engine caret yet. Keep that range owned until replay;
+            // moving the host insertion point here would detach the delayed
+            // keystrokes from the text the user can see.
+            if !pendingRimeInput.isEmpty,
+               activeMarkedTextOwner == .rimeComposition {
+                textTrackpadLastStepX = stepX
+                return
+            }
+            if composition.isComposing,
                activeMarkedTextOwner == .rimeComposition,
                let split = KeyboardRimeInlineEditPolicy.partialCompositionSplit(
-                   rawInput: state.input,
-                   preedit: state.preedit,
-                   preeditSelectionStart: state.preeditSelectionStart,
-                   preeditSelectionEnd: state.preeditSelectionEnd
+                   rawInput: composition.input,
+                   preedit: composition.preedit,
+                   preeditSelectionStart: composition.preeditSelectionStart,
+                   preeditSelectionEnd: composition.preeditSelectionEnd
                ) {
                 let endOffset = split.remainingRawInput.utf8.count
                 let targetOffset = KeyboardRimeInlineEditPolicy.clampedCaretOffset(
@@ -10428,23 +11298,26 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 textTrackpadLastStepX = stepX
                 return
             }
-            if state.isComposing,
+            if composition.isComposing,
                activeMarkedTextOwner == .rimeComposition,
-               KeyboardRimeInlineEditPolicy.supports(rawInput: state.input, preedit: state.preedit) {
-                let currentOffset = rimeInlineEditCaretOffset ?? state.input.utf8.count
+               KeyboardRimeInlineEditPolicy.supports(
+                   rawInput: composition.input,
+                   preedit: composition.preedit
+               ) {
+                let currentOffset = rimeInlineEditCaretOffset ?? composition.input.utf8.count
                 let nextOffset = KeyboardRimeInlineEditPolicy.clampedCaretOffset(
                     currentOffset + deltaStepX,
-                    in: state.input
+                    in: composition.input
                 )
                 if nextOffset != currentOffset {
                     rimeInlineEditCaretOffset = nextOffset
                     replaceMarkedText(
-                        state.input,
+                        composition.input,
                         owner: .rimeComposition,
                         selectionLocation: nextOffset
                     )
                 }
-            } else if !state.isComposing {
+            } else if !composition.isComposing {
                 textDocumentProxy.adjustTextPosition(byCharacterOffset: deltaStepX)
             }
             textTrackpadLastStepX = stepX
@@ -10455,7 +11328,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         _ split: KeyboardRimeInlineEditPolicy.PartialCompositionSplit,
         caretOffset: Int
     ) {
-        let remainingState = rimeInput.replaceCompositionInput(
+        let remainingUpdate = rimeInput.replaceCompositionInput(
             split.remainingRawInput,
             asciiPunctuation: chinesePunctuationStyle == .english,
             asciiMode: false
@@ -10467,9 +11340,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         rimeCompositionSession = currentRimeCompositionSession()
         rimeInlineEditCaretOffset = KeyboardRimeInlineEditPolicy.clampedCaretOffset(
             caretOffset,
-            in: remainingState.input
+            in: remainingUpdate.composition.input
         )
-        applyRimeState(remainingState)
+        applyRimeUpdate(remainingUpdate)
     }
 
     @objc private func insertReturn() {
