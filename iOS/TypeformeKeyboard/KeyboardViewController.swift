@@ -9152,9 +9152,26 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func updateCandidateScrollViewport() {
-        candidateScrollView.contentInset.right = 0
-        candidateScrollView.horizontalScrollIndicatorInsets.right = 0
+        let reserve = candidateScrollTrailingRevealReserve()
+        candidateScrollView.contentInset.right = reserve
+        candidateScrollView.horizontalScrollIndicatorInsets.right = reserve
         candidateScrollView.layer.mask = nil
+    }
+
+    private func candidateScrollTrailingRevealReserve() -> CGFloat {
+        guard !textCandidateGridButton.isHidden else { return 0 }
+        let viewport = candidateScrollView.convert(
+            candidateScrollView.bounds,
+            to: candidateTextOverlay
+        )
+        let safeViewport = candidateTextOverlaySafeViewport(for: viewport)
+        guard !safeViewport.isNull else { return 0 }
+        return CGFloat(
+            KeyboardCandidateStripGeometryPolicy.trailingRevealReserve(
+                viewportTrailingEdge: Double(viewport.maxX),
+                safeTrailingEdge: Double(safeViewport.maxX)
+            )
+        )
     }
 
     private func updateCandidateTextOverlay() {
