@@ -839,16 +839,6 @@ final class RimeInputController: @unchecked Sendable {
         }
     }
 
-    func commitRawInput() -> RimeKeyboardUpdate {
-        guard startIfNeeded() else { return notReadyUpdate() }
-        return rimeQueue.sync {
-            guard isReadyOnQueue else { return notReadyUpdate() }
-            let rawInput = api.getInput(session) ?? ""
-            api.cleanComposition(session)
-            return captureUpdateOnQueue(committedTexts: rawInput.isEmpty ? [] : [rawInput])
-        }
-    }
-
     func commitVisibleComposition(_ text: String) -> RimeKeyboardUpdate {
         guard startIfNeeded() else {
             return notReadyUpdate(committedTexts: text.isEmpty ? [] : [text])

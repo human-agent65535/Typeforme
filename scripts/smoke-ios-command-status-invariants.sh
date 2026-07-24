@@ -449,10 +449,10 @@ if "setTextTrackpadMode(true)" not in space_cursor:
     raise AssertionError("space trackpad no longer enters cursor mode")
 
 text_return = block(keyboard, "private func handleTextReturn(")
-if "rimeInput.commitRawInput()" not in text_return:
-    raise AssertionError("Return must commit raw pinyin while Rime is composing")
-if "commitDisplayedRimeCompositionIfNeeded" in text_return:
-    raise AssertionError("Return must not select or commit the displayed Rime candidate")
+if "commitDisplayedRimeCompositionIfNeeded()" not in text_return:
+    raise AssertionError("Return must preserve a confirmed prefix and commit only the active suffix as raw input")
+if "rimeInput.commitRawInput()" in text_return or "func commitRawInput()" in rime_controller:
+    raise AssertionError("Return must not flatten a partially converted composition back to raw keystrokes")
 for required in ("if !pendingRimeInput.isEmpty", "pendingRimeInput.appendReturnKey()"):
     if required not in text_return:
         raise AssertionError(f"Return lost pending Rime semantics: {required}")

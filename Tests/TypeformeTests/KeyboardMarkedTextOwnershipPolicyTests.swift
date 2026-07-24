@@ -141,6 +141,12 @@ struct KeyboardMarkedTextOwnershipPolicyTests {
             preeditSelectionStart: 3,
             preeditSelectionEnd: 7
         ) == "你nue")
+        #expect(KeyboardRimeCompositionPolicy.committableText(
+            rawInput: "nihaoa",
+            preedit: "你好a",
+            preeditSelectionStart: 6,
+            preeditSelectionEnd: 7
+        ) == "你好a")
     }
 
     @Test("Pending Rime transaction keeps engine and literal input in tap order")

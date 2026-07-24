@@ -8463,9 +8463,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
 
         if currentRimeComposition.isComposing {
-            let update = rimeInput.commitRawInput()
-            applyRimeUpdate(update)
-            if update.committedTexts.isEmpty {
+            let update = commitDisplayedRimeCompositionIfNeeded()
+            if update?.committedTexts.isEmpty ?? true {
                 clearRefineUndoStateForManualEdit()
                 insertDocumentText("\n")
             }
@@ -8577,15 +8576,18 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         commitDisplayedRimeCompositionIfNeeded()
     }
 
-    private func commitDisplayedRimeCompositionIfNeeded() {
-        guard currentRimeComposition.isComposing else { return }
+    @discardableResult
+    private func commitDisplayedRimeCompositionIfNeeded() -> RimeKeyboardUpdate? {
+        guard currentRimeComposition.isComposing else { return nil }
         // Commit text differs from the DISPLAYED marked text: the preedit's
         // syllable separators ("c laude") are display-only and must not be
         // written into the document.
         let text = currentRimeComposition.committableCompositionText(
             preferRawInput: shouldUseRawRimeInputAsMarkedText(currentRimeComposition.input)
         )
-        applyRimeUpdate(rimeInput.commitVisibleComposition(text))
+        let update = rimeInput.commitVisibleComposition(text)
+        applyRimeUpdate(update)
+        return update
     }
 
     private func returnToAlphabetKeyboardAfterSymbolInput() {
