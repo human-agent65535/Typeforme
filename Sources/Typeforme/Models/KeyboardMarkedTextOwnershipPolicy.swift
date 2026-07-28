@@ -55,7 +55,7 @@ enum KeyboardRimeCompositionPolicy {
 
     /// Apostrophe is Rime's explicit syllable separator. While an ASCII
     /// composition is active it belongs to the engine (for example `xi'an`),
-    /// not to the direct punctuation path that first commits a candidate.
+    /// not to the direct boundary that commits the visible composition first.
     static func isPinyinSeparatorContinuation(_ character: String, rawInput: String) -> Bool {
         character == "'"
             && !rawInput.isEmpty
@@ -72,14 +72,13 @@ enum KeyboardRimeCompositionPolicy {
 struct KeyboardPendingRimeInput: Equatable {
     enum Operation: Equatable {
         case engineCharacters([String])
-        case literalTextKeys([String])
         /// A normal Space key is semantic while pinyin is active: Rime chooses
         /// the first candidate. It must not be flattened to literal text merely
         /// because the engine is still starting.
         case spaceKey
-        /// One reversible URL/email key tap: commit the raw engine buffer, then
-        /// insert its literal text. The boundary and visible key must never be
-        /// split into separate Backspace steps.
+        /// One direct-text boundary: commit the raw engine buffer exactly as
+        /// Return would while Rime is unavailable, then append the key text.
+        /// It must never ask Rime to select a candidate.
         case rawLiteralBoundary(String)
         /// Return commits active raw pinyin; if an earlier pending operation
         /// already ended composition, it behaves as a normal newline.
@@ -99,16 +98,6 @@ struct KeyboardPendingRimeInput: Equatable {
             operations[operations.count - 1] = .engineCharacters(characters)
         } else {
             operations.append(.engineCharacters([character]))
-        }
-    }
-
-    mutating func appendLiteralText(_ text: String) {
-        guard !text.isEmpty else { return }
-        if case .literalTextKeys(var keys)? = operations.last {
-            keys.append(text)
-            operations[operations.count - 1] = .literalTextKeys(keys)
-        } else {
-            operations.append(.literalTextKeys([text]))
         }
     }
 
@@ -133,12 +122,6 @@ struct KeyboardPendingRimeInput: Equatable {
             let removed = characters.removeLast()
             if !characters.isEmpty {
                 operations.append(.engineCharacters(characters))
-            }
-            return removed
-        case .literalTextKeys(var keys):
-            let removed = keys.removeLast()
-            if !keys.isEmpty {
-                operations.append(.literalTextKeys(keys))
             }
             return removed
         case .spaceKey:
@@ -174,9 +157,6 @@ struct KeyboardPendingRimeInput: Equatable {
             case .engineCharacters(let characters):
                 result += characters.joined()
                 hasActiveEngineInput = !characters.isEmpty
-            case .literalTextKeys(let keys):
-                result += keys.joined()
-                hasActiveEngineInput = false
             case .spaceKey:
                 result += " "
                 hasActiveEngineInput = false

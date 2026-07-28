@@ -147,6 +147,12 @@ struct KeyboardMarkedTextOwnershipPolicyTests {
             preeditSelectionStart: 6,
             preeditSelectionEnd: 7
         ) == "你好a")
+        #expect(KeyboardRimeCompositionPolicy.committableText(
+            rawInput: "hahaha",
+            preedit: "哈哈ha",
+            preeditSelectionStart: 6,
+            preeditSelectionEnd: 8
+        ) == "哈哈ha")
     }
 
     @Test("Pending Rime transaction keeps engine and literal input in tap order")
@@ -158,13 +164,13 @@ struct KeyboardMarkedTextOwnershipPolicyTests {
         #expect(pending.activeEngineInput == "ni")
         #expect(pending.flattenedLiteralText(appending: " ") == "ni ")
 
-        pending.appendLiteralText(",")
+        pending.appendRawLiteralBoundary(",")
         pending.appendEngineCharacter("h")
         pending.appendEngineCharacter("a")
         pending.appendEngineCharacter("o")
         #expect(pending.operations == [
             .engineCharacters(["n", "i"]),
-            .literalTextKeys([","]),
+            .rawLiteralBoundary(","),
             .engineCharacters(["h", "a", "o"]),
         ])
         #expect(pending.activeEngineInput == "hao")
@@ -181,6 +187,17 @@ struct KeyboardMarkedTextOwnershipPolicyTests {
         #expect(pending.flattenedLiteralText() == nil)
         pending.consumeAfterSuccessfulReplay()
         #expect(pending.isEmpty)
+
+        var mixedBoundary = KeyboardPendingRimeInput()
+        for character in "hahaha" {
+            mixedBoundary.appendEngineCharacter(String(character))
+        }
+        mixedBoundary.appendRawLiteralBoundary("“")
+        #expect(mixedBoundary.operations == [
+            .engineCharacters(["h", "a", "h", "a", "h", "a"]),
+            .rawLiteralBoundary("“"),
+        ])
+        #expect(mixedBoundary.flattenedLiteralText() == "hahaha“")
     }
 
     @Test("Pending literal shortcut remains one reversible tap boundary")
@@ -189,12 +206,13 @@ struct KeyboardMarkedTextOwnershipPolicyTests {
         pending.appendEngineCharacter("w")
         pending.appendEngineCharacter("w")
         pending.appendEngineCharacter("w")
-        pending.appendLiteralText(".com")
-        pending.appendLiteralText("/")
+        pending.appendRawLiteralBoundary(".com")
+        pending.appendRawLiteralBoundary("/")
 
         #expect(pending.operations == [
             .engineCharacters(["w", "w", "w"]),
-            .literalTextKeys([".com", "/"]),
+            .rawLiteralBoundary(".com"),
+            .rawLiteralBoundary("/"),
         ])
         #expect(pending.flattenedLiteralText() == "www.com/")
         #expect(pending.removeLast() == "/")
@@ -252,7 +270,7 @@ struct KeyboardMarkedTextOwnershipPolicyTests {
         var pending = KeyboardPendingRimeInput()
         pending.appendEngineCharacter("n")
         pending.appendEngineCharacter("i")
-        pending.appendLiteralText(",")
+        pending.appendRawLiteralBoundary(",")
         pending.appendEngineCharacter("h")
         let original = pending
 

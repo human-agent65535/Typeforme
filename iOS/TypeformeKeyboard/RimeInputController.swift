@@ -141,16 +141,21 @@ struct RimeCandidateWindow {
 
 /// One mutation result. Composition and candidates are projections of the same
 /// engine capture; commits are ordered events drained after each processed key.
+/// Keep the events separate for learning, but replace the document's marked
+/// range with their concatenation plus any UI-owned suffix in one mutation.
+/// UI text is deliberately not an engine commit or a learning event.
 struct RimeKeyboardUpdate {
     let composition: RimeCompositionSnapshot
     let candidateWindow: RimeCandidateWindow
     let committedTexts: [String]
+    let documentCommitText: String
     var errorMessage: String? { composition.errorMessage }
 
     init(
         composition: RimeCompositionSnapshot,
         candidateWindow: RimeCandidateWindow,
-        committedTexts: [String]
+        committedTexts: [String],
+        documentCommitText: String? = nil
     ) {
         precondition(
             composition.revision == candidateWindow.revision,
@@ -159,8 +164,18 @@ struct RimeKeyboardUpdate {
         self.composition = composition
         self.candidateWindow = candidateWindow
         self.committedTexts = committedTexts
+        self.documentCommitText = documentCommitText ?? committedTexts.joined()
     }
 
+    func appendingDocumentText(_ text: String) -> RimeKeyboardUpdate {
+        guard !text.isEmpty else { return self }
+        return RimeKeyboardUpdate(
+            composition: composition,
+            candidateWindow: candidateWindow,
+            committedTexts: committedTexts,
+            documentCommitText: documentCommitText + text
+        )
+    }
 }
 
 enum RimeInputProcessResult {
@@ -704,10 +719,10 @@ final class RimeInputController: @unchecked Sendable {
         return ActivationAttemptResult(succeeded: false, errorMessage: errorMessage)
     }
 
-    /// Replays queued input as one engine transaction. Literal operations end
-    /// the preceding composition and become ordered document commits; a later
-    /// engine operation starts a fresh composition. The reusable projection is
-    /// captured only once after the complete transaction.
+    /// Replays queued input as one engine transaction. A direct boundary uses
+    /// the same raw fallback as Return instead of selecting a candidate; a
+    /// later engine operation starts a fresh composition. The reusable
+    /// projection is captured only once after the complete transaction.
     func processInputIfReady(
         _ input: KeyboardPendingRimeInput,
         asciiPunctuation: Bool,
@@ -719,45 +734,49 @@ final class RimeInputController: @unchecked Sendable {
             guard isReadyOnQueue else { return .notReady(notReadyUpdate()) }
             applyOptionsOnQueue(asciiMode: asciiMode, asciiPunctuation: asciiPunctuation)
             var committedTexts: [String] = []
+            var documentCommitText = ""
+            func drainEngineCommit() {
+                let priorCount = committedTexts.count
+                drainCommit(into: &committedTexts)
+                if committedTexts.count > priorCount {
+                    documentCommitText += committedTexts[priorCount...].joined()
+                }
+            }
             for operation in input.operations {
                 switch operation {
                 case .engineCharacters(let characters):
                     for character in characters {
                         guard let scalar = character.unicodeScalars.first else { continue }
                         _ = api.processKeyCode(Int32(scalar.value), modifier: 0, andSession: session)
-                        drainCommit(into: &committedTexts)
+                        drainEngineCommit()
                     }
-                case .literalTextKeys(let keys):
-                    _ = api.commitComposition(session)
-                    drainCommit(into: &committedTexts)
-                    committedTexts.append(contentsOf: keys.filter { !$0.isEmpty })
                 case .spaceKey:
                     let hasComposition = !(api.getInput(session) ?? "").isEmpty
                         || api.getStatus(session)?.isComposing == true
                     if hasComposition {
                         _ = api.processKeyCode(32, modifier: 0, andSession: session)
-                        drainCommit(into: &committedTexts)
+                        drainEngineCommit()
                     } else {
-                        committedTexts.append(" ")
+                        documentCommitText += " "
                     }
                 case .rawLiteralBoundary(let text):
                     let rawInput = api.getInput(session) ?? ""
                     api.cleanComposition(session)
-                    if !rawInput.isEmpty {
-                        committedTexts.append(rawInput)
-                    }
-                    committedTexts.append(text)
+                    documentCommitText += rawInput + text
                 case .returnKey:
                     let rawInput = api.getInput(session) ?? ""
                     api.cleanComposition(session)
                     if !rawInput.isEmpty {
-                        committedTexts.append(rawInput)
+                        documentCommitText += rawInput
                     } else {
-                        committedTexts.append("\n")
+                        documentCommitText += "\n"
                     }
                 }
             }
-            return .processed(captureUpdateOnQueue(committedTexts: committedTexts))
+            return .processed(captureUpdateOnQueue(
+                committedTexts: committedTexts,
+                documentCommitText: documentCommitText
+            ))
         }
     }
 
@@ -822,17 +841,6 @@ final class RimeInputController: @unchecked Sendable {
         return rimeQueue.sync {
             guard isReadyOnQueue else { return notReadyUpdate() }
             _ = api.selectCandidate(session, andIndex: Int32(index))
-            var committedTexts: [String] = []
-            drainCommit(into: &committedTexts)
-            return captureUpdateOnQueue(committedTexts: committedTexts)
-        }
-    }
-
-    func commitComposition() -> RimeKeyboardUpdate {
-        guard startIfNeeded() else { return notReadyUpdate() }
-        return rimeQueue.sync {
-            guard isReadyOnQueue else { return notReadyUpdate() }
-            _ = api.commitComposition(session)
             var committedTexts: [String] = []
             drainCommit(into: &committedTexts)
             return captureUpdateOnQueue(committedTexts: committedTexts)
@@ -982,7 +990,10 @@ final class RimeInputController: @unchecked Sendable {
         return revision != 0 && revision == lastIssuedRevision
     }
 
-    private func captureUpdateOnQueue(committedTexts: [String] = []) -> RimeKeyboardUpdate {
+    private func captureUpdateOnQueue(
+        committedTexts: [String] = [],
+        documentCommitText: String? = nil
+    ) -> RimeKeyboardUpdate {
         let signpostID = OSSignpostID(log: rimePerformanceLog)
         os_signpost(
             .begin,
@@ -1010,7 +1021,8 @@ final class RimeInputController: @unchecked Sendable {
             return unavailableUpdate(
                 revision: projection.revision,
                 errorMessage: projection.errorMessage,
-                committedTexts: committedTexts
+                committedTexts: committedTexts,
+                documentCommitText: documentCommitText
             )
         }
 
@@ -1083,7 +1095,8 @@ final class RimeInputController: @unchecked Sendable {
         return RimeKeyboardUpdate(
             composition: compositionSnapshot,
             candidateWindow: candidateWindow,
-            committedTexts: committedTexts
+            committedTexts: committedTexts,
+            documentCommitText: documentCommitText
         )
     }
 
@@ -1115,7 +1128,8 @@ final class RimeInputController: @unchecked Sendable {
     private func unavailableUpdate(
         revision: UInt64,
         errorMessage: String?,
-        committedTexts: [String]
+        committedTexts: [String],
+        documentCommitText: String? = nil
     ) -> RimeKeyboardUpdate {
         let composition = RimeCompositionSnapshot(
             revision: revision,
@@ -1133,7 +1147,8 @@ final class RimeInputController: @unchecked Sendable {
                 revision: revision,
                 compositionIdentity: composition.identity
             ),
-            committedTexts: committedTexts
+            committedTexts: committedTexts,
+            documentCommitText: documentCommitText
         )
     }
 

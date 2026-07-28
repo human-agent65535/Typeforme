@@ -457,6 +457,49 @@ for required in ("if !pendingRimeInput.isEmpty", "pendingRimeInput.appendReturnK
     if required not in text_return:
         raise AssertionError(f"Return lost pending Rime semantics: {required}")
 
+rime_update = block(rime_controller, "struct RimeKeyboardUpdate")
+for required in (
+    "let documentCommitText: String",
+    "documentCommitText ?? committedTexts.joined()",
+    "func appendingDocumentText(",
+):
+    if required not in rime_update:
+        raise AssertionError(f"Rime commit batch lost ordered document semantics: {required}")
+
+apply_rime_update = block(keyboard, "private func applyRimeUpdate(")
+for required in (
+    "let documentCommitText = update.documentCommitText",
+    "commitTextReplacingMarkedText(documentCommitText, reason: .rimeCommit)",
+):
+    if required not in apply_rime_update:
+        raise AssertionError(f"Rime commit events are no longer one marked-text mutation: {required}")
+if "commitTextReplacingMarkedText(committedText, reason: .rimeCommit)" in apply_rime_update:
+    raise AssertionError("Rime commit events must not be written as separate proxy mutations")
+
+rime_literal_boundary = block(keyboard, "private func commitDisplayedRimeCompositionIfNeeded(")
+for required in (
+    "appending documentSuffix: String = \"\"",
+    "currentRimeComposition.committableCompositionText(",
+    ".commitVisibleComposition(text)",
+    ".appendingDocumentText(documentSuffix)",
+):
+    if required not in rime_literal_boundary:
+        raise AssertionError(f"Rime Return/direct boundary lost visible composition semantics: {required}")
+
+chinese_direct_key = block(keyboard, "private func insertChineseDirectTextKey(")
+if "commitDisplayedRimeCompositionIfNeeded(appending: directText)" not in chinese_direct_key:
+    raise AssertionError("Chinese symbol input no longer commits Return-equivalent text before the symbol")
+for forbidden in ("commitComposition", "selectCandidate", "deferTextAfterRimeComposition"):
+    if forbidden in chinese_direct_key:
+        raise AssertionError(f"Chinese symbol input regained implicit candidate selection/state: {forbidden}")
+literal_shortcut = block(keyboard, "private func insertLiteralTextShortcut(")
+if "commitDisplayedRimeCompositionIfNeeded(appending: text)" not in literal_shortcut:
+    raise AssertionError("literal shortcut no longer shares the Return-equivalent Rime boundary")
+pending_direct_boundary = block(keyboard, "private func queuePendingRimeDirectBoundary(")
+for required in ("pendingRimeInput.appendRawLiteralBoundary(text)", "replayPendingRimeInputIfReady()"):
+    if required not in pending_direct_boundary:
+        raise AssertionError(f"startup Rime direct boundary can select a candidate: {required}")
+
 text_space = block(keyboard, "private func handleTextSpace(")
 for required in ("if !pendingRimeInput.isEmpty", "pendingRimeInput.appendSpaceKey()"):
     if required not in text_space:
@@ -532,20 +575,24 @@ if "RimeKeyboardUpdate" in candidate_extension or "drainCommit" in candidate_ext
 queued_replay = block(rime_controller, "func processInputIfReady(")
 for required in (
     "var committedTexts: [String] = []",
+    'var documentCommitText = ""',
+    "func drainEngineCommit()",
     "drainCommit(into: &committedTexts)",
-    "captureUpdateOnQueue(committedTexts: committedTexts)",
+    "documentCommitText += rawInput + text",
+    "documentCommitText: documentCommitText",
     "case .engineCharacters",
-    "case .literalTextKeys",
     "case .spaceKey",
     "case .rawLiteralBoundary",
     "case .returnKey",
-    "api.commitComposition(session)",
     "api.processKeyCode(32",
     "api.getInput(session)",
-    "committedTexts.append(contentsOf:",
 ):
     if required not in queued_replay:
         raise AssertionError(f"queued Rime replay lost atomic batch behavior: {required}")
+if "committedTexts.append(contentsOf:" in queued_replay:
+    raise AssertionError("UI-owned literal text must not become a Rime learning event")
+if "case .literalTextKeys" in queued_replay or "api.commitComposition(session)" in queued_replay:
+    raise AssertionError("queued direct text must not implicitly accept the first Rime candidate")
 if queued_replay.count("captureUpdateOnQueue(") != 1:
     raise AssertionError("queued Rime replay must capture candidates exactly once")
 
@@ -957,14 +1004,14 @@ for marker in (
 
 apply_rime = block(keyboard, "private func applyRimeUpdate(")
 for required in (
-    "commitTextReplacingMarkedText(committedText",
+    "commitTextReplacingMarkedText(documentCommitText",
     "rimeCompositionSession = currentRimeCompositionSession()",
     "selectionLocation: rimeMarkedTextSelectionLocation(for: composition)",
 ):
     if required not in apply_rime:
         raise AssertionError(f"Rime commit/composition transaction lost step: {required}")
 if not (
-    apply_rime.index("commitTextReplacingMarkedText(committedText")
+    apply_rime.index("commitTextReplacingMarkedText(documentCommitText")
     < apply_rime.index("rimeCompositionSession = currentRimeCompositionSession()")
     < apply_rime.index("selectionLocation: rimeMarkedTextSelectionLocation(for: composition)")
 ):

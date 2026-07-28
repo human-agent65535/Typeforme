@@ -8204,15 +8204,15 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         return true
     }
 
-    private func queuePendingRimeDirectTextKey(_ text: String) {
-        pendingRimeInput.appendLiteralText(text)
+    private func queuePendingRimeDirectBoundary(_ text: String) {
+        pendingRimeInput.appendRawLiteralBoundary(text)
         replayPendingRimeInputIfReady()
     }
 
     private func applyReadyRimeUpdateOrRender(_ update: RimeKeyboardUpdate) {
         let hasOwnedInput = !pendingRimeInput.isEmpty
             || update.composition.isComposing
-            || !update.committedTexts.isEmpty
+            || !update.documentCommitText.isEmpty
             || activeMarkedTextOwner == .rimeComposition
         if hasOwnedInput, !validateRimeDocumentForMutation() {
             return
@@ -8406,7 +8406,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let update = result.update
         applyRimeUpdate(update)
         if !result.wasComposing,
-           update.committedTexts.isEmpty,
+           update.documentCommitText.isEmpty,
            !update.composition.isComposing {
             clearRefineUndoStateForManualEdit()
             insertDocumentText(" ")
@@ -8484,7 +8484,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let composition = update.composition
         guard composition.revision > currentRimeComposition.revision else { return }
 
-        if !update.committedTexts.isEmpty
+        if !update.documentCommitText.isEmpty
             || !KeyboardRimeInlineEditPolicy.supports(
                 rawInput: composition.input,
                 preedit: composition.preedit
@@ -8492,20 +8492,21 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             rimeInlineEditCaretOffset = nil
         }
         let composingText = rimeMarkedText(for: composition)
-        let mutatesProxy = !update.committedTexts.isEmpty
+        let mutatesProxy = !update.documentCommitText.isEmpty
             || !composingText.isEmpty
             || activeMarkedTextOwner == .rimeComposition
         if mutatesProxy, !validateRimeDocumentForMutation() {
             return
         }
 
-        if !update.committedTexts.isEmpty {
+        let documentCommitText = update.documentCommitText
+        if !documentCommitText.isEmpty {
             acceptPendingTextTouchIfSurvived()
             resetQuoteParity()
             clearRefineUndoStateForManualEdit()
-            for committedText in update.committedTexts where !committedText.isEmpty {
-                commitTextReplacingMarkedText(committedText, reason: .rimeCommit)
-                if rimeProfile.learningEnabled {
+            commitTextReplacingMarkedText(documentCommitText, reason: .rimeCommit)
+            if rimeProfile.learningEnabled {
+                for committedText in update.committedTexts where !committedText.isEmpty {
                     chineseLearningRecorder.recordCommit(committedText)
                 }
             }
@@ -8577,7 +8578,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     @discardableResult
-    private func commitDisplayedRimeCompositionIfNeeded() -> RimeKeyboardUpdate? {
+    private func commitDisplayedRimeCompositionIfNeeded(
+        appending documentSuffix: String = ""
+    ) -> RimeKeyboardUpdate? {
         guard currentRimeComposition.isComposing else { return nil }
         // Commit text differs from the DISPLAYED marked text: the preedit's
         // syllable separators ("c laude") are display-only and must not be
@@ -8585,7 +8588,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let text = currentRimeComposition.committableCompositionText(
             preferRawInput: shouldUseRawRimeInputAsMarkedText(currentRimeComposition.input)
         )
-        let update = rimeInput.commitVisibleComposition(text)
+        let update = rimeInput
+            .commitVisibleComposition(text)
+            .appendingDocumentText(documentSuffix)
         applyRimeUpdate(update)
         return update
     }
@@ -10892,7 +10897,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
         let directText = chineseDirectText(for: character)
         if !pendingRimeInput.isEmpty {
-            queuePendingRimeDirectTextKey(directText)
+            queuePendingRimeDirectBoundary(directText)
             resetShiftIfSticky()
             renderRefineSuggestionsIfIdle()
             return
@@ -10908,12 +10913,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 renderRefineSuggestionsIfIdle()
                 return
             }
-            applyRimeUpdate(rimeInput.commitComposition())
+            commitDisplayedRimeCompositionIfNeeded(appending: directText)
         } else {
             replaceMarkedText("")
+            clearRefineUndoStateForManualEdit()
+            insertDocumentText(directText)
         }
-        clearRefineUndoStateForManualEdit()
-        insertDocumentText(directText)
         resetShiftIfSticky()
         renderRefineSuggestionsIfIdle()
     }
@@ -11179,7 +11184,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             return
         }
         if !pendingRimeInput.isEmpty {
-            queuePendingRimeDirectTextKey(text)
+            queuePendingRimeDirectBoundary(text)
             resetShiftIfSticky()
             renderRefineSuggestionsIfIdle()
             return
@@ -11196,10 +11201,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 renderRefineSuggestionsIfIdle()
                 return
             }
-            applyRimeUpdate(rimeInput.commitComposition())
+            commitDisplayedRimeCompositionIfNeeded(appending: text)
+        } else {
+            clearRefineUndoStateForManualEdit()
+            insertDocumentText(text)
         }
-        clearRefineUndoStateForManualEdit()
-        insertDocumentText(text)
         if !resetShiftIfSticky() {
             refreshEnglishLetterCasingIfNeeded()
         }
