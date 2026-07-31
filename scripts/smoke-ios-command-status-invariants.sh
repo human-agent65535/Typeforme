@@ -984,8 +984,8 @@ for required in (
     "activeMarkedTextOwner == .rimeComposition",
     "isMutatingDocumentMarkedText",
     "targetIsCurrent: rimeCompositionSessionIsCurrent()",
-    "case .finishAtCurrentTarget",
-    "finishRimeTextTransaction()",
+    "case .relinquishCurrentTarget",
+    "relinquishRimeInputToExternalHost(reason: reason)",
     "case .discardStaleTarget",
     "discardStaleRimeInput(reason: reason)",
 ):
@@ -994,9 +994,53 @@ for required in (
 for forbidden in ("documentContextBeforeInput", "documentContextAfterInput"):
     if forbidden in host_change_boundary:
         raise AssertionError(f"Rime ownership regressed to host-context polling: {forbidden}")
+
+host_relinquish = block(keyboard, "private func relinquishRimeInputToExternalHost(")
+for required in (
+    "unmarkDocumentMarkedText()",
+    "resetRimeInputState()",
+    'event: "rime_input_relinquished_to_host"',
+):
+    if required not in host_relinquish:
+        raise AssertionError(f"Rime host relinquish lost invariant: {required}")
+for forbidden in (
+    "setDocumentMarkedText",
+    "commitDocumentMarkedText",
+    "clearDocumentMarkedText",
+    "insertDocumentText",
+    "deleteDocumentTextBackward",
+    "finishRimeTextTransaction",
+    "commitDisplayedRimeCompositionIfNeeded",
+):
+    if forbidden in host_relinquish:
+        raise AssertionError(f"external host changes must not replay Rime text: {forbidden}")
+
+rime_reset = block(keyboard, "private func resetRimeInputState(")
+for required in (
+    "pendingRimeInput.removeAll()",
+    "rimeCompositionSession = nil",
+    "clearLocalMarkedTextState()",
+    "rimeInput.clearComposition()",
+    "renderCurrentRimeProjection()",
+):
+    if required not in rime_reset:
+        raise AssertionError(f"Rime ownership reset lost invariant: {required}")
+for forbidden in (
+    "textDocumentProxy",
+    "setDocumentMarkedText",
+    "commitDocumentMarkedText",
+    "unmarkDocumentMarkedText",
+    "clearDocumentMarkedText",
+    "insertDocumentText",
+    "deleteDocumentTextBackward",
+):
+    if forbidden in rime_reset:
+        raise AssertionError(f"Rime ownership reset must not mutate the host document: {forbidden}")
+
 for marker in (
     "private func setDocumentMarkedText(",
     "private func commitDocumentMarkedText(",
+    "private func unmarkDocumentMarkedText(",
     "private func clearDocumentMarkedText(",
 ):
     if "withLocalMarkedTextMutation" not in block(keyboard, marker):

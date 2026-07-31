@@ -481,7 +481,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private let chineseLearningRecorder = ChineseLearningRecorder()
     private var pendingRimeInput = KeyboardPendingRimeInput()
     private var rimeCompositionSession: RimeCompositionSession?
-    private var isDiscardingStaleRimeInput = false
+    private var isResettingRimeInput = false
     private var rimeInlineEditCaretOffset: Int?
     private var activeMarkedText = ""
     private var activeMarkedTextOwner: MarkedTextOwner?
@@ -4734,6 +4734,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         documentTextDidMutateLocally()
     }
 
+    private func unmarkDocumentMarkedText() {
+        withLocalMarkedTextMutation {
+            textDocumentProxy.unmarkText()
+        }
+        documentTextDidMutateLocally()
+    }
+
     private func clearDocumentMarkedText() {
         withLocalMarkedTextMutation {
             textDocumentProxy.setMarkedText("", selectedRange: NSRange(location: 0, length: 0))
@@ -8154,11 +8161,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         discardStaleRimeInput(reason: "document_changed")
     }
 
-    /// Host text/selection changes close the current marked-text transaction
-    /// before UIKit moves away from its old insertion target. UIInputViewController
-    /// receives nil text-input arguments here, so the event boundary plus the
-    /// local mutation guard is the complete public signal; context polling is
-    /// intentionally not part of Rime ownership.
+    /// Host text/selection changes transfer ownership of the existing marked
+    /// range to UIKit. The visible text is already in the document, so this
+    /// boundary may unmark it but must never ask Rime to insert or replace it.
+    /// UIInputViewController receives nil text-input arguments here; the event
+    /// boundary plus the local mutation guard is the complete public signal.
     private func resolveRimeInputForExternalHostChange(reason: String) {
         let resolution = KeyboardRimeCompositionPolicy.externalHostChangeResolution(
             hasRimeMarkedTextOwner: activeMarkedTextOwner == .rimeComposition,
@@ -8168,32 +8175,54 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         switch resolution {
         case .ignore:
             return
-        case .finishAtCurrentTarget:
-            finishRimeTextTransaction()
+        case .relinquishCurrentTarget:
+            relinquishRimeInputToExternalHost(reason: reason)
         case .discardStaleTarget:
             discardStaleRimeInput(reason: reason)
         }
     }
 
-    private func discardStaleRimeInput(reason: String = "target_changed") {
-        guard !isDiscardingStaleRimeInput else { return }
-        isDiscardingStaleRimeInput = true
-        defer { isDiscardingStaleRimeInput = false }
-        pendingRimeInput.removeAll()
-        rimeCompositionSession = nil
-        rimeInlineEditCaretOffset = nil
-        let clearedUpdate = rimeInput.clearComposition()
-        clearLocalMarkedTextState()
-        if clearedUpdate.composition.revision > currentRimeComposition.revision {
-            currentRimeComposition = clearedUpdate.composition
-            currentRimeCandidateWindow = clearedUpdate.candidateWindow
+    /// Preserves exactly the marked text the host can already see. `unmarkText`
+    /// only ends that input session; unlike `setMarkedText`, it cannot replay
+    /// the composition after a host has sent or cleared its input.
+    private func relinquishRimeInputToExternalHost(reason: String) {
+        guard !isResettingRimeInput else { return }
+        isResettingRimeInput = true
+        defer { isResettingRimeInput = false }
+        if !activeMarkedText.isEmpty {
+            unmarkDocumentMarkedText()
         }
-        renderCurrentRimeProjection()
+        resetRimeInputState()
+        KeyboardDiagnosticEventLog.record(
+            source: "keyboard-ui",
+            event: "rime_input_relinquished_to_host",
+            fields: ["reason": reason]
+        )
+    }
+
+    private func discardStaleRimeInput(reason: String = "target_changed") {
+        guard !isResettingRimeInput else { return }
+        isResettingRimeInput = true
+        defer { isResettingRimeInput = false }
+        resetRimeInputState()
         KeyboardDiagnosticEventLog.record(
             source: "keyboard-ui",
             event: "rime_input_discarded_external_change",
             fields: ["reason": reason]
         )
+    }
+
+    private func resetRimeInputState() {
+        pendingRimeInput.removeAll()
+        rimeCompositionSession = nil
+        rimeInlineEditCaretOffset = nil
+        clearLocalMarkedTextState()
+        let clearedUpdate = rimeInput.clearComposition()
+        if clearedUpdate.composition.revision > currentRimeComposition.revision {
+            currentRimeComposition = clearedUpdate.composition
+            currentRimeCandidateWindow = clearedUpdate.candidateWindow
+        }
+        renderCurrentRimeProjection()
     }
 
     private func validateRimeDocumentForMutation() -> Bool {

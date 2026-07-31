@@ -297,13 +297,13 @@ struct KeyboardMarkedTextOwnershipPolicyTests {
         ))
     }
 
-    @Test("External host callbacks finish only at the captured document")
+    @Test("External host callbacks relinquish visible Rime text without replaying it")
     func rimeCompositionUsesDelegateBoundary() {
         #expect(KeyboardRimeCompositionPolicy.externalHostChangeResolution(
             hasRimeMarkedTextOwner: true,
             localMutationInProgress: false,
             targetIsCurrent: true
-        ) == .finishAtCurrentTarget)
+        ) == .relinquishCurrentTarget)
         #expect(KeyboardRimeCompositionPolicy.externalHostChangeResolution(
             hasRimeMarkedTextOwner: true,
             localMutationInProgress: false,

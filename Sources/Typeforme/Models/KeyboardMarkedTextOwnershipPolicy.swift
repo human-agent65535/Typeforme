@@ -3,7 +3,7 @@ import Foundation
 enum KeyboardRimeCompositionPolicy {
     enum ExternalHostChangeResolution: Equatable {
         case ignore
-        case finishAtCurrentTarget
+        case relinquishCurrentTarget
         case discardStaleTarget
     }
 
@@ -14,12 +14,12 @@ enum KeyboardRimeCompositionPolicy {
         capturedDocumentIdentifier == currentDocumentIdentifier
     }
 
-    /// A third-party keyboard receives nil `UITextInput` callback arguments,
-    /// so the callback boundary itself is the available host signal. Finish an
-    /// owned composition while its captured document is still current; only a
-    /// synchronous callback caused by this keyboard's own set/unmark operation
-    /// is ignored. A changed document must fail closed instead of committing at
-    /// an unproven insertion target.
+    /// A third-party keyboard receives nil `UITextInput` callback arguments, so
+    /// the callback boundary itself is the available host signal. The host now
+    /// owns the visible marked text: relinquish it without asking Rime to write
+    /// another copy. Only synchronous callbacks caused by this keyboard's own
+    /// set/unmark operation are ignored. A changed document must fail closed
+    /// without touching the new insertion target.
     static func externalHostChangeResolution(
         hasRimeMarkedTextOwner: Bool,
         localMutationInProgress: Bool,
@@ -28,7 +28,7 @@ enum KeyboardRimeCompositionPolicy {
         guard hasRimeMarkedTextOwner, !localMutationInProgress else {
             return .ignore
         }
-        return targetIsCurrent ? .finishAtCurrentTarget : .discardStaleTarget
+        return targetIsCurrent ? .relinquishCurrentTarget : .discardStaleTarget
     }
 
     /// Returns the text that may leave Rime's marked-text session. Rime's
