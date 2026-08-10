@@ -96,6 +96,104 @@ final class KeyboardTextLayoutPolicyTests: XCTestCase {
         XCTAssertTrue(widths.allSatisfy { $0 >= 44 })
     }
 
+    func testFloatingKeyboardDropsOnlyOptionalTrailingShortcuts() {
+        let url = KeyboardTextLayoutPolicy.fittedBottomRow(
+            KeyboardTextLayoutPolicy.bottomRow(for: .url),
+            availableWidth: 307,
+            showsGlobeKey: true,
+            showsLanguageKey: true
+        )
+        XCTAssertEqual(url.shortcuts.map(\.text), [".", "/"])
+        XCTAssertNotNil(url.returnKeyWidth)
+
+        let email = KeyboardTextLayoutPolicy.fittedBottomRow(
+            KeyboardTextLayoutPolicy.bottomRow(for: .email),
+            availableWidth: 307,
+            showsGlobeKey: true,
+            showsLanguageKey: true
+        )
+        XCTAssertEqual(email.shortcuts.map(\.text), ["@"])
+        XCTAssertTrue(email.includesSpaceKey)
+        XCTAssertNotNil(email.returnKeyWidth)
+    }
+
+    func testWideKeyboardRestoresAllShortcuts() {
+        let url = KeyboardTextLayoutPolicy.fittedBottomRow(
+            KeyboardTextLayoutPolicy.bottomRow(for: .url),
+            availableWidth: KeyboardSurfaceLayoutPolicy.maximumContentWidth,
+            showsGlobeKey: true,
+            showsLanguageKey: true
+        )
+        XCTAssertEqual(url.shortcuts.map(\.text), [".", "/", ".com"])
+    }
+
+    func testExceptionalWidthNeverShrinksFixedKeysBelowMinimumTarget() {
+        let widths = KeyboardTextLayoutPolicy.fittedFixedWidths(
+            [48, 48, 103],
+            availableWidth: 120,
+            gapCount: 2,
+            includesFlexibleKey: false
+        )
+        XCTAssertEqual(widths, [44, 44, 44])
+    }
+
+    func testSurfaceMetricsUseActualWidthAndCapWideCanvas() {
+        let floating = KeyboardSurfaceLayoutPolicy.metrics(
+            availableWidth: 307,
+            verticalSizeIsCompact: false
+        )
+        XCTAssertEqual(floating.contentHeight, 253)
+        XCTAssertEqual(floating.orbDiameter, 112)
+        XCTAssertEqual(floating.voiceSideColumnWidth, 76)
+        XCTAssertEqual(floating.inputModeSwitchWidth, 56)
+        XCTAssertEqual(floating.textKeyHorizontalGap, 4)
+        XCTAssertEqual(floating.textUtilityKeyWidth, 44)
+
+        let narrowPhone = KeyboardSurfaceLayoutPolicy.metrics(
+            availableWidth: 362,
+            verticalSizeIsCompact: false
+        )
+        XCTAssertEqual(narrowPhone.orbDiameter, 112)
+
+        let standardBoundary = KeyboardSurfaceLayoutPolicy.metrics(
+            availableWidth: 376,
+            verticalSizeIsCompact: false
+        )
+        XCTAssertEqual(standardBoundary.orbDiameter, 132)
+
+        let docked = KeyboardSurfaceLayoutPolicy.metrics(
+            availableWidth: KeyboardSurfaceLayoutPolicy.maximumContentWidth,
+            verticalSizeIsCompact: false
+        )
+        XCTAssertEqual(docked.contentHeight, 267)
+        XCTAssertEqual(docked.orbDiameter, 132)
+        XCTAssertEqual(docked.textKeyHorizontalGap, 6)
+        XCTAssertEqual(docked.textUtilityKeyWidth, 51)
+        XCTAssertEqual(KeyboardSurfaceLayoutPolicy.maximumContentWidth, 900)
+    }
+
+    func testCompactSurfaceFitsRepresentative320PointKeyboard() {
+        let availableWidth = 307.0
+        let metrics = KeyboardSurfaceLayoutPolicy.metrics(
+            availableWidth: availableWidth,
+            verticalSizeIsCompact: false
+        )
+        let utilitySpacer = max(0, 13 - metrics.textKeyHorizontalGap * 2)
+        let thirdRowMinimumWidth = metrics.textUtilityKeyWidth * 2
+            + utilitySpacer * 2
+            + 24 * 7
+            + metrics.textKeyHorizontalGap * 10
+        XCTAssertLessThanOrEqual(thirdRowMinimumWidth, availableWidth)
+
+        let voiceLeftClearanceWidth = 2 * (
+            10
+                + metrics.voiceSideColumnWidth
+                + 8
+                + metrics.orbDiameter / 2
+        )
+        XCTAssertLessThanOrEqual(voiceLeftClearanceWidth, availableWidth)
+    }
+
     func testReturnPresentationSeparatesNeutralAndActionSemantics() {
         XCTAssertEqual(
             KeyboardReturnKeyPolicy.presentation(for: .default),

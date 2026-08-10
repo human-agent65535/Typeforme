@@ -81,7 +81,7 @@ struct SetupReadinessView: View {
             ReadinessActionRow(
                 icon: "waveform",
                 title: "Apple Speech Preview",
-                detail: "Only needed for on-iPhone live partial preview. Core dictation still works without it.",
+                detail: "Only needed for on-device live partial preview. Core dictation still works without it.",
                 status: speechStatus,
                 actionTitle: speechActionTitle,
                 actionIcon: speechActionIcon,

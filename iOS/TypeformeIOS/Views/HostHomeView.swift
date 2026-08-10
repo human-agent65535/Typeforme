@@ -1,5 +1,9 @@
 import SwiftUI
 
+private enum HostHomeLayout {
+    static let maxContentWidth: CGFloat = 760
+}
+
 struct HostHomeView: View {
     @Environment(AppState.self) private var state
     @Binding var rawTranscriptExpanded: Bool
@@ -10,6 +14,8 @@ struct HostHomeView: View {
     var body: some View {
         if !state.isConfigured {
             UnpairedHero(onTapPair: onShowPairing)
+                .frame(maxWidth: HostHomeLayout.maxContentWidth)
+                .frame(maxWidth: .infinity)
         } else {
             VStack(spacing: 12) {
                 RouteStatusBar()
@@ -37,6 +43,8 @@ struct HostHomeView: View {
                     .padding(.bottom, 32)
                 }
             }
+            .frame(maxWidth: HostHomeLayout.maxContentWidth)
+            .frame(maxWidth: .infinity)
             .padding(.top, 8)
         }
     }
@@ -99,7 +107,7 @@ private struct UnpairedHero: View {
     var body: some View {
         VStack(spacing: 22) {
             Spacer(minLength: 0)
-            Image(systemName: "iphone.gen3.radiowaves.left.and.right")
+            Image(systemName: "link.circle")
                 .font(.system(size: 64, weight: .light))
                 .foregroundStyle(.tint)
                 .symbolRenderingMode(.hierarchical)

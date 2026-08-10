@@ -28,7 +28,7 @@ struct PairingView: View {
     var body: some View {
         List {
             Section {
-                Text("Open the Mac app, copy the pairing JSON, then paste it here. Pairing stores connection details. Languages and the default dictation mode are iPhone settings.")
+                Text("Open the Mac app, copy the pairing JSON, then paste it here. Pairing stores connection details. Languages and the default dictation mode are device settings.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }

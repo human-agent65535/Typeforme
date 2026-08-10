@@ -25,7 +25,7 @@
 "Capture mode and permissions" = "采集模式与系统权限";
 "Help & About" = "帮助与关于";
 "Connect a Mac" = "连接 Mac";
-"Pair this iPhone before dictating" = "听写前请先配对此 iPhone";
+"Pair this device before dictating" = "听写前请先配对此设备";
 "Review permissions and keyboard access" = "检查权限与键盘访问";
 "Mac is offline" = "Mac 已离线";
 "Check the bridge connection" = "检查 Bridge 连接";
@@ -43,7 +43,7 @@
 "Recognition, refine, languages, vocabulary, and models" = "识别、优化、语言、词汇与模型";
 "Change or Repair Pairing" = "更改或修复配对";
 "Pair a Mac" = "配对 Mac";
-"Applies to this iPhone and the Typeforme keyboard. Fast skips refine." = "应用于此 iPhone 和 Typeforme 键盘。Fast 会跳过优化。";
+"Applies to this device and the Typeforme keyboard. Fast skips refine." = "应用于此设备和 Typeforme 键盘。Fast 会跳过优化。";
 "Mac Default Languages" = "Mac 默认语言";
 "Checking" = "检查中";
 "Offline" = "离线";
@@ -132,7 +132,7 @@
 "iOS exposes this only through Settings. Full Access lets the keyboard reach the host app." = "iOS 只能在系统设置中开启。完全访问让键盘连接宿主 app。";
 "Optional" = "可选";
 "Apple Speech Preview" = "Apple Speech 预览";
-"Only needed for on-iPhone live partial preview. Core dictation still works without it." = "只用于 iPhone 端实时部分预览。没有它也不影响核心听写。";
+"Only needed for on-device live partial preview. Core dictation still works without it." = "只用于设备端实时部分预览。没有它也不影响核心听写。";
 "Help" = "帮助";
 "Camera access is requested only when you open the QR scanner." = "只有打开二维码扫描器时才会请求相机权限。";
 "Allowed" = "已允许";
@@ -157,7 +157,7 @@
 "Learning" = "学习";
 "Audio" = "音频";
 "Preview" = "预览";
-"iPhone Keyboard Preview" = "iPhone 键盘预览";
+"Device Keyboard Preview" = "设备键盘预览";
 "Host audio session" = "宿主音频会话";
 "Live Preview" = "实时预览";
 "Preview Recognition" = "预览识别";
@@ -247,7 +247,7 @@
 "Typeforme uses your Mac's local ASR + LLM to clean up dictation. Pair the Mac Bridge URL and token to get started." = "Typeforme 使用 Mac 本地 ASR 和 LLM 清理听写文本。先配对 Mac Bridge URL 和 token。";
 "Pair Mac Bridge" = "配对 Mac Bridge";
 "Or copy the pairing JSON from the Mac app." = "也可以从 Mac app 复制配对 JSON。";
-"Open the Mac app, copy the pairing JSON, then paste it here. Pairing stores connection details. Languages and the default dictation mode are iPhone settings." = "打开 Mac app,复制配对 JSON 后粘贴到这里。配对只保存连接信息;语言和默认听写模式是 iPhone 设置。";
+"Open the Mac app, copy the pairing JSON, then paste it here. Pairing stores connection details. Languages and the default dictation mode are device settings." = "打开 Mac app,复制配对 JSON 后粘贴到这里。配对只保存连接信息;语言和默认听写模式是设备设置。";
 "Paste Pairing JSON" = "粘贴配对 JSON";
 "Paste from Clipboard" = "从剪贴板粘贴";
 "Scan QR from Mac" = "扫描 Mac 上的二维码";
@@ -278,6 +278,7 @@
 "Scan pairing QR" = "扫描配对二维码";
 "Camera access denied" = "相机权限被拒绝";
 "Enable camera in iOS Settings to scan a pairing QR, or paste the pairing JSON manually instead." = "请在 iOS 设置中开启相机权限以扫描配对二维码,或改为手动粘贴配对 JSON。";
+"Camera is temporarily unavailable. Resize the Typeforme window or paste the pairing JSON instead." = "相机暂时不可用。请调整 Typeforme 窗口大小,或改为粘贴配对 JSON。";
 
 // 键盘指南
 "Setup" = "设置";
@@ -317,7 +318,7 @@
 
 // 听写设置
 "Default Mode" = "默认模式";
-"Applies to this iPhone and the Typeforme keyboard. Fast skips refine and uses the selected Fast ASR source only." = "应用到这台 iPhone 和 Typeforme 键盘。Fast 会跳过优化,且只使用选中的 Fast ASR 来源。";
+"Applies to this device and the Typeforme keyboard. Fast skips refine and uses the selected Fast ASR source only." = "应用到此设备和 Typeforme 键盘。Fast 会跳过优化,且只使用选中的 Fast ASR 来源。";
 "Fast ASR Source" = "Fast ASR 来源";
 "Fast ASR" = "Fast ASR";
 "Affects the paired Mac Bridge. Each ASR source is optional; dictation is unavailable when none are enabled." = "影响配对的 Mac Bridge。每个 ASR 来源都是可选的；未启用任何来源时无法听写。";
@@ -358,8 +359,8 @@
 "On-device preview availability is reported by iOS. Manage Dictation languages and system updates in iOS Settings." = "端上预览能力以 iOS 当前报告为准。听写语言和系统更新请在 iOS 设置中管理。";
 "Changes apply immediately after Full Access is enabled." = "开启完全访问后,更改会立即生效。";
 "Changes apply immediately. Controls how long Typeforme keeps keyboard dictation ready after the host app is opened." = "更改会立即生效。用于控制从键盘打开宿主 app 后,Typeforme 保持听写就绪的时长。";
-"This preview setting is local to the iPhone keyboard and applies immediately. It does not change the Mac live transcript setting." = "这个预览设置只作用于 iPhone 键盘,并且立即生效。它不会改变 Mac 端自己的实时转写设置。";
-"This preview setting is saved to the paired Mac when you tap Done. It does not change the iPhone keyboard preview." = "点击完成后,这个预览设置会保存到配对的 Mac。它不会改变 iPhone 键盘预览设置。";
+"This preview setting is local to this device and applies immediately. It does not change the Mac live transcript setting." = "这个预览设置只作用于此设备,并且立即生效。它不会改变 Mac 端自己的实时转写设置。";
+"This preview setting is saved to the paired Mac when you tap Done. It does not change this device's keyboard preview." = "点击完成后,这个预览设置会保存到配对的 Mac。它不会改变此设备的键盘预览设置。";
 "Apple Speech is local. Server uses Mac." = "Apple Speech 本地预览；Server 使用 Mac。";
 "Server ASR" = "服务端 ASR";
 "Server-side" = "服务端";
@@ -368,7 +369,8 @@
 "Qwen3-ASR preview runs on the Mac." = "Qwen3-ASR 预览在 Mac 上运行。";
 "NVIDIA Nemotron preview runs on the Mac." = "NVIDIA Nemotron 预览在 Mac 上运行。";
 "Server ASR preview runs on the Mac." = "服务端 ASR 预览在 Mac 上运行。";
-"Apple Speech preview runs on this iPhone." = "Apple Speech 预览在这台 iPhone 上运行。";
+"Apple Speech preview runs on this device." = "Apple Speech 预览在此设备上运行。";
+"Device preferences live under Voice Dictation and Text Keyboard. Mac recognition and refine options live under Connected Mac." = "设备偏好设置位于语音听写和文本键盘中。Mac 识别与优化选项位于已连接的 Mac 中。";
 "Qwen3-ASR (Mac)" = "Qwen3-ASR (Mac)";
 "Server ASR (Mac)" = "服务端 ASR (Mac)";
 "NVIDIA Nemotron (Mac)" = "NVIDIA Nemotron (Mac)";

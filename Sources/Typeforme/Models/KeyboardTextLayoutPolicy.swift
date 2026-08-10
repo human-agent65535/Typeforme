@@ -92,6 +92,43 @@ enum KeyboardTextLayoutPolicy {
         }
     }
 
+    /// Removes only optional text shortcuts when a floating keyboard is too
+    /// narrow to preserve 44pt controls. Mode, Globe, language, Space, and
+    /// Return remain present because they are navigation or editing controls.
+    static func fittedBottomRow(
+        _ layout: KeyboardTextBottomRowLayout,
+        availableWidth: Double,
+        showsGlobeKey: Bool,
+        showsLanguageKey: Bool,
+        gap: Double = 6
+    ) -> KeyboardTextBottomRowLayout {
+        guard availableWidth > 0 else { return layout }
+        var shortcuts = layout.shortcuts
+
+        func minimumRequiredWidth(shortcutCount: Int) -> Double {
+            let fixedKeyCount = 1
+                + (showsGlobeKey ? 1 : 0)
+                + (showsLanguageKey ? 1 : 0)
+                + shortcutCount
+                + (layout.returnKeyWidth == nil ? 0 : 1)
+            let visibleKeyCount = fixedKeyCount + (layout.includesSpaceKey ? 1 : 0)
+            return Double(visibleKeyCount) * minimumKeyWidth
+                + Double(max(0, visibleKeyCount - 1)) * gap
+        }
+
+        while !shortcuts.isEmpty,
+              minimumRequiredWidth(shortcutCount: shortcuts.count) > availableWidth {
+            shortcuts.removeLast()
+        }
+        return KeyboardTextBottomRowLayout(
+            modeKeyWidth: layout.modeKeyWidth,
+            showsLanguageKey: layout.showsLanguageKey,
+            includesSpaceKey: layout.includesSpaceKey,
+            shortcuts: shortcuts,
+            returnKeyWidth: layout.returnKeyWidth
+        )
+    }
+
     /// Preserves the measured widths whenever they fit. On narrower keyboards
     /// it shrinks all fixed keys proportionally toward the minimum tap target,
     /// leaving one minimum-width slot for a flexible Space key when present.
@@ -110,11 +147,12 @@ enum KeyboardTextLayoutPolicy {
         guard preferredTotal > budget else { return preferredWidths }
 
         let minimumTotal = minimumKeyWidth * Double(preferredWidths.count)
-        guard budget > minimumTotal else {
-            return Array(
-                repeating: max(0, budget / Double(preferredWidths.count)),
-                count: preferredWidths.count
-            )
+        guard budget >= minimumTotal else {
+            // Structural fitting removes optional shortcuts first. If UIKit
+            // ever supplies an even narrower surface, preserve minimum touch
+            // targets and let the system resolve the exceptional constraint
+            // pressure instead of silently creating undersized controls.
+            return Array(repeating: minimumKeyWidth, count: preferredWidths.count)
         }
 
         let preferredCapacity = preferredTotal - minimumTotal
@@ -124,6 +162,38 @@ enum KeyboardTextLayoutPolicy {
         return preferredWidths.map { preferred in
             minimumKeyWidth + (preferred - minimumKeyWidth) * scale
         }
+    }
+}
+
+struct KeyboardSurfaceMetrics: Equatable, Sendable {
+    let contentHeight: Double
+    let orbDiameter: Double
+    let voiceSideColumnWidth: Double
+    let inputModeSwitchWidth: Double
+    let textKeyHorizontalGap: Double
+    let textUtilityKeyWidth: Double
+}
+
+enum KeyboardSurfaceLayoutPolicy {
+    static let maximumContentWidth = 900.0
+    // The orb is centered independently of its two side columns. With the
+    // standard 132/104/68pt controls, the left column needs 376pt of usable
+    // width to clear the orb without constraint pressure.
+    private static let standardVoiceMinimumWidth = 376.0
+
+    static func metrics(
+        availableWidth: Double,
+        verticalSizeIsCompact: Bool
+    ) -> KeyboardSurfaceMetrics {
+        let usesCompactWidth = availableWidth > 1 && availableWidth < standardVoiceMinimumWidth
+        return KeyboardSurfaceMetrics(
+            contentHeight: verticalSizeIsCompact || usesCompactWidth ? 253 : 267,
+            orbDiameter: usesCompactWidth ? 112 : 132,
+            voiceSideColumnWidth: usesCompactWidth ? 76 : 104,
+            inputModeSwitchWidth: usesCompactWidth ? 56 : 68,
+            textKeyHorizontalGap: usesCompactWidth ? 4 : 6,
+            textUtilityKeyWidth: usesCompactWidth ? 44 : 51
+        )
     }
 }
 

@@ -213,7 +213,7 @@ struct LivePreviewSettingsSection: View {
     let title: LocalizedStringKey
 
     init(
-        title: LocalizedStringKey = "iPhone Keyboard Preview"
+        title: LocalizedStringKey = "Device Keyboard Preview"
     ) {
         self.title = title
     }
@@ -257,7 +257,7 @@ struct LivePreviewSettingsSection: View {
             Text(title)
         } footer: {
             VStack(alignment: .leading, spacing: 4) {
-                Text("This preview setting is local to the iPhone keyboard and applies immediately. It does not change the Mac live transcript setting.")
+                Text("This preview setting is local to this device and applies immediately. It does not change the Mac live transcript setting.")
                 Text(livePreviewFooter)
             }
         }
@@ -293,7 +293,7 @@ struct LivePreviewSettingsSection: View {
         }
         switch source {
         case .appleSpeech:
-            return "Apple Speech preview runs on this iPhone."
+            return "Apple Speech preview runs on this device."
         case .qwen:
             return "Qwen3-ASR preview runs on the Mac."
         case .nvidiaNemotron:
@@ -414,7 +414,7 @@ struct KeyboardGuideView: View {
                 GuideStepRow(
                     icon: "slider.horizontal.3",
                     title: "More settings",
-                    detail: "iPhone preferences live under Voice Dictation and Text Keyboard. Mac recognition and refine options live under Connected Mac."
+                    detail: "Device preferences live under Voice Dictation and Text Keyboard. Mac recognition and refine options live under Connected Mac."
                 )
                 GuideStepRow(
                     icon: "exclamationmark.bubble",
@@ -870,4 +870,3 @@ private struct TouchLearningStatsView: View {
         return formatter.localizedString(for: Date(timeIntervalSince1970: timestamp), relativeTo: Date())
     }
 }
-

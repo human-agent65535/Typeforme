@@ -139,7 +139,7 @@ private struct HostSettingsOverview: View {
     }
 
     private var primaryStatusDetail: LocalizedStringKey {
-        if !state.isConfigured { return "Pair this iPhone before dictating" }
+        if !state.isConfigured { return "Pair this device before dictating" }
         if state.setupReadinessNeedsAttention { return "Review permissions and keyboard access" }
         if state.routeStatus.activeKind == .unavailable { return "Check the bridge connection" }
         switch state.routeStatus.activeKind {
@@ -207,7 +207,7 @@ private struct VoiceDictationSettingsView: View {
                 }
                 .pickerStyle(.menu)
             } footer: {
-                Text("Applies to this iPhone and the Typeforme keyboard. Fast skips refine.")
+                Text("Applies to this device and the Typeforme keyboard. Fast skips refine.")
             }
 
             LivePreviewSettingsSection()

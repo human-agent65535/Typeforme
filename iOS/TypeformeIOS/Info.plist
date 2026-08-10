@@ -57,7 +57,7 @@
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Typeforme connects to your paired Mac on the local network for dictation, settings, and keyboard status.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>Typeforme can use Apple Speech for optional live preview while recording. On-device Only keeps preview audio on this iPhone; Cloud Fallback may use Apple servers for unsupported languages.</string>
+	<string>Typeforme can use Apple Speech for optional live preview while recording. On-device Only keeps preview audio on this device; Cloud Fallback may use Apple servers for unsupported languages.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
@@ -72,6 +72,13 @@
 	<key>UISupportedInterfaceOrientations</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>
+	</array>
+	<key>UISupportedInterfaceOrientations~ipad</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationPortraitUpsideDown</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
 </dict>
 </plist>

@@ -249,17 +249,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private struct TextKeyboardLayoutModel {
-        static let keyHorizontalGap: CGFloat = 6
         static let keyVerticalGap: CGFloat = 11
         static let numericKeyVerticalGap: CGFloat = 6
-        static let utilityKeyWidth: CGFloat = 51
-        static let utilityLetterGap: CGFloat = 13
         static let bottomModeKeyWidth: CGFloat = 48
         static let bottomGlobeKeyWidth: CGFloat = 48
         static let bottomLanguageKeyWidth: CGFloat = 48
-        static var utilityLetterSpacerWidth: CGFloat {
-            max(0, utilityLetterGap - keyHorizontalGap * 2)
-        }
     }
 
     private enum TextInputLanguage: String {
@@ -354,6 +348,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let constraints: [NSLayoutConstraint]
         let gapCount: Int
         let includesFlexibleKey: Bool
+        let shortcutTexts: [String]
         var lastAvailableWidth: CGFloat
     }
 
@@ -504,6 +499,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private var lastPresentationGateLogKey = ""
     private var orbContainerHeightConstraint: NSLayoutConstraint?
     private var textKeyboardContainerHeightConstraint: NSLayoutConstraint?
+    private var voiceButtonWidthConstraint: NSLayoutConstraint?
+    private var voiceButtonHeightConstraint: NSLayoutConstraint?
+    private var voiceSendButtonWidthConstraint: NSLayoutConstraint?
+    private var correctionModePanelWidthConstraint: NSLayoutConstraint?
+    private var inputModeSwitchWidthConstraint: NSLayoutConstraint?
+    private var appliedKeyboardSurfaceMetrics: KeyboardSurfaceMetrics?
     private var lastStatusSignature = ""
     private var lastMissingAudioLevelLogAt: TimeInterval = 0
     private var isApplyingHostBridgeStatus = false
@@ -697,14 +698,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     /// triggers the send action. Bigger and more obvious than the host
     /// app's own send button so it's easier to hit one-handed.
     private let voiceSendButton = HitInsetButton(frame: .zero)
-    private static let orbDiameter: CGFloat = 132
     /// Smaller variant for the 32pt text-toolbar mic button.
     private static let textToolsReadyDotDiameter: CGFloat = 8
-    // +9 vs the original 258/244 to fund the taller candidate strip; the orb
-    // container and key-row heights both derive as remainders and stay equal.
-    private static let portraitKeyboardContentHeight: CGFloat = 267
-    private static let compactKeyboardContentHeight: CGFloat = 253
     private static let rootHorizontalInset: CGFloat = 20.0 / 3.0
+    private static let maximumKeyboardContentWidth = CGFloat(KeyboardSurfaceLayoutPolicy.maximumContentWidth)
     private static let rootVerticalInset: CGFloat = 4
     private static let stackSpacing: CGFloat = 4
     /// 0.01-alpha is required: iOS custom-keyboard extensions probe pixel
@@ -965,7 +962,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let initialHeight = currentKeyboardContentHeight + Self.topChromeCoverHeight
         beginInputModeCarryoverSuppression()
         let rootView = ClickFeedbackInputView(
-            frame: CGRect(x: 0, y: 0, width: UIScreen.main.bounds.width, height: initialHeight),
+            frame: CGRect(x: 0, y: 0, width: 1, height: initialHeight),
             // `.keyboard` is required for full-keyboard replacements. `.default`
             // is for accessory views laid on top of the system keyboard; using
             // it for a full keyboard caused iOS to allocate extra accessory
@@ -2440,9 +2437,17 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         view.addSubview(keyboardTouchOverlay)
         setKeyboardContentVisible(true)
 
+        let preferredRootWidth = rootStack.widthAnchor.constraint(
+            equalTo: keyboardContentView.widthAnchor,
+            constant: -(Self.rootHorizontalInset * 2)
+        )
+        preferredRootWidth.priority = UILayoutPriority(999)
         NSLayoutConstraint.activate([
-            rootStack.leadingAnchor.constraint(equalTo: keyboardContentView.leadingAnchor, constant: Self.rootHorizontalInset),
-            rootStack.trailingAnchor.constraint(equalTo: keyboardContentView.trailingAnchor, constant: -Self.rootHorizontalInset),
+            rootStack.leadingAnchor.constraint(greaterThanOrEqualTo: keyboardContentView.leadingAnchor, constant: Self.rootHorizontalInset),
+            rootStack.trailingAnchor.constraint(lessThanOrEqualTo: keyboardContentView.trailingAnchor, constant: -Self.rootHorizontalInset),
+            rootStack.centerXAnchor.constraint(equalTo: keyboardContentView.centerXAnchor),
+            rootStack.widthAnchor.constraint(lessThanOrEqualToConstant: Self.maximumKeyboardContentWidth),
+            preferredRootWidth,
             rootStack.topAnchor.constraint(equalTo: keyboardContentView.topAnchor, constant: Self.rootVerticalInset + Self.topChromeCoverHeight),
             rootStack.bottomAnchor.constraint(equalTo: keyboardContentView.bottomAnchor, constant: -Self.rootVerticalInset),
         ])
@@ -2477,33 +2482,30 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let heightDelta = abs(view.bounds.height - targetHeight)
         let keyboardFrame = view.convert(view.bounds, to: nil)
         let windowFrame = view.window?.frame
-        let screenBottom = UIScreen.main.bounds.maxY
-        let bottomDelta = windowFrame.map { abs(keyboardFrame.maxY - $0.maxY) } ?? 0
-        let windowScreenDelta = windowFrame.map { abs($0.maxY - screenBottom) } ?? 0
         let hasWindow = view.window != nil
-        let shouldCheckWindowScreenBottom = windowFrame.map { $0.maxY > targetHeight + 20 } ?? false
-        let isBottomAnchored = !hasWindow
-            || (bottomDelta <= 2 && (!shouldCheckWindowScreenBottom || windowScreenDelta <= 2))
-        let isStable = heightDelta <= 2 && isBottomAnchored
+        let hasUsableWidth = view.bounds.width > 1
+        // Floating iPad keyboards are intentionally not anchored to the
+        // display bottom. Stability belongs to this input view's own bounds,
+        // not to a process-global screen rectangle.
+        let isStable = heightDelta <= 2 && hasWindow && hasUsableWidth
         let logKey = [
             String(format: "%.1f", Double(view.bounds.height)),
             String(format: "%.1f", Double(targetHeight)),
+            String(format: "%.1f", Double(view.bounds.width)),
             String(format: "%.1f", Double(keyboardFrame.minY)),
             String(format: "%.1f", Double(keyboardFrame.maxY)),
             String(format: "%.1f", Double(windowFrame?.maxY ?? -1)),
-            String(format: "%.1f", Double(screenBottom)),
         ].joined(separator: "|")
         let reason = String(
-            format: "height=%.1f target=%.1f heightDelta=%.1f keyboardY=%.1f keyboardBottom=%.1f windowBottom=%.1f screenBottom=%.1f bottomDelta=%.1f windowScreenDelta=%.1f",
+            format: "size=%.1fx%.1f targetHeight=%.1f heightDelta=%.1f keyboardY=%.1f keyboardBottom=%.1f windowBottom=%.1f hasWindow=%d",
+            Double(view.bounds.width),
             Double(view.bounds.height),
             Double(targetHeight),
             Double(heightDelta),
             Double(keyboardFrame.minY),
             Double(keyboardFrame.maxY),
             Double(windowFrame?.maxY ?? -1),
-            Double(screenBottom),
-            Double(bottomDelta),
-            Double(windowScreenDelta)
+            hasWindow ? 1 : 0
         )
         return (isStable, logKey, reason)
     }
@@ -2566,10 +2568,37 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         CATransaction.commit()
     }
 
+    private var keyboardSurfaceAvailableWidth: CGFloat {
+        guard isViewLoaded, view.bounds.width > 1 else {
+            return Self.maximumKeyboardContentWidth
+        }
+        return min(
+            Self.maximumKeyboardContentWidth,
+            max(0, view.bounds.width - Self.rootHorizontalInset * 2)
+        )
+    }
+
+    private var currentKeyboardSurfaceMetrics: KeyboardSurfaceMetrics {
+        KeyboardSurfaceLayoutPolicy.metrics(
+            availableWidth: Double(keyboardSurfaceAvailableWidth),
+            verticalSizeIsCompact: traitCollection.verticalSizeClass == .compact
+        )
+    }
+
     private var currentKeyboardContentHeight: CGFloat {
-        traitCollection.verticalSizeClass == .compact
-            ? Self.compactKeyboardContentHeight
-            : Self.portraitKeyboardContentHeight
+        CGFloat(currentKeyboardSurfaceMetrics.contentHeight)
+    }
+
+    private var textKeyHorizontalGap: CGFloat {
+        CGFloat(currentKeyboardSurfaceMetrics.textKeyHorizontalGap)
+    }
+
+    private var textUtilityKeyWidth: CGFloat {
+        CGFloat(currentKeyboardSurfaceMetrics.textUtilityKeyWidth)
+    }
+
+    private var textUtilityLetterSpacerWidth: CGFloat {
+        max(0, 13 - textKeyHorizontalGap * 2)
     }
 
     private var effectiveKeyboardContentHeight: CGFloat {
@@ -2585,6 +2614,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func applyKeyboardHeightForCurrentTraits() {
+        applyKeyboardSurfaceMetricsForCurrentBounds()
         let targetContentHeight = currentKeyboardContentHeight
         let totalHeight = targetContentHeight + Self.topChromeCoverHeight
         heightConstraint?.constant = totalHeight
@@ -2596,13 +2626,34 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         logKeyboardPresentationLayout("applyHeight", force: true)
     }
 
+    private func applyKeyboardSurfaceMetricsForCurrentBounds() {
+        let metrics = currentKeyboardSurfaceMetrics
+        let metricsChanged = appliedKeyboardSurfaceMetrics != metrics
+        appliedKeyboardSurfaceMetrics = metrics
+
+        heightConstraint?.constant = CGFloat(metrics.contentHeight) + Self.topChromeCoverHeight
+        voiceButtonWidthConstraint?.constant = CGFloat(metrics.orbDiameter)
+        voiceButtonHeightConstraint?.constant = CGFloat(metrics.orbDiameter)
+        voiceSendButtonWidthConstraint?.constant = CGFloat(metrics.voiceSideColumnWidth)
+        correctionModePanelWidthConstraint?.constant = CGFloat(metrics.voiceSideColumnWidth)
+        inputModeSwitchWidthConstraint?.constant = CGFloat(metrics.inputModeSwitchWidth)
+
+        if metricsChanged, voiceButtonWidthConstraint != nil {
+            updateUI(animated: false)
+            if renderedTextKeyboardLayoutKind != nil {
+                rebuildTextKeyboardRows()
+            }
+        }
+    }
+
     private func keyboardContentFrameForCurrentBounds() -> CGRect {
         let bounds = view.bounds
-        let width = bounds.width > 0 ? bounds.width : UIScreen.main.bounds.width
+        let width = max(1, bounds.width)
         return CGRect(x: bounds.minX, y: bounds.minY, width: width, height: bounds.height)
     }
 
     private func layoutKeyboardContentViewForCurrentBounds() {
+        applyKeyboardSurfaceMetricsForCurrentBounds()
         let frame = keyboardContentFrameForCurrentBounds()
         if keyboardSurfaceView.frame != frame {
             keyboardSurfaceView.frame = frame
@@ -2870,8 +2921,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         if controllerStyle != .unspecified { return controllerStyle }
         let windowStyle = view.window?.windowScene?.traitCollection.userInterfaceStyle ?? .unspecified
         if windowStyle != .unspecified { return windowStyle }
-        let screenStyle = UIScreen.main.traitCollection.userInterfaceStyle
-        return screenStyle == .dark ? .dark : .light
+        return .light
+    }
+
+    private var keyboardDisplayScale: CGFloat {
+        let scale = view.window?.windowScene?.screen.scale ?? traitCollection.displayScale
+        return scale > 0 ? scale : 2
     }
 
     private var isKeyboardDark: Bool {
@@ -3109,7 +3164,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         orbContainer.isUserInteractionEnabled = true
         rootStack.addArrangedSubview(orbContainer)
 
-        let diameter = Self.orbDiameter
+        let surfaceMetrics = currentKeyboardSurfaceMetrics
         voiceButton.translatesAutoresizingMaskIntoConstraints = false
         voiceButton.accessibilityLabel = NSLocalizedString("Dictate", comment: "Accessibility label for the orb")
         voiceButton.accessibilityTraits = .button
@@ -3137,14 +3192,22 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         // added first → popover sits above it.
         view.addSubview(correctionPopoverDismissOverlay)
         view.addSubview(correctionPopover)
+        let preferredCorrectionPopoverWidth = correctionPopover.widthAnchor.constraint(
+            equalTo: view.widthAnchor,
+            constant: -16
+        )
+        preferredCorrectionPopoverWidth.priority = UILayoutPriority(999)
         NSLayoutConstraint.activate([
             correctionPopoverDismissOverlay.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             correctionPopoverDismissOverlay.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             correctionPopoverDismissOverlay.topAnchor.constraint(equalTo: view.topAnchor),
             correctionPopoverDismissOverlay.bottomAnchor.constraint(equalTo: view.bottomAnchor),
 
-            correctionPopover.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 8),
-            correctionPopover.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -8),
+            correctionPopover.leadingAnchor.constraint(greaterThanOrEqualTo: view.leadingAnchor, constant: 8),
+            correctionPopover.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -8),
+            correctionPopover.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            correctionPopover.widthAnchor.constraint(lessThanOrEqualToConstant: Self.maximumKeyboardContentWidth),
+            preferredCorrectionPopoverWidth,
             // Centered on the keyboard view so the popover lands roughly over
             // the orb in voice mode AND over the keys area in text mode,
             // without needing per-mode constraint reshuffling.
@@ -3155,11 +3218,31 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         orbContainerHeightConstraint = orbContainer.heightAnchor.constraint(
             equalToConstant: Self.orbContainerHeight(for: currentKeyboardContentHeight)
         )
+        let voiceWidth = voiceButton.widthAnchor.constraint(
+            equalToConstant: CGFloat(surfaceMetrics.orbDiameter)
+        )
+        let voiceHeight = voiceButton.heightAnchor.constraint(
+            equalToConstant: CGFloat(surfaceMetrics.orbDiameter)
+        )
+        let sendWidth = voiceSendButton.widthAnchor.constraint(
+            equalToConstant: CGFloat(surfaceMetrics.voiceSideColumnWidth)
+        )
+        let correctionWidth = correctionModePanel.widthAnchor.constraint(
+            equalToConstant: CGFloat(surfaceMetrics.voiceSideColumnWidth)
+        )
+        let switchWidth = inputModeSwitch.widthAnchor.constraint(
+            equalToConstant: CGFloat(surfaceMetrics.inputModeSwitchWidth)
+        )
+        voiceButtonWidthConstraint = voiceWidth
+        voiceButtonHeightConstraint = voiceHeight
+        voiceSendButtonWidthConstraint = sendWidth
+        correctionModePanelWidthConstraint = correctionWidth
+        inputModeSwitchWidthConstraint = switchWidth
         NSLayoutConstraint.activate([
             orbContainerHeightConstraint!,
 
-            voiceButton.widthAnchor.constraint(equalToConstant: diameter),
-            voiceButton.heightAnchor.constraint(equalToConstant: diameter),
+            voiceWidth,
+            voiceHeight,
             voiceButton.centerXAnchor.constraint(equalTo: orbContainer.centerXAnchor),
             voiceButton.centerYAnchor.constraint(equalTo: orbContainer.centerYAnchor),
             voiceButton.topAnchor.constraint(greaterThanOrEqualTo: orbContainer.topAnchor, constant: 2),
@@ -3169,24 +3252,25 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             // below. 8pt gap between them; whole column centered on the
             // orb's vertical mid-line so the two buttons read as a paired
             // unit balanced against the Hold/Tap switch on the right.
-            // 104pt wide fits the longest labels ("Structure+", "Return")
-            // without text wrap, with adjustsFontSizeToFitWidth as fallback.
+            // Standard width fits the longest labels ("Structure+", "Return")
+            // without wrapping. Floating iPad keyboards use the compact
+            // policy and shrink text as a bounded fallback.
             voiceSendButton.leadingAnchor.constraint(equalTo: orbContainer.leadingAnchor, constant: 10),
             voiceSendButton.trailingAnchor.constraint(lessThanOrEqualTo: voiceButton.leadingAnchor, constant: -8),
-            voiceSendButton.widthAnchor.constraint(equalToConstant: 104),
+            sendWidth,
             voiceSendButton.heightAnchor.constraint(equalToConstant: 42),
             voiceSendButton.bottomAnchor.constraint(equalTo: voiceButton.centerYAnchor, constant: -5),
 
             correctionModePanel.leadingAnchor.constraint(equalTo: orbContainer.leadingAnchor, constant: 10),
             correctionModePanel.trailingAnchor.constraint(lessThanOrEqualTo: voiceButton.leadingAnchor, constant: -8),
             correctionModePanel.topAnchor.constraint(equalTo: voiceButton.centerYAnchor, constant: 5),
-            correctionModePanel.widthAnchor.constraint(equalToConstant: 104),
+            correctionWidth,
             correctionModePanel.heightAnchor.constraint(equalToConstant: 42),
 
             inputModeSwitch.leadingAnchor.constraint(greaterThanOrEqualTo: voiceButton.trailingAnchor, constant: 8),
             inputModeSwitch.centerYAnchor.constraint(equalTo: voiceButton.centerYAnchor),
             inputModeSwitch.trailingAnchor.constraint(equalTo: orbContainer.trailingAnchor, constant: -14),
-            inputModeSwitch.widthAnchor.constraint(equalToConstant: 68),
+            switchWidth,
             inputModeSwitch.heightAnchor.constraint(equalToConstant: 82),
         ])
     }
@@ -4355,7 +4439,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             directButtons.append(shiftKey)
         }
         if separatesUtilityEdges {
-            addFixedTextRowSpacer(to: row, width: TextKeyboardLayoutModel.utilityLetterSpacerWidth)
+            addFixedTextRowSpacer(to: row, width: textUtilityLetterSpacerWidth)
         }
         keys.forEach { key in
             let title = displayTitle(forTextKey: key)
@@ -4371,7 +4455,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
         if includeDelete {
             if separatesUtilityEdges {
-                addFixedTextRowSpacer(to: row, width: TextKeyboardLayoutModel.utilityLetterSpacerWidth)
+                addFixedTextRowSpacer(to: row, width: textUtilityLetterSpacerWidth)
             }
             let deleteKey = makeTextKeyButton(title: "", image: "delete.left", weight: .utility)
             deleteKey.accessibilityLabel = NSLocalizedString("Delete", comment: "Accessibility label for Delete key")
@@ -4452,12 +4536,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         })
         if let leadingUtilityButton {
             constraints.append(leadingUtilityButton.widthAnchor.constraint(
-                equalToConstant: TextKeyboardLayoutModel.utilityKeyWidth
+                equalToConstant: textUtilityKeyWidth
             ))
         }
         if let trailingUtilityButton {
             constraints.append(trailingUtilityButton.widthAnchor.constraint(
-                equalToConstant: TextKeyboardLayoutModel.utilityKeyWidth
+                equalToConstant: textUtilityKeyWidth
             ))
         }
         if let leadingHalfKeySpacer {
@@ -4468,7 +4552,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 toItem: referenceButton,
                 attribute: .width,
                 multiplier: 0.5,
-                constant: -TextKeyboardLayoutModel.keyHorizontalGap / 2
+                constant: -textKeyHorizontalGap / 2
             ))
         }
         if let trailingHalfKeySpacer {
@@ -4479,7 +4563,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 toItem: referenceButton,
                 attribute: .width,
                 multiplier: 0.5,
-                constant: -TextKeyboardLayoutModel.keyHorizontalGap / 2
+                constant: -textKeyHorizontalGap / 2
             ))
         }
         NSLayoutConstraint.activate(constraints)
@@ -4523,14 +4607,22 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func addTextBottomRow(layout kind: KeyboardTextBottomLayoutKind) {
-        let layout = KeyboardTextLayoutPolicy.bottomRow(for: kind)
+        let preferredLayout = KeyboardTextLayoutPolicy.bottomRow(for: kind)
+        let showsGlobe = needsInputModeSwitchKey
+        let showsLanguage = preferredLayout.showsLanguageKey && isChineseInputEnabled
+        let availableWidth = textBottomRowAvailableWidth
+        let layout = KeyboardTextLayoutPolicy.fittedBottomRow(
+            preferredLayout,
+            availableWidth: Double(availableWidth),
+            showsGlobeKey: showsGlobe,
+            showsLanguageKey: showsLanguage,
+            gap: Double(textKeyHorizontalGap)
+        )
         let row = makeTextKeyRow()
         row.distribution = .fill
         var directButtons: [UIButton] = []
         var fixedWidthConstraints: [NSLayoutConstraint] = []
 
-        let showsGlobe = needsInputModeSwitchKey
-        let showsLanguage = layout.showsLanguageKey && isChineseInputEnabled
         var preferredFixedWidths = [layout.modeKeyWidth]
         if showsGlobe {
             preferredFixedWidths.append(Double(TextKeyboardLayoutModel.bottomGlobeKeyWidth))
@@ -4543,13 +4635,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             preferredFixedWidths.append(returnKeyWidth)
         }
         let visibleKeyCount = preferredFixedWidths.count + (layout.includesSpaceKey ? 1 : 0)
-        let availableWidth = textBottomRowAvailableWidth
         var fittedFixedWidths = KeyboardTextLayoutPolicy.fittedFixedWidths(
             preferredFixedWidths,
             availableWidth: Double(availableWidth),
             gapCount: max(0, visibleKeyCount - 1),
             includesFlexibleKey: layout.includesSpaceKey,
-            gap: Double(TextKeyboardLayoutModel.keyHorizontalGap)
+            gap: Double(textKeyHorizontalGap)
         ).makeIterator()
 
         textModeButtonWidthConstraint?.constant = CGFloat(fittedFixedWidths.next() ?? layout.modeKeyWidth)
@@ -4637,6 +4728,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             constraints: fixedWidthConstraints,
             gapCount: max(0, visibleKeyCount - 1),
             includesFlexibleKey: layout.includesSpaceKey,
+            shortcutTexts: layout.shortcuts.map(\.text),
             lastAvailableWidth: availableWidth
         )
         registerTextKeyboardHitRow(
@@ -4652,7 +4744,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         if keyRowsStack.bounds.width > 1 {
             return keyRowsStack.bounds.width
         }
-        return max(0, view.bounds.width - (2 * Self.rootHorizontalInset))
+        return min(
+            Self.maximumKeyboardContentWidth,
+            max(0, view.bounds.width - (2 * Self.rootHorizontalInset))
+        )
     }
 
     private func updateTextBottomRowWidthsForCurrentBounds() {
@@ -4662,12 +4757,30 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
               abs(binding.lastAvailableWidth - availableWidth) > 0.5
         else { return }
 
+        if case .text(let bottom, _) = renderedTextKeyboardLayoutKind {
+            let kind: KeyboardTextBottomLayoutKind = isSymbolKeyboard ? .symbols : bottom
+            let preferredLayout = KeyboardTextLayoutPolicy.bottomRow(for: kind)
+            let showsGlobe = needsInputModeSwitchKey
+            let showsLanguage = preferredLayout.showsLanguageKey && isChineseInputEnabled
+            let fittedLayout = KeyboardTextLayoutPolicy.fittedBottomRow(
+                preferredLayout,
+                availableWidth: Double(availableWidth),
+                showsGlobeKey: showsGlobe,
+                showsLanguageKey: showsLanguage,
+                gap: Double(textKeyHorizontalGap)
+            )
+            if fittedLayout.shortcuts.map(\.text) != binding.shortcutTexts {
+                rebuildTextKeyboardRows()
+                return
+            }
+        }
+
         let widths = KeyboardTextLayoutPolicy.fittedFixedWidths(
             binding.preferredWidths,
             availableWidth: Double(availableWidth),
             gapCount: binding.gapCount,
             includesFlexibleKey: binding.includesFlexibleKey,
-            gap: Double(TextKeyboardLayoutModel.keyHorizontalGap)
+            gap: Double(textKeyHorizontalGap)
         )
         guard widths.count == binding.constraints.count else { return }
         for (constraint, width) in zip(binding.constraints, widths) {
@@ -4908,7 +5021,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private func makeTextKeyRow() -> UIStackView {
         let row = UIStackView()
         row.axis = .horizontal
-        row.spacing = TextKeyboardLayoutModel.keyHorizontalGap
+        row.spacing = textKeyHorizontalGap
         row.alignment = .fill
         row.distribution = .fill
         return row
@@ -5176,7 +5289,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 : VoiceOrbVisualPolicy.idleIconPointSizeRatio
             orbCenterContent = .symbol(
                 name: voiceIconName,
-                pointSize: Self.orbDiameter * CGFloat(pointSizeRatio)
+                pointSize: CGFloat(currentKeyboardSurfaceMetrics.orbDiameter) * CGFloat(pointSizeRatio)
             )
         }
         let orbPresentation = KeyboardVoiceOrbPresentation(
@@ -8854,7 +8967,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private func makeCandidateInlineLayoutSignature(
         viewportWidth: CGFloat
     ) -> CandidateInlineLayoutSignature {
-        let displayScale = view.window?.screen.scale ?? UIScreen.main.scale
+        let displayScale = keyboardDisplayScale
         return CandidateInlineLayoutSignature(
             viewportWidthInPixels: Int((viewportWidth * displayScale).rounded()),
             displayScaleInHundredths: Int((displayScale * 100).rounded())
@@ -9334,7 +9447,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             separator = reusableCandidateSeparators[activeCandidateSeparatorIndex]
         } else {
             separator = UIView()
-            separator.widthAnchor.constraint(equalToConstant: 1.0 / UIScreen.main.scale).isActive = true
+            separator.widthAnchor.constraint(equalToConstant: 1.0 / keyboardDisplayScale).isActive = true
             separator.heightAnchor.constraint(equalToConstant: 20).isActive = true
             separator.setContentHuggingPriority(.required, for: .horizontal)
             separator.setContentCompressionResistancePriority(.required, for: .horizontal)
@@ -9671,7 +9784,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         availableWidth: CGFloat,
         columnCount: Int
     ) -> CandidateGridLayoutSignature {
-        let displayScale = view.window?.screen.scale ?? UIScreen.main.scale
+        let displayScale = keyboardDisplayScale
         return CandidateGridLayoutSignature(
             availableWidthInPixels: Int((availableWidth * displayScale).rounded()),
             displayScaleInHundredths: Int((displayScale * 100).rounded()),
@@ -9865,7 +9978,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let separator = UIView()
         separator.backgroundColor = UIColor.separator.withAlphaComponent(isKeyboardDark ? 0.42 : 0.32)
         separator.translatesAutoresizingMaskIntoConstraints = false
-        separator.heightAnchor.constraint(equalToConstant: 1.0 / UIScreen.main.scale).isActive = true
+        separator.heightAnchor.constraint(equalToConstant: 1.0 / keyboardDisplayScale).isActive = true
         separator.widthAnchor.constraint(equalToConstant: width).isActive = true
         candidateGridStack.addArrangedSubview(separator)
     }

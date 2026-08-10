@@ -190,7 +190,13 @@ private struct QRScannerRepresentable: UIViewControllerRepresentable {
         let session = AVCaptureSession()
         private let queue = DispatchQueue(label: "\(TypeformeBundleConfiguration.hostBundleIdentifier).qr-scanner", qos: .userInitiated)
 
-        func configure(coordinator: Coordinator?) {
+        func configure(coordinator: Coordinator?) -> AVCaptureDevice? {
+            if session.isMultitaskingCameraAccessSupported {
+                // iPad windows are resizable and may share the display with
+                // another app. Opt in before the session starts so QR pairing
+                // remains available in supported multitasking layouts.
+                session.isMultitaskingCameraAccessEnabled = true
+            }
             session.beginConfiguration()
             defer { session.commitConfiguration() }
 
@@ -198,16 +204,17 @@ private struct QRScannerRepresentable: UIViewControllerRepresentable {
                 let device = AVCaptureDevice.default(for: .video),
                 let input = try? AVCaptureDeviceInput(device: device),
                 session.canAddInput(input)
-            else { return }
+            else { return nil }
             session.addInput(input)
 
             let output = AVCaptureMetadataOutput()
-            guard session.canAddOutput(output) else { return }
+            guard session.canAddOutput(output) else { return nil }
             session.addOutput(output)
             output.setMetadataObjectsDelegate(coordinator, queue: .main)
             // Adding the type AFTER addOutput, otherwise availableMetadataObjectTypes
             // is empty and the assignment is a no-op (a classic gotcha).
             output.metadataObjectTypes = [.qr]
+            return device
         }
 
         func startIfNeeded() {
@@ -240,11 +247,30 @@ private struct QRScannerRepresentable: UIViewControllerRepresentable {
 
         private let scannerSession = ScannerSessionController()
         private var previewLayer: AVCaptureVideoPreviewLayer?
+        private var rotationCoordinator: AVCaptureDevice.RotationCoordinator?
+        private let interruptionLabel = UILabel()
 
         override func viewDidLoad() {
             super.viewDidLoad()
             view.backgroundColor = .black
             configureSession()
+            configureInterruptionOverlay()
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(sessionWasInterrupted),
+                name: AVCaptureSession.wasInterruptedNotification,
+                object: scannerSession.session
+            )
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(sessionInterruptionEnded),
+                name: AVCaptureSession.interruptionEndedNotification,
+                object: scannerSession.session
+            )
+        }
+
+        deinit {
+            NotificationCenter.default.removeObserver(self)
         }
 
         override func viewWillAppear(_ animated: Bool) {
@@ -260,14 +286,65 @@ private struct QRScannerRepresentable: UIViewControllerRepresentable {
         override func viewDidLayoutSubviews() {
             super.viewDidLayoutSubviews()
             previewLayer?.frame = view.layer.bounds
+            updatePreviewRotation()
         }
 
         private func configureSession() {
-            scannerSession.configure(coordinator: coordinator)
+            let device = scannerSession.configure(coordinator: coordinator)
             let preview = AVCaptureVideoPreviewLayer(session: scannerSession.session)
             preview.videoGravity = .resizeAspectFill
             view.layer.addSublayer(preview)
             previewLayer = preview
+            if let device {
+                rotationCoordinator = AVCaptureDevice.RotationCoordinator(
+                    device: device,
+                    previewLayer: preview
+                )
+            }
+        }
+
+        private func configureInterruptionOverlay() {
+            interruptionLabel.translatesAutoresizingMaskIntoConstraints = false
+            interruptionLabel.text = NSLocalizedString(
+                "Camera is temporarily unavailable. Resize the Typeforme window or paste the pairing JSON instead.",
+                comment: "QR scanner camera interruption message"
+            )
+            interruptionLabel.textColor = .white
+            interruptionLabel.backgroundColor = UIColor.black.withAlphaComponent(0.72)
+            interruptionLabel.font = .preferredFont(forTextStyle: .footnote)
+            interruptionLabel.textAlignment = .center
+            interruptionLabel.numberOfLines = 0
+            interruptionLabel.layer.cornerRadius = 14
+            interruptionLabel.layer.cornerCurve = .continuous
+            interruptionLabel.clipsToBounds = true
+            interruptionLabel.isHidden = true
+            view.addSubview(interruptionLabel)
+            NSLayoutConstraint.activate([
+                interruptionLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+                interruptionLabel.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+                interruptionLabel.leadingAnchor.constraint(greaterThanOrEqualTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 24),
+                interruptionLabel.trailingAnchor.constraint(lessThanOrEqualTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -24),
+                interruptionLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 420),
+                interruptionLabel.heightAnchor.constraint(greaterThanOrEqualToConstant: 64),
+            ])
+        }
+
+        private func updatePreviewRotation() {
+            guard
+                let connection = previewLayer?.connection,
+                let angle = rotationCoordinator?.videoRotationAngleForHorizonLevelPreview,
+                connection.isVideoRotationAngleSupported(angle)
+            else { return }
+            connection.videoRotationAngle = angle
+        }
+
+        @objc private func sessionWasInterrupted(_ notification: Notification) {
+            interruptionLabel.isHidden = false
+        }
+
+        @objc private func sessionInterruptionEnded(_ notification: Notification) {
+            interruptionLabel.isHidden = true
+            scannerSession.startIfNeeded()
         }
     }
 }

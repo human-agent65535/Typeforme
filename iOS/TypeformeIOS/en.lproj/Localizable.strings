@@ -25,7 +25,7 @@
 "Capture mode and permissions" = "Capture mode and permissions";
 "Help & About" = "Help & About";
 "Connect a Mac" = "Connect a Mac";
-"Pair this iPhone before dictating" = "Pair this iPhone before dictating";
+"Pair this device before dictating" = "Pair this device before dictating";
 "Review permissions and keyboard access" = "Review permissions and keyboard access";
 "Mac is offline" = "Mac is offline";
 "Check the bridge connection" = "Check the bridge connection";
@@ -43,7 +43,7 @@
 "Recognition, refine, languages, vocabulary, and models" = "Recognition, refine, languages, vocabulary, and models";
 "Change or Repair Pairing" = "Change or Repair Pairing";
 "Pair a Mac" = "Pair a Mac";
-"Applies to this iPhone and the Typeforme keyboard. Fast skips refine." = "Applies to this iPhone and the Typeforme keyboard. Fast skips refine.";
+"Applies to this device and the Typeforme keyboard. Fast skips refine." = "Applies to this device and the Typeforme keyboard. Fast skips refine.";
 "Mac Default Languages" = "Mac Default Languages";
 "Checking" = "Checking";
 "Offline" = "Offline";
@@ -132,7 +132,7 @@
 "iOS exposes this only through Settings. Full Access lets the keyboard reach the host app." = "iOS exposes this only through Settings. Full Access lets the keyboard reach the host app.";
 "Optional" = "Optional";
 "Apple Speech Preview" = "Apple Speech Preview";
-"Only needed for on-iPhone live partial preview. Core dictation still works without it." = "Only needed for on-iPhone live partial preview. Core dictation still works without it.";
+"Only needed for on-device live partial preview. Core dictation still works without it." = "Only needed for on-device live partial preview. Core dictation still works without it.";
 "Help" = "Help";
 "Camera access is requested only when you open the QR scanner." = "Camera access is requested only when you open the QR scanner.";
 "Allowed" = "Allowed";
@@ -157,7 +157,7 @@
 "Learning" = "Learning";
 "Audio" = "Audio";
 "Preview" = "Preview";
-"iPhone Keyboard Preview" = "iPhone Keyboard Preview";
+"Device Keyboard Preview" = "Device Keyboard Preview";
 "Host audio session" = "Host audio session";
 "Live Preview" = "Live Preview";
 "Preview Recognition" = "Preview Recognition";
@@ -247,7 +247,7 @@
 "Typeforme uses your Mac's local ASR + LLM to clean up dictation. Pair the Mac Bridge URL and token to get started." = "Typeforme uses your Mac's local ASR + LLM to clean up dictation. Pair the Mac Bridge URL and token to get started.";
 "Pair Mac Bridge" = "Pair Mac Bridge";
 "Or copy the pairing JSON from the Mac app." = "Or copy the pairing JSON from the Mac app.";
-"Open the Mac app, copy the pairing JSON, then paste it here. Pairing stores connection details. Languages and the default dictation mode are iPhone settings." = "Open the Mac app, copy the pairing JSON, then paste it here. Pairing stores connection details. Languages and the default dictation mode are iPhone settings.";
+"Open the Mac app, copy the pairing JSON, then paste it here. Pairing stores connection details. Languages and the default dictation mode are device settings." = "Open the Mac app, copy the pairing JSON, then paste it here. Pairing stores connection details. Languages and the default dictation mode are device settings.";
 "Paste Pairing JSON" = "Paste Pairing JSON";
 "Paste from Clipboard" = "Paste from Clipboard";
 "Scan QR from Mac" = "Scan QR from Mac";
@@ -278,6 +278,7 @@
 "Scan pairing QR" = "Scan pairing QR";
 "Camera access denied" = "Camera access denied";
 "Enable camera in iOS Settings to scan a pairing QR, or paste the pairing JSON manually instead." = "Enable camera in iOS Settings to scan a pairing QR, or paste the pairing JSON manually instead.";
+"Camera is temporarily unavailable. Resize the Typeforme window or paste the pairing JSON instead." = "Camera is temporarily unavailable. Resize the Typeforme window or paste the pairing JSON instead.";
 
 // Keyboard guide
 "Setup" = "Setup";
@@ -317,7 +318,7 @@
 
 // Dictation settings
 "Default Mode" = "Default Mode";
-"Applies to this iPhone and the Typeforme keyboard. Fast skips refine and uses the selected Fast ASR source only." = "Applies to this iPhone and the Typeforme keyboard. Fast skips refine and uses the selected Fast ASR source only.";
+"Applies to this device and the Typeforme keyboard. Fast skips refine and uses the selected Fast ASR source only." = "Applies to this device and the Typeforme keyboard. Fast skips refine and uses the selected Fast ASR source only.";
 "Fast ASR Source" = "Fast ASR Source";
 "Fast ASR" = "Fast ASR";
 "Affects the paired Mac Bridge. Each ASR source is optional; dictation is unavailable when none are enabled." = "Affects the paired Mac Bridge. Each ASR source is optional; dictation is unavailable when none are enabled.";
@@ -358,8 +359,8 @@
 "On-device preview availability is reported by iOS. Manage Dictation languages and system updates in iOS Settings." = "On-device preview availability is reported by iOS. Manage Dictation languages and system updates in iOS Settings.";
 "Changes apply immediately after Full Access is enabled." = "Changes apply immediately after Full Access is enabled.";
 "Changes apply immediately. Controls how long Typeforme keeps keyboard dictation ready after the host app is opened." = "Changes apply immediately. Controls how long Typeforme keeps keyboard dictation ready after the host app is opened.";
-"This preview setting is local to the iPhone keyboard and applies immediately. It does not change the Mac live transcript setting." = "This preview setting is local to the iPhone keyboard and applies immediately. It does not change the Mac live transcript setting.";
-"This preview setting is saved to the paired Mac when you tap Done. It does not change the iPhone keyboard preview." = "This preview setting is saved to the paired Mac when you tap Done. It does not change the iPhone keyboard preview.";
+"This preview setting is local to this device and applies immediately. It does not change the Mac live transcript setting." = "This preview setting is local to this device and applies immediately. It does not change the Mac live transcript setting.";
+"This preview setting is saved to the paired Mac when you tap Done. It does not change this device's keyboard preview." = "This preview setting is saved to the paired Mac when you tap Done. It does not change this device's keyboard preview.";
 "Apple Speech is local. Server uses Mac." = "Apple Speech is local. Server uses Mac.";
 "Server ASR" = "Server ASR";
 "Server-side" = "Server-side";
@@ -368,7 +369,8 @@
 "Qwen3-ASR preview runs on the Mac." = "Qwen3-ASR preview runs on the Mac.";
 "NVIDIA Nemotron preview runs on the Mac." = "NVIDIA Nemotron preview runs on the Mac.";
 "Server ASR preview runs on the Mac." = "Server ASR preview runs on the Mac.";
-"Apple Speech preview runs on this iPhone." = "Apple Speech preview runs on this iPhone.";
+"Apple Speech preview runs on this device." = "Apple Speech preview runs on this device.";
+"Device preferences live under Voice Dictation and Text Keyboard. Mac recognition and refine options live under Connected Mac." = "Device preferences live under Voice Dictation and Text Keyboard. Mac recognition and refine options live under Connected Mac.";
 "Qwen3-ASR (Mac)" = "Qwen3-ASR (Mac)";
 "Server ASR (Mac)" = "Server ASR (Mac)";
 "NVIDIA Nemotron (Mac)" = "NVIDIA Nemotron (Mac)";
