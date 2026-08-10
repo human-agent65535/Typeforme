@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import UIKit
 
 struct KeyboardSettingsView: View {
     @Environment(AppState.self) private var state
@@ -170,7 +171,14 @@ private struct KeyboardLearningSettingsView: View {
             }
 
             Section {
-                Toggle("Touch learning", isOn: touchLearningBinding)
+                if touchLearningAvailable {
+                    Toggle("Touch learning", isOn: touchLearningBinding)
+                } else {
+                    LabeledContent("Touch learning") {
+                        Text("Off on iPad")
+                            .foregroundStyle(.secondary)
+                    }
+                }
                 NavigationLink {
                     TouchLearningStatsView()
                 } label: {
@@ -184,7 +192,11 @@ private struct KeyboardLearningSettingsView: View {
             } header: {
                 Text("Touch")
             } footer: {
-                Text("Touch learning adapts per-key tap offsets. When off, text keys use fixed midpoint hit routing.")
+                if touchLearningAvailable {
+                    Text("Touch learning adapts per-key tap offsets. When off, text keys use fixed midpoint hit routing.")
+                } else {
+                    Text("Touch learning is disabled on iPad. iPad text keys always use fixed midpoint hit routing; existing iPhone learning data is preserved.")
+                }
             }
         }
         .navigationTitle("Learning")
@@ -205,6 +217,13 @@ private struct KeyboardLearningSettingsView: View {
         } set: { enabled in
             state.setKeyboardTouchLearningEnabled(enabled)
         }
+    }
+
+    private var touchLearningAvailable: Bool {
+        KeyboardTouchLearningAvailabilityPolicy.isActive(
+            userEnabled: true,
+            interfaceIdiomIsPad: UIDevice.current.userInterfaceIdiom == .pad
+        )
     }
 }
 

@@ -111,8 +111,11 @@ final class KeyboardTextKeyControl: UIButton {
         configuration.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
             var outgoing = incoming
             if showsSecondaryTitle {
-                outgoing.font = .systemFont(ofSize: 10, weight: .regular)
-                outgoing.foregroundColor = .secondaryLabel
+                outgoing.font = .systemFont(
+                    ofSize: CGFloat(KeyboardTextKeyVisualPolicy.stackedSecondaryPointSize),
+                    weight: .regular
+                )
+                outgoing.foregroundColor = .label
                 return outgoing
             }
             let weight: UIFont.Weight = typography.weight == .medium ? .medium : .regular
@@ -124,7 +127,9 @@ final class KeyboardTextKeyControl: UIButton {
                 var outgoing = incoming
                 let weight: UIFont.Weight = typography.weight == .medium ? .medium : .regular
                 outgoing.font = .systemFont(
-                    ofSize: CGFloat(max(17, typography.pointSize - 1)),
+                    ofSize: CGFloat(KeyboardTextKeyVisualPolicy.stackedPrimaryPointSize(
+                        for: typography
+                    )),
                     weight: weight
                 )
                 outgoing.foregroundColor = .label

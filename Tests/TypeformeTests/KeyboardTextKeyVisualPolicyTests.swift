@@ -16,8 +16,8 @@ final class KeyboardTextKeyVisualPolicyTests: XCTestCase {
 
         XCTAssertEqual(lowercase.pointSize, 25)
         XCTAssertEqual(uppercase.pointSize, 22)
-        XCTAssertEqual(lowercase.topInset, 3)
-        XCTAssertEqual(lowercase.bottomInset, 7)
+        XCTAssertEqual(lowercase.topInset, 5)
+        XCTAssertEqual(lowercase.bottomInset, 5)
     }
 
     func testCompactModeKeysUseDedicatedTypography() {
@@ -46,6 +46,20 @@ final class KeyboardTextKeyVisualPolicyTests: XCTestCase {
 
         XCTAssertEqual(utility, action)
         XCTAssertNotEqual(KeyboardTextKeyRole.utility, KeyboardTextKeyRole.action)
+    }
+
+    func testStackedIPadLegendsKeepAlternateSymbolsReadable() {
+        let digit = KeyboardTextKeyVisualPolicy.typography(
+            title: "1",
+            hasImage: false,
+            role: .normal
+        )
+
+        XCTAssertEqual(KeyboardTextKeyVisualPolicy.stackedSecondaryPointSize, 15)
+        XCTAssertEqual(
+            KeyboardTextKeyVisualPolicy.stackedPrimaryPointSize(for: digit),
+            21
+        )
     }
 
     func testUtilityKeysRetainStrongerShadowThanNormalKeys() {

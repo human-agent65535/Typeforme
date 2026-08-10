@@ -27,6 +27,11 @@ enum KeyboardTextKeyVisualPolicy {
     static let horizontalContentInset = 4.0
     static let numericDigitPointSize = 26.0
     static let numericSecondaryPointSize = 8.5
+    /// iPad's stacked key legends keep the alternate symbol readable instead
+    /// of treating it like a phone-key hint. This is shared by the number row
+    /// and the compact iPad letter layout.
+    static let stackedSecondaryPointSize = 15.0
+    static let stackedPrimaryMinimumPointSize = 17.0
 
     static func typography(
         title: String,
@@ -38,8 +43,8 @@ enum KeyboardTextKeyVisualPolicy {
             return KeyboardTextKeyTypography(
                 pointSize: title == title.uppercased() ? 22 : 25,
                 weight: .regular,
-                topInset: 3,
-                bottomInset: 7
+                topInset: 5,
+                bottomInset: 5
             )
         }
 
@@ -72,6 +77,10 @@ enum KeyboardTextKeyVisualPolicy {
         case .utility, .action:
             return isDark ? 0.24 : 0.14
         }
+    }
+
+    static func stackedPrimaryPointSize(for typography: KeyboardTextKeyTypography) -> Double {
+        max(stackedPrimaryMinimumPointSize, typography.pointSize - 1)
     }
 
     private static func isSingleASCIILetter(_ title: String) -> Bool {

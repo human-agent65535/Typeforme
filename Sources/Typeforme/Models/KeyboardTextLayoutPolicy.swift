@@ -26,6 +26,43 @@ struct KeyboardTextBottomRowLayout: Equatable, Sendable {
 enum KeyboardTextLayoutPolicy {
     static let minimumKeyWidth = 44.0
 
+    static func largePadLetterSecondaryTitle(for key: String) -> String? {
+        [
+            "[": "{", "]": "}", "\\": "|",
+            ";": ":", "'": "\"",
+            ",": "<", ".": ">", "/": "?",
+        ][key]
+    }
+
+    /// The large iPad symbol keyboard follows the same four character-row
+    /// geometry as the native letter keyboard: 13, 13, 11, and 10 ordinary
+    /// keys. Keeping those counts stable lets Tab/Delete, mode/Return, and the
+    /// wide fourth-row mode slot line up with their letter-key counterparts
+    /// instead of producing a different floating grid on every symbol row.
+    static func largePadSymbolRows(
+        alternate: Bool,
+        usesChinesePunctuation: Bool
+    ) -> [[String]] {
+        if alternate {
+            return [
+                ["§", "±", "×", "÷", "√", "π", "°", "©", "®", "™", "<", ">", "≈"],
+                ["_", "\\", "|", "~", "^", "•", "·", "∞", "≠", "≤", "≥", "{", "}"],
+                ["€", "£", "¥", "¢", "₩", "₽", "₹", "₺", "₫", "₪", "₴"],
+                ["…", "¿", "¡", "‘", "’", "“", "”", "–", "—", "•"],
+            ]
+        }
+
+        let punctuation = usesChinesePunctuation
+            ? ["…", "。", "，", "、", "？", "！", "“", "”", "——", "•"]
+            : ["…", ".", ",", "?", "!", "'", "\"", "_", "€", "•"]
+        return [
+            ["`", "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "<", ">"],
+            ["[", "]", "{", "}", "#", "%", "^", "*", "+", "=", "\\", "|", "~"],
+            ["-", "/", ":", ";", "(", ")", "$", "&", "@", "£", "¥"],
+            punctuation,
+        ]
+    }
+
     /// Preferred iPhone portrait measurements from the current system
     /// keyboard. Call `fittedFixedWidths` before applying them so compact
     /// widths and an in-keyboard Globe key do not create unsatisfiable rows.
@@ -171,6 +208,7 @@ struct KeyboardSurfaceMetrics: Equatable, Sendable {
     let orbDiameter: Double
     let voiceSideColumnWidth: Double
     let inputModeSwitchWidth: Double
+    let voiceControlGap: Double
     let textKeyHorizontalGap: Double
     let textKeyVerticalGap: Double
     let textUtilityKeyWidth: Double
@@ -190,8 +228,8 @@ enum KeyboardSurfaceLayoutPolicy {
     /// surface than the matching native key block to preserve native key size.
     static let padTextToolbarCompensation = 41.0
     // The orb is centered independently of its two side columns. With the
-    // standard 132/104/68pt controls, the left column needs 376pt of usable
-    // width to clear the orb without constraint pressure.
+    // standard 132/104/68pt controls and an 8pt control gap, the left column
+    // needs 376pt of usable width to clear the orb without constraint pressure.
     private static let standardVoiceMinimumWidth = 376.0
 
     static func interfaceOrientationIsLandscape(
@@ -260,9 +298,10 @@ enum KeyboardSurfaceLayoutPolicy {
         return KeyboardSurfaceMetrics(
             voiceContentHeight: voiceContentHeight,
             textContentHeight: textContentHeight,
-            orbDiameter: usesCompactWidth ? 112 : 132,
-            voiceSideColumnWidth: usesCompactWidth ? 76 : 104,
-            inputModeSwitchWidth: usesCompactWidth ? 56 : 68,
+            orbDiameter: usesCompactWidth ? 112 : (usesPadFullTextLayout ? 148 : 132),
+            voiceSideColumnWidth: usesCompactWidth ? 76 : (usesPadFullTextLayout ? 112 : 104),
+            inputModeSwitchWidth: usesCompactWidth ? 56 : (usesPadFullTextLayout ? 72 : 68),
+            voiceControlGap: usesPadFullTextLayout ? 24 : 8,
             textKeyHorizontalGap: usesCompactWidth ? 4 : (usesPadFullTextLayout ? 8 : 6),
             textKeyVerticalGap: usesPadFullTextLayout ? 9 : 11,
             textUtilityKeyWidth: usesCompactWidth

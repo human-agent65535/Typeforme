@@ -2,6 +2,40 @@ import XCTest
 @testable import Typeforme
 
 final class KeyboardTextLayoutPolicyTests: XCTestCase {
+    func testLargePadLetterPunctuationUsesNativeStackedLegends() {
+        XCTAssertEqual(KeyboardTextLayoutPolicy.largePadLetterSecondaryTitle(for: "["), "{")
+        XCTAssertEqual(KeyboardTextLayoutPolicy.largePadLetterSecondaryTitle(for: ";"), ":")
+        XCTAssertEqual(KeyboardTextLayoutPolicy.largePadLetterSecondaryTitle(for: ","), "<")
+        XCTAssertEqual(KeyboardTextLayoutPolicy.largePadLetterSecondaryTitle(for: "."), ">")
+        XCTAssertEqual(KeyboardTextLayoutPolicy.largePadLetterSecondaryTitle(for: "/"), "?")
+        XCTAssertNil(KeyboardTextLayoutPolicy.largePadLetterSecondaryTitle(for: "a"))
+    }
+
+    func testLargePadSymbolRowsKeepNativeLetterGridGeometry() {
+        let primary = KeyboardTextLayoutPolicy.largePadSymbolRows(
+            alternate: false,
+            usesChinesePunctuation: false
+        )
+        XCTAssertEqual(primary.map(\.count), [13, 13, 11, 10])
+        XCTAssertEqual(Array(primary[0].prefix(3)), ["`", "1", "2"])
+        XCTAssertTrue(primary[1].contains("\\"))
+        XCTAssertEqual(primary[3], ["…", ".", ",", "?", "!", "'", "\"", "_", "€", "•"])
+
+        let chinese = KeyboardTextLayoutPolicy.largePadSymbolRows(
+            alternate: false,
+            usesChinesePunctuation: true
+        )
+        XCTAssertEqual(chinese.map(\.count), [13, 13, 11, 10])
+        XCTAssertTrue(chinese[3].contains("。"))
+        XCTAssertTrue(chinese[3].contains("、"))
+
+        let alternate = KeyboardTextLayoutPolicy.largePadSymbolRows(
+            alternate: true,
+            usesChinesePunctuation: false
+        )
+        XCTAssertEqual(alternate.map(\.count), [13, 13, 11, 10])
+    }
+
     func testStandardAndSymbolRowsKeepNativeFunctionalKeyPositions() {
         let standard = KeyboardTextLayoutPolicy.bottomRow(for: .standard)
         XCTAssertEqual(standard.modeKeyWidth, 48)
@@ -147,6 +181,7 @@ final class KeyboardTextLayoutPolicyTests: XCTestCase {
         XCTAssertEqual(floating.orbDiameter, 112)
         XCTAssertEqual(floating.voiceSideColumnWidth, 76)
         XCTAssertEqual(floating.inputModeSwitchWidth, 56)
+        XCTAssertEqual(floating.voiceControlGap, 8)
         XCTAssertEqual(floating.textKeyHorizontalGap, 4)
         XCTAssertEqual(floating.textKeyVerticalGap, 11)
         XCTAssertEqual(floating.textUtilityKeyWidth, 44)
@@ -173,6 +208,7 @@ final class KeyboardTextLayoutPolicyTests: XCTestCase {
         XCTAssertEqual(docked.voiceContentHeight, 267)
         XCTAssertEqual(docked.textContentHeight, 267)
         XCTAssertEqual(docked.orbDiameter, 132)
+        XCTAssertEqual(docked.voiceControlGap, 8)
         XCTAssertEqual(docked.textKeyHorizontalGap, 6)
         XCTAssertEqual(docked.textKeyVerticalGap, 11)
         XCTAssertEqual(docked.textUtilityKeyWidth, 51)
@@ -229,6 +265,10 @@ final class KeyboardTextLayoutPolicyTests: XCTestCase {
         XCTAssertFalse(portrait.usesPadFloatingLayout)
         XCTAssertFalse(portrait.usesPadNumberRow)
         XCTAssertEqual(portrait.voiceContentHeight, 267)
+        XCTAssertEqual(portrait.orbDiameter, 148)
+        XCTAssertEqual(portrait.voiceSideColumnWidth, 112)
+        XCTAssertEqual(portrait.inputModeSwitchWidth, 72)
+        XCTAssertEqual(portrait.voiceControlGap, 24)
         XCTAssertEqual(portrait.textContentHeight, 308)
         XCTAssertNil(portrait.padNumberRowHeight)
         XCTAssertEqual(portrait.textKeyHorizontalGap, 8)
@@ -245,6 +285,8 @@ final class KeyboardTextLayoutPolicyTests: XCTestCase {
         XCTAssertTrue(landscape.usesPadFullTextLayout)
         XCTAssertFalse(landscape.usesPadNumberRow)
         XCTAssertEqual(landscape.voiceContentHeight, 267)
+        XCTAssertEqual(landscape.orbDiameter, 148)
+        XCTAssertEqual(landscape.voiceControlGap, 24)
         XCTAssertEqual(landscape.textContentHeight, 394)
         XCTAssertEqual(landscape.textUtilityKeyWidth, 131.67, accuracy: 0.001)
 
@@ -304,7 +346,7 @@ final class KeyboardTextLayoutPolicyTests: XCTestCase {
         let voiceLeftClearanceWidth = 2 * (
             10
                 + metrics.voiceSideColumnWidth
-                + 8
+                + metrics.voiceControlGap
                 + metrics.orbDiameter / 2
         )
         XCTAssertLessThanOrEqual(voiceLeftClearanceWidth, availableWidth)

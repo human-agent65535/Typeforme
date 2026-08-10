@@ -66,3 +66,24 @@ struct KeyboardTouchGapPolicyTests {
         #expect(abs((decision?.leftBias ?? .nan) - KeyboardTouchGapPolicy.maxMeanX) < 0.000_001)
     }
 }
+
+@Suite("KeyboardTouchLearningAvailabilityPolicy")
+struct KeyboardTouchLearningAvailabilityPolicyTests {
+    @Test func followsUserSettingOnPhone() {
+        #expect(KeyboardTouchLearningAvailabilityPolicy.isActive(
+            userEnabled: true,
+            interfaceIdiomIsPad: false
+        ))
+        #expect(!KeyboardTouchLearningAvailabilityPolicy.isActive(
+            userEnabled: false,
+            interfaceIdiomIsPad: false
+        ))
+    }
+
+    @Test func isExplicitlyDisabledOnPad() {
+        #expect(!KeyboardTouchLearningAvailabilityPolicy.isActive(
+            userEnabled: true,
+            interfaceIdiomIsPad: true
+        ))
+    }
+}

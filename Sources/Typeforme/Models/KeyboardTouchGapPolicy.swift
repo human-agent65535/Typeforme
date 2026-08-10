@@ -52,3 +52,12 @@ struct KeyboardTouchGapPolicy {
         Swift.min(Swift.max(value, lower), upper)
     }
 }
+
+/// Device-level availability for adaptive touch routing. iPad key geometry is
+/// intentionally deterministic; learned offsets remain stored for iPhone but
+/// are neither applied nor updated while the keyboard runs on iPad.
+struct KeyboardTouchLearningAvailabilityPolicy {
+    static func isActive(userEnabled: Bool, interfaceIdiomIsPad: Bool) -> Bool {
+        userEnabled && !interfaceIdiomIsPad
+    }
+}
