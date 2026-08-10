@@ -4,6 +4,7 @@ import UIKit
 /// committed characters, layout membership, Shift/Rime state, and hit routing.
 final class KeyboardTextKeyControl: UIButton {
     private var renderedTitle = ""
+    private var renderedSecondaryTitle: String?
     private var renderedImageName: String?
     private var renderedRole: KeyboardTextKeyRole = .normal
     private var renderedStyle: UIUserInterfaceStyle = .light
@@ -28,16 +29,19 @@ final class KeyboardTextKeyControl: UIButton {
 
     func render(
         title: String,
+        secondaryTitle: String? = nil,
         imageName: String?,
         role: KeyboardTextKeyRole,
         style: UIUserInterfaceStyle
     ) {
         renderedTitle = title
+        renderedSecondaryTitle = secondaryTitle
         renderedImageName = imageName
         renderedRole = role
         renderedStyle = style
         overrideUserInterfaceStyle = style
         accessibilityLabel = title.isEmpty ? imageName : title
+        accessibilityValue = secondaryTitle == nil ? nil : title
         applyCurrentConfiguration()
     }
 
@@ -76,7 +80,9 @@ final class KeyboardTextKeyControl: UIButton {
             role: renderedRole
         )
         var configuration = UIButton.Configuration.filled()
-        configuration.title = renderedTitle
+        let showsSecondaryTitle = renderedSecondaryTitle?.isEmpty == false
+        configuration.title = showsSecondaryTitle ? renderedSecondaryTitle : renderedTitle
+        configuration.subtitle = showsSecondaryTitle ? renderedTitle : nil
         configuration.image = renderedImageName.flatMap { UIImage(systemName: $0) }
         if renderedImageName != nil {
             configuration.preferredSymbolConfigurationForImage = UIImage.SymbolConfiguration(
@@ -88,9 +94,9 @@ final class KeyboardTextKeyControl: UIButton {
         configuration.cornerStyle = .fixed
         configuration.background.cornerRadius = CGFloat(KeyboardTextKeyVisualPolicy.cornerRadius)
         configuration.contentInsets = NSDirectionalEdgeInsets(
-            top: CGFloat(typography.topInset),
+            top: showsSecondaryTitle ? 1 : CGFloat(typography.topInset),
             leading: CGFloat(KeyboardTextKeyVisualPolicy.horizontalContentInset),
-            bottom: CGFloat(typography.bottomInset),
+            bottom: showsSecondaryTitle ? 1 : CGFloat(typography.bottomInset),
             trailing: CGFloat(KeyboardTextKeyVisualPolicy.horizontalContentInset)
         )
         configuration.baseForegroundColor = foregroundColor(isEnabled: isEnabled)
@@ -104,9 +110,26 @@ final class KeyboardTextKeyControl: UIButton {
         )
         configuration.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
             var outgoing = incoming
+            if showsSecondaryTitle {
+                outgoing.font = .systemFont(ofSize: 10, weight: .regular)
+                outgoing.foregroundColor = .secondaryLabel
+                return outgoing
+            }
             let weight: UIFont.Weight = typography.weight == .medium ? .medium : .regular
             outgoing.font = .systemFont(ofSize: CGFloat(typography.pointSize), weight: weight)
             return outgoing
+        }
+        if showsSecondaryTitle {
+            configuration.subtitleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
+                var outgoing = incoming
+                let weight: UIFont.Weight = typography.weight == .medium ? .medium : .regular
+                outgoing.font = .systemFont(
+                    ofSize: CGFloat(max(17, typography.pointSize - 1)),
+                    weight: weight
+                )
+                outgoing.foregroundColor = .label
+                return outgoing
+            }
         }
         return configuration
     }

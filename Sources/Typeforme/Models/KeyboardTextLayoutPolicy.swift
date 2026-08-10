@@ -166,7 +166,8 @@ enum KeyboardTextLayoutPolicy {
 }
 
 struct KeyboardSurfaceMetrics: Equatable, Sendable {
-    let contentHeight: Double
+    let voiceContentHeight: Double
+    let textContentHeight: Double
     let orbDiameter: Double
     let voiceSideColumnWidth: Double
     let inputModeSwitchWidth: Double
@@ -174,42 +175,91 @@ struct KeyboardSurfaceMetrics: Equatable, Sendable {
     let textKeyVerticalGap: Double
     let textUtilityKeyWidth: Double
     let usesPadFullTextLayout: Bool
+    let usesPadFloatingLayout: Bool
     let usesPadNumberRow: Bool
+    let padNumberRowHeight: Double?
 }
 
 enum KeyboardSurfaceLayoutPolicy {
     static let maximumContentWidth = 900.0
     static let minimumPadFullTextWidth = 600.0
-    static let minimumPadLandscapeTextWidth = 1_000.0
-    static let minimumPadNumberRowWidth = 1_250.0
+    static let minimumLargePadTextWidth = 1_000.0
+    static let minimumLargePadShortestSide = 1_000.0
+    /// The custom candidate/action toolbar is additional to the iPad input
+    /// assistant row. Full-size text keyboards therefore need this much more
+    /// surface than the matching native key block to preserve native key size.
+    static let padTextToolbarCompensation = 41.0
     // The orb is centered independently of its two side columns. With the
     // standard 132/104/68pt controls, the left column needs 376pt of usable
     // width to clear the orb without constraint pressure.
     private static let standardVoiceMinimumWidth = 376.0
 
+    static func interfaceOrientationIsLandscape(
+        surfaceWidth: Double,
+        screenWidth: Double,
+        screenHeight: Double,
+        sceneOrientationIsLandscape: Bool
+    ) -> Bool {
+        let shortSide = min(screenWidth, screenHeight)
+        let longSide = max(screenWidth, screenHeight)
+        guard surfaceWidth >= minimumPadFullTextWidth,
+              longSide - shortSide > 1
+        else { return sceneOrientationIsLandscape }
+        return abs(surfaceWidth - longSide) < abs(surfaceWidth - shortSide)
+    }
+
     static func metrics(
         availableWidth: Double,
         verticalSizeIsCompact: Bool,
-        interfaceIdiomIsPad: Bool = false
+        interfaceIdiomIsPad: Bool = false,
+        interfaceOrientationIsLandscape: Bool = false,
+        screenShortestSide: Double = 0
     ) -> KeyboardSurfaceMetrics {
         let usesCompactWidth = availableWidth > 1 && availableWidth < standardVoiceMinimumWidth
+        let usesPadFloatingLayout = interfaceIdiomIsPad
+            && availableWidth > 1
+            && availableWidth < minimumPadFullTextWidth
         let usesPadFullTextLayout = interfaceIdiomIsPad
+            && !usesPadFloatingLayout
             && availableWidth >= minimumPadFullTextWidth
-        let usesPadLandscapeTextLayout = usesPadFullTextLayout
-            && availableWidth >= minimumPadLandscapeTextWidth
-        let usesPadNumberRow = usesPadFullTextLayout
-            && availableWidth >= minimumPadNumberRowWidth
+        let usesLargePadLayout = usesPadFullTextLayout
+            && availableWidth >= minimumLargePadTextWidth
+            && screenShortestSide >= minimumLargePadShortestSide
+        let usesPadNumberRow = usesLargePadLayout
+
+        // These are the native key-block profiles measured on iPadOS 27,
+        // plus the 41pt occupied by Typeforme's own text toolbar. Screen class
+        // and real interface orientation are explicit: surface width alone
+        // cannot distinguish a 13-inch portrait keyboard from 11-inch
+        // landscape, and floating keyboards intentionally use compact width.
+        let padTextContentHeight: Double
+        let padNumberRowHeight: Double?
+        switch (usesLargePadLayout, interfaceOrientationIsLandscape) {
+        case (true, true):
+            padTextContentHeight = 428 + padTextToolbarCompensation
+            padNumberRowHeight = 59
+        case (true, false):
+            padTextContentHeight = 338 + padTextToolbarCompensation
+            padNumberRowHeight = 44
+        case (false, true):
+            padTextContentHeight = 353 + padTextToolbarCompensation
+            padNumberRowHeight = nil
+        case (false, false):
+            padTextContentHeight = 267 + padTextToolbarCompensation
+            padNumberRowHeight = nil
+        }
+
+        let standardContentHeight = verticalSizeIsCompact || usesCompactWidth ? 253.0 : 267.0
+        let voiceContentHeight = usesPadFullTextLayout ? 267.0 : standardContentHeight
+        let textContentHeight = usesPadFullTextLayout ? padTextContentHeight : standardContentHeight
         // A docked iPad keyboard does not stretch the phone rows. Its outer
         // utility columns absorb the extra width, and grow modestly between
         // portrait and landscape while the character keys stay near native
         // proportions.
         let padUtilityKeyWidth = min(132, max(88, availableWidth * 0.11))
         return KeyboardSurfaceMetrics(
-            contentHeight: usesPadNumberRow
-                ? 428
-                : (usesPadLandscapeTextLayout
-                    ? 353
-                    : (verticalSizeIsCompact || usesCompactWidth ? 253 : 267)),
+            voiceContentHeight: voiceContentHeight,
+            textContentHeight: textContentHeight,
             orbDiameter: usesCompactWidth ? 112 : 132,
             voiceSideColumnWidth: usesCompactWidth ? 76 : 104,
             inputModeSwitchWidth: usesCompactWidth ? 56 : 68,
@@ -219,7 +269,9 @@ enum KeyboardSurfaceLayoutPolicy {
                 ? 44
                 : (usesPadFullTextLayout ? padUtilityKeyWidth : 51),
             usesPadFullTextLayout: usesPadFullTextLayout,
-            usesPadNumberRow: usesPadNumberRow
+            usesPadFloatingLayout: usesPadFloatingLayout,
+            usesPadNumberRow: usesPadNumberRow,
+            padNumberRowHeight: padNumberRowHeight
         )
     }
 }

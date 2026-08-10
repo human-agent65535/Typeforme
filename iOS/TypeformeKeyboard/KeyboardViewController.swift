@@ -653,7 +653,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private let statusLabel = UILabel()
 
     private let settingsButton = UIButton(type: .system)
-    private let keyboardFocusButton = UIButton(type: .system)
+    private let keyboardFocusButton = HitInsetButton(type: .system)
     /// Compact trigger that lives left of the orb. Shows the currently-active
     /// preset + a chevron; tapping it expands `correctionPopover` over the
     /// orb area with all 5 presets as ≥44pt hit targets. Replaces the old
@@ -784,7 +784,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     /// Text-mode toolbar mic readiness signal; voice mode uses the top-left
     /// status dot instead of adding chrome to the orb.
     private let textToolsReadyDot = UIView()
-    private let textKeyboardSwitchButton = UIButton(type: .system)
+    private let textKeyboardSwitchButton = HitInsetButton(type: .system)
     private let textHostSettingsButton = UIButton(type: .system)
     private let textCandidateGridButton = HitInsetButton(frame: .zero)
     private let candidateGridCollapseButton = HitInsetButton(frame: .zero)
@@ -849,6 +849,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private var activeCandidateSeparatorIndex = 0
     private var activeCandidateStatusLabelIndex = 0
     private var keyboardRowConstraints: [NSLayoutConstraint] = []
+    private var padRegularKeyRows: [UIStackView] = []
     private var textModeButtonWidthConstraint: NSLayoutConstraint?
     private var textGlobeButtonWidthConstraint: NSLayoutConstraint?
     private var textLanguageButtonWidthConstraint: NSLayoutConstraint?
@@ -2583,12 +2584,41 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         KeyboardSurfaceLayoutPolicy.metrics(
             availableWidth: Double(keyboardSurfaceAvailableWidth),
             verticalSizeIsCompact: traitCollection.verticalSizeClass == .compact,
-            interfaceIdiomIsPad: traitCollection.userInterfaceIdiom == .pad
+            interfaceIdiomIsPad: traitCollection.userInterfaceIdiom == .pad,
+            interfaceOrientationIsLandscape: keyboardInterfaceOrientationIsLandscape,
+            screenShortestSide: Double(keyboardScreenShortestSide)
         )
     }
 
+    private var keyboardInterfaceOrientationIsLandscape: Bool {
+        let screenBounds = keyboardScreenBounds
+        let surfaceWidth = viewIfLoaded?.bounds.width ?? 0
+        let sceneOrientation = viewIfLoaded?.window?.windowScene?.interfaceOrientation
+        // iPadOS 27's remote keyboard scene can keep reporting portrait after
+        // rotation. A docked input view still exposes the authoritative span:
+        // portrait is nearest the screen's short side and landscape the long.
+        return KeyboardSurfaceLayoutPolicy.interfaceOrientationIsLandscape(
+            surfaceWidth: Double(surfaceWidth),
+            screenWidth: Double(screenBounds.width),
+            screenHeight: Double(screenBounds.height),
+            sceneOrientationIsLandscape: sceneOrientation?.isLandscape == true
+        )
+    }
+
+    private var keyboardScreenShortestSide: CGFloat {
+        let bounds = keyboardScreenBounds
+        return min(bounds.width, bounds.height)
+    }
+
+    private var keyboardScreenBounds: CGRect {
+        viewIfLoaded?.window?.windowScene?.screen.bounds ?? UIScreen.main.bounds
+    }
+
     private var currentKeyboardContentHeight: CGFloat {
-        CGFloat(currentKeyboardSurfaceMetrics.contentHeight)
+        let metrics = currentKeyboardSurfaceMetrics
+        let usesTextHeight = keyboardFocus == .text
+            && (renderedTextKeyboardLayoutKind?.isText ?? true)
+        return CGFloat(usesTextHeight ? metrics.textContentHeight : metrics.voiceContentHeight)
     }
 
     private var textKeyHorizontalGap: CGFloat {
@@ -2638,7 +2668,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         appliedKeyboardSurfaceMetrics = metrics
         updateRootMaximumWidth(using: metrics)
 
-        heightConstraint?.constant = CGFloat(metrics.contentHeight) + Self.topChromeCoverHeight
+        heightConstraint?.constant = currentKeyboardContentHeight + Self.topChromeCoverHeight
         voiceButtonWidthConstraint?.constant = CGFloat(metrics.orbDiameter)
         voiceButtonHeightConstraint?.constant = CGFloat(metrics.orbDiameter)
         voiceSendButtonWidthConstraint?.constant = CGFloat(metrics.voiceSideColumnWidth)
@@ -3131,6 +3161,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         keyboardFocusButton.translatesAutoresizingMaskIntoConstraints = false
         keyboardFocusButton.widthAnchor.constraint(equalToConstant: 32).isActive = true
         keyboardFocusButton.heightAnchor.constraint(equalToConstant: Self.topRowHeight).isActive = true
+        keyboardFocusButton.hitInsets = UIEdgeInsets(top: -5, left: -6, bottom: -5, right: -6)
         keyboardFocusButton.addTarget(self, action: #selector(toggleKeyboardFocus), for: .touchUpInside)
         attachPressAnimation(keyboardFocusButton)
 
@@ -3751,6 +3782,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
         renderToolbarIcon(textKeyboardSwitchButton, role: .voiceMode, image: "waveform")
         textKeyboardSwitchButton.widthAnchor.constraint(equalToConstant: 32).isActive = true
+        textKeyboardSwitchButton.hitInsets = UIEdgeInsets(top: -5, left: -6, bottom: -5, right: -6)
         textKeyboardSwitchButton.accessibilityLabel = NSLocalizedString("Show voice input", comment: "Accessibility label for switching to voice input")
         textKeyboardSwitchButton.addTarget(self, action: #selector(showVoiceFocus), for: .touchUpInside)
         attachPressAnimation(textKeyboardSwitchButton)
@@ -4060,6 +4092,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         candidateGridCollapseButton.isHidden = true
         NSLayoutConstraint.deactivate(keyboardRowConstraints)
         keyboardRowConstraints.removeAll()
+        padRegularKeyRows.removeAll()
         textBottomRowWidthBinding = nil
         keyRowsStack.arrangedSubviews.forEach { row in
             keyRowsStack.removeArrangedSubview(row)
@@ -4136,6 +4169,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         keyRowsStack.spacing = isNumeric
             ? TextKeyboardLayoutModel.numericKeyVerticalGap
             : textKeyVerticalGap
+        keyRowsStack.distribution = !isNumeric && currentKeyboardSurfaceMetrics.usesPadNumberRow
+            ? .fill
+            : .fillEqually
     }
 
     private func detachReusableTextControlButtons() {
@@ -4486,7 +4522,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         var keyButtons: [UIButton] = []
         for key in keys {
             let title = displayTitle(forTextKey: key)
-            let button = makeTextKeyButton(title: title)
+            let button = makeTextKeyButton(
+                title: title,
+                secondaryTitle: padNumberRowSecondaryTitle(for: key)
+            )
             attachKeyPreview(to: button, title: title)
             row.addArrangedSubview(button)
             textKeyboardButtons.append(button)
@@ -4502,6 +4541,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             trailingUtilityButton: deleteButton
         )
         keyRowsStack.addArrangedSubview(row)
+        if let numberRowHeight = currentKeyboardSurfaceMetrics.padNumberRowHeight {
+            let height = row.heightAnchor.constraint(equalToConstant: CGFloat(numberRowHeight))
+            height.isActive = true
+            keyboardRowConstraints.append(height)
+        }
         registerTextKeyboardHitRow(
             row,
             routedButtons: keyButtons,
@@ -4524,7 +4568,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         var keyButtons: [UIButton] = []
         for key in keys {
             let title = displayTitle(forTextKey: key)
-            let button = makeTextKeyButton(title: title)
+            let button = makeTextKeyButton(
+                title: title,
+                secondaryTitle: padLetterRowSecondaryTitle(for: key)
+            )
             attachKeyPreview(to: button, title: title)
             row.addArrangedSubview(button)
             textKeyboardButtons.append(button)
@@ -4546,6 +4593,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             utilityKeyWidth: utilityKeyWidth
         )
         keyRowsStack.addArrangedSubview(row)
+        registerPadRegularKeyRow(row)
         var directButtons: [UIButton] = [leadingButton]
         var boundaryButtons: [UIButton] = [leadingButton] + keyButtons
         if let trailingButton {
@@ -4559,6 +4607,28 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             boundaryButtons: boundaryButtons,
             kind: .character
         )
+    }
+
+    private func padNumberRowSecondaryTitle(for key: String) -> String? {
+        [
+            "`": "~", "1": "!", "2": "@", "3": "#", "4": "$", "5": "%",
+            "6": "^", "7": "&", "8": "*", "9": "(", "0": ")", "-": "_", "=": "+",
+        ][key]
+    }
+
+    private func padLetterRowSecondaryTitle(for key: String) -> String? {
+        guard currentKeyboardSurfaceMetrics.usesPadFullTextLayout,
+              !currentKeyboardSurfaceMetrics.usesPadNumberRow,
+              !isSymbolKeyboard
+        else { return nil }
+        return [
+            "q": "1", "w": "2", "e": "3", "r": "4", "t": "5",
+            "y": "6", "u": "7", "i": "8", "o": "9", "p": "0",
+            "a": "@", "s": "#", "d": "$", "f": "&", "g": "*",
+            "h": "(", "j": ")", "k": "'", "l": "\"",
+            "z": "%", "x": "-", "c": "+", "v": "=", "b": "/",
+            "n": ";", "m": ":", ",": "!", ".": "?",
+        ][key.lowercased()]
     }
 
     private func makePadTabKey() -> KeyboardTextKeyControl {
@@ -4643,11 +4713,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         textKeyboardButtons.append(textModeButton)
         directButtons.append(textModeButton)
 
-        let dictationButton = makeTextKeyButton(title: "", image: "mic.fill", weight: .utility)
-        dictationButton.accessibilityLabel = NSLocalizedString("Dictate", comment: "Accessibility label for iPad dictation key")
-        dictationButton.addTarget(self, action: #selector(textVoiceTapped), for: .touchUpInside)
-        appendFixedButton(dictationButton, width: fixedKeyWidth)
-
         if preferredLayout.includesSpaceKey {
             let spaceKey = makeTextKeyButton(title: spaceKeyTitle, weight: .primary)
             spaceKey.accessibilityLabel = NSLocalizedString("Space", comment: "Accessibility label for Space key")
@@ -4692,6 +4757,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         appendFixedButton(dismissButton, width: fixedKeyWidth)
 
         keyRowsStack.addArrangedSubview(row)
+        registerPadRegularKeyRow(row)
         registerTextKeyboardHitRow(
             row,
             routedButtons: [],
@@ -4699,6 +4765,15 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             boundaryButtons: directButtons,
             kind: .bottom
         )
+    }
+
+    private func registerPadRegularKeyRow(_ row: UIStackView) {
+        if let referenceRow = padRegularKeyRows.first {
+            let equalHeight = row.heightAnchor.constraint(equalTo: referenceRow.heightAnchor)
+            equalHeight.isActive = true
+            keyboardRowConstraints.append(equalHeight)
+        }
+        padRegularKeyRows.append(row)
     }
 
     private func addTextKeyRow(
@@ -5340,11 +5415,18 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     private func makeTextKeyButton(
         title: String,
+        secondaryTitle: String? = nil,
         image: String? = nil,
         weight: KeyboardTextKeyRole = .normal
     ) -> KeyboardTextKeyControl {
         let button = KeyboardTextKeyControl(type: .system)
-        configureTextKeyButton(button, title: title, image: image, weight: weight)
+        configureTextKeyButton(
+            button,
+            title: title,
+            secondaryTitle: secondaryTitle,
+            image: image,
+            weight: weight
+        )
         button.titleLabel?.adjustsFontSizeToFitWidth = true
         button.titleLabel?.minimumScaleFactor = 0.7
         button.titleLabel?.numberOfLines = 1
@@ -5482,11 +5564,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private func configureTextKeyButton(
         _ button: KeyboardTextKeyControl,
         title: String,
+        secondaryTitle: String? = nil,
         image: String?,
         weight: KeyboardTextKeyRole
     ) {
         button.render(
             title: title,
+            secondaryTitle: secondaryTitle,
             imageName: image,
             role: weight,
             style: keyboardInterfaceStyle
@@ -8184,7 +8268,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         orbContainer.isHidden = isTextFocus
         utilityRow.isHidden = isTextFocus
         textKeyboardContainer.isHidden = !isTextFocus
-        updateRootMaximumWidth()
+        // Voice First and the docked iPad text keyboard intentionally have
+        // different heights. Re-assert the active surface here; trait-only
+        // updates cannot observe a focus change.
+        applyKeyboardHeightForCurrentTraits()
         updateKeyboardSurfaceMask()
         updateKeyboardOverlayOrdering()
         renderToolbarIcon(
@@ -8377,7 +8464,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         lastLetterCasingSnapshot = nextSnapshot
         for (key, button) in letterButtonMap {
             let title = displayTitle(forTextKey: key, autoCap: autoCap)
-            configureTextKeyButton(button, title: title, image: nil, weight: .normal)
+            configureTextKeyButton(
+                button,
+                title: title,
+                secondaryTitle: padLetterRowSecondaryTitle(for: key),
+                image: nil,
+                weight: .normal
+            )
             button.accessibilityValue = title
         }
     }
@@ -13456,7 +13549,10 @@ final class KeyboardTouchOverlayView: UIView {
     }
 
     private func commonInit() {
-        isMultipleTouchEnabled = true
+        // Character routing owns one typing finger. A second finger belongs
+        // to iPadOS (notably the docked-to-floating pinch); accepting both
+        // here committed two keys before the system gesture could take over.
+        isMultipleTouchEnabled = false
         isUserInteractionEnabled = true
         isAccessibilityElement = false
     }
