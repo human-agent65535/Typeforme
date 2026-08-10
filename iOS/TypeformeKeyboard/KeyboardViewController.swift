@@ -774,6 +774,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private let spaceButton = UIButton(type: .system)
     private let deleteButton = UIButton(type: .system)
     private let returnButton = UIButton(type: .system)
+    private let voiceDismissButton = UIButton(type: .system)
 
     private let textKeyboardContainer = UIStackView()
     private let textToolbar = UIStackView()
@@ -1019,6 +1020,14 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             if isTextKeyboardDirectControlPoint(point) {
                 return nil
             }
+            // Visible character bounds are authoritative. The row-band model
+            // exists to rescue gaps and near misses, but it can briefly lag a
+            // rebuilt iPad layout while rotation constraints settle. If that
+            // transient geometry wins, valid centers become an inert
+            // focus-swipe surface instead of committing their visible key.
+            if let button = visibleTextKeySurfaceTarget(at: point) {
+                return .textKey(button)
+            }
             if shouldTextKeyTouchSurfaceHandle(point: point) {
                 if let button = nearestTextKeySurfaceTarget(at: point) {
                     return .textKey(button)
@@ -1054,6 +1063,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             spaceButton,
             deleteButton,
             returnButton,
+            voiceDismissButton,
             textCandidateGridButton,
             candidateGridCollapseButton,
             textModeButton,
@@ -1489,6 +1499,21 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
 
         return nil
+    }
+
+    private func visibleTextKeySurfaceTarget(at point: CGPoint) -> UIButton? {
+        guard !textKeyboardContainer.isHidden,
+              !keyRowsStack.isHidden,
+              keyRowsStack.alpha > 0.01,
+              keyRowsStack.bounds.width > 0,
+              keyRowsStack.bounds.height > 0,
+              !isCandidateGridExpanded
+        else { return nil }
+        return visibleHitButtons(in: textKeyboardButtons).first { button in
+            textKeyCommitCharacters[ObjectIdentifier(button)] != nil
+                && button.isDescendant(of: keyRowsStack)
+                && button.convert(button.bounds, to: view).contains(point)
+        }
     }
 
     private func textCharacterIntentPoint(from point: CGPoint) -> CGPoint {
@@ -2166,6 +2191,15 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         coordinator.animate { [weak self] _ in
             guard let self else { return }
             self.applyKeyboardHeightForCurrentTraits()
+            self.view.layoutIfNeeded()
+        } completion: { [weak self] _ in
+            guard let self else { return }
+            // iPadOS can publish the extension's final surface bounds after
+            // the alongside-transition pass. Reconcile once more so rendered
+            // keys and overlay hit geometry share the final coordinate space.
+            self.applyKeyboardHeightForCurrentTraits()
+            self.keyboardContentView.setNeedsLayout()
+            self.keyRowsStack.setNeedsLayout()
             self.view.layoutIfNeeded()
         }
     }
@@ -2911,6 +2945,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             spaceButton,
             deleteButton,
             returnButton,
+            voiceDismissButton,
             textKeyboardContainer,
             textToolbar,
             textWandButton,
@@ -2949,7 +2984,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             $0.button.overrideUserInterfaceStyle = style
             $0.button.setNeedsUpdateConfiguration()
         }
-        [settingsButton, keyboardFocusButton, spaceButton, deleteButton, returnButton].forEach {
+        [settingsButton, keyboardFocusButton, spaceButton, deleteButton, returnButton, voiceDismissButton].forEach {
             $0.setNeedsUpdateConfiguration()
         }
         refreshCapsuleButtonConfigurations()
@@ -3668,14 +3703,15 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func configureUtilityRow() {
+        let showsVoiceDismissButton = traitCollection.userInterfaceIdiom == .pad
         utilityRow.axis = .horizontal
-        utilityRow.spacing = 6
+        utilityRow.spacing = showsVoiceDismissButton ? 4 : 6
         utilityRow.alignment = .fill
         utilityRow.distribution = .fill
         utilityRow.heightAnchor.constraint(equalToConstant: Self.utilityRowHeight).isActive = true
 
         configureCapsuleButton(commandButton, title: "", image: "wand.and.stars", style: .utility)
-        commandButton.widthAnchor.constraint(equalToConstant: 48).isActive = true
+        commandButton.widthAnchor.constraint(equalToConstant: showsVoiceDismissButton ? 44 : 48).isActive = true
         commandButton.accessibilityLabel = NSLocalizedString("Command input", comment: "Accessibility label for command/edit-input button")
         commandButton.addTarget(self, action: #selector(commandPressDown), for: [.touchDown, .touchDragEnter])
         attachDragOutCancelTracker(commandButton)
@@ -3683,7 +3719,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         commandButton.addTarget(self, action: #selector(commandPressCancelled), for: [.touchUpOutside, .touchCancel, .touchDragExit])
 
         configureCapsuleButton(voiceUndoButton, title: "", image: "arrow.uturn.backward", style: .utility)
-        voiceUndoButton.widthAnchor.constraint(equalToConstant: 48).isActive = true
+        voiceUndoButton.widthAnchor.constraint(equalToConstant: showsVoiceDismissButton ? 44 : 48).isActive = true
         voiceUndoButton.accessibilityLabel = NSLocalizedString("Undo refine", comment: "Accessibility label for undoing the latest refine")
         voiceUndoButton.addTarget(self, action: #selector(undoRefineTapped), for: .touchUpInside)
         attachPressAnimation(voiceUndoButton)
@@ -3693,21 +3729,40 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         attachPressAnimation(spaceButton)
 
         configureCapsuleButton(deleteButton, title: "", image: "delete.left", style: .utility)
-        deleteButton.widthAnchor.constraint(equalToConstant: 54).isActive = true
+        deleteButton.widthAnchor.constraint(equalToConstant: showsVoiceDismissButton ? 44 : 54).isActive = true
         deleteButton.addTarget(self, action: #selector(deletePressDown), for: [.touchDown, .touchDragEnter])
         deleteButton.addTarget(self, action: #selector(deletePressUp), for: [.touchUpInside, .touchUpOutside, .touchCancel, .touchDragExit])
         attachPressAnimation(deleteButton)
 
         configureCapsuleButton(returnButton, title: "return", image: nil, style: .utility)
-        returnButton.widthAnchor.constraint(equalToConstant: 78).isActive = true
+        returnButton.widthAnchor.constraint(equalToConstant: showsVoiceDismissButton ? 50 : 78).isActive = true
         returnButton.addTarget(self, action: #selector(insertReturn), for: .touchDown)
         attachPressAnimation(returnButton)
+
+        if showsVoiceDismissButton {
+            configureCapsuleButton(
+                voiceDismissButton,
+                title: "",
+                image: "keyboard.chevron.compact.down",
+                style: .utility
+            )
+            voiceDismissButton.widthAnchor.constraint(equalToConstant: 44).isActive = true
+            voiceDismissButton.accessibilityLabel = NSLocalizedString(
+                "Hide keyboard",
+                comment: "Accessibility label for iPad voice keyboard dismiss key"
+            )
+            voiceDismissButton.addTarget(self, action: #selector(dismissTypeformeKeyboard), for: .touchUpInside)
+            attachPressAnimation(voiceDismissButton)
+        }
 
         utilityRow.addArrangedSubview(commandButton)
         utilityRow.addArrangedSubview(voiceUndoButton)
         utilityRow.addArrangedSubview(spaceButton)
         utilityRow.addArrangedSubview(deleteButton)
         utilityRow.addArrangedSubview(returnButton)
+        if showsVoiceDismissButton {
+            utilityRow.addArrangedSubview(voiceDismissButton)
+        }
         rootStack.addArrangedSubview(utilityRow)
     }
 
@@ -4753,7 +4808,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             weight: .utility
         )
         dismissButton.accessibilityLabel = NSLocalizedString("Hide keyboard", comment: "Accessibility label for iPad keyboard dismiss key")
-        dismissButton.addTarget(self, action: #selector(dismissPadKeyboard), for: .touchUpInside)
+        dismissButton.addTarget(self, action: #selector(dismissTypeformeKeyboard), for: .touchUpInside)
         appendFixedButton(dismissButton, width: fixedKeyWidth)
 
         keyRowsStack.addArrangedSubview(row)
@@ -5593,6 +5648,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         spaceButton.configuration = capsuleButtonConfiguration(title: "space", image: nil, style: .key)
         deleteButton.configuration = capsuleButtonConfiguration(title: "", image: "delete.left", style: .utility)
         returnButton.configuration = capsuleButtonConfiguration(title: "return", image: nil, style: .utility)
+        voiceDismissButton.configuration = capsuleButtonConfiguration(
+            title: "",
+            image: "keyboard.chevron.compact.down",
+            style: .utility
+        )
     }
 
     /// Re-pull `isKeyboardDark`-derived layer colors so the popover and
@@ -11705,7 +11765,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         insertLiteralTextShortcut("\t")
     }
 
-    @objc private func dismissPadKeyboard() {
+    @objc private func dismissTypeformeKeyboard() {
         dismissKeyboard()
         lightHaptic()
     }
