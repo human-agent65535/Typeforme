@@ -147,7 +147,10 @@ final class KeyboardTextLayoutPolicyTests: XCTestCase {
         XCTAssertEqual(floating.voiceSideColumnWidth, 76)
         XCTAssertEqual(floating.inputModeSwitchWidth, 56)
         XCTAssertEqual(floating.textKeyHorizontalGap, 4)
+        XCTAssertEqual(floating.textKeyVerticalGap, 11)
         XCTAssertEqual(floating.textUtilityKeyWidth, 44)
+        XCTAssertFalse(floating.usesPadFullTextLayout)
+        XCTAssertFalse(floating.usesPadNumberRow)
 
         let narrowPhone = KeyboardSurfaceLayoutPolicy.metrics(
             availableWidth: 362,
@@ -168,8 +171,54 @@ final class KeyboardTextLayoutPolicyTests: XCTestCase {
         XCTAssertEqual(docked.contentHeight, 267)
         XCTAssertEqual(docked.orbDiameter, 132)
         XCTAssertEqual(docked.textKeyHorizontalGap, 6)
+        XCTAssertEqual(docked.textKeyVerticalGap, 11)
         XCTAssertEqual(docked.textUtilityKeyWidth, 51)
         XCTAssertEqual(KeyboardSurfaceLayoutPolicy.maximumContentWidth, 900)
+    }
+
+    func testPadFullKeyboardUsesNativeScaleProfilesInsteadOfPhoneStretching() {
+        let portrait = KeyboardSurfaceLayoutPolicy.metrics(
+            availableWidth: 821,
+            verticalSizeIsCompact: false,
+            interfaceIdiomIsPad: true
+        )
+        XCTAssertTrue(portrait.usesPadFullTextLayout)
+        XCTAssertFalse(portrait.usesPadNumberRow)
+        XCTAssertEqual(portrait.contentHeight, 267)
+        XCTAssertEqual(portrait.textKeyHorizontalGap, 8)
+        XCTAssertEqual(portrait.textKeyVerticalGap, 9)
+        XCTAssertEqual(portrait.textUtilityKeyWidth, 90.31, accuracy: 0.001)
+
+        let landscape = KeyboardSurfaceLayoutPolicy.metrics(
+            availableWidth: 1_197,
+            verticalSizeIsCompact: false,
+            interfaceIdiomIsPad: true
+        )
+        XCTAssertTrue(landscape.usesPadFullTextLayout)
+        XCTAssertFalse(landscape.usesPadNumberRow)
+        XCTAssertEqual(landscape.contentHeight, 353)
+        XCTAssertEqual(landscape.textUtilityKeyWidth, 131.67, accuracy: 0.001)
+
+        let wideLandscape = KeyboardSurfaceLayoutPolicy.metrics(
+            availableWidth: 1_353,
+            verticalSizeIsCompact: false,
+            interfaceIdiomIsPad: true
+        )
+        XCTAssertTrue(wideLandscape.usesPadNumberRow)
+        XCTAssertEqual(wideLandscape.contentHeight, 428)
+        XCTAssertEqual(wideLandscape.textUtilityKeyWidth, 132)
+    }
+
+    func testPhoneLandscapeDoesNotSelectPadFullKeyboard() {
+        let phoneLandscape = KeyboardSurfaceLayoutPolicy.metrics(
+            availableWidth: 920,
+            verticalSizeIsCompact: true,
+            interfaceIdiomIsPad: false
+        )
+        XCTAssertFalse(phoneLandscape.usesPadFullTextLayout)
+        XCTAssertFalse(phoneLandscape.usesPadNumberRow)
+        XCTAssertEqual(phoneLandscape.contentHeight, 253)
+        XCTAssertEqual(phoneLandscape.textUtilityKeyWidth, 51)
     }
 
     func testCompactSurfaceFitsRepresentative320PointKeyboard() {

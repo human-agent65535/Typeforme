@@ -171,11 +171,17 @@ struct KeyboardSurfaceMetrics: Equatable, Sendable {
     let voiceSideColumnWidth: Double
     let inputModeSwitchWidth: Double
     let textKeyHorizontalGap: Double
+    let textKeyVerticalGap: Double
     let textUtilityKeyWidth: Double
+    let usesPadFullTextLayout: Bool
+    let usesPadNumberRow: Bool
 }
 
 enum KeyboardSurfaceLayoutPolicy {
     static let maximumContentWidth = 900.0
+    static let minimumPadFullTextWidth = 600.0
+    static let minimumPadLandscapeTextWidth = 1_000.0
+    static let minimumPadNumberRowWidth = 1_250.0
     // The orb is centered independently of its two side columns. With the
     // standard 132/104/68pt controls, the left column needs 376pt of usable
     // width to clear the orb without constraint pressure.
@@ -183,16 +189,37 @@ enum KeyboardSurfaceLayoutPolicy {
 
     static func metrics(
         availableWidth: Double,
-        verticalSizeIsCompact: Bool
+        verticalSizeIsCompact: Bool,
+        interfaceIdiomIsPad: Bool = false
     ) -> KeyboardSurfaceMetrics {
         let usesCompactWidth = availableWidth > 1 && availableWidth < standardVoiceMinimumWidth
+        let usesPadFullTextLayout = interfaceIdiomIsPad
+            && availableWidth >= minimumPadFullTextWidth
+        let usesPadLandscapeTextLayout = usesPadFullTextLayout
+            && availableWidth >= minimumPadLandscapeTextWidth
+        let usesPadNumberRow = usesPadFullTextLayout
+            && availableWidth >= minimumPadNumberRowWidth
+        // A docked iPad keyboard does not stretch the phone rows. Its outer
+        // utility columns absorb the extra width, and grow modestly between
+        // portrait and landscape while the character keys stay near native
+        // proportions.
+        let padUtilityKeyWidth = min(132, max(88, availableWidth * 0.11))
         return KeyboardSurfaceMetrics(
-            contentHeight: verticalSizeIsCompact || usesCompactWidth ? 253 : 267,
+            contentHeight: usesPadNumberRow
+                ? 428
+                : (usesPadLandscapeTextLayout
+                    ? 353
+                    : (verticalSizeIsCompact || usesCompactWidth ? 253 : 267)),
             orbDiameter: usesCompactWidth ? 112 : 132,
             voiceSideColumnWidth: usesCompactWidth ? 76 : 104,
             inputModeSwitchWidth: usesCompactWidth ? 56 : 68,
-            textKeyHorizontalGap: usesCompactWidth ? 4 : 6,
-            textUtilityKeyWidth: usesCompactWidth ? 44 : 51
+            textKeyHorizontalGap: usesCompactWidth ? 4 : (usesPadFullTextLayout ? 8 : 6),
+            textKeyVerticalGap: usesPadFullTextLayout ? 9 : 11,
+            textUtilityKeyWidth: usesCompactWidth
+                ? 44
+                : (usesPadFullTextLayout ? padUtilityKeyWidth : 51),
+            usesPadFullTextLayout: usesPadFullTextLayout,
+            usesPadNumberRow: usesPadNumberRow
         )
     }
 }
