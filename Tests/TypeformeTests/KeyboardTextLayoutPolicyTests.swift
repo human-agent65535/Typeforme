@@ -181,9 +181,11 @@ final class KeyboardTextLayoutPolicyTests: XCTestCase {
         XCTAssertEqual(floating.orbDiameter, 112)
         XCTAssertEqual(floating.voiceSideColumnWidth, 76)
         XCTAssertEqual(floating.inputModeSwitchWidth, 56)
-        XCTAssertEqual(floating.voiceControlGap, 8)
+        XCTAssertEqual(floating.voiceLeftControlGap, 11.5)
+        XCTAssertEqual(floating.voiceRightControlGap, 27.5)
         XCTAssertEqual(floating.textKeyHorizontalGap, 4)
         XCTAssertEqual(floating.textKeyVerticalGap, 11)
+        XCTAssertEqual(floating.textSurfaceHorizontalInset, 20.0 / 3.0)
         XCTAssertEqual(floating.textUtilityKeyWidth, 44)
         XCTAssertFalse(floating.usesPadFullTextLayout)
         XCTAssertFalse(floating.usesPadFloatingLayout)
@@ -194,12 +196,16 @@ final class KeyboardTextLayoutPolicyTests: XCTestCase {
             verticalSizeIsCompact: false
         )
         XCTAssertEqual(narrowPhone.orbDiameter, 112)
+        XCTAssertEqual(narrowPhone.voiceLeftControlGap, 39)
+        XCTAssertEqual(narrowPhone.voiceRightControlGap, 55)
 
         let standardBoundary = KeyboardSurfaceLayoutPolicy.metrics(
             availableWidth: 376,
             verticalSizeIsCompact: false
         )
         XCTAssertEqual(standardBoundary.orbDiameter, 132)
+        XCTAssertEqual(standardBoundary.voiceLeftControlGap, 8)
+        XCTAssertEqual(standardBoundary.voiceRightControlGap, 40)
 
         let docked = KeyboardSurfaceLayoutPolicy.metrics(
             availableWidth: KeyboardSurfaceLayoutPolicy.maximumContentWidth,
@@ -208,7 +214,8 @@ final class KeyboardTextLayoutPolicyTests: XCTestCase {
         XCTAssertEqual(docked.voiceContentHeight, 267)
         XCTAssertEqual(docked.textContentHeight, 267)
         XCTAssertEqual(docked.orbDiameter, 132)
-        XCTAssertEqual(docked.voiceControlGap, 8)
+        XCTAssertEqual(docked.voiceLeftControlGap, 100.0 / 3.0, accuracy: 0.001)
+        XCTAssertEqual(docked.voiceRightControlGap, 196.0 / 3.0, accuracy: 0.001)
         XCTAssertEqual(docked.textKeyHorizontalGap, 6)
         XCTAssertEqual(docked.textKeyVerticalGap, 11)
         XCTAssertEqual(docked.textUtilityKeyWidth, 51)
@@ -226,9 +233,12 @@ final class KeyboardTextLayoutPolicyTests: XCTestCase {
         XCTAssertTrue(floating.usesPadFloatingLayout)
         XCTAssertFalse(floating.usesPadFullTextLayout)
         XCTAssertFalse(floating.usesPadNumberRow)
+        XCTAssertEqual(floating.textKeyVisualProfile, .compact)
         XCTAssertEqual(floating.voiceContentHeight, 253)
         XCTAssertEqual(floating.textContentHeight, 253)
         XCTAssertEqual(floating.orbDiameter, 112)
+        XCTAssertEqual(floating.voiceLeftControlGap, 8)
+        XCTAssertEqual(floating.voiceRightControlGap, 8)
         XCTAssertEqual(floating.textUtilityKeyWidth, 44)
     }
 
@@ -264,15 +274,18 @@ final class KeyboardTextLayoutPolicyTests: XCTestCase {
         XCTAssertTrue(portrait.usesPadFullTextLayout)
         XCTAssertFalse(portrait.usesPadFloatingLayout)
         XCTAssertFalse(portrait.usesPadNumberRow)
+        XCTAssertEqual(portrait.textKeyVisualProfile, .padPortrait)
         XCTAssertEqual(portrait.voiceContentHeight, 267)
         XCTAssertEqual(portrait.orbDiameter, 148)
         XCTAssertEqual(portrait.voiceSideColumnWidth, 112)
         XCTAssertEqual(portrait.inputModeSwitchWidth, 72)
-        XCTAssertEqual(portrait.voiceControlGap, 24)
+        XCTAssertEqual(portrait.voiceLeftControlGap, 24)
+        XCTAssertEqual(portrait.voiceRightControlGap, 24)
         XCTAssertEqual(portrait.textContentHeight, 308)
         XCTAssertNil(portrait.padNumberRowHeight)
         XCTAssertEqual(portrait.textKeyHorizontalGap, 8)
         XCTAssertEqual(portrait.textKeyVerticalGap, 9)
+        XCTAssertEqual(portrait.textSurfaceHorizontalInset, 3.5)
         XCTAssertEqual(portrait.textUtilityKeyWidth, 90.31, accuracy: 0.001)
 
         let landscape = KeyboardSurfaceLayoutPolicy.metrics(
@@ -284,14 +297,16 @@ final class KeyboardTextLayoutPolicyTests: XCTestCase {
         )
         XCTAssertTrue(landscape.usesPadFullTextLayout)
         XCTAssertFalse(landscape.usesPadNumberRow)
+        XCTAssertEqual(landscape.textKeyVisualProfile, .padFull)
         XCTAssertEqual(landscape.voiceContentHeight, 267)
         XCTAssertEqual(landscape.orbDiameter, 148)
-        XCTAssertEqual(landscape.voiceControlGap, 24)
+        XCTAssertEqual(landscape.voiceLeftControlGap, 24)
+        XCTAssertEqual(landscape.voiceRightControlGap, 24)
         XCTAssertEqual(landscape.textContentHeight, 394)
         XCTAssertEqual(landscape.textUtilityKeyWidth, 131.67, accuracy: 0.001)
 
         let largePortrait = KeyboardSurfaceLayoutPolicy.metrics(
-            availableWidth: 1_019,
+            availableWidth: 1_025,
             verticalSizeIsCompact: false,
             interfaceIdiomIsPad: true,
             interfaceOrientationIsLandscape: false,
@@ -299,8 +314,15 @@ final class KeyboardTextLayoutPolicyTests: XCTestCase {
         )
         XCTAssertTrue(largePortrait.usesPadNumberRow)
         XCTAssertEqual(largePortrait.voiceContentHeight, 267)
-        XCTAssertEqual(largePortrait.textContentHeight, 379)
-        XCTAssertEqual(largePortrait.padNumberRowHeight, 44)
+        XCTAssertEqual(largePortrait.textContentHeight, 372)
+        XCTAssertEqual(largePortrait.padNumberRowHeight, 46)
+        XCTAssertEqual(largePortrait.textKeyVisualProfile, .padFull)
+        XCTAssertEqual(largePortrait.textKeyHorizontalGap, 7)
+        XCTAssertEqual(largePortrait.textKeyVerticalGap, 7)
+        XCTAssertEqual(largePortrait.textSurfaceHorizontalInset, 3.5)
+        XCTAssertEqual(largePortrait.textUtilityKeyWidth, 102.5)
+        XCTAssertEqual(largePortrait.textLanguageUtilityKeyWidth, 118.5)
+        XCTAssertEqual(largePortrait.textShiftUtilityKeyWidth, 154)
 
         let largeLandscape = KeyboardSurfaceLayoutPolicy.metrics(
             availableWidth: 1_363,
@@ -314,6 +336,90 @@ final class KeyboardTextLayoutPolicyTests: XCTestCase {
         XCTAssertEqual(largeLandscape.textContentHeight, 469)
         XCTAssertEqual(largeLandscape.padNumberRowHeight, 59)
         XCTAssertEqual(largeLandscape.textUtilityKeyWidth, 132)
+        XCTAssertEqual(largeLandscape.textKeyVisualProfile, .padFull)
+    }
+
+    func testLargePadPortraitGridSolvesToMeasuredNativeKeySizes() {
+        let metrics = KeyboardSurfaceLayoutPolicy.metrics(
+            availableWidth: 1_025,
+            verticalSizeIsCompact: false,
+            interfaceIdiomIsPad: true,
+            interfaceOrientationIsLandscape: false,
+            screenShortestSide: 1_032
+        )
+        let width = 1_032 - metrics.textSurfaceHorizontalInset * 2
+        let gap = metrics.textKeyHorizontalGap
+
+        // Native iPadOS 27 portrait rows are 1,025pt wide inside 3.5pt edge
+        // insets. Each row independently resolves to the same 64pt text key.
+        let numberAndQKeyWidth = (
+            width - metrics.textUtilityKeyWidth - gap * 13
+        ) / 13
+        let homeKeyWidth = (
+            width - metrics.textLanguageUtilityKeyWidth * 2 - gap * 12
+        ) / 11
+        let shiftKeyWidth = (
+            width - metrics.textShiftUtilityKeyWidth * 2 - gap * 11
+        ) / 10
+        // The measured Tab column ends on a half-point boundary; Auto Layout
+        // distributes that 0.5pt across 13 keys before the 2x raster rounds
+        // their visible edges to the native 64pt cadence.
+        XCTAssertEqual(numberAndQKeyWidth, 64, accuracy: 0.05)
+        XCTAssertEqual(homeKeyWidth, 64)
+        XCTAssertEqual(shiftKeyWidth, 64)
+
+        // The extension owns a 34pt toolbar above the native-sized five-row
+        // block. Removing chrome and row gaps leaves four exact 61pt rows.
+        let keyboardBodyHeight = metrics.textContentHeight - 8
+        let keyRowsHeight = keyboardBodyHeight - 5 - 34 - 7
+        let regularRowHeight = (
+            keyRowsHeight - (metrics.padNumberRowHeight ?? 0) - metrics.textKeyVerticalGap * 4
+        ) / 4
+        XCTAssertEqual(regularRowHeight, 61)
+    }
+
+    func testPadFlickLegendsShareTheCommittedAlternateMapping() {
+        XCTAssertEqual(
+            KeyboardTextKeyFlickPolicy.letterAlternate(for: "q", usesNumberRow: false),
+            "1"
+        )
+        XCTAssertEqual(
+            KeyboardTextKeyFlickPolicy.letterAlternate(for: ",", usesNumberRow: false),
+            "!"
+        )
+        XCTAssertEqual(
+            KeyboardTextKeyFlickPolicy.letterAlternate(for: "[", usesNumberRow: true),
+            "{"
+        )
+        XCTAssertEqual(KeyboardTextKeyFlickPolicy.numberRowAlternate(for: "2"), "@")
+        XCTAssertNil(KeyboardTextKeyFlickPolicy.letterAlternate(for: "q", usesNumberRow: true))
+    }
+
+    func testPadFlickRequiresARealDownwardGesture() {
+        XCTAssertFalse(KeyboardTextKeyFlickPolicy.selectsAlternate(
+            startX: 50,
+            startY: 50,
+            currentX: 50,
+            currentY: 67
+        ))
+        XCTAssertTrue(KeyboardTextKeyFlickPolicy.selectsAlternate(
+            startX: 50,
+            startY: 50,
+            currentX: 54,
+            currentY: 70
+        ))
+        XCTAssertFalse(KeyboardTextKeyFlickPolicy.selectsAlternate(
+            startX: 50,
+            startY: 50,
+            currentX: 78,
+            currentY: 70
+        ))
+        XCTAssertFalse(KeyboardTextKeyFlickPolicy.selectsAlternate(
+            startX: 50,
+            startY: 50,
+            currentX: 50,
+            currentY: 25
+        ))
     }
 
     func testPhoneLandscapeDoesNotSelectPadFullKeyboard() {
@@ -327,6 +433,8 @@ final class KeyboardTextLayoutPolicyTests: XCTestCase {
         XCTAssertFalse(phoneLandscape.usesPadNumberRow)
         XCTAssertEqual(phoneLandscape.voiceContentHeight, 253)
         XCTAssertEqual(phoneLandscape.textContentHeight, 253)
+        XCTAssertEqual(phoneLandscape.voiceLeftControlGap, 8)
+        XCTAssertEqual(phoneLandscape.voiceRightControlGap, 8)
         XCTAssertEqual(phoneLandscape.textUtilityKeyWidth, 51)
     }
 
@@ -346,7 +454,7 @@ final class KeyboardTextLayoutPolicyTests: XCTestCase {
         let voiceLeftClearanceWidth = 2 * (
             10
                 + metrics.voiceSideColumnWidth
-                + metrics.voiceControlGap
+                + metrics.voiceLeftControlGap
                 + metrics.orbDiameter / 2
         )
         XCTAssertLessThanOrEqual(voiceLeftClearanceWidth, availableWidth)

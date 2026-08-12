@@ -7,7 +7,10 @@ final class KeyboardTextKeyControl: UIButton {
     private var renderedSecondaryTitle: String?
     private var renderedImageName: String?
     private var renderedRole: KeyboardTextKeyRole = .normal
+    private var renderedVisualProfile: KeyboardTextKeyVisualProfile = .compact
+    private var renderedStackedLegendStyle: KeyboardTextKeyStackedLegendStyle = .alternateHint
     private var renderedStyle: UIUserInterfaceStyle = .light
+    private var isFlickAlternateSelected = false
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -32,17 +35,73 @@ final class KeyboardTextKeyControl: UIButton {
         secondaryTitle: String? = nil,
         imageName: String?,
         role: KeyboardTextKeyRole,
+        visualProfile: KeyboardTextKeyVisualProfile,
+        stackedLegendStyle: KeyboardTextKeyStackedLegendStyle = .alternateHint,
         style: UIUserInterfaceStyle
     ) {
+        isFlickAlternateSelected = false
+        titleLabel?.layer.removeAllAnimations()
+        titleLabel?.transform = .identity
+        titleLabel?.alpha = 1
         renderedTitle = title
         renderedSecondaryTitle = secondaryTitle
         renderedImageName = imageName
         renderedRole = role
+        renderedVisualProfile = visualProfile
+        renderedStackedLegendStyle = stackedLegendStyle
         renderedStyle = style
         overrideUserInterfaceStyle = style
         accessibilityLabel = title.isEmpty ? imageName : title
         accessibilityValue = secondaryTitle == nil ? nil : title
         applyCurrentConfiguration()
+    }
+
+    /// Promotes the upper legend into the key's primary position once a
+    /// downward flick crosses its commit threshold. The button remains the
+    /// real hit target; only its configuration content moves, so feedback can
+    /// never diverge from the controller's touch geometry.
+    func setFlickAlternateSelected(_ selected: Bool, animated: Bool) {
+        guard renderedSecondaryTitle?.isEmpty == false else { return }
+        guard isFlickAlternateSelected != selected else { return }
+        isFlickAlternateSelected = selected
+
+        titleLabel?.layer.removeAllAnimations()
+        if !animated {
+            titleLabel?.transform = .identity
+            titleLabel?.alpha = 1
+            applyCurrentConfiguration()
+            return
+        }
+
+        if selected {
+            UIView.performWithoutAnimation {
+                self.applyCurrentConfiguration()
+                self.layoutIfNeeded()
+                self.titleLabel?.transform = CGAffineTransform(translationX: 0, y: -12)
+                    .scaledBy(x: 0.72, y: 0.72)
+                self.titleLabel?.alpha = 0.68
+            }
+            UIView.animate(
+                withDuration: 0.14,
+                delay: 0,
+                usingSpringWithDamping: 0.82,
+                initialSpringVelocity: 0.2,
+                options: [.beginFromCurrentState, .allowUserInteraction, .curveEaseOut]
+            ) {
+                self.titleLabel?.transform = .identity
+                self.titleLabel?.alpha = 1
+            }
+        } else {
+            titleLabel?.transform = .identity
+            titleLabel?.alpha = 1
+            UIView.transition(
+                with: self,
+                duration: 0.10,
+                options: [.transitionCrossDissolve, .beginFromCurrentState, .allowUserInteraction]
+            ) {
+                self.applyCurrentConfiguration()
+            }
+        }
     }
 
     func refreshAppearance(style: UIUserInterfaceStyle) {
@@ -74,19 +133,27 @@ final class KeyboardTextKeyControl: UIButton {
     }
 
     private func makeConfiguration(isPressed: Bool, isEnabled: Bool) -> UIButton.Configuration {
+        let visualProfile = renderedVisualProfile
+        let stackedLegendStyle = renderedStackedLegendStyle
         let typography = KeyboardTextKeyVisualPolicy.typography(
             title: renderedTitle,
             hasImage: renderedImageName != nil,
-            role: renderedRole
+            role: renderedRole,
+            profile: visualProfile
         )
         var configuration = UIButton.Configuration.filled()
-        let showsSecondaryTitle = renderedSecondaryTitle?.isEmpty == false
-        configuration.title = showsSecondaryTitle ? renderedSecondaryTitle : renderedTitle
+        let hasSecondaryTitle = renderedSecondaryTitle?.isEmpty == false
+        let showsSelectedAlternate = hasSecondaryTitle && isFlickAlternateSelected
+        let showsSecondaryTitle = hasSecondaryTitle && !showsSelectedAlternate
+        configuration.title = hasSecondaryTitle ? renderedSecondaryTitle : renderedTitle
         configuration.subtitle = showsSecondaryTitle ? renderedTitle : nil
         configuration.image = renderedImageName.flatMap { UIImage(systemName: $0) }
         if renderedImageName != nil {
             configuration.preferredSymbolConfigurationForImage = UIImage.SymbolConfiguration(
-                pointSize: CGFloat(KeyboardTextKeyVisualPolicy.iconPointSize),
+                pointSize: CGFloat(KeyboardTextKeyVisualPolicy.iconPointSize(
+                    imageName: renderedImageName,
+                    profile: visualProfile
+                )),
                 weight: .regular
             )
         }
@@ -110,12 +177,30 @@ final class KeyboardTextKeyControl: UIButton {
         )
         configuration.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
             var outgoing = incoming
-            if showsSecondaryTitle {
+            if showsSelectedAlternate {
                 outgoing.font = .systemFont(
-                    ofSize: CGFloat(KeyboardTextKeyVisualPolicy.stackedSecondaryPointSize),
+                    ofSize: CGFloat(max(
+                        22,
+                        KeyboardTextKeyVisualPolicy.stackedPrimaryPointSize(
+                            for: typography,
+                            profile: visualProfile,
+                            style: stackedLegendStyle
+                        )
+                    )),
                     weight: .regular
                 )
                 outgoing.foregroundColor = .label
+                return outgoing
+            }
+            if showsSecondaryTitle {
+                outgoing.font = .systemFont(
+                    ofSize: CGFloat(KeyboardTextKeyVisualPolicy.stackedSecondaryPointSize(
+                        profile: visualProfile,
+                        style: stackedLegendStyle
+                    )),
+                    weight: .regular
+                )
+                outgoing.foregroundColor = .secondaryLabel
                 return outgoing
             }
             let weight: UIFont.Weight = typography.weight == .medium ? .medium : .regular
@@ -128,7 +213,9 @@ final class KeyboardTextKeyControl: UIButton {
                 let weight: UIFont.Weight = typography.weight == .medium ? .medium : .regular
                 outgoing.font = .systemFont(
                     ofSize: CGFloat(KeyboardTextKeyVisualPolicy.stackedPrimaryPointSize(
-                        for: typography
+                        for: typography,
+                        profile: visualProfile,
+                        style: stackedLegendStyle
                     )),
                     weight: weight
                 )

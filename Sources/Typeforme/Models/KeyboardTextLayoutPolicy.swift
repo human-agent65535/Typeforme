@@ -202,16 +202,62 @@ enum KeyboardTextLayoutPolicy {
     }
 }
 
+/// The visible iPad secondary legend and the committed flick character share
+/// this source of truth. A secondary character must never be rendered unless a
+/// downward flick on that same key can commit it.
+enum KeyboardTextKeyFlickPolicy {
+    static let minimumDownwardDistance = 18.0
+    static let verticalAxisDominance = 1.15
+
+    static func letterAlternate(for key: String, usesNumberRow: Bool) -> String? {
+        if usesNumberRow {
+            return KeyboardTextLayoutPolicy.largePadLetterSecondaryTitle(for: key)
+        }
+        return [
+            "q": "1", "w": "2", "e": "3", "r": "4", "t": "5",
+            "y": "6", "u": "7", "i": "8", "o": "9", "p": "0",
+            "a": "@", "s": "#", "d": "$", "f": "&", "g": "*",
+            "h": "(", "j": ")", "k": "'", "l": "\"",
+            "z": "%", "x": "-", "c": "+", "v": "=", "b": "/",
+            "n": ";", "m": ":", ",": "!", ".": "?",
+        ][key.lowercased()]
+    }
+
+    static func numberRowAlternate(for key: String) -> String? {
+        [
+            "`": "~", "1": "!", "2": "@", "3": "#", "4": "$", "5": "%",
+            "6": "^", "7": "&", "8": "*", "9": "(", "0": ")", "-": "_", "=": "+",
+        ][key]
+    }
+
+    static func selectsAlternate(
+        startX: Double,
+        startY: Double,
+        currentX: Double,
+        currentY: Double
+    ) -> Bool {
+        let deltaX = currentX - startX
+        let deltaY = currentY - startY
+        return deltaY >= minimumDownwardDistance
+            && deltaY >= abs(deltaX) * verticalAxisDominance
+    }
+}
+
 struct KeyboardSurfaceMetrics: Equatable, Sendable {
     let voiceContentHeight: Double
     let textContentHeight: Double
     let orbDiameter: Double
     let voiceSideColumnWidth: Double
     let inputModeSwitchWidth: Double
-    let voiceControlGap: Double
+    let voiceLeftControlGap: Double
+    let voiceRightControlGap: Double
     let textKeyHorizontalGap: Double
     let textKeyVerticalGap: Double
+    let textSurfaceHorizontalInset: Double
     let textUtilityKeyWidth: Double
+    let textLanguageUtilityKeyWidth: Double
+    let textShiftUtilityKeyWidth: Double
+    let textKeyVisualProfile: KeyboardTextKeyVisualProfile
     let usesPadFullTextLayout: Bool
     let usesPadFloatingLayout: Bool
     let usesPadNumberRow: Bool
@@ -223,14 +269,27 @@ enum KeyboardSurfaceLayoutPolicy {
     static let minimumPadFullTextWidth = 600.0
     static let minimumLargePadTextWidth = 1_000.0
     static let minimumLargePadShortestSide = 1_000.0
-    /// The custom candidate/action toolbar is additional to the iPad input
-    /// assistant row. Full-size text keyboards therefore need this much more
-    /// surface than the matching native key block to preserve native key size.
+    static let standardHorizontalInset = 20.0 / 3.0
+    static let padFullHorizontalInset = 3.5
+    static let voiceLeftEdgeInset = 10.0
+    static let voiceRightEdgeInset = 14.0
+    /// The host responder owns iPad's input-assistant row; a keyboard extension
+    /// cannot publish Rime candidates or host editing actions into it. Keep the
+    /// extension-owned candidate/action toolbar separate and reserve its exact
+    /// height so the native-sized key block is not compressed.
     static let padTextToolbarCompensation = 41.0
     // The orb is centered independently of its two side columns. With the
     // standard 132/104/68pt controls and an 8pt control gap, the left column
     // needs 376pt of usable width to clear the orb without constraint pressure.
     private static let standardVoiceMinimumWidth = 376.0
+    private static let minimumVoiceControlGap = 8.0
+    private static let padFullVoiceControlGap = 24.0
+    // The widest current iPhone portrait surface is 440pt before the standard
+    // root insets. Cap the Voice stage there so a future wider surface or a
+    // synthetic test canvas does not send the side controls arbitrarily far
+    // away from the centered orb.
+    private static let maximumPhonePortraitVoiceStageWidth = 440.0
+        - standardHorizontalInset * 2
 
     static func interfaceOrientationIsLandscape(
         surfaceWidth: Double,
@@ -263,6 +322,9 @@ enum KeyboardSurfaceLayoutPolicy {
         let usesLargePadLayout = usesPadFullTextLayout
             && availableWidth >= minimumLargePadTextWidth
             && screenShortestSide >= minimumLargePadShortestSide
+        // iPadOS 27 keeps the 13-inch hardware-like five-row grid in both
+        // orientations. The portrait reference is 1,032pt wide and measures
+        // 64pt ordinary keys, a 46pt number row, and 61pt regular rows.
         let usesPadNumberRow = usesLargePadLayout
 
         // These are the native key-block profiles measured on iPadOS 27,
@@ -277,8 +339,10 @@ enum KeyboardSurfaceLayoutPolicy {
             padTextContentHeight = 428 + padTextToolbarCompensation
             padNumberRowHeight = 59
         case (true, false):
-            padTextContentHeight = 338 + padTextToolbarCompensation
-            padNumberRowHeight = 44
+            // 34pt toolbar + 7pt toolbar gap + the measured native key block:
+            // 46 + 4×61pt rows + 4×7pt row gaps, including container insets.
+            padTextContentHeight = 331 + padTextToolbarCompensation
+            padNumberRowHeight = 46
         case (false, true):
             padTextContentHeight = 353 + padTextToolbarCompensation
             padNumberRowHeight = nil
@@ -294,19 +358,70 @@ enum KeyboardSurfaceLayoutPolicy {
         // utility columns absorb the extra width, and grow modestly between
         // portrait and landscape while the character keys stay near native
         // proportions.
-        let padUtilityKeyWidth = min(132, max(88, availableWidth * 0.11))
+        let padUtilityKeyWidth = usesLargePadLayout && !interfaceOrientationIsLandscape
+            ? 102.5
+            : min(132, max(88, availableWidth * 0.11))
+        let padLanguageUtilityKeyWidth = usesLargePadLayout && !interfaceOrientationIsLandscape
+            ? 118.5
+            : padUtilityKeyWidth * 1.25
+        let padShiftUtilityKeyWidth = usesLargePadLayout && !interfaceOrientationIsLandscape
+            ? 154
+            : padUtilityKeyWidth * 1.55
+        let orbDiameter = usesCompactWidth ? 112.0 : (usesPadFullTextLayout ? 148.0 : 132.0)
+        let voiceSideColumnWidth = usesCompactWidth ? 76.0 : (usesPadFullTextLayout ? 112.0 : 104.0)
+        let inputModeSwitchWidth = usesCompactWidth ? 56.0 : (usesPadFullTextLayout ? 72.0 : 68.0)
+        let baseVoiceControlGap = usesPadFullTextLayout
+            ? padFullVoiceControlGap
+            : minimumVoiceControlGap
+        let spreadsPhonePortraitControls = !interfaceIdiomIsPad && !verticalSizeIsCompact
+        let voiceStageWidth = min(
+            max(0, availableWidth),
+            maximumPhonePortraitVoiceStageWidth
+        )
+        let voiceSideSpace = max(0, (voiceStageWidth - orbDiameter) / 2)
+        let voiceLeftControlGap = spreadsPhonePortraitControls
+            ? max(
+                baseVoiceControlGap,
+                voiceSideSpace - voiceSideColumnWidth - voiceLeftEdgeInset
+            )
+            : baseVoiceControlGap
+        let voiceRightControlGap = spreadsPhonePortraitControls
+            ? max(
+                baseVoiceControlGap,
+                voiceSideSpace - inputModeSwitchWidth - voiceRightEdgeInset
+            )
+            : baseVoiceControlGap
         return KeyboardSurfaceMetrics(
             voiceContentHeight: voiceContentHeight,
             textContentHeight: textContentHeight,
-            orbDiameter: usesCompactWidth ? 112 : (usesPadFullTextLayout ? 148 : 132),
-            voiceSideColumnWidth: usesCompactWidth ? 76 : (usesPadFullTextLayout ? 112 : 104),
-            inputModeSwitchWidth: usesCompactWidth ? 56 : (usesPadFullTextLayout ? 72 : 68),
-            voiceControlGap: usesPadFullTextLayout ? 24 : 8,
-            textKeyHorizontalGap: usesCompactWidth ? 4 : (usesPadFullTextLayout ? 8 : 6),
-            textKeyVerticalGap: usesPadFullTextLayout ? 9 : 11,
+            orbDiameter: orbDiameter,
+            voiceSideColumnWidth: voiceSideColumnWidth,
+            inputModeSwitchWidth: inputModeSwitchWidth,
+            voiceLeftControlGap: voiceLeftControlGap,
+            voiceRightControlGap: voiceRightControlGap,
+            textKeyHorizontalGap: usesCompactWidth
+                ? 4
+                : (usesLargePadLayout && !interfaceOrientationIsLandscape
+                    ? 7
+                    : (usesPadFullTextLayout ? 8 : 6)),
+            textKeyVerticalGap: usesLargePadLayout && !interfaceOrientationIsLandscape
+                ? 7
+                : (usesPadFullTextLayout ? 9 : 11),
+            textSurfaceHorizontalInset: usesPadFullTextLayout
+                ? padFullHorizontalInset
+                : standardHorizontalInset,
             textUtilityKeyWidth: usesCompactWidth
                 ? 44
                 : (usesPadFullTextLayout ? padUtilityKeyWidth : 51),
+            textLanguageUtilityKeyWidth: usesCompactWidth
+                ? 44
+                : (usesPadFullTextLayout ? padLanguageUtilityKeyWidth : 51),
+            textShiftUtilityKeyWidth: usesCompactWidth
+                ? 44
+                : (usesPadFullTextLayout ? padShiftUtilityKeyWidth : 51),
+            textKeyVisualProfile: usesPadFullTextLayout
+                ? (usesLargePadLayout || interfaceOrientationIsLandscape ? .padFull : .padPortrait)
+                : .compact,
             usesPadFullTextLayout: usesPadFullTextLayout,
             usesPadFloatingLayout: usesPadFloatingLayout,
             usesPadNumberRow: usesPadNumberRow,
