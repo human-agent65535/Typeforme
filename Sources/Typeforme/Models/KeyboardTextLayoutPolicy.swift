@@ -129,7 +129,7 @@ enum KeyboardTextLayoutPolicy {
         }
     }
 
-    /// Removes only optional text shortcuts when a floating keyboard is too
+    /// Removes only optional text shortcuts when a compact surface is too
     /// narrow to preserve 44pt controls. Mode, Globe, language, Space, and
     /// Return remain present because they are navigation or editing controls.
     static func fittedBottomRow(
@@ -259,14 +259,13 @@ struct KeyboardSurfaceMetrics: Equatable, Sendable {
     let textShiftUtilityKeyWidth: Double
     let textKeyVisualProfile: KeyboardTextKeyVisualProfile
     let usesPadFullTextLayout: Bool
-    let usesPadFloatingLayout: Bool
     let usesPadNumberRow: Bool
     let padNumberRowHeight: Double?
 }
 
 enum KeyboardSurfaceLayoutPolicy {
     static let maximumContentWidth = 900.0
-    static let minimumPadFullTextWidth = 600.0
+    static let minimumPadDockedOrientationWidth = 600.0
     static let minimumLargePadTextWidth = 1_000.0
     static let minimumLargePadShortestSide = 1_000.0
     static let standardHorizontalInset = 20.0 / 3.0
@@ -299,7 +298,7 @@ enum KeyboardSurfaceLayoutPolicy {
     ) -> Bool {
         let shortSide = min(screenWidth, screenHeight)
         let longSide = max(screenWidth, screenHeight)
-        guard surfaceWidth >= minimumPadFullTextWidth,
+        guard surfaceWidth >= minimumPadDockedOrientationWidth,
               longSide - shortSide > 1
         else { return sceneOrientationIsLandscape }
         return abs(surfaceWidth - longSide) < abs(surfaceWidth - shortSide)
@@ -312,13 +311,13 @@ enum KeyboardSurfaceLayoutPolicy {
         interfaceOrientationIsLandscape: Bool = false,
         screenShortestSide: Double = 0
     ) -> KeyboardSurfaceMetrics {
-        let usesCompactWidth = availableWidth > 1 && availableWidth < standardVoiceMinimumWidth
-        let usesPadFloatingLayout = interfaceIdiomIsPad
+        // Third-party iPad keyboards only use the docked surface. Width-based
+        // compact sizing belongs to iPhone and must not create a synthetic
+        // floating-keyboard mode on iPad.
+        let usesCompactWidth = !interfaceIdiomIsPad
             && availableWidth > 1
-            && availableWidth < minimumPadFullTextWidth
+            && availableWidth < standardVoiceMinimumWidth
         let usesPadFullTextLayout = interfaceIdiomIsPad
-            && !usesPadFloatingLayout
-            && availableWidth >= minimumPadFullTextWidth
         let usesLargePadLayout = usesPadFullTextLayout
             && availableWidth >= minimumLargePadTextWidth
             && screenShortestSide >= minimumLargePadShortestSide
@@ -331,7 +330,7 @@ enum KeyboardSurfaceLayoutPolicy {
         // plus the 41pt occupied by Typeforme's own text toolbar. Screen class
         // and real interface orientation are explicit: surface width alone
         // cannot distinguish a 13-inch portrait keyboard from 11-inch
-        // landscape, and floating keyboards intentionally use compact width.
+        // landscape.
         let padTextContentHeight: Double
         let padNumberRowHeight: Double?
         switch (usesLargePadLayout, interfaceOrientationIsLandscape) {
@@ -423,7 +422,6 @@ enum KeyboardSurfaceLayoutPolicy {
                 ? (usesLargePadLayout || interfaceOrientationIsLandscape ? .padFull : .padPortrait)
                 : .compact,
             usesPadFullTextLayout: usesPadFullTextLayout,
-            usesPadFloatingLayout: usesPadFloatingLayout,
             usesPadNumberRow: usesPadNumberRow,
             padNumberRowHeight: padNumberRowHeight
         )

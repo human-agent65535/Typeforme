@@ -130,7 +130,7 @@ final class KeyboardTextLayoutPolicyTests: XCTestCase {
         XCTAssertTrue(widths.allSatisfy { $0 >= 44 })
     }
 
-    func testFloatingKeyboardDropsOnlyOptionalTrailingShortcuts() {
+    func testCompactSurfaceDropsOnlyOptionalTrailingShortcuts() {
         let url = KeyboardTextLayoutPolicy.fittedBottomRow(
             KeyboardTextLayoutPolicy.bottomRow(for: .url),
             availableWidth: 307,
@@ -172,24 +172,23 @@ final class KeyboardTextLayoutPolicyTests: XCTestCase {
     }
 
     func testSurfaceMetricsUseActualWidthAndCapWideCanvas() {
-        let floating = KeyboardSurfaceLayoutPolicy.metrics(
+        let compactSurface = KeyboardSurfaceLayoutPolicy.metrics(
             availableWidth: 307,
             verticalSizeIsCompact: false
         )
-        XCTAssertEqual(floating.voiceContentHeight, 253)
-        XCTAssertEqual(floating.textContentHeight, 253)
-        XCTAssertEqual(floating.orbDiameter, 112)
-        XCTAssertEqual(floating.voiceSideColumnWidth, 76)
-        XCTAssertEqual(floating.inputModeSwitchWidth, 56)
-        XCTAssertEqual(floating.voiceLeftControlGap, 11.5)
-        XCTAssertEqual(floating.voiceRightControlGap, 27.5)
-        XCTAssertEqual(floating.textKeyHorizontalGap, 4)
-        XCTAssertEqual(floating.textKeyVerticalGap, 11)
-        XCTAssertEqual(floating.textSurfaceHorizontalInset, 20.0 / 3.0)
-        XCTAssertEqual(floating.textUtilityKeyWidth, 44)
-        XCTAssertFalse(floating.usesPadFullTextLayout)
-        XCTAssertFalse(floating.usesPadFloatingLayout)
-        XCTAssertFalse(floating.usesPadNumberRow)
+        XCTAssertEqual(compactSurface.voiceContentHeight, 253)
+        XCTAssertEqual(compactSurface.textContentHeight, 253)
+        XCTAssertEqual(compactSurface.orbDiameter, 112)
+        XCTAssertEqual(compactSurface.voiceSideColumnWidth, 76)
+        XCTAssertEqual(compactSurface.inputModeSwitchWidth, 56)
+        XCTAssertEqual(compactSurface.voiceLeftControlGap, 11.5)
+        XCTAssertEqual(compactSurface.voiceRightControlGap, 27.5)
+        XCTAssertEqual(compactSurface.textKeyHorizontalGap, 4)
+        XCTAssertEqual(compactSurface.textKeyVerticalGap, 11)
+        XCTAssertEqual(compactSurface.textSurfaceHorizontalInset, 20.0 / 3.0)
+        XCTAssertEqual(compactSurface.textUtilityKeyWidth, 44)
+        XCTAssertFalse(compactSurface.usesPadFullTextLayout)
+        XCTAssertFalse(compactSurface.usesPadNumberRow)
 
         let narrowPhone = KeyboardSurfaceLayoutPolicy.metrics(
             availableWidth: 362,
@@ -222,24 +221,23 @@ final class KeyboardTextLayoutPolicyTests: XCTestCase {
         XCTAssertEqual(KeyboardSurfaceLayoutPolicy.maximumContentWidth, 900)
     }
 
-    func testPadFloatingKeyboardUsesExplicitCompactProfile() {
-        let floating = KeyboardSurfaceLayoutPolicy.metrics(
+    func testPadDoesNotSelectPhoneCompactProfileAtSyntheticNarrowWidth() {
+        let pad = KeyboardSurfaceLayoutPolicy.metrics(
             availableWidth: 307,
             verticalSizeIsCompact: false,
             interfaceIdiomIsPad: true,
             interfaceOrientationIsLandscape: true,
             screenShortestSide: 1_032
         )
-        XCTAssertTrue(floating.usesPadFloatingLayout)
-        XCTAssertFalse(floating.usesPadFullTextLayout)
-        XCTAssertFalse(floating.usesPadNumberRow)
-        XCTAssertEqual(floating.textKeyVisualProfile, .compact)
-        XCTAssertEqual(floating.voiceContentHeight, 253)
-        XCTAssertEqual(floating.textContentHeight, 253)
-        XCTAssertEqual(floating.orbDiameter, 112)
-        XCTAssertEqual(floating.voiceLeftControlGap, 8)
-        XCTAssertEqual(floating.voiceRightControlGap, 8)
-        XCTAssertEqual(floating.textUtilityKeyWidth, 44)
+        XCTAssertTrue(pad.usesPadFullTextLayout)
+        XCTAssertFalse(pad.usesPadNumberRow)
+        XCTAssertEqual(pad.textKeyVisualProfile, .padFull)
+        XCTAssertEqual(pad.voiceContentHeight, 267)
+        XCTAssertEqual(pad.textContentHeight, 394)
+        XCTAssertEqual(pad.orbDiameter, 148)
+        XCTAssertEqual(pad.voiceLeftControlGap, 24)
+        XCTAssertEqual(pad.voiceRightControlGap, 24)
+        XCTAssertEqual(pad.textUtilityKeyWidth, 88)
     }
 
     func testDockedOrientationUsesPhysicalSurfaceWhenRemoteSceneIsStale() {
@@ -272,7 +270,6 @@ final class KeyboardTextLayoutPolicyTests: XCTestCase {
             screenShortestSide: 820
         )
         XCTAssertTrue(portrait.usesPadFullTextLayout)
-        XCTAssertFalse(portrait.usesPadFloatingLayout)
         XCTAssertFalse(portrait.usesPadNumberRow)
         XCTAssertEqual(portrait.textKeyVisualProfile, .padPortrait)
         XCTAssertEqual(portrait.voiceContentHeight, 267)
@@ -429,7 +426,6 @@ final class KeyboardTextLayoutPolicyTests: XCTestCase {
             interfaceIdiomIsPad: false
         )
         XCTAssertFalse(phoneLandscape.usesPadFullTextLayout)
-        XCTAssertFalse(phoneLandscape.usesPadFloatingLayout)
         XCTAssertFalse(phoneLandscape.usesPadNumberRow)
         XCTAssertEqual(phoneLandscape.voiceContentHeight, 253)
         XCTAssertEqual(phoneLandscape.textContentHeight, 253)

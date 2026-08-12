@@ -230,7 +230,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         // Route with an intent point, then draw feedback on the resolved key.
         // Keep horizontal routing aligned to the visible key centers; a fixed
         // horizontal bias makes adjacent pairs like i/o and n/m feel random.
-        // The phone/floating vertical correction keeps low fingertip contact
+        // The compact-width vertical correction keeps low fingertip contact
         // inside the intended character row without stealing bottom controls.
         // A full iPad grid has large, explicit rows and must route its gaps by
         // the visible midpoint instead of shifting the hit map upward.
@@ -2607,9 +2607,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let windowFrame = view.window?.frame
         let hasWindow = view.window != nil
         let hasUsableWidth = view.bounds.width > 1
-        // Floating iPad keyboards are intentionally not anchored to the
-        // display bottom. Stability belongs to this input view's own bounds,
-        // not to a process-global screen rectangle.
+        // App-window geometry is not a keyboard mode signal. Presentation
+        // stability belongs to this input view's own bounds.
         let isStable = heightDelta <= 2 && hasWindow && hasUsableWidth
         let logKey = [
             String(format: "%.1f", Double(view.bounds.height)),
@@ -2696,10 +2695,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             return Self.maximumKeyboardContentWidth
         }
         let usesDockedPadInset = traitCollection.userInterfaceIdiom == .pad
-            && view.bounds.width >= CGFloat(
-                KeyboardSurfaceLayoutPolicy.minimumPadFullTextWidth
-                    + KeyboardSurfaceLayoutPolicy.padFullHorizontalInset * 2
-            )
         let horizontalInset = usesDockedPadInset
             ? CGFloat(KeyboardSurfaceLayoutPolicy.padFullHorizontalInset)
             : Self.rootHorizontalInset
@@ -10059,9 +10054,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         textToolsButton.isHidden = !showAllIdleIcons // mic
         textStylePickerButton.isHidden = !showAllIdleIcons
         textUndoButton.isHidden = !(showAllIdleIcons || freshRefineUndoState() != nil)
-        // Keep the mode switch reachable at every width. Third-party keyboard
-        // extensions can adapt after iPadOS supplies a floating compact width,
-        // but have no public API to initiate that transition themselves.
+        // Keep the voice-mode switch reachable at every surface width.
         textKeyboardSwitchButton.isHidden = !showAllIdleIcons
         textHostSettingsButton.isHidden = !showAllIdleIcons
     }
@@ -13912,7 +13905,6 @@ final class KeyboardTouchOverlayView: UIView {
     private var pendingActivationPoint: CGPoint?
     private var pendingActivationResolvedAt: CFTimeInterval = 0
     private var lastTouchCommitTime: CFTimeInterval = 0
-    private var isYieldingToSystemMultiTouch = false
     private static let pendingActivationReuseWindow: CFTimeInterval = 0.12
     private static let pendingActivationPointTolerance: CGFloat = 1.5
 
@@ -13927,10 +13919,9 @@ final class KeyboardTouchOverlayView: UIView {
     }
 
     private func commonInit() {
-        // Receive the complete sequence so a second finger can explicitly
-        // cancel character routing and yield to iPadOS's docked-to-floating
-        // pinch. With multiple-touch disabled UIKit never delivered that
-        // transition to this overlay, leaving the first typing touch active.
+        // Fast two-handed typing routinely overlaps touch lifetimes. Route
+        // every finger independently; finger count is not a system-gesture
+        // signal and must never retract or suppress an already typed key.
         isMultipleTouchEnabled = true
         isUserInteractionEnabled = true
         isAccessibilityElement = false
@@ -13971,11 +13962,6 @@ final class KeyboardTouchOverlayView: UIView {
             super.touchesBegan(touches, with: event)
             return
         }
-        if isYieldingToSystemMultiTouch || activeTouchCount(in: event) > 1 {
-            beginSystemMultiTouchHandoff(hitController: hitController)
-            super.touchesBegan(touches, with: event)
-            return
-        }
 
         var handledAnyTouch = false
         for touch in orderedTouches(touches) {
@@ -14001,10 +13987,6 @@ final class KeyboardTouchOverlayView: UIView {
 
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
         guard let hitController else {
-            super.touchesMoved(touches, with: event)
-            return
-        }
-        if isYieldingToSystemMultiTouch {
             super.touchesMoved(touches, with: event)
             return
         }
@@ -14056,11 +14038,6 @@ final class KeyboardTouchOverlayView: UIView {
             super.touchesEnded(touches, with: event)
             return
         }
-        if isYieldingToSystemMultiTouch {
-            super.touchesEnded(touches, with: event)
-            finishSystemMultiTouchHandoffIfNeeded(event: event)
-            return
-        }
 
         var handledAnyTouch = false
         for touch in orderedTouches(touches) {
@@ -14079,11 +14056,6 @@ final class KeyboardTouchOverlayView: UIView {
         guard let hitController else {
             activeTouches.removeAll()
             super.touchesCancelled(touches, with: event)
-            return
-        }
-        if isYieldingToSystemMultiTouch {
-            super.touchesCancelled(touches, with: event)
-            finishSystemMultiTouchHandoffIfNeeded(event: event)
             return
         }
 
@@ -14154,38 +14126,6 @@ final class KeyboardTouchOverlayView: UIView {
         pendingActivationTarget = nil
         pendingActivationPoint = nil
         pendingActivationResolvedAt = 0
-    }
-
-    private func beginSystemMultiTouchHandoff(hitController: KeyboardViewController) {
-        guard !isYieldingToSystemMultiTouch else { return }
-        isYieldingToSystemMultiTouch = true
-        clearPendingActivation()
-        for active in activeTouches.values {
-            hitController.cancelKeyboardTouchTarget(active.target, point: active.startPoint)
-            if active.didCommitTextKey {
-                hitController.undoRoutedTextKeyCommit()
-            }
-        }
-        activeTouches.removeAll()
-        hitController.logKeyboardTouchEvent("system-multitouch", target: nil, point: nil)
-    }
-
-    private func finishSystemMultiTouchHandoffIfNeeded(event: UIEvent?) {
-        guard activeTouchCount(in: event) == 0 else { return }
-        isYieldingToSystemMultiTouch = false
-    }
-
-    private func activeTouchCount(in event: UIEvent?) -> Int {
-        event?.allTouches?.lazy.filter {
-            switch $0.phase {
-            case .began, .moved, .stationary:
-                return true
-            case .ended, .cancelled, .regionEntered, .regionMoved, .regionExited:
-                return false
-            @unknown default:
-                return false
-            }
-        }.count ?? 0
     }
 
     private func releaseExistingTouchIfNeeded(for target: KeyboardTouchTarget) {

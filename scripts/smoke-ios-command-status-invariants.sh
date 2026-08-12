@@ -852,6 +852,20 @@ if "gutterGapBiasWinner(" not in block(keyboard, "private func interKeyGapWinner
 if "gutterGaussianWinner(" not in block(keyboard, "private func gutterResolutionWinner("):
     raise AssertionError("gutter routing no longer delegates to the learned Gaussian policy")
 
+touch_overlay = block(keyboard, "final class KeyboardTouchOverlayView")
+if "isMultipleTouchEnabled = true" not in touch_overlay:
+    raise AssertionError("fast two-handed typing no longer receives overlapping touches")
+for forbidden in (
+    "system-multitouch",
+    "beginSystemMultiTouchHandoff",
+    "activeTouchCount(in: event)",
+    "isYieldingToSystemMultiTouch",
+    "UIPinchGestureRecognizer",
+    "docked-to-floating",
+):
+    if forbidden in touch_overlay:
+        raise AssertionError(f"overlapping typing regained destructive multi-touch handoff: {forbidden}")
+
 apply_options = block(rime_device_controller, "private func applyOptionsOnQueue(")
 for required in ("appliedInputOptions", "guard appliedInputOptions != options"):
     if required not in apply_options:
