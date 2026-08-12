@@ -7,7 +7,20 @@ struct ContentView: View {
     @State private var settingsInitialRoute: HostSettingsRoute?
     @State private var rawTranscriptExpanded = false
 
+    @ViewBuilder
     var body: some View {
+#if DEBUG && targetEnvironment(simulator)
+        if ProcessInfo.processInfo.environment["TYPEFORME_KEYBOARD_LAYOUT_FIXTURE"] == "1" {
+            SimulatorKeyboardLayoutFixture()
+        } else {
+            appContent
+        }
+#else
+        appContent
+#endif
+    }
+
+    private var appContent: some View {
         NavigationStack {
             content
                 .navigationTitle("Typeforme")
@@ -76,6 +89,29 @@ struct ContentView: View {
         )
     }
 }
+
+#if DEBUG && targetEnvironment(simulator)
+private struct SimulatorKeyboardLayoutFixture: View {
+    @State private var text = ""
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        VStack(spacing: 20) {
+            Text("iPadOS keyboard layout fixture")
+                .font(.title2.weight(.semibold))
+            TextField("Tap to type", text: $text)
+                .textFieldStyle(.roundedBorder)
+                .focused($isFocused)
+        }
+        .padding(32)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .task {
+            try? await Task.sleep(for: .milliseconds(500))
+            isFocused = true
+        }
+    }
+}
+#endif
 
 private struct PiPSourceViewMount: View {
     @Environment(AppState.self) private var state

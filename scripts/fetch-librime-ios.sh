@@ -9,6 +9,7 @@ FRAMEWORK_SHA256="${LIBRIMEKIT_FRAMEWORK_SHA256:-7b3d1d210c5a251a951685b722399c5
 REPO_URL="${LIBRIMEKIT_REPO_URL:-https://github.com/mariorichp/LibrimeKit.git}"
 REPO_REF="${LIBRIMEKIT_REPO_REF:-583a59e82702a3a057bdcc6f65f3fcab5fae52e6}"
 BUILD_ARM64_SIMULATOR="${TYPEFORME_BUILD_RIME_ARM64_SIMULATOR:-auto}"
+SESSION_OWNERSHIP_PATCH="$ROOT/scripts/patches/librimekit-session-ownership.patch"
 
 # shellcheck source=scripts/lib/xcode-tools.sh
 . "$ROOT/scripts/lib/xcode-tools.sh"
@@ -79,6 +80,17 @@ checkout_librimekit_ref() {
   )
 }
 
+apply_librimekit_patches() {
+  if git -C "$VENDOR_DIR" apply --check "$SESSION_OWNERSHIP_PATCH"; then
+    git -C "$VENDOR_DIR" apply "$SESSION_OWNERSHIP_PATCH"
+  elif git -C "$VENDOR_DIR" apply --reverse --check "$SESSION_OWNERSHIP_PATCH"; then
+    return
+  else
+    echo "LibrimeKit session-ownership patch does not apply cleanly at $REPO_REF." >&2
+    exit 1
+  fi
+}
+
 mkdir -p "$ROOT/vendor"
 
 if [[ ! -d "$VENDOR_DIR/.git" ]]; then
@@ -86,6 +98,7 @@ if [[ ! -d "$VENDOR_DIR/.git" ]]; then
   git clone "$REPO_URL" "$VENDOR_DIR"
 fi
 checkout_librimekit_ref
+apply_librimekit_patches
 
 if [[ ! -d "$VENDOR_DIR/Frameworks/librime.xcframework" ]]; then
   TMP_DIR="$(mktemp -d)"

@@ -5,6 +5,7 @@
 "Dictation Settings" = "Dictation Settings";
 "Keyboard Guide" = "Keyboard Guide";
 "Privacy Policy" = "Privacy Policy";
+"Version" = "Version";
 "Setup & Permissions" = "Setup & Permissions";
 "Done" = "Done";
 "Save & Download" = "Save & Download";
@@ -80,6 +81,7 @@
 "Needed for local bridge, dictation, settings, and learning sync" = "Needed for local bridge, dictation, settings, and learning sync";
 "Allow Microphone so the host app can own dictation audio." = "Allow Microphone so the host app can own dictation audio.";
 "Enable the Typeforme keyboard and allow Full Access." = "Enable the Typeforme keyboard and allow Full Access.";
+"Enable Full Access, then open the Typeforme keyboard once to verify it." = "Enable Full Access, then open the Typeforme keyboard once to verify it.";
 "Review setup and permissions." = "Review setup and permissions.";
 "Guide" = "Guide";
 "Open Settings" = "Open Settings";
@@ -130,6 +132,8 @@
 "Required because the host app owns keyboard dictation audio." = "Required because the host app owns keyboard dictation audio.";
 "Keyboard & Full Access" = "Keyboard & Full Access";
 "iOS exposes this only through Settings. Full Access lets the keyboard reach the host app." = "iOS exposes this only through Settings. Full Access lets the keyboard reach the host app.";
+"After enabling Full Access in Settings, open the Typeforme keyboard once so this app can verify it." = "After enabling Full Access in Settings, open the Typeforme keyboard once so this app can verify it.";
+"Not Verified" = "Not Verified";
 "Optional" = "Optional";
 "Apple Speech Preview" = "Apple Speech Preview";
 "Only needed for on-device live partial preview. Core dictation still works without it." = "Only needed for on-device live partial preview. Core dictation still works without it.";

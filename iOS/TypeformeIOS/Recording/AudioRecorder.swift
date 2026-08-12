@@ -623,11 +623,7 @@ final class AudioRecorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
         @unknown default:
             return false
         }
-        return await withCheckedContinuation { continuation in
-            AVAudioApplication.requestRecordPermission { granted in
-                continuation.resume(returning: granted)
-            }
-        }
+        return await HostPermissionRequester.requestMicrophone()
     }
 }
 
@@ -1232,11 +1228,7 @@ final class StandbyAudioSession: ObservableObject {
         @unknown default:
             return false
         }
-        return await withCheckedContinuation { continuation in
-            AVAudioApplication.requestRecordPermission { granted in
-                continuation.resume(returning: granted)
-            }
-        }
+        return await HostPermissionRequester.requestMicrophone()
     }
 
     private func recordAudioDiagnostic(event: String, fields extraFields: [String: String] = [:]) {

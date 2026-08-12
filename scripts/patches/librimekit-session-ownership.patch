@@ -1,0 +1,22 @@
+diff --git a/Sources/ObjC/include/irime_api.h b/Sources/ObjC/include/irime_api.h
+--- a/Sources/ObjC/include/irime_api.h
++++ b/Sources/ObjC/include/irime_api.h
+@@ -44,4 +44,5 @@
+ // Session management
+ - (RimeSessionId)createSession;
+ - (BOOL)findSession:(RimeSessionId)session;
++- (BOOL)destroySession:(RimeSessionId)session;
+ - (void)cleanAllSession;
+diff --git a/Sources/ObjC/irime_api.m b/Sources/ObjC/irime_api.m
+--- a/Sources/ObjC/irime_api.m
++++ b/Sources/ObjC/irime_api.m
+@@ -376,6 +376,9 @@
+ - (BOOL)findSession:(RimeSessionId)session {
+   return RimeFindSession(session);
+ }
++- (BOOL)destroySession:(RimeSessionId)session {
++  return RimeDestroySession(session);
++}
+ - (void)cleanAllSession {
+   RimeCleanupAllSessions();
+ }

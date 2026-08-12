@@ -622,6 +622,8 @@ final class KeyboardLocalServer: @unchecked Sendable {
                 }
                 if authorized {
                     switch request.action {
+                    case .health:
+                        self.send(status, connection: connection, closeAfterSend: true)
                     case .statusStream:
                         guard self.registerStatusStream(connection, generation: generation) else {
                             connection.cancel()
@@ -655,6 +657,8 @@ final class KeyboardLocalServer: @unchecked Sendable {
             return KeyboardBridgeStatus(state: .error, message: "Keyboard bridge unauthorized")
         }
         switch request.action {
+        case .health:
+            return .idle
         case .statusStream, .statusSnapshot:
             return await statusProvider?() ?? .idle
         case .command:
@@ -1020,7 +1024,11 @@ final class KeyboardLocalServer: @unchecked Sendable {
             guard KeyboardLocalBridgeAuth.verifyServerHello(hello, bridgeToken: expectedToken) else {
                 throw URLError(.userAuthenticationRequired)
             }
-            guard let request = KeyboardLocalBridgeRequest.statusSnapshot().authenticated(
+            // This containing-app probe proves only that the listener and its
+            // authentication path work. Calling statusProvider here would
+            // impersonate a keyboard contact and create a false Full Access
+            // result before the extension has ever run.
+            guard let request = KeyboardLocalBridgeRequest.health().authenticated(
                 bridgeToken: expectedToken,
                 serverNonce: hello.nonce
             ) else {

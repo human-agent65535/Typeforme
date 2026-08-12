@@ -5,6 +5,7 @@
 "Dictation Settings" = "听写设置";
 "Keyboard Guide" = "键盘使用指南";
 "Privacy Policy" = "隐私政策";
+"Version" = "版本";
 "Setup & Permissions" = "设置与权限";
 "Done" = "完成";
 "Save & Download" = "保存并下载";
@@ -80,6 +81,7 @@
 "Needed for local bridge, dictation, settings, and learning sync" = "用于本地桥接、听写、设置和学习数据同步";
 "Allow Microphone so the host app can own dictation audio." = "请允许麦克风,让宿主 app 接管听写音频。";
 "Enable the Typeforme keyboard and allow Full Access." = "请启用 Typeforme 键盘并允许完全访问。";
+"Enable Full Access, then open the Typeforme keyboard once to verify it." = "请开启完全访问，然后切到一次 Typeforme 键盘完成验证。";
 "Review setup and permissions." = "检查设置和权限。";
 "Guide" = "指南";
 "Open Settings" = "打开设置";
@@ -130,6 +132,8 @@
 "Required because the host app owns keyboard dictation audio." = "宿主 app 负责键盘听写音频,因此需要此权限。";
 "Keyboard & Full Access" = "键盘与完全访问";
 "iOS exposes this only through Settings. Full Access lets the keyboard reach the host app." = "iOS 只能在系统设置中开启。完全访问让键盘连接宿主 app。";
+"After enabling Full Access in Settings, open the Typeforme keyboard once so this app can verify it." = "在设置中开启完全访问后，请切到一次 Typeforme 键盘，让本 app 完成验证。";
+"Not Verified" = "未验证";
 "Optional" = "可选";
 "Apple Speech Preview" = "Apple Speech 预览";
 "Only needed for on-device live partial preview. Core dictation still works without it." = "只用于设备端实时部分预览。没有它也不影响核心听写。";

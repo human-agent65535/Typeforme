@@ -8,27 +8,40 @@ enum KeyboardRimeCompositionPolicy {
     }
 
     static func targetIsCurrent(
-        capturedDocumentIdentifier: UUID,
-        currentDocumentIdentifier: UUID
+        capturedDocumentIdentifier: UUID?,
+        currentDocumentIdentifier: UUID?,
+        capturedContextBefore: String?,
+        capturedContextAfter: String?,
+        currentContextBefore: String?,
+        currentContextAfter: String?
     ) -> Bool {
-        capturedDocumentIdentifier == currentDocumentIdentifier
+        guard let capturedDocumentIdentifier,
+              let currentDocumentIdentifier
+        else { return false }
+        return capturedDocumentIdentifier == currentDocumentIdentifier
+            && capturedContextBefore == currentContextBefore
+            && capturedContextAfter == currentContextAfter
     }
 
     /// A third-party keyboard receives nil `UITextInput` callback arguments, so
-    /// the callback boundary itself is the available host signal. The host now
-    /// owns the visible marked text: relinquish it without asking Rime to write
-    /// another copy. Only synchronous callbacks caused by this keyboard's own
-    /// set/unmark operation are ignored. A changed document must fail closed
-    /// without touching the new insertion target.
+    /// the callback boundary alone cannot distinguish a host edit from a
+    /// delayed callback for this keyboard's own `setMarkedText` operation. A
+    /// still-matching document/context snapshot remains keyboard-owned. Once
+    /// that target changes, relinquish visible text without replaying it; a
+    /// changed document fails closed without touching the new insertion target.
     static func externalHostChangeResolution(
         hasRimeMarkedTextOwner: Bool,
         localMutationInProgress: Bool,
-        targetIsCurrent: Bool
+        targetIsCurrent: Bool,
+        documentIdentityIsCurrent: Bool
     ) -> ExternalHostChangeResolution {
-        guard hasRimeMarkedTextOwner, !localMutationInProgress else {
+        guard hasRimeMarkedTextOwner,
+              !localMutationInProgress,
+              !targetIsCurrent
+        else {
             return .ignore
         }
-        return targetIsCurrent ? .relinquishCurrentTarget : .discardStaleTarget
+        return documentIdentityIsCurrent ? .relinquishCurrentTarget : .discardStaleTarget
     }
 
     /// Returns the text that may leave Rime's marked-text session. Rime's
@@ -314,14 +327,17 @@ enum KeyboardLivePartialOwnershipPolicy {
     }
 
     static func insertionTargetIsCurrent(
-        capturedDocumentIdentifier: UUID,
-        currentDocumentIdentifier: UUID,
+        capturedDocumentIdentifier: UUID?,
+        currentDocumentIdentifier: UUID?,
         capturedContextBefore: String,
         capturedContextAfter: String,
         currentContextBefore: String,
         currentContextAfter: String
     ) -> Bool {
-        capturedDocumentIdentifier == currentDocumentIdentifier
+        guard let capturedDocumentIdentifier,
+              let currentDocumentIdentifier
+        else { return false }
+        return capturedDocumentIdentifier == currentDocumentIdentifier
             && capturedContextBefore == currentContextBefore
             && capturedContextAfter == currentContextAfter
     }
@@ -329,13 +345,16 @@ enum KeyboardLivePartialOwnershipPolicy {
     static func ownsMarkedText(
         expectedCommandID: String,
         commandID: String,
-        expectedDocumentIdentifier: UUID,
-        documentIdentifier: UUID,
+        expectedDocumentIdentifier: UUID?,
+        documentIdentifier: UUID?,
         expectedText: String,
         activeMarkedText: String,
         hasLivePartialOwner: Bool
     ) -> Bool {
-        hasLivePartialOwner
+        guard let expectedDocumentIdentifier,
+              let documentIdentifier
+        else { return false }
+        return hasLivePartialOwner
             && !expectedText.isEmpty
             && expectedCommandID == commandID
             && expectedDocumentIdentifier == documentIdentifier

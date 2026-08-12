@@ -1,6 +1,8 @@
 import CryptoKit
 import Foundation
+#if !targetEnvironment(simulator)
 import LibrimeKit
+#endif
 import OSLog
 
 private let rimeLog = Logger(subsystem: TypeformeBundleConfiguration.keyboardBundleIdentifier, category: "rime")
@@ -216,13 +218,124 @@ struct RimeKeyboardProfile: Equatable, Sendable {
     }
 }
 
+#if targetEnvironment(simulator)
+/// The checked-in librime XCFramework has a device arm64 slice and a simulator
+/// x86_64 slice, but no simulator arm64 slice. Modern Apple-silicon simulator
+/// devices reject the translated x86_64 extension entirely. Keep visual and
+/// UIKit lifecycle checks available with an inert projection; physical builds
+/// always compile the real engine below.
+final class RimeInputController: @unchecked Sendable {
+    var onActivation: ((RimeKeyboardUpdate) -> Void)?
+    var onResetUserDataApplied: ((Int) -> Void)?
+
+    init(acknowledgedResetUserDataGeneration: Int = 0) {}
+
+    var isReady: Bool { true }
+
+    @discardableResult
+    func startIfNeeded(bundle: Bundle = .main) -> Bool { true }
+
+    func prepareForSuspension() {}
+
+    @discardableResult
+    func resumeAfterSuspension(bundle: Bundle = .main) -> Bool { true }
+
+    func applyInputOptions(asciiPunctuation: Bool, asciiMode: Bool) {}
+
+    func activateDesiredConfigurationAfterTextBoundary() {
+        publishCurrentActivationIfAvailable()
+    }
+
+    func setDesiredConfiguration(
+        profile: RimeKeyboardProfile,
+        asciiPunctuation: Bool,
+        asciiMode: Bool,
+        userPhrases: [String],
+        userPhrasesRevision: String?,
+        resetUserDataGeneration: Int
+    ) {
+        onResetUserDataApplied?(max(0, resetUserDataGeneration))
+    }
+
+    func publishCurrentActivationIfAvailable() {
+        onActivation?(emptyUpdate())
+    }
+
+    func processInputIfReady(
+        _ input: KeyboardPendingRimeInput,
+        asciiPunctuation: Bool,
+        asciiMode: Bool
+    ) -> RimeInputProcessResult {
+        .processed(emptyUpdate())
+    }
+
+    func processKeyCode(_ code: Int32) -> RimeKeyboardUpdate {
+        emptyUpdate()
+    }
+
+    func replaceCompositionInput(
+        _ input: String,
+        asciiPunctuation: Bool,
+        asciiMode: Bool
+    ) -> RimeKeyboardUpdate {
+        emptyUpdate()
+    }
+
+    func processKeyCode(
+        _ code: Int32,
+        asciiPunctuation: Bool,
+        asciiMode: Bool
+    ) -> RimeKeyCodeProcessResult {
+        RimeKeyCodeProcessResult(wasComposing: false, update: emptyUpdate())
+    }
+
+    func selectCandidate(at index: Int) -> RimeKeyboardUpdate {
+        emptyUpdate()
+    }
+
+    func commitVisibleComposition(_ text: String) -> RimeKeyboardUpdate {
+        emptyUpdate(documentCommitText: text)
+    }
+
+    func clearComposition() -> RimeKeyboardUpdate {
+        emptyUpdate()
+    }
+
+    func expandedCandidateWindow(
+        upTo candidateCount: Int,
+        matching expectedWindow: RimeCandidateWindow
+    ) -> RimeCandidateWindow? {
+        expectedWindow
+    }
+
+    private func emptyUpdate(documentCommitText: String = "") -> RimeKeyboardUpdate {
+        let composition = RimeCompositionSnapshot(
+            revision: 1,
+            isReady: true,
+            isComposing: false,
+            input: "",
+            preedit: "",
+            preeditSelectionStart: 0,
+            preeditSelectionEnd: 0,
+            errorMessage: nil
+        )
+        return RimeKeyboardUpdate(
+            composition: composition,
+            candidateWindow: .empty(revision: composition.revision),
+            committedTexts: [],
+            documentCommitText: documentCommitText
+        )
+    }
+}
+#else
 final class RimeInputController: @unchecked Sendable {
     private final class GlobalLifecycle: @unchecked Sendable {
         private let lock = NSLock()
         private var didSetup = false
         private var didInitialize = false
+        private var activeOwners: Set<UUID> = []
 
-        func prepareIfNeeded(api: IRimeAPI, traits: IRimeTraits) {
+        func prepareIfNeeded(api: IRimeAPI, traits: IRimeTraits, ownerID: UUID) {
             lock.lock()
             defer { lock.unlock() }
 
@@ -234,6 +347,21 @@ final class RimeInputController: @unchecked Sendable {
                 api.initialize(traits)
                 didInitialize = true
             }
+            activeOwners.insert(ownerID)
+        }
+
+        /// RimeCleanupAllSessions releases the visible sessions, but global
+        /// registry components can retain a LevelDB handle. Finalization is the
+        /// process-wide boundary that releases those file locks before UIKit
+        /// suspends the keyboard extension.
+        func releaseIfNeeded(api: IRimeAPI, ownerID: UUID) {
+            lock.lock()
+            defer { lock.unlock() }
+
+            activeOwners.remove(ownerID)
+            guard activeOwners.isEmpty, didInitialize else { return }
+            api.finalize()
+            didInitialize = false
         }
     }
 
@@ -260,7 +388,6 @@ final class RimeInputController: @unchecked Sendable {
         let errorMessage: String?
     }
 
-    private static let appName = "rime.typeforme"
     private static let distributionName = "Typeforme"
     private static let distributionCodeName = "typeforme"
     private static let dataVersion = "typeforme-pinyin-v2"
@@ -323,8 +450,16 @@ final class RimeInputController: @unchecked Sendable {
         }
     }
 
+    /// librime's service and registry are process-global. UIKit may overlap
+    /// keyboard-controller lifetimes during a handoff, so every controller
+    /// must serialize C API access through this one process-wide queue.
+    private static let sharedRimeQueue = DispatchQueue(
+        label: "\(TypeformeBundleConfiguration.keyboardBundleIdentifier).rime",
+        qos: .userInitiated
+    )
     private let api = IRimeAPI()
-    private let rimeQueue = DispatchQueue(label: "\(TypeformeBundleConfiguration.keyboardBundleIdentifier).rime", qos: .userInitiated)
+    private let ownerID = UUID()
+    private var rimeQueue: DispatchQueue { Self.sharedRimeQueue }
     private let stateLock = NSLock()
     private var activationPolicy: KeyboardRimeActivationPolicy<DesiredRimeActivationConfiguration>
     /// Protected by stateLock. These options are applied as serialized live
@@ -333,6 +468,11 @@ final class RimeInputController: @unchecked Sendable {
         asciiMode: false,
         asciiPunctuation: false
     )
+    /// Protected by stateLock. A controller starts suspended because UIKit can
+    /// construct a keyboard surface without completing its presentation. Rime
+    /// may acquire its user database only after `viewDidAppear`, and must stay
+    /// blocked again from `viewWillDisappear` until the next visible surface.
+    private var isSuspended = true
     private var lastErrorMessage: String?
     /// Accessed only on rimeQueue.
     private var selectedSchemaID: String?
@@ -380,13 +520,17 @@ final class RimeInputController: @unchecked Sendable {
     var isReady: Bool {
         stateLock.lock()
         defer { stateLock.unlock() }
-        return activationPolicy.isReady && lastErrorMessage == nil
+        return !isSuspended && activationPolicy.isReady && lastErrorMessage == nil
     }
 
     @discardableResult
     func startIfNeeded(bundle: Bundle = .main) -> Bool {
         let now = Date().timeIntervalSince1970
         stateLock.lock()
+        if isSuspended {
+            stateLock.unlock()
+            return false
+        }
         if activationPolicy.isReady, lastErrorMessage == nil {
             stateLock.unlock()
             return true
@@ -403,6 +547,34 @@ final class RimeInputController: @unchecked Sendable {
         guard let target else { return false }
         scheduleActivationFlight(target, bundle: bundle)
         return false
+    }
+
+    /// Closes every librime session before UIKit can suspend the extension.
+    /// Live sessions own LevelDB/file locks; retaining those locks across a
+    /// keyboard handoff causes a RUNNINGBOARD 0xdead10cc termination.
+    func prepareForSuspension() {
+        stateLock.lock()
+        isSuspended = true
+        stateLock.unlock()
+
+        rimeQueue.sync {
+            resetAllSessionsOnQueue()
+            Self.globalLifecycle.releaseIfNeeded(api: api, ownerID: ownerID)
+            stateLock.lock()
+            activationPolicy.invalidateAppliedConfiguration()
+            latestActivationPublication = nil
+            lastErrorMessage = nil
+            stateLock.unlock()
+        }
+    }
+
+    /// Re-enables engine activation for a newly presented keyboard surface.
+    @discardableResult
+    func resumeAfterSuspension(bundle: Bundle = .main) -> Bool {
+        stateLock.lock()
+        isSuspended = false
+        stateLock.unlock()
+        return startIfNeeded(bundle: bundle)
     }
 
     /// Applies session-local options without entering activation. The queued
@@ -427,9 +599,10 @@ final class RimeInputController: @unchecked Sendable {
     }
 
     /// Stores one complete host settings snapshot without touching the live
-    /// session. Cold launch calls this before `startIfNeeded`; a live refresh
-    /// follows it with `activateDesiredConfigurationAfterTextBoundary` after
-    /// ending any destructive text ownership boundary.
+    /// session. Cold launch calls this before the visible presentation resumes
+    /// Rime; a live refresh follows it with
+    /// `activateDesiredConfigurationAfterTextBoundary` after ending any
+    /// destructive text ownership boundary.
     func setDesiredConfiguration(
         profile: RimeKeyboardProfile,
         asciiPunctuation: Bool,
@@ -655,9 +828,18 @@ final class RimeInputController: @unchecked Sendable {
             traits.distributionName = Self.distributionName
             traits.distributionCodeName = Self.distributionCodeName
             traits.distributionVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? ""
-            traits.appName = Self.appName
+            // Do not set appName in an iOS keyboard extension. RimeSetup uses
+            // it to initialize glog, whose file destination holds an
+            // fcntl(F_SETLK) write lock. RimeFinalize does not shut glog down,
+            // so that lock survives otherwise-complete Rime session cleanup
+            // and iOS terminates the suspended extension with 0xdead10cc.
+            // Typeforme already routes runtime diagnostics through OSLog.
 
-            Self.globalLifecycle.prepareIfNeeded(api: api, traits: traits)
+            Self.globalLifecycle.prepareIfNeeded(
+                api: api,
+                traits: traits,
+                ownerID: ownerID
+            )
             if session == 0 {
                 session = api.createSession()
                 guard session != 0 else {
@@ -691,7 +873,7 @@ final class RimeInputController: @unchecked Sendable {
 
     private func resetAllSessionsOnQueue() {
         if session != 0 {
-            api.cleanAllSession()
+            _ = api.destroySession(session)
         }
         session = 0
         selectedSchemaID = nil
@@ -968,7 +1150,9 @@ final class RimeInputController: @unchecked Sendable {
 
     private var isReadyOnQueue: Bool {
         stateLock.lock()
-        let lifecycleIsReady = activationPolicy.isReady && lastErrorMessage == nil
+        let lifecycleIsReady = !isSuspended
+            && activationPolicy.isReady
+            && lastErrorMessage == nil
         stateLock.unlock()
         guard lifecycleIsReady,
               session != 0,
@@ -1425,3 +1609,4 @@ final class RimeInputController: @unchecked Sendable {
         return tokens
     }
 }
+#endif

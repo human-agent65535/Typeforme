@@ -25,6 +25,37 @@ final class KeyboardRimeActivationPolicyTests: XCTestCase {
         XCTAssertTrue(policy.isReady)
     }
 
+    func testSuspensionInvalidationRequiresFreshActivationForSameConfiguration() throws {
+        var policy = KeyboardRimeActivationPolicy(initialConfiguration: initial)
+        let first = try XCTUnwrap(policy.requestActivation(now: 0, retryInterval: 2))
+        XCTAssertEqual(policy.complete(first, succeeded: true, now: 0), .publish)
+        XCTAssertTrue(policy.isReady)
+        XCTAssertTrue(policy.shouldDeliverPublication(for: first))
+
+        policy.invalidateAppliedConfiguration()
+
+        XCTAssertFalse(policy.isReady)
+        XCTAssertFalse(policy.shouldDeliverPublication(for: first))
+        let resumed = try XCTUnwrap(policy.requestActivation(now: 1, retryInterval: 2))
+        XCTAssertEqual(resumed.configuration, initial)
+        XCTAssertEqual(policy.complete(resumed, succeeded: true, now: 1), .publish)
+        XCTAssertTrue(policy.isReady)
+    }
+
+    func testSuspensionInvalidationDiscardsAnOutstandingActivation() throws {
+        var policy = KeyboardRimeActivationPolicy(initialConfiguration: initial)
+        let interrupted = try XCTUnwrap(policy.requestActivation(now: 0, retryInterval: 2))
+
+        policy.invalidateAppliedConfiguration()
+
+        XCTAssertFalse(policy.hasActivationInFlight)
+        XCTAssertEqual(
+            policy.complete(interrupted, succeeded: true, now: 0.5),
+            .discard
+        )
+        XCTAssertNotNil(policy.requestActivation(now: 0.5, retryInterval: 2))
+    }
+
     func testOneFlightDrainsDirectlyToLatestCompleteSnapshot() throws {
         var policy = KeyboardRimeActivationPolicy(initialConfiguration: initial)
         let first = try XCTUnwrap(policy.requestActivation(now: 0, retryInterval: 2))

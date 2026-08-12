@@ -309,7 +309,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     private struct PendingDictationInsertionAnchor {
         let commandID: String
-        let documentIdentifier: UUID
+        let documentIdentifier: UUID?
         let contextBefore: String
         let contextAfter: String
     }
@@ -320,13 +320,15 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         // context; Rime composition has a separate session and edit caret.
         let commandID: String
         var text: String
-        let documentIdentifier: UUID
+        let documentIdentifier: UUID?
         var consumedByUser: Bool
         var ownershipInvalidated: Bool
     }
 
     private struct RimeCompositionSession {
-        let documentIdentifier: UUID
+        let documentIdentifier: UUID?
+        let contextBefore: String?
+        let contextAfter: String?
     }
 
     private struct TextBottomRowWidthBinding {
@@ -468,8 +470,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private var activeMarkedTextOwner: MarkedTextOwner?
     private var activeMarkedTextSelectionLocation = 0
     /// Reentrancy guard for UITextInputDelegate callbacks caused by this
-    /// keyboard's own set/unmark operations. It is not lifecycle state.
+    /// keyboard's own set/unmark operations. UIKit may deliver the matching
+    /// delegate callbacks on the next main-queue turn, so the generation keeps
+    /// that one bounded mutation recognizable until its document snapshot has
+    /// settled. It is not lifecycle state.
     private var isMutatingDocumentMarkedText = false
+    private var localMarkedTextMutationGeneration: UInt64 = 0
+    private var pendingLocalMarkedTextMutationGeneration: UInt64?
     private var heightConstraint: NSLayoutConstraint?
     /// While entering Typeforme from the system globe menu, UIKit may retarget
     /// the original selection touch to our globe key. Suppress that activation
@@ -481,7 +488,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private var suppressedInputModeTouches: Set<ObjectIdentifier> = []
     private static let inputModeCarryoverBeganGrace: CFTimeInterval = 0.12
     private static let inputModeCarryoverNoTouchGrace: CFTimeInterval = 0.25
+    private var isKeyboardPresentationVisible = false
     private var pendingTextKeyboardTraitRefresh: DispatchWorkItem?
+    private var pendingKeyboardSurfaceMetricsRefresh: DispatchWorkItem?
     private var lastPresentationGateLogKey = ""
     private var orbContainerHeightConstraint: NSLayoutConstraint?
     private var textKeyboardContainerHeightConstraint: NSLayoutConstraint?
@@ -1903,6 +1912,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        configureExtensionHostLifecycleObservers()
+        publishFullAccessReport()
         configureSystemKeyboardAffordances()
         setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
         configureRimeStateCallback()
@@ -1919,7 +1930,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         _ = applySharedStandbySnapshotForPresentation()
         applyKeyboardInterfaceStyle(force: true)
         updateKeyboardFocus(animated: false)
-        _ = rimeInput.startIfNeeded()
         updateUI(animated: false)
         keyboardHaptics.prepareForKeyboardReady()
         // Keyboard extensions receive the active input scene's appearance as
@@ -1947,6 +1957,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
+        publishFullAccessReport()
         beginInputModeCarryoverSuppression()
         configureSystemKeyboardAffordances()
         setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
@@ -1971,6 +1982,14 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
+        isKeyboardPresentationVisible = true
+        // UIKit can construct or begin presenting more than one keyboard
+        // controller during an input-mode handoff. Only the surface that
+        // actually became visible may open Rime's LevelDB-backed user data.
+        // An appearance that is cancelled before this callback therefore
+        // cannot leave a database lock behind when the extension is suspended.
+        configureRimeStateCallback()
+        _ = rimeInput.resumeAfterSuspension()
         setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
         disableGestureRecognizerDelays()
         setKeyboardContentVisible(true)
@@ -2100,6 +2119,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     override func textDidChange(_ textInput: UITextInput?) {
         super.textDidChange(textInput)
+        resolveRimeInputForExternalHostChange(reason: "host_text_did_change")
         discardRimeInputIfDocumentChanged()
         refreshTextKeyboardLayoutForCurrentInputTraits()
         refreshInputModeSwitchKeyVisibility()
@@ -2114,13 +2134,17 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     override func selectionDidChange(_ textInput: UITextInput?) {
         super.selectionDidChange(textInput)
+        resolveRimeInputForExternalHostChange(reason: "host_selection_did_change")
         discardRimeInputIfDocumentChanged()
         refreshReturnKeyTitle()
         refreshEnglishLetterCasingIfNeeded()
     }
 
     isolated deinit {
+        NotificationCenter.default.removeObserver(self)
+        rimeInput.prepareForSuspension()
         pendingTextKeyboardTraitRefresh?.cancel()
+        pendingKeyboardSurfaceMetricsRefresh?.cancel()
         deferredStartupWorkItem?.cancel()
         textToolbarStatusClearTask?.cancel()
         scheduledStopTask?.cancel()
@@ -2138,6 +2162,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
+        isKeyboardPresentationVisible = false
         resetAllPressedControlStates(animated: false)
         if keyboardFocus == .text {
             finishRimeTextTransaction()
@@ -2152,6 +2177,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         rimeInput.onActivation = nil
         deferredStartupWorkItem?.cancel()
         deferredStartupWorkItem = nil
+        pendingKeyboardSurfaceMetricsRefresh?.cancel()
+        pendingKeyboardSurfaceMetricsRefresh = nil
         textToolbarStatusClearTask?.cancel()
         textToolbarStatusClearTask = nil
         textToolbarStatusText = nil
@@ -2165,6 +2192,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         styleConfigureTask = nil
         keyboardDarwinObservers.forEach { $0.stopObserving() }
         keyboardDarwinObservers = []
+        rimeInput.prepareForSuspension()
         voiceButton.stopActivity()
         topRowVoicePrint.isActive = false
         textToolbarVoicePrint.isActive = false
@@ -2182,6 +2210,35 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             correctionPopover.transform = .identity
             updateKeyboardOverlayOrdering()
         }
+    }
+
+    /// Extension-host notifications arrive before UIKit completes a keyboard
+    /// handoff. Releasing Rime at that boundary prevents the process-global
+    /// LevelDB lock from surviving into extension suspension; view lifecycle
+    /// cleanup remains the ownership fallback for ordinary dismissals.
+    private func configureExtensionHostLifecycleObservers() {
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(extensionHostWillResignActive(_:)),
+            name: .NSExtensionHostWillResignActive,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(extensionHostDidBecomeActive(_:)),
+            name: .NSExtensionHostDidBecomeActive,
+            object: nil
+        )
+    }
+
+    @objc private func extensionHostWillResignActive(_: Notification) {
+        rimeInput.prepareForSuspension()
+    }
+
+    @objc private func extensionHostDidBecomeActive(_: Notification) {
+        guard isKeyboardPresentationVisible else { return }
+        configureRimeStateCallback()
+        _ = rimeInput.resumeAfterSuspension()
     }
 
     override func viewWillTransition(to size: CGSize, with coordinator: UIViewControllerTransitionCoordinator) {
@@ -2717,9 +2774,26 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         if metricsChanged, voiceButtonWidthConstraint != nil {
             updateUI(animated: false)
             if renderedTextKeyboardLayoutKind != nil {
-                rebuildTextKeyboardRows()
+                scheduleKeyboardSurfaceMetricsRefresh()
             }
         }
+    }
+
+    /// Surface metrics are observed from `viewDidLayoutSubviews`. UIKit's
+    /// constraint engine is already solving the current hierarchy there, so
+    /// synchronously removing arranged views can raise an internal NSISEngine
+    /// exception. Rebuild after the active layout transaction completes.
+    private func scheduleKeyboardSurfaceMetricsRefresh() {
+        pendingKeyboardSurfaceMetricsRefresh?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.pendingKeyboardSurfaceMetricsRefresh = nil
+            self.rebuildTextKeyboardRows()
+            self.applyKeyboardHeightForCurrentTraits()
+            self.view.setNeedsLayout()
+        }
+        pendingKeyboardSurfaceMetricsRefresh = workItem
+        DispatchQueue.main.async(execute: workItem)
     }
 
     private func updateRootMaximumWidth(using metrics: KeyboardSurfaceMetrics? = nil) {
@@ -5398,7 +5472,19 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private func withLocalMarkedTextMutation(_ mutation: () -> Void) {
         let wasMutating = isMutatingDocumentMarkedText
         isMutatingDocumentMarkedText = true
-        defer { isMutatingDocumentMarkedText = wasMutating }
+        localMarkedTextMutationGeneration &+= 1
+        let generation = localMarkedTextMutationGeneration
+        pendingLocalMarkedTextMutationGeneration = generation
+        defer {
+            isMutatingDocumentMarkedText = wasMutating
+            DispatchQueue.main.async { [weak self] in
+                guard let self,
+                      self.pendingLocalMarkedTextMutationGeneration == generation
+                else { return }
+                self.pendingLocalMarkedTextMutationGeneration = nil
+                self.refreshRimeCompositionTargetAfterLocalCallbackIfVisible()
+            }
+        }
         mutation()
     }
 
@@ -5409,6 +5495,16 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     /// `UITextDocumentProxy.hasText` remains the source of truth.
     private func documentTextDidMutateLocally() {
         refreshReturnKeyEnabledState()
+    }
+
+    /// UIKit declares `documentIdentifier` as nonnull, but the remote proxy can
+    /// return nil while a keyboard is attaching to or detaching from its host.
+    /// Accessing the typed Swift property then traps in UUID bridging before
+    /// application code can inspect it. KVC preserves the Objective-C nil so
+    /// ownership checks can fail closed at that lifecycle boundary.
+    private var currentDocumentIdentifierIfAvailable: UUID? {
+        guard let proxyObject = textDocumentProxy as? NSObject else { return nil }
+        return proxyObject.value(forKey: "documentIdentifier") as? UUID
     }
 
     private var spaceKeyTitle: String {
@@ -6915,7 +7011,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         activeDictationInsertionAnchor = textEditContext == nil
             ? PendingDictationInsertionAnchor(
                 commandID: command.id,
-                documentIdentifier: textDocumentProxy.documentIdentifier,
+                documentIdentifier: currentDocumentIdentifierIfAvailable,
                 contextBefore: limitedContextBefore(textDocumentProxy.documentContextBeforeInput ?? ""),
                 contextAfter: limitedContextAfter(textDocumentProxy.documentContextAfterInput ?? "")
             )
@@ -7900,7 +7996,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let after = limitedContextAfter(textDocumentProxy.documentContextAfterInput ?? "")
         return KeyboardLivePartialOwnershipPolicy.insertionTargetIsCurrent(
             capturedDocumentIdentifier: anchor.documentIdentifier,
-            currentDocumentIdentifier: textDocumentProxy.documentIdentifier,
+            currentDocumentIdentifier: currentDocumentIdentifierIfAvailable,
             capturedContextBefore: anchor.contextBefore,
             capturedContextAfter: anchor.contextAfter,
             currentContextBefore: before,
@@ -8768,7 +8864,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     private func currentRimeCompositionSession() -> RimeCompositionSession {
         return RimeCompositionSession(
-            documentIdentifier: textDocumentProxy.documentIdentifier
+            documentIdentifier: currentDocumentIdentifierIfAvailable,
+            contextBefore: textDocumentProxy.documentContextBeforeInput,
+            contextAfter: textDocumentProxy.documentContextAfterInput
         )
     }
 
@@ -8776,8 +8874,22 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         guard let rimeCompositionSession else { return false }
         return KeyboardRimeCompositionPolicy.targetIsCurrent(
             capturedDocumentIdentifier: rimeCompositionSession.documentIdentifier,
-            currentDocumentIdentifier: textDocumentProxy.documentIdentifier
+            currentDocumentIdentifier: currentDocumentIdentifierIfAvailable,
+            capturedContextBefore: rimeCompositionSession.contextBefore,
+            capturedContextAfter: rimeCompositionSession.contextAfter,
+            currentContextBefore: textDocumentProxy.documentContextBeforeInput,
+            currentContextAfter: textDocumentProxy.documentContextAfterInput
         )
+    }
+
+    private func refreshRimeCompositionTargetAfterLocalCallbackIfVisible() {
+        guard activeMarkedTextOwner == .rimeComposition,
+              !activeMarkedText.isEmpty,
+              rimeCompositionSession?.documentIdentifier == currentDocumentIdentifierIfAvailable,
+              let contextBefore = textDocumentProxy.documentContextBeforeInput,
+              contextBefore.hasSuffix(activeMarkedText)
+        else { return }
+        rimeCompositionSession = currentRimeCompositionSession()
     }
 
     private func prepareRimeCompositionSessionForCurrentDocument() {
@@ -8791,7 +8903,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     private func discardRimeInputIfDocumentChanged() {
         guard let rimeCompositionSession,
-              rimeCompositionSession.documentIdentifier != textDocumentProxy.documentIdentifier
+              rimeCompositionSession.documentIdentifier != currentDocumentIdentifierIfAvailable
         else { return }
         discardStaleRimeInput(reason: "document_changed")
     }
@@ -8799,13 +8911,18 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     /// Host text/selection changes transfer ownership of the existing marked
     /// range to UIKit. The visible text is already in the document, so this
     /// boundary may unmark it but must never ask Rime to insert or replace it.
-    /// UIInputViewController receives nil text-input arguments here; the event
-    /// boundary plus the local mutation guard is the complete public signal.
+    /// UIInputViewController receives nil text-input arguments here, and iOS
+    /// can deliver callbacks for our own marked-text writes after the call has
+    /// returned. The captured document target distinguishes those callbacks
+    /// from an actual host edit without logging or persisting user text.
     private func resolveRimeInputForExternalHostChange(reason: String) {
         let resolution = KeyboardRimeCompositionPolicy.externalHostChangeResolution(
             hasRimeMarkedTextOwner: activeMarkedTextOwner == .rimeComposition,
-            localMutationInProgress: isMutatingDocumentMarkedText,
-            targetIsCurrent: rimeCompositionSessionIsCurrent()
+            localMutationInProgress: isMutatingDocumentMarkedText
+                || pendingLocalMarkedTextMutationGeneration != nil,
+            targetIsCurrent: rimeCompositionSessionIsCurrent(),
+            documentIdentityIsCurrent: rimeCompositionSession?.documentIdentifier != nil
+                && rimeCompositionSession?.documentIdentifier == currentDocumentIdentifierIfAvailable
         )
         switch resolution {
         case .ignore:
@@ -10867,6 +10984,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         activeMarkedText = text
         activeMarkedTextOwner = nextOwner
         activeMarkedTextSelectionLocation = nextSelectionLocation
+        if nextOwner == .rimeComposition {
+            rimeCompositionSession = currentRimeCompositionSession()
+        }
     }
 
     private func clearLocalMarkedTextState() {
@@ -10969,7 +11089,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             livePartialPreviewState = LivePartialPreviewState(
                 commandID: commandID,
                 text: preview,
-                documentIdentifier: textDocumentProxy.documentIdentifier,
+                documentIdentifier: currentDocumentIdentifierIfAvailable,
                 consumedByUser: false,
                 ownershipInvalidated: false
             )
@@ -11006,7 +11126,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             livePartialPreviewState = LivePartialPreviewState(
                 commandID: commandID,
                 text: text,
-                documentIdentifier: textDocumentProxy.documentIdentifier,
+                documentIdentifier: currentDocumentIdentifierIfAvailable,
                 consumedByUser: false,
                 ownershipInvalidated: true
             )
@@ -11022,7 +11142,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             livePartialPreviewState = LivePartialPreviewState(
                 commandID: commandID,
                 text: text,
-                documentIdentifier: textDocumentProxy.documentIdentifier,
+                documentIdentifier: currentDocumentIdentifierIfAvailable,
                 consumedByUser: false,
                 ownershipInvalidated: true
             )
@@ -11069,7 +11189,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         livePartialPreviewState = LivePartialPreviewState(
             commandID: commandID,
             text: activeMarkedText.trimmingCharacters(in: .whitespacesAndNewlines),
-            documentIdentifier: textDocumentProxy.documentIdentifier,
+            documentIdentifier: currentDocumentIdentifierIfAvailable,
             consumedByUser: true,
             ownershipInvalidated: false
         )
@@ -11347,7 +11467,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             expectedCommandID: preview.commandID,
             commandID: effectiveLivePartialCommandID() ?? "",
             expectedDocumentIdentifier: preview.documentIdentifier,
-            documentIdentifier: textDocumentProxy.documentIdentifier,
+            documentIdentifier: currentDocumentIdentifierIfAvailable,
             expectedText: preview.text,
             activeMarkedText: activeMarkedText,
             hasLivePartialOwner: activeMarkedTextOwner == .livePartial
@@ -12166,6 +12286,20 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             showTextKeyboardStatus(NSLocalizedString("Enable Full Access", comment: "Inline status when keyboard full access is missing"))
         }
         updateUI()
+    }
+
+    /// `hasFullAccess` is only available inside UIInputViewController. Mirror
+    /// the positive result into the App Group so the host can consume the
+    /// extension's answer even when it launches after the keyboard. A missing
+    /// result still uses Darwin because a closed-access keyboard cannot write
+    /// the shared container.
+    private func publishFullAccessReport() {
+        guard hasFullAccess else {
+            KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.fullAccessRequired)
+            return
+        }
+        guard KeyboardSharedDefaults.saveFullAccessReport(.granted()) else { return }
+        KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.fullAccessChanged)
     }
 
     private var isBridgeAwake: Bool {

@@ -94,7 +94,7 @@ private struct SetupReadinessBanner: View {
             return "Allow Microphone so the host app can own dictation audio."
         }
         if state.keyboardNeedsFullAccessSetup {
-            return "Enable the Typeforme keyboard and allow Full Access."
+            return "Enable Full Access, then open the Typeforme keyboard once to verify it."
         }
         return "Review setup and permissions."
     }

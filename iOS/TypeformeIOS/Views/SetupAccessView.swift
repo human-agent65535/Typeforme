@@ -66,7 +66,7 @@ struct SetupReadinessView: View {
             ReadinessActionRow(
                 icon: "keyboard",
                 title: "Keyboard & Full Access",
-                detail: "iOS exposes this only through Settings. Full Access lets the keyboard reach the host app.",
+                detail: "After enabling Full Access in Settings, open the Typeforme keyboard once so this app can verify it.",
                 status: keyboardStatus,
                 actionTitle: keyboardActionTitle,
                 actionIcon: "arrow.up.right.square",
@@ -140,7 +140,7 @@ struct SetupReadinessView: View {
 
     private var keyboardStatus: ReadinessStatusBadge {
         state.keyboardNeedsFullAccessSetup
-            ? .warning("Required")
+            ? .warning("Not Verified")
             : .ready("Ready")
     }
 

@@ -284,40 +284,82 @@ struct KeyboardMarkedTextOwnershipPolicyTests {
         #expect(pending.isEmpty)
     }
 
-    @Test("Rime composition remains current only in its captured document")
-    func rimeCompositionUsesDocumentIdentity() {
+    @Test("Rime composition remains current only at its captured document target")
+    func rimeCompositionUsesDocumentTarget() {
         let captured = UUID()
         #expect(KeyboardRimeCompositionPolicy.targetIsCurrent(
             capturedDocumentIdentifier: captured,
-            currentDocumentIdentifier: captured
+            currentDocumentIdentifier: captured,
+            capturedContextBefore: "beforej",
+            capturedContextAfter: "after",
+            currentContextBefore: "beforej",
+            currentContextAfter: "after"
         ))
         #expect(!KeyboardRimeCompositionPolicy.targetIsCurrent(
             capturedDocumentIdentifier: captured,
-            currentDocumentIdentifier: UUID()
+            currentDocumentIdentifier: UUID(),
+            capturedContextBefore: "beforej",
+            capturedContextAfter: "after",
+            currentContextBefore: "beforej",
+            currentContextAfter: "after"
+        ))
+        #expect(!KeyboardRimeCompositionPolicy.targetIsCurrent(
+            capturedDocumentIdentifier: captured,
+            currentDocumentIdentifier: captured,
+            capturedContextBefore: "beforej",
+            capturedContextAfter: "after",
+            currentContextBefore: "before",
+            currentContextAfter: "after"
+        ))
+        #expect(!KeyboardRimeCompositionPolicy.targetIsCurrent(
+            capturedDocumentIdentifier: captured,
+            currentDocumentIdentifier: nil,
+            capturedContextBefore: "beforej",
+            capturedContextAfter: "after",
+            currentContextBefore: "beforej",
+            currentContextAfter: "after"
+        ))
+        #expect(!KeyboardRimeCompositionPolicy.targetIsCurrent(
+            capturedDocumentIdentifier: nil,
+            currentDocumentIdentifier: nil,
+            capturedContextBefore: nil,
+            capturedContextAfter: nil,
+            currentContextBefore: nil,
+            currentContextAfter: nil
         ))
     }
 
-    @Test("External host callbacks relinquish visible Rime text without replaying it")
+    @Test("Delayed local callbacks preserve Rime ownership while host edits relinquish it")
     func rimeCompositionUsesDelegateBoundary() {
         #expect(KeyboardRimeCompositionPolicy.externalHostChangeResolution(
             hasRimeMarkedTextOwner: true,
             localMutationInProgress: false,
-            targetIsCurrent: true
+            targetIsCurrent: false,
+            documentIdentityIsCurrent: true
         ) == .relinquishCurrentTarget)
         #expect(KeyboardRimeCompositionPolicy.externalHostChangeResolution(
             hasRimeMarkedTextOwner: true,
             localMutationInProgress: false,
-            targetIsCurrent: false
+            targetIsCurrent: false,
+            documentIdentityIsCurrent: false
         ) == .discardStaleTarget)
         #expect(KeyboardRimeCompositionPolicy.externalHostChangeResolution(
             hasRimeMarkedTextOwner: true,
             localMutationInProgress: true,
-            targetIsCurrent: true
+            targetIsCurrent: false,
+            documentIdentityIsCurrent: true
+        ) == .ignore)
+        #expect(KeyboardRimeCompositionPolicy.externalHostChangeResolution(
+            hasRimeMarkedTextOwner: true,
+            localMutationInProgress: false,
+            targetIsCurrent: true,
+            documentIdentityIsCurrent: true
         ) == .ignore)
         #expect(KeyboardRimeCompositionPolicy.externalHostChangeResolution(
             hasRimeMarkedTextOwner: false,
             localMutationInProgress: false,
-            targetIsCurrent: true
+            targetIsCurrent: false,
+            documentIdentityIsCurrent: true
         ) == .ignore)
     }
 
@@ -360,6 +402,15 @@ struct KeyboardMarkedTextOwnershipPolicyTests {
             activeMarkedText: "拼音",
             hasLivePartialOwner: true
         ))
+        #expect(!KeyboardLivePartialOwnershipPolicy.ownsMarkedText(
+            expectedCommandID: "command",
+            commandID: "command",
+            expectedDocumentIdentifier: nil,
+            documentIdentifier: nil,
+            expectedText: "语音预览",
+            activeMarkedText: "语音预览",
+            hasLivePartialOwner: true
+        ))
     }
 
     @Test("Voice establishes its initial marked text only at the captured insertion target")
@@ -369,6 +420,14 @@ struct KeyboardMarkedTextOwnershipPolicyTests {
         #expect(KeyboardLivePartialOwnershipPolicy.insertionTargetIsCurrent(
             capturedDocumentIdentifier: document,
             currentDocumentIdentifier: document,
+            capturedContextBefore: "",
+            capturedContextAfter: "",
+            currentContextBefore: "",
+            currentContextAfter: ""
+        ))
+        #expect(!KeyboardLivePartialOwnershipPolicy.insertionTargetIsCurrent(
+            capturedDocumentIdentifier: document,
+            currentDocumentIdentifier: nil,
             capturedContextBefore: "",
             capturedContextAfter: "",
             currentContextBefore: "",

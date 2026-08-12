@@ -122,7 +122,23 @@ private struct HostSettingsOverview: View {
                     Label("Privacy Policy", systemImage: "hand.raised")
                 }
             }
+
+            Section {
+                HStack {
+                    Text("Version")
+                    Spacer()
+                    Text(appVersion)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+            }
         }
+    }
+
+    private var appVersion: String {
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0"
+        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "0"
+        return "\(version) (\(build))"
     }
 
     private var primaryStatusRoute: HostSettingsRoute {

@@ -50,6 +50,18 @@ struct KeyboardRimeActivationPolicy<Configuration: Equatable & Sendable>: Sendab
         inFlightSnapshot != nil
     }
 
+    /// Invalidates a live engine/session without changing the desired
+    /// configuration. Keyboard extensions use this before suspension after
+    /// closing librime sessions so the next presentation performs a fresh
+    /// activation instead of treating the now-missing session as ready.
+    mutating func invalidateAppliedConfiguration() {
+        appliedGeneration = nil
+        inFlightSnapshot = nil
+        failedGeneration = nil
+        lastCompletedAttempt = nil
+        lastAttemptAt = nil
+    }
+
     /// Replaces the complete desired value. Identical observations are a no-op:
     /// per-key option refreshes must not continuously invalidate a ready engine.
     @discardableResult

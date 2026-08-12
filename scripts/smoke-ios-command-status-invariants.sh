@@ -12,6 +12,11 @@ root = Path(sys.argv[1])
 app = (root / "iOS/TypeformeIOS/AppState.swift").read_text()
 keyboard = (root / "iOS/TypeformeKeyboard/KeyboardViewController.swift").read_text()
 rime_controller = (root / "iOS/TypeformeKeyboard/RimeInputController.swift").read_text()
+# The simulator build intentionally compiles a lightweight Rime stub because
+# the checked-in XCFramework has no arm64-simulator slice. Engine ownership
+# invariants below must inspect the physical-device implementation after the
+# conditional's `#else`, not the first stub method with the same signature.
+rime_device_controller = rime_controller.rsplit("#else", 1)[-1]
 shared = (root / "iOS/Shared/KeyboardBridgeModels.swift").read_text()
 pip = (root / "iOS/TypeformeIOS/PiP/PiPDictationCoordinator.swift").read_text()
 audio = (root / "iOS/TypeformeIOS/Recording/AudioRecorder.swift").read_text()
@@ -341,6 +346,37 @@ for required in ("catch is CancellationError", "wasCancelled = true", "!wasCance
 self_probe = block(local_server, "private func selfProbe(")
 if "async throws -> Bool" not in self_probe or "catch is CancellationError" not in self_probe:
     raise AssertionError("cancelled self-probe can be treated as a bridge failure")
+if "KeyboardLocalBridgeRequest.health()" not in self_probe or ".statusSnapshot()" in self_probe:
+    raise AssertionError("host self-probe can impersonate keyboard Full Access evidence")
+bridge_status = block(local_server, "private func status(for request:")
+if "case .health:" not in bridge_status or "return .idle" not in bridge_status:
+    raise AssertionError("bridge health action is not isolated from the keyboard status provider")
+
+full_access_report = block(shared, "struct KeyboardFullAccessReport")
+for required in ("hasFullAccess: Bool", "updatedAt: TimeInterval", "static func granted("):
+    if required not in full_access_report:
+        raise AssertionError(f"keyboard Full Access report lost extension-owned evidence: {required}")
+publish_full_access = block(keyboard, "private func publishFullAccessReport(")
+for required in (
+    "guard hasFullAccess else",
+    "KeyboardSharedDefaults.saveFullAccessReport(.granted())",
+    "KeyboardDarwinNotificationName.fullAccessChanged",
+):
+    if required not in publish_full_access:
+        raise AssertionError(f"keyboard no longer publishes its own Full Access result: {required}")
+keyboard_load = block(keyboard, "override func viewDidLoad(")
+if keyboard_load.index("publishFullAccessReport()") > keyboard_load.index("configureTextKeyboard()"):
+    raise AssertionError("keyboard reports Full Access only after crash-prone UI construction")
+if "KeyboardSharedDefaults.loadFullAccessReport()?.hasFullAccess == true" not in app:
+    raise AssertionError("host launch no longer consumes the extension-owned Full Access report")
+mark_full_access_missing = block(app, "private func markKeyboardFullAccessRequired(")
+for required in ("clearFullAccessReport()", "keyboardEverContacted = false"):
+    if required not in mark_full_access_missing:
+        raise AssertionError(f"missing Full Access does not revoke stale positive evidence: {required}")
+
+permission_requester = block(app, "enum HostPermissionRequester")
+if permission_requester.count("withCheckedContinuation(isolation: nil)") != 2:
+    raise AssertionError("TCC permission callbacks regained MainActor-inherited continuations")
 
 final_plan = block(keyboard, "private func livePartialFinalCommitPlan(")
 if "anchoredCommitted" in final_plan or "visibleCommitted" in final_plan:
@@ -350,7 +386,7 @@ ownership = block(keyboard, "private func ownsActiveLivePartialMarkedText(")
 for required in (
     "KeyboardLivePartialOwnershipPolicy.ownsMarkedText",
     "expectedCommandID: preview.commandID",
-    "documentIdentifier: textDocumentProxy.documentIdentifier",
+    "documentIdentifier: currentDocumentIdentifierIfAvailable",
     "hasLivePartialOwner: activeMarkedTextOwner == .livePartial",
 ):
     if required not in ownership:
@@ -373,11 +409,9 @@ if "correctionTimeoutMs" in shared or "correctionTimeoutMs" in keyboard:
 for required in ("KeyboardLivePartialOwnershipPolicy", "KeyboardRimeInlineEditPolicy"):
     if required not in marked_policy:
         raise AssertionError(f"separate marked-text ownership policy missing: {required}")
-for forbidden in ("observedContextMode", "contextsMatch", "beforeCandidates"):
+for forbidden in ("observedContextMode", "beforeCandidates"):
     if forbidden in marked_policy:
         raise AssertionError(f"marked-text ownership regained context inference: {forbidden}")
-if "rimeCompositionContextsMatch" in marked_policy:
-    raise AssertionError("Rime composition returned to per-key context ownership checks")
 
 partial_update = block(keyboard, "private func canPresentLivePartialPreview(")
 for required in (
@@ -421,17 +455,23 @@ for required in (
         raise AssertionError(f"live partial clear lost command/anchor proof: {required}")
 
 rime_session = block(keyboard, "private func currentRimeCompositionSession(")
-if "textDocumentProxy.documentIdentifier" not in rime_session:
-    raise AssertionError("Rime session lost its document identity")
-for forbidden in ("documentContextBeforeInput", "documentContextAfterInput", "markedTextContextMode"):
-    if forbidden in rime_session:
-        raise AssertionError(f"Rime session regained context ownership: {forbidden}")
+for required in (
+    "currentDocumentIdentifierIfAvailable",
+    "textDocumentProxy.documentContextBeforeInput",
+    "textDocumentProxy.documentContextAfterInput",
+):
+    if required not in rime_session:
+        raise AssertionError(f"Rime session lost its exact document target: {required}")
 
 rime_target_match = block(keyboard, "private func rimeCompositionSessionIsCurrent(")
 for required in (
     "KeyboardRimeCompositionPolicy.targetIsCurrent(",
     "rimeCompositionSession.documentIdentifier",
-    "textDocumentProxy.documentIdentifier",
+    "currentDocumentIdentifierIfAvailable",
+    "rimeCompositionSession.contextBefore",
+    "rimeCompositionSession.contextAfter",
+    "textDocumentProxy.documentContextBeforeInput",
+    "textDocumentProxy.documentContextAfterInput",
 ):
     if required not in rime_target_match:
         raise AssertionError(f"Rime document matching lost ownership proof: {required}")
@@ -561,7 +601,7 @@ if "func state(" in rime_controller:
 if "RimeKeyboardUpdate(" in keyboard:
     raise AssertionError("keyboard UI must not fabricate one-shot Rime updates")
 
-candidate_extension = block(rime_controller, "func expandedCandidateWindow(")
+candidate_extension = block(rime_device_controller, "func expandedCandidateWindow(")
 for required in (
     ") -> RimeCandidateWindow?",
     "isLatestRevision(expectedWindow.revision)",
@@ -572,7 +612,7 @@ for required in (
 if "RimeKeyboardUpdate" in candidate_extension or "drainCommit" in candidate_extension:
     raise AssertionError("candidate scrolling can produce a text update or commit")
 
-queued_replay = block(rime_controller, "func processInputIfReady(")
+queued_replay = block(rime_device_controller, "func processInputIfReady(")
 for required in (
     "var committedTexts: [String] = []",
     'var documentCommitText = ""',
@@ -641,7 +681,7 @@ if session_boundary > configuration_activation:
 if desired_phrases > configuration_activation:
     raise AssertionError("Rime activation can race ahead of the complete desired configuration")
 
-desired_phrase_setter = block(rime_controller, "func setDesiredConfiguration(")
+desired_phrase_setter = block(rime_device_controller, "func setDesiredConfiguration(")
 for required in (
     "resetUserDataGeneration: Int",
     "activationPolicy.replaceDesiredConfiguration(configuration)",
@@ -652,7 +692,7 @@ for forbidden in ("cleanAllSession", "startIfNeeded", "rimeQueue", "api."):
     if forbidden in desired_phrase_setter:
         raise AssertionError(f"desired phrase setter mutates the live engine: {forbidden}")
 
-input_options = block(rime_controller, "func applyInputOptions(")
+input_options = block(rime_device_controller, "func applyInputOptions(")
 for required in (
     "setDesiredOptions(",
     "applyDesiredOptionsToLiveSession()",
@@ -667,13 +707,13 @@ for forbidden in ("rimeQueue.sync", "rimeQueue.async", "api.", "resetUserDataOnQ
         raise AssertionError(f"Rime input-options entrypoint performs direct engine work: {forbidden}")
 
 configuration_activation_entry = block(
-    rime_controller,
+    rime_device_controller,
     "func activateDesiredConfigurationAfterTextBoundary(",
 )
 if "_ = startIfNeeded()" not in configuration_activation_entry:
     raise AssertionError("Rime destructive configuration no longer uses the shared activation flight")
 
-start_rime = block(rime_controller, "func startIfNeeded(")
+start_rime = block(rime_device_controller, "func startIfNeeded(")
 for required in (
     "activationPolicy.requestActivation(",
     "scheduleActivationFlight(target, bundle: bundle)",
@@ -684,11 +724,67 @@ for forbidden in ("rimeQueue.sync", "rimeQueue.async", "api."):
     if forbidden in start_rime:
         raise AssertionError(f"Rime startup entrypoint performs engine work: {forbidden}")
 
+rime_suspension = block(rime_device_controller, "func prepareForSuspension(")
+for required in (
+    "isSuspended = true",
+    "rimeQueue.sync",
+    "resetAllSessionsOnQueue()",
+    "globalLifecycle.releaseIfNeeded(api: api, ownerID: ownerID)",
+):
+    if required not in rime_suspension:
+        raise AssertionError(f"Rime suspension can retain a device file lock: {required}")
+global_rime_lifecycle = block(rime_device_controller, "private final class GlobalLifecycle")
+for required in (
+    "activeOwners: Set<UUID>",
+    "activeOwners.insert(ownerID)",
+    "func releaseIfNeeded(api: IRimeAPI, ownerID: UUID)",
+    "activeOwners.remove(ownerID)",
+    "activeOwners.isEmpty",
+    "api.finalize()",
+    "didInitialize = false",
+):
+    if required not in global_rime_lifecycle:
+        raise AssertionError(f"Rime global lifecycle cannot reopen after suspension: {required}")
+for forbidden in ("traits.appName", ".suddenTerminationDisabled", "beginActivity("):
+    if forbidden in rime_device_controller:
+        raise AssertionError(f"keyboard Rime regained a suspension-unsafe file activity: {forbidden}")
+if "fcntl(F_SETLK)" not in rime_device_controller:
+    raise AssertionError("Rime glog lock constraint is no longer documented at the setup boundary")
+if "private static let sharedRimeQueue" not in rime_device_controller:
+    raise AssertionError("overlapping keyboard controllers no longer share one librime queue")
+reset_rime_sessions = block(rime_device_controller, "private func resetAllSessionsOnQueue(")
+if "api.destroySession(session)" not in reset_rime_sessions:
+    raise AssertionError("one keyboard controller can still destroy another controller's Rime session")
+if "api.cleanAllSession()" in reset_rime_sessions:
+    raise AssertionError("per-controller cleanup must not clear process-global Rime sessions")
+
+if "private var isSuspended = true" not in rime_device_controller:
+    raise AssertionError("Rime must stay closed until a keyboard surface actually appears")
+view_did_load = block(keyboard, "override func viewDidLoad(")
+view_will_appear = block(keyboard, "override func viewWillAppear(")
+view_did_appear = block(keyboard, "override func viewDidAppear(")
+if "rimeInput.startIfNeeded()" in view_did_load:
+    raise AssertionError("viewDidLoad must not open Rime for a keyboard surface that may never appear")
+if "rimeInput.resumeAfterSuspension()" in view_will_appear:
+    raise AssertionError("viewWillAppear must not open Rime before presentation is committed")
+if "rimeInput.resumeAfterSuspension()" not in view_did_appear:
+    raise AssertionError("a visible keyboard surface no longer resumes Rime")
+extension_host_lifecycle = block(keyboard, "private func configureExtensionHostLifecycleObservers(")
+for required in (
+    ".NSExtensionHostWillResignActive",
+    ".NSExtensionHostDidBecomeActive",
+):
+    if required not in extension_host_lifecycle:
+        raise AssertionError(f"keyboard lost the extension-host lifecycle boundary: {required}")
+host_resign = block(keyboard, "@objc private func extensionHostWillResignActive(")
+if "rimeInput.prepareForSuspension()" not in host_resign:
+    raise AssertionError("extension-host deactivation can suspend with Rime still open")
+
 if rime_controller.count("rimeQueue.async {") != 2:
     raise AssertionError("Rime must have one activation scheduler and one live-options scheduler")
-activation_scheduler = block(rime_controller, "private func scheduleActivationFlight(")
-activation_drain = block(rime_controller, "private func drainActivationFlight(")
-live_options = block(rime_controller, "private func applyDesiredOptionsToLiveSession(")
+activation_scheduler = block(rime_device_controller, "private func scheduleActivationFlight(")
+activation_drain = block(rime_device_controller, "private func drainActivationFlight(")
+live_options = block(rime_device_controller, "private func applyDesiredOptionsToLiveSession(")
 for required in (
     "target.configuration",
     "activationPolicy.complete(",
@@ -702,23 +798,23 @@ for forbidden in ("asyncAfter", "Timer", "heartbeat", "watchdog"):
         raise AssertionError(f"Rime activation gained an autonomous recovery branch: {forbidden}")
 
 activation_configuration = block(
-    rime_controller,
+    rime_device_controller,
     "private struct DesiredRimeActivationConfiguration",
 )
 for forbidden in ("asciiMode", "asciiPunctuation"):
     if forbidden in activation_configuration:
         raise AssertionError(f"live input option re-entered destructive activation: {forbidden}")
-desired_options = block(rime_controller, "private func setDesiredOptions(")
+desired_options = block(rime_device_controller, "private func setDesiredOptions(")
 if "replaceDesiredConfiguration" in desired_options or "startIfNeeded" in desired_options:
     raise AssertionError("live input options must not invalidate or start activation")
 
-ready = block(rime_controller, "var isReady: Bool")
+ready = block(rime_device_controller, "var isReady: Bool")
 if "activationPolicy.isReady" not in ready:
     raise AssertionError("Rime readiness is not tied to the applied desired generation")
 for forbidden in ("Date(", "session", "selectedSchemaID", "fallback"):
     if forbidden in ready:
         raise AssertionError(f"public Rime readiness reads queue/time-owned state: {forbidden}")
-queue_ready = block(rime_controller, "private var isReadyOnQueue: Bool")
+queue_ready = block(rime_device_controller, "private var isReadyOnQueue: Bool")
 for forbidden in ("Date(", "effectiveStartupProfile", "activeStartupFallback"):
     if forbidden in queue_ready:
         raise AssertionError(f"queue readiness can change fallback mid-session: {forbidden}")
@@ -756,7 +852,7 @@ if "gutterGapBiasWinner(" not in block(keyboard, "private func interKeyGapWinner
 if "gutterGaussianWinner(" not in block(keyboard, "private func gutterResolutionWinner("):
     raise AssertionError("gutter routing no longer delegates to the learned Gaussian policy")
 
-apply_options = block(rime_controller, "private func applyOptionsOnQueue(")
+apply_options = block(rime_device_controller, "private func applyOptionsOnQueue(")
 for required in ("appliedInputOptions", "guard appliedInputOptions != options"):
     if required not in apply_options:
         raise AssertionError(f"Rime input option mutation is not deduplicated: {required}")
@@ -951,7 +1047,7 @@ for required in (
     if required not in partial_rebase:
         raise AssertionError(f"partial Rime rebase lost stack boundary: {required}")
 
-inline_character = block(rime_controller, "func replaceCompositionInput(")
+inline_character = block(rime_device_controller, "func replaceCompositionInput(")
 for required in (
     "api.cleanComposition(session)",
     "for scalar in input.unicodeScalars",
@@ -968,6 +1064,18 @@ replace_marked = block(keyboard, "private func replaceMarkedText(")
 if "selectedRange: NSRange(location: nextSelectionLocation" not in replace_marked:
     raise AssertionError("marked-text writes do not preserve the Rime caret")
 
+if "textDocumentProxy.documentIdentifier" in keyboard:
+    raise AssertionError("typed documentIdentifier access can trap when the remote proxy returns nil")
+safe_document_identifier = block(
+    keyboard,
+    "private var currentDocumentIdentifierIfAvailable: UUID?",
+)
+for required in ('value(forKey: "documentIdentifier") as? UUID',):
+    if required not in safe_document_identifier:
+        raise AssertionError(f"nullable documentIdentifier boundary regressed: {required}")
+if "ownership checks can fail closed" not in keyboard:
+    raise AssertionError("nullable documentIdentifier lifecycle constraint is undocumented")
+
 text_did_change = block(keyboard, "override func textDidChange(")
 if "discardRimeInputIfTargetChanged" in text_did_change:
     raise AssertionError("keyboard-owned proxy writes must not be treated as external context changes")
@@ -975,7 +1083,8 @@ if "discardRimeInputIfDocumentChanged" not in text_did_change:
     raise AssertionError("document switches must still clear stale Rime state")
 text_will_change = block(keyboard, "override func textWillChange(")
 selection_will_change = block(keyboard, "override func selectionWillChange(")
-for callback in (text_will_change, selection_will_change):
+selection_did_change = block(keyboard, "override func selectionDidChange(")
+for callback in (text_will_change, text_did_change, selection_will_change, selection_did_change):
     if "resolveRimeInputForExternalHostChange(" not in callback:
         raise AssertionError("external host changes can replay Rime at a new insertion point")
 host_change_boundary = block(keyboard, "private func resolveRimeInputForExternalHostChange(")
@@ -983,7 +1092,9 @@ for required in (
     "KeyboardRimeCompositionPolicy.externalHostChangeResolution(",
     "activeMarkedTextOwner == .rimeComposition",
     "isMutatingDocumentMarkedText",
+    "pendingLocalMarkedTextMutationGeneration != nil",
     "targetIsCurrent: rimeCompositionSessionIsCurrent()",
+    "documentIdentityIsCurrent:",
     "case .relinquishCurrentTarget",
     "relinquishRimeInputToExternalHost(reason: reason)",
     "case .discardStaleTarget",
@@ -991,9 +1102,6 @@ for required in (
 ):
     if required not in host_change_boundary:
         raise AssertionError(f"Rime host-change ownership lost boundary: {required}")
-for forbidden in ("documentContextBeforeInput", "documentContextAfterInput"):
-    if forbidden in host_change_boundary:
-        raise AssertionError(f"Rime ownership regressed to host-context polling: {forbidden}")
 
 host_relinquish = block(keyboard, "private func relinquishRimeInputToExternalHost(")
 for required in (
@@ -1198,7 +1306,7 @@ anchor_match = block(keyboard, "private func matchesCurrentInsertionAnchor(")
 for required in (
     "KeyboardLivePartialOwnershipPolicy.insertionTargetIsCurrent(",
     "anchor.documentIdentifier",
-    "textDocumentProxy.documentIdentifier",
+    "currentDocumentIdentifierIfAvailable",
     "capturedContextBefore: anchor.contextBefore",
     "capturedContextAfter: anchor.contextAfter",
 ):

@@ -11,6 +11,32 @@ import UIKit
 
 private let appLog = Logger(subsystem: TypeformeBundleConfiguration.hostBundleIdentifier, category: "app")
 
+/// TCC invokes permission completions on an arbitrary queue. Keep those
+/// callbacks outside AppState's MainActor isolation, then return only Sendable
+/// values for the UI to consume. Passing a MainActor-inherited closure directly
+/// to TCC traps under Swift 6 when the system replies on its worker queue.
+enum HostPermissionRequester {
+    static func requestMicrophone() async -> Bool {
+        await withCheckedContinuation(isolation: nil) { continuation in
+            AVAudioApplication.requestRecordPermission { granted in
+                continuation.resume(returning: granted)
+            }
+        }
+    }
+
+    static func requestSpeechAuthorizationRawValue() async -> Int {
+        await withCheckedContinuation(isolation: nil) { continuation in
+            SFSpeechRecognizer.requestAuthorization { status in
+                continuation.resume(returning: status.rawValue)
+            }
+        }
+    }
+
+    static func requestSpeechAuthorizationWithoutWaiting() {
+        SFSpeechRecognizer.requestAuthorization { _ in }
+    }
+}
+
 private final class LivePreviewTrace: @unchecked Sendable {
     private let lock = NSLock()
     private let startedAt: CFAbsoluteTime
@@ -406,12 +432,10 @@ final class AppState {
     private(set) var keyboardRimeLearningResetGeneration: Int
     private(set) var keyboardTouchLearningResetGeneration: Int
     var keyboardBridgeStatus = KeyboardBridgeStatus.idle
-    /// True once the keyboard extension has successfully contacted the host
-    /// (via the local bridge server or a Darwin notification). A successful
-    /// contact implies the keyboard is enabled AND has Full Access — without
-    /// Full Access the extension can't open a local network connection. Used
-    /// by SetupStatusCard to decide whether to default-expand the onboarding
-    /// hints. Persisted in UserDefaults so it survives app restarts.
+    /// True after the extension itself reports `hasFullAccess`, or after an
+    /// authenticated keyboard request reaches this process. The containing
+    /// app cannot query that UIKit property directly; its own bridge probes
+    /// are never accepted as evidence.
     var keyboardEverContacted: Bool
     var keyboardFullAccessRequired: Bool
     var lastRecordingSummary = ""
@@ -470,7 +494,6 @@ final class AppState {
     private static let keyboardDefaultTextInputLanguageKey = "keyboard.defaultTextInputLanguage"
     private static let keyboardRimeLearningResetGenerationKey = "keyboard.rimeLearningResetGeneration"
     private static let keyboardTouchLearningResetGenerationKey = "keyboard.touchLearningResetGeneration"
-    private static let keyboardEverContactedKey = "keyboard.everContacted"
     private static let keyboardFullAccessRequiredKey = "keyboard.fullAccessRequired"
     private static let setupReadinessDismissedKey = "setup.readinessDismissed"
     private static let serverRimeUserPhrasesKey = "server.rimeUserPhrases"
@@ -709,8 +732,14 @@ final class AppState {
             .flatMap(KeyboardDefaultTextInputLanguage.init(rawValue:)) ?? .lastUsed
         self.keyboardRimeLearningResetGeneration = UserDefaults.standard.integer(forKey: Self.keyboardRimeLearningResetGenerationKey)
         self.keyboardTouchLearningResetGeneration = UserDefaults.standard.integer(forKey: Self.keyboardTouchLearningResetGenerationKey)
-        self.keyboardEverContacted = UserDefaults.standard.bool(forKey: Self.keyboardEverContactedKey)
-        self.keyboardFullAccessRequired = UserDefaults.standard.bool(forKey: Self.keyboardFullAccessRequiredKey)
+        let keyboardReportedFullAccess = KeyboardSharedDefaults.loadFullAccessReport()?.hasFullAccess == true
+        self.keyboardEverContacted = keyboardReportedFullAccess
+        self.keyboardFullAccessRequired = keyboardReportedFullAccess
+            ? false
+            : UserDefaults.standard.bool(forKey: Self.keyboardFullAccessRequiredKey)
+        if keyboardReportedFullAccess {
+            UserDefaults.standard.set(false, forKey: Self.keyboardFullAccessRequiredKey)
+        }
         self.microphonePermissionStatus = Self.currentMicrophonePermissionStatus()
         self.speechRecognitionPermissionStatus = Self.currentSpeechRecognitionPermissionStatus()
         self.setupReadinessDismissed = UserDefaults.standard.bool(forKey: Self.setupReadinessDismissedKey)
@@ -814,11 +843,8 @@ final class AppState {
         guard speechRecognitionPermissionStatus == .notDetermined else {
             return speechRecognitionPermissionStatus
         }
-        let status = await withCheckedContinuation { continuation in
-            SFSpeechRecognizer.requestAuthorization { status in
-                continuation.resume(returning: status)
-            }
-        }
+        let rawStatus = await HostPermissionRequester.requestSpeechAuthorizationRawValue()
+        let status = SFSpeechRecognizerAuthorizationStatus(rawValue: rawStatus) ?? .denied
         speechRecognitionPermissionStatus = Self.readinessStatus(for: status)
         return speechRecognitionPermissionStatus
     }
@@ -3443,11 +3469,7 @@ final class AppState {
 
     private func requestMicrophonePermission() async -> MicrophonePermissionRequestResult {
         guard await waitUntilApplicationIsActive() else { return .unavailable }
-        let granted = await withCheckedContinuation { continuation in
-            AVAudioApplication.requestRecordPermission { granted in
-                continuation.resume(returning: granted)
-            }
-        }
+        let granted = await HostPermissionRequester.requestMicrophone()
         return granted ? .granted : .denied
     }
 
@@ -3590,7 +3612,7 @@ final class AppState {
             // First use: request silently. We do not block the current recording
             // on the prompt — preview just stays off this session. Subsequent
             // recordings benefit if the user grants.
-            SFSpeechRecognizer.requestAuthorization { _ in }
+            HostPermissionRequester.requestSpeechAuthorizationWithoutWaiting()
             appLog.notice("live preview skipped: speech permission not determined")
             return false
         case .denied, .restricted:
@@ -3938,13 +3960,19 @@ final class AppState {
             keyboardFullAccessRequired = false
             UserDefaults.standard.set(false, forKey: Self.keyboardFullAccessRequiredKey)
         }
-        guard !keyboardEverContacted else { return }
         keyboardEverContacted = true
-        UserDefaults.standard.set(true, forKey: Self.keyboardEverContactedKey)
+    }
+
+    @MainActor
+    private func applyKeyboardFullAccessReport() {
+        guard KeyboardSharedDefaults.loadFullAccessReport()?.hasFullAccess == true else { return }
+        markKeyboardEverContacted()
     }
 
     @MainActor
     private func markKeyboardFullAccessRequired() {
+        KeyboardSharedDefaults.clearFullAccessReport()
+        keyboardEverContacted = false
         guard !keyboardFullAccessRequired else { return }
         keyboardFullAccessRequired = true
         UserDefaults.standard.set(true, forKey: Self.keyboardFullAccessRequiredKey)
@@ -4184,6 +4212,11 @@ final class AppState {
                 self?.markKeyboardFullAccessRequired()
             }
         }
+        let fullAccessChangedObserver = KeyboardDarwinBridge.observe(KeyboardDarwinNotificationName.fullAccessChanged) { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.applyKeyboardFullAccessReport()
+            }
+        }
         let keyboardIssueObserver = KeyboardDarwinBridge.observe(KeyboardDarwinNotificationName.keyboardIssueReported) { [weak self] in
             Task { @MainActor [weak self] in
                 self?.consumeKeyboardHostIssue()
@@ -4198,11 +4231,12 @@ final class AppState {
                 token: keyboardBridgeToken
             )
         else {
-            keyboardDarwinObservers = [fullAccessObserver, keyboardIssueObserver]
+            keyboardDarwinObservers = [fullAccessObserver, fullAccessChangedObserver, keyboardIssueObserver]
             return
         }
         keyboardDarwinObservers = [
             fullAccessObserver,
+            fullAccessChangedObserver,
             keyboardIssueObserver,
             KeyboardDarwinBridge.observe(commandIntentName) { [weak self] in
                 Task { @MainActor [weak self] in

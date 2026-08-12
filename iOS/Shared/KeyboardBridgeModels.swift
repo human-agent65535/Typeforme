@@ -138,6 +138,15 @@ enum KeyboardDiagnosticEventLog {
     }
 }
 
+struct KeyboardFullAccessReport: Codable, Equatable, Sendable {
+    let hasFullAccess: Bool
+    let updatedAt: TimeInterval
+
+    static func granted(now: TimeInterval = Date().timeIntervalSince1970) -> KeyboardFullAccessReport {
+        KeyboardFullAccessReport(hasFullAccess: true, updatedAt: now)
+    }
+}
+
 enum KeyboardSharedDefaults {
     static var appGroupIdentifier: String { TypeformeBundleConfiguration.appGroupIdentifier }
     static let keyboardDefaultsKey = "keyboard.defaults.v3"
@@ -147,6 +156,7 @@ enum KeyboardSharedDefaults {
     private static let commandIntentKey = "keyboard.command-intent.v1"
     private static let commandLifecycleKey = "keyboard.command-lifecycle.v1"
     private static let keyboardHostIssueKey = "keyboard.host-issue.v1"
+    private static let keyboardFullAccessReportKey = "keyboard.full-access-report.v1"
     private static let touchLearningStatsKey = "keyboard.touchLearningStats.v1"
     private static let chineseLearningKey = "keyboard.chineseLearning.v1"
 
@@ -170,6 +180,22 @@ enum KeyboardSharedDefaults {
 
     static func loadStatusSnapshot() -> KeyboardBridgeStatus? {
         loadCodable(KeyboardBridgeStatus.self, key: keyboardStatusKey)
+    }
+
+    /// Only the keyboard extension writes this report after reading
+    /// UIInputViewController.hasFullAccess. The containing app must never
+    /// manufacture it from its own bridge health checks.
+    @discardableResult
+    static func saveFullAccessReport(_ report: KeyboardFullAccessReport) -> Bool {
+        saveCodable(report, key: keyboardFullAccessReportKey, flush: true)
+    }
+
+    static func loadFullAccessReport() -> KeyboardFullAccessReport? {
+        loadCodable(KeyboardFullAccessReport.self, key: keyboardFullAccessReportKey)
+    }
+
+    static func clearFullAccessReport() {
+        suite()?.removeObject(forKey: keyboardFullAccessReportKey)
     }
 
     @discardableResult
@@ -702,6 +728,7 @@ enum KeyboardDarwinNotificationName {
     static let commandIntentChanged = "\(namespace).commandIntentChanged"
     static let keyboardDefaultsChanged = "\(namespace).defaultsChanged"
     static let fullAccessRequired = "\(namespace).fullAccessRequired"
+    static let fullAccessChanged = "\(namespace).fullAccessChanged"
     static let keyboardIssueReported = "\(namespace).issueReported"
     static let commandLifecycleChanged = "\(namespace).commandLifecycleChanged"
 
@@ -1066,6 +1093,7 @@ enum KeyboardLocalBridgeAuth {
 
 struct KeyboardLocalBridgeRequest: Codable, Equatable, Sendable {
     enum Action: String, Codable, Sendable {
+        case health
         case statusStream = "status_stream"
         case statusSnapshot = "status_snapshot"
         case command
@@ -1074,6 +1102,14 @@ struct KeyboardLocalBridgeRequest: Codable, Equatable, Sendable {
     let action: Action
     let authentication: KeyboardLocalBridgeProof?
     let command: KeyboardBridgeCommand?
+
+    static func health() -> KeyboardLocalBridgeRequest {
+        KeyboardLocalBridgeRequest(
+            action: .health,
+            authentication: nil,
+            command: nil
+        )
+    }
 
     static func statusStream() -> KeyboardLocalBridgeRequest {
         KeyboardLocalBridgeRequest(
