@@ -4100,11 +4100,25 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         textModeButton.addTarget(self, action: #selector(toggleSymbolKeyboard), for: .touchUpInside)
         attachPressAnimation(textModeButton)
 
-        configureTextControlButton(textAlternateSymbolButton, title: "#+=", image: nil)
+        configureTextControlButton(
+            textAlternateSymbolButton,
+            title: "#+=",
+            image: nil,
+            contentPlacement: currentKeyboardSurfaceMetrics.textKeyVisualProfile == .compact
+                ? .centered
+                : .leadingBottom
+        )
         textAlternateSymbolButton.addTarget(self, action: #selector(toggleAlternateSymbolKeyboard), for: .touchUpInside)
         attachPressAnimation(textAlternateSymbolButton)
 
-        configureTextControlButton(textGlobeButton, title: "", image: "globe")
+        configureTextControlButton(
+            textGlobeButton,
+            title: "",
+            image: "globe",
+            contentPlacement: currentKeyboardSurfaceMetrics.textKeyVisualProfile == .compact
+                ? .centered
+                : .leadingCenter
+        )
         textGlobeButtonWidthConstraint = textGlobeButton.widthAnchor.constraint(
             equalToConstant: TextKeyboardLayoutModel.bottomGlobeKeyWidth
         )
@@ -4686,8 +4700,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         addPadTextKeyRow(
             ["z", "x", "c", "v", "b", "n", "m", ",", "."]
                 + (usesNumberRow ? ["/"] : []),
-            leadingButton: makeTextShiftButton(),
-            trailingButton: makeTextShiftButton(),
+            leadingButton: makeTextShiftButton(contentPlacement: .leadingBottom),
+            trailingButton: makeTextShiftButton(contentPlacement: .trailingBottom),
             utilityKeyWidth: usesNumberRow ? textShiftUtilityKeyWidth : nil
         )
     }
@@ -4710,7 +4724,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             addPadTextKeyRow(
                 nativeRows[0],
                 leadingButton: nil,
-                trailingButton: makeTextDeleteKey()
+                trailingButton: makeTextDeleteKey(),
+                keyRole: .numberRow,
+                fixedHeight: currentKeyboardSurfaceMetrics.padNumberRowHeight.map { CGFloat($0) }
             )
             addPadTextKeyRow(
                 nativeRows[1],
@@ -4810,7 +4826,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         leadingButton: KeyboardTextKeyControl?,
         trailingButton: KeyboardTextKeyControl?,
         utilityKeyWidth: CGFloat? = nil,
-        trailingSpacerWidth: CGFloat? = nil
+        trailingSpacerWidth: CGFloat? = nil,
+        keyRole: KeyboardTextKeyRole = .normal,
+        fixedHeight: CGFloat? = nil
     ) {
         let row = makeTextKeyRow()
         if let leadingButton {
@@ -4827,7 +4845,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 secondaryTitle: alternate,
                 stackedLegendStyle: alternate == nil || !currentKeyboardSurfaceMetrics.usesPadNumberRow
                     ? .alternateHint
-                    : .pairedSymbol
+                    : .pairedSymbol,
+                weight: keyRole
             )
             attachKeyPreview(to: button, title: title)
             row.addArrangedSubview(button)
@@ -4869,7 +4888,17 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             utilityKeyWidth: utilityKeyWidth
         )
         keyRowsStack.addArrangedSubview(row)
-        registerPadRegularKeyRow(row)
+        if let fixedHeight {
+            let height = row.heightAnchor.constraint(equalToConstant: fixedHeight)
+            height.isActive = true
+            keyboardRowConstraints.append(height)
+        }
+        // A native number row has its own fixed height. Registering it as the
+        // equal-height reference forces every regular row to that height and
+        // makes Auto Layout break the fixed constraint to fill the stack.
+        if fixedHeight == nil {
+            registerPadRegularKeyRow(row)
+        }
         var directButtons: [UIButton] = []
         var boundaryButtons: [UIButton] = []
         if let leadingButton {
@@ -4908,7 +4937,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let button = makeTextKeyButton(
             title: "",
             image: "arrow.right.to.line",
-            weight: .utility
+            weight: .utility,
+            contentPlacement: .leadingBottom
         )
         button.accessibilityLabel = NSLocalizedString("Tab", comment: "Accessibility label for Tab key")
         button.addTarget(self, action: #selector(insertPadTab), for: .touchUpInside)
@@ -4917,7 +4947,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     private func makePadLanguageKey() -> KeyboardTextKeyControl {
         let title = textInputLanguage == .chinese ? "拼音" : "ABC"
-        let button = makeTextKeyButton(title: title, weight: .utility)
+        let button = makeTextKeyButton(
+            title: title,
+            weight: .utility,
+            contentPlacement: .leadingBottom
+        )
         button.isEnabled = isChineseInputEnabled
         button.accessibilityLabel = textInputLanguage == .chinese
             ? NSLocalizedString("Chinese active, switch to English", comment: "Accessibility label for iPad language toggle")
@@ -4927,14 +4961,25 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func makePadSymbolModeKey() -> KeyboardTextKeyControl {
-        let button = makeTextKeyButton(title: "ABC", weight: .utility)
+        let button = makeTextKeyButton(
+            title: "ABC",
+            weight: .utility,
+            contentPlacement: .leadingBottom
+        )
         button.accessibilityLabel = NSLocalizedString("Show letters", comment: "Accessibility label for iPad symbol mode key")
         button.addTarget(self, action: #selector(toggleSymbolKeyboard), for: .touchUpInside)
         return button
     }
 
     private func makeTextDeleteKey() -> KeyboardTextKeyControl {
-        let button = makeTextKeyButton(title: "", image: "delete.left", weight: .utility)
+        let button = makeTextKeyButton(
+            title: "",
+            image: "delete.left",
+            weight: .utility,
+            contentPlacement: currentKeyboardSurfaceMetrics.textKeyVisualProfile == .compact
+                ? .centered
+                : .trailingCenter
+        )
         button.accessibilityLabel = NSLocalizedString("Delete", comment: "Accessibility label for Delete key")
         button.addTarget(self, action: #selector(deletePressDown), for: [.touchDown, .touchDragEnter])
         button.addTarget(self, action: #selector(deletePressUp), for: [.touchUpInside, .touchUpOutside, .touchCancel, .touchDragExit])
@@ -4946,7 +4991,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let button = makeTextKeyButton(
             title: returnKeyTitle,
             image: returnKeyImageName,
-            weight: weight
+            weight: weight,
+            contentPlacement: .trailingBottom
         )
         button.addTarget(self, action: #selector(insertReturn), for: .touchUpInside)
         button.accessibilityLabel = returnKeyAccessibilityLabel
@@ -5029,7 +5075,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let dismissButton = makeTextKeyButton(
             title: "",
             image: "keyboard.chevron.compact.down",
-            weight: .utility
+            weight: .utility,
+            contentPlacement: .trailingCenter
         )
         dismissButton.accessibilityLabel = NSLocalizedString("Hide keyboard", comment: "Accessibility label for iPad keyboard dismiss key")
         dismissButton.addTarget(self, action: #selector(dismissTypeformeKeyboard), for: .touchUpInside)
@@ -5235,13 +5282,16 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         keyboardRowConstraints.append(contentsOf: constraints)
     }
 
-    private func makeTextShiftButton() -> KeyboardTextKeyControl {
+    private func makeTextShiftButton(
+        contentPlacement: KeyboardTextKeyContentPlacement? = nil
+    ) -> KeyboardTextKeyControl {
         let autoCap = shouldAutoCapitalizeNextEnglishLetter()
         let isShiftActive = effectiveTextShiftActive(autoCap: autoCap)
         let button = makeTextKeyButton(
             title: "",
             image: isTextShiftLocked ? "capslock.fill" : (isShiftActive ? "shift.fill" : "shift"),
-            weight: .utility
+            weight: .utility,
+            contentPlacement: contentPlacement
         )
         button.isSelected = isShiftActive || isTextShiftLocked
         button.setNeedsUpdateConfiguration()
@@ -5719,7 +5769,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         secondaryTitle: String? = nil,
         stackedLegendStyle: KeyboardTextKeyStackedLegendStyle = .alternateHint,
         image: String? = nil,
-        weight: KeyboardTextKeyRole = .normal
+        weight: KeyboardTextKeyRole = .normal,
+        contentPlacement: KeyboardTextKeyContentPlacement? = nil
     ) -> KeyboardTextKeyControl {
         let button = KeyboardTextKeyControl(type: .system)
         configureTextKeyButton(
@@ -5728,7 +5779,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             secondaryTitle: secondaryTitle,
             stackedLegendStyle: stackedLegendStyle,
             image: image,
-            weight: weight
+            weight: weight,
+            contentPlacement: contentPlacement
         )
         button.titleLabel?.adjustsFontSizeToFitWidth = true
         button.titleLabel?.minimumScaleFactor = 0.7
@@ -5741,9 +5793,16 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private func configureTextControlButton(
         _ button: KeyboardTextKeyControl,
         title: String,
-        image: String?
+        image: String?,
+        contentPlacement: KeyboardTextKeyContentPlacement? = nil
     ) {
-        configureTextKeyButton(button, title: title, image: image, weight: .utility)
+        configureTextKeyButton(
+            button,
+            title: title,
+            image: image,
+            weight: .utility,
+            contentPlacement: contentPlacement
+        )
         button.titleLabel?.adjustsFontSizeToFitWidth = true
         button.titleLabel?.minimumScaleFactor = 0.72
     }
@@ -5870,7 +5929,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         secondaryTitle: String? = nil,
         stackedLegendStyle: KeyboardTextKeyStackedLegendStyle = .alternateHint,
         image: String?,
-        weight: KeyboardTextKeyRole
+        weight: KeyboardTextKeyRole,
+        contentPlacement: KeyboardTextKeyContentPlacement? = nil
     ) {
         button.render(
             title: title,
@@ -5879,6 +5939,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             role: weight,
             visualProfile: currentKeyboardSurfaceMetrics.textKeyVisualProfile,
             stackedLegendStyle: stackedLegendStyle,
+            contentPlacement: contentPlacement,
             style: keyboardInterfaceStyle
         )
     }
@@ -8723,8 +8784,22 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         } else {
             textModeButton.accessibilityLabel = NSLocalizedString("Show numbers and symbols", comment: "Accessibility label for switching to numbers and symbols")
         }
-        configureTextControlButton(textAlternateSymbolButton, title: isAlternateSymbolKeyboard ? "123" : "#+=", image: nil)
-        configureTextControlButton(textGlobeButton, title: "", image: "globe")
+        configureTextControlButton(
+            textAlternateSymbolButton,
+            title: isAlternateSymbolKeyboard ? "123" : "#+=",
+            image: nil,
+            contentPlacement: currentKeyboardSurfaceMetrics.textKeyVisualProfile == .compact
+                ? .centered
+                : .leadingBottom
+        )
+        configureTextControlButton(
+            textGlobeButton,
+            title: "",
+            image: "globe",
+            contentPlacement: currentKeyboardSurfaceMetrics.textKeyVisualProfile == .compact
+                ? .centered
+                : .leadingCenter
+        )
         textGlobeButton.accessibilityLabel = NSLocalizedString("Next keyboard", comment: "Accessibility label for switching to the next keyboard")
         refreshInputModeSwitchKeyVisibility()
         let isRecording = currentBridgeStatus?.state == .recording

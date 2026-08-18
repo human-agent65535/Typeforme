@@ -2,6 +2,7 @@ import Foundation
 
 enum KeyboardTextKeyRole: Equatable, Sendable {
     case normal
+    case numberRow
     case primary
     case utility
     case action
@@ -19,6 +20,14 @@ enum KeyboardTextKeyStackedLegendStyle: Equatable, Sendable {
     case pairedSymbol
 }
 
+enum KeyboardTextKeyContentPlacement: Equatable, Sendable {
+    case centered
+    case leadingCenter
+    case trailingCenter
+    case leadingBottom
+    case trailingBottom
+}
+
 enum KeyboardTextKeyFontWeight: Equatable, Sendable {
     case regular
     case medium
@@ -29,6 +38,13 @@ struct KeyboardTextKeyTypography: Equatable, Sendable {
     let weight: KeyboardTextKeyFontWeight
     let topInset: Double
     let bottomInset: Double
+}
+
+struct KeyboardTextKeyContentScale: Equatable, Sendable {
+    let horizontal: Double
+    let vertical: Double
+
+    static let identity = KeyboardTextKeyContentScale(horizontal: 1, vertical: 1)
 }
 
 /// Pure visual metrics for ordinary keyboard keys. It does not describe key
@@ -50,18 +66,27 @@ enum KeyboardTextKeyVisualPolicy {
     ) -> KeyboardTextKeyTypography {
         if profile == .padPortrait, hasImage {
             return KeyboardTextKeyTypography(
-                pointSize: 21,
+                pointSize: 18,
                 weight: .regular,
-                topInset: 5,
-                bottomInset: 3
+                topInset: 3,
+                bottomInset: 5
             )
         }
         if profile == .padFull, hasImage {
             return KeyboardTextKeyTypography(
-                pointSize: 23,
+                pointSize: 18,
                 weight: .regular,
-                topInset: 7,
-                bottomInset: 3
+                topInset: 3,
+                bottomInset: 7
+            )
+        }
+
+        if profile == .padFull, role == .numberRow {
+            return KeyboardTextKeyTypography(
+                pointSize: 18,
+                weight: .regular,
+                topInset: 3,
+                bottomInset: 7
             )
         }
 
@@ -69,18 +94,18 @@ enum KeyboardTextKeyVisualPolicy {
         if isLetter {
             if profile == .padPortrait {
                 return KeyboardTextKeyTypography(
-                    pointSize: 22,
+                    pointSize: title == title.uppercased() ? 20 : 22,
                     weight: .regular,
-                    topInset: 5,
-                    bottomInset: 3
+                    topInset: 3,
+                    bottomInset: 5
                 )
             }
             if profile == .padFull {
                 return KeyboardTextKeyTypography(
-                    pointSize: 26,
+                    pointSize: title == title.uppercased() ? 22 : 25,
                     weight: .regular,
-                    topInset: 7,
-                    bottomInset: 3
+                    topInset: 3,
+                    bottomInset: 7
                 )
             }
             return KeyboardTextKeyTypography(
@@ -98,11 +123,13 @@ enum KeyboardTextKeyVisualPolicy {
             let pointSize: Double
             switch profile {
             case .compact:
-                pointSize = 18
+                // Native iPhone keeps the in-row alternate-symbol label
+                // smaller than the bottom-row 123/ABC mode labels.
+                pointSize = title == "#+=" ? 13 : 18
             case .padPortrait:
                 pointSize = 17
             case .padFull:
-                pointSize = 20
+                pointSize = 18
             }
             return KeyboardTextKeyTypography(
                 pointSize: pointSize,
@@ -112,22 +139,40 @@ enum KeyboardTextKeyVisualPolicy {
             )
         }
 
+        if profile == .compact, role == .normal, !hasImage {
+            let opticalPointSize: Double?
+            switch title {
+            case "/": opticalPointSize = 20
+            case ".", ",": opticalPointSize = 26
+            case ":": opticalPointSize = 25
+            default: opticalPointSize = nil
+            }
+            if let opticalPointSize {
+                return KeyboardTextKeyTypography(
+                    pointSize: opticalPointSize,
+                    weight: .regular,
+                    topInset: 5,
+                    bottomInset: 5
+                )
+            }
+        }
+
         let isShort = title.count <= 2
         let isUtilityAction = (role == .utility || role == .action) && !hasImage
         if profile == .padPortrait {
             return KeyboardTextKeyTypography(
-                pointSize: isUtilityAction ? (isShort ? 17 : 15) : (isShort ? 21 : 16),
+                pointSize: isUtilityAction ? (isShort ? 17 : 15) : (isShort ? 20 : 16),
                 weight: isUtilityAction || !isShort ? .medium : .regular,
-                topInset: 5,
-                bottomInset: 3
+                topInset: 3,
+                bottomInset: 5
             )
         }
         if profile == .padFull {
             return KeyboardTextKeyTypography(
-                pointSize: isUtilityAction ? (isShort ? 19 : 16) : (isShort ? 24 : 17),
+                pointSize: isUtilityAction ? (isShort ? 18 : 16) : (isShort ? 22 : 17),
                 weight: isUtilityAction || !isShort ? .medium : .regular,
-                topInset: 7,
-                bottomInset: 3
+                topInset: 3,
+                bottomInset: 7
             )
         }
         return KeyboardTextKeyTypography(
@@ -142,32 +187,20 @@ enum KeyboardTextKeyVisualPolicy {
         imageName: String?,
         profile: KeyboardTextKeyVisualProfile
     ) -> Double {
-        if profile == .compact { return 15 }
-        if profile == .padPortrait {
-            switch imageName {
-            case "arrow.right.to.line":
-                return 23
-            case "shift", "shift.fill", "capslock.fill":
-                return 22
-            case "delete.left", "return", "arrow.turn.down.left":
-                return 21
-            case "globe", "mic.fill", "keyboard.chevron.compact.down":
-                return 20
-            default:
-                return 20
-            }
-        }
-        switch imageName {
-        case "arrow.right.to.line":
-            return 27
-        case "shift", "shift.fill", "capslock.fill":
-            return 25
-        case "delete.left", "return", "arrow.turn.down.left":
-            return 24
-        case "globe", "mic.fill", "keyboard.chevron.compact.down":
-            return 23
+        profile == .compact ? 15 : 16
+    }
+
+    static func contentScale(
+        title: String,
+        role: KeyboardTextKeyRole,
+        profile: KeyboardTextKeyVisualProfile
+    ) -> KeyboardTextKeyContentScale {
+        guard profile == .compact else { return .identity }
+        switch (role, title) {
+        case (.utility, "#+="):
+            return KeyboardTextKeyContentScale(horizontal: 1.03, vertical: 0.82)
         default:
-            return 23
+            return .identity
         }
     }
 
@@ -176,7 +209,7 @@ enum KeyboardTextKeyVisualPolicy {
         style: KeyboardTextKeyStackedLegendStyle = .alternateHint
     ) -> Double {
         if profile == .padFull, style == .numberRow { return 15 }
-        if profile == .padFull, style == .pairedSymbol { return 26 }
+        if profile == .padFull, style == .pairedSymbol { return 15 }
         switch profile {
         case .compact:
             return 15
@@ -189,7 +222,7 @@ enum KeyboardTextKeyVisualPolicy {
 
     static func shadowOpacity(role: KeyboardTextKeyRole, isDark: Bool) -> Double {
         switch role {
-        case .normal, .primary:
+        case .normal, .numberRow, .primary:
             return isDark ? 0.22 : 0.12
         case .utility, .action:
             return isDark ? 0.24 : 0.14
@@ -202,7 +235,7 @@ enum KeyboardTextKeyVisualPolicy {
         style: KeyboardTextKeyStackedLegendStyle = .alternateHint
     ) -> Double {
         if profile == .padFull, style == .numberRow { return 15 }
-        if profile == .padFull, style == .pairedSymbol { return 26 }
+        if profile == .padFull, style == .pairedSymbol { return 15 }
         if profile == .padPortrait {
             return max(20, typography.pointSize - 1)
         }

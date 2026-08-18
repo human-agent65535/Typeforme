@@ -21,7 +21,7 @@ final class KeyboardTextKeyVisualPolicyTests: XCTestCase {
     }
 
     func testCompactModeKeysUseDedicatedTypography() {
-        for title in ["123", "ABC", "#+="] {
+        for title in ["123", "ABC"] {
             let typography = KeyboardTextKeyVisualPolicy.typography(
                 title: title,
                 hasImage: false,
@@ -30,6 +30,72 @@ final class KeyboardTextKeyVisualPolicyTests: XCTestCase {
             XCTAssertEqual(typography.pointSize, 18)
             XCTAssertEqual(typography.weight, .regular)
         }
+
+        let alternateSymbols = KeyboardTextKeyVisualPolicy.typography(
+            title: "#+=",
+            hasImage: false,
+            role: .utility
+        )
+        XCTAssertEqual(alternateSymbols.pointSize, 13)
+        XCTAssertEqual(alternateSymbols.weight, .regular)
+    }
+
+    func testCompactSlashUsesNativeOpticalScale() {
+        let slash = KeyboardTextKeyVisualPolicy.typography(
+            title: "/",
+            hasImage: false,
+            role: .normal
+        )
+
+        XCTAssertEqual(slash.pointSize, 20)
+        XCTAssertEqual(slash.weight, .regular)
+    }
+
+    func testCompactPunctuationUsesNativeOpticalScale() {
+        for (title, expectedPointSize) in [(".", 26.0), (",", 26.0), (":", 25.0)] {
+            let punctuation = KeyboardTextKeyVisualPolicy.typography(
+                title: title,
+                hasImage: false,
+                role: .normal
+            )
+            XCTAssertEqual(punctuation.pointSize, expectedPointSize)
+            XCTAssertEqual(punctuation.weight, .regular)
+        }
+    }
+
+    func testCompactNarrowSymbolsUseNativeOpticalProportions() {
+        XCTAssertEqual(
+            KeyboardTextKeyVisualPolicy.contentScale(
+                title: "#+=",
+                role: .utility,
+                profile: .compact
+            ),
+            KeyboardTextKeyContentScale(horizontal: 1.03, vertical: 0.82)
+        )
+        XCTAssertEqual(
+            KeyboardTextKeyVisualPolicy.contentScale(
+                title: "/",
+                role: .normal,
+                profile: .compact
+            ),
+            .identity
+        )
+        XCTAssertEqual(
+            KeyboardTextKeyVisualPolicy.contentScale(
+                title: "q",
+                role: .normal,
+                profile: .compact
+            ),
+            .identity
+        )
+        XCTAssertEqual(
+            KeyboardTextKeyVisualPolicy.contentScale(
+                title: "#+=",
+                role: .utility,
+                profile: .padFull
+            ),
+            .identity
+        )
     }
 
     func testFullPadKeyLegendsUseNativeScaleAndBaseline() {
@@ -46,10 +112,18 @@ final class KeyboardTextKeyVisualPolicyTests: XCTestCase {
             profile: .padFull
         )
 
-        XCTAssertEqual(letter.pointSize, 26)
-        XCTAssertEqual(letter.topInset, 7)
-        XCTAssertEqual(letter.bottomInset, 3)
-        XCTAssertEqual(utility.pointSize, 20)
+        XCTAssertEqual(letter.pointSize, 22)
+        XCTAssertEqual(letter.topInset, 3)
+        XCTAssertEqual(letter.bottomInset, 7)
+        XCTAssertEqual(utility.pointSize, 18)
+
+        let lowercase = KeyboardTextKeyVisualPolicy.typography(
+            title: "q",
+            hasImage: false,
+            role: .normal,
+            profile: .padFull
+        )
+        XCTAssertEqual(lowercase.pointSize, 25)
     }
 
     func testPortraitPadUsesCompactNativeLegendScale() {
@@ -66,9 +140,9 @@ final class KeyboardTextKeyVisualPolicyTests: XCTestCase {
             profile: .padPortrait
         )
 
-        XCTAssertEqual(letter.pointSize, 22)
-        XCTAssertEqual(letter.topInset, 5)
-        XCTAssertEqual(letter.bottomInset, 3)
+        XCTAssertEqual(letter.pointSize, 20)
+        XCTAssertEqual(letter.topInset, 3)
+        XCTAssertEqual(letter.bottomInset, 5)
         XCTAssertEqual(utility.pointSize, 17)
         XCTAssertEqual(
             KeyboardTextKeyVisualPolicy.stackedSecondaryPointSize(profile: .padPortrait),
@@ -79,31 +153,31 @@ final class KeyboardTextKeyVisualPolicyTests: XCTestCase {
                 for: letter,
                 profile: .padPortrait
             ),
-            21
+            20
         )
     }
 
-    func testFullPadSymbolsAreNotScaledLikePhoneIcons() {
+    func testPadUtilitySymbolsMatchNativeGlyphScale() {
         XCTAssertEqual(
             KeyboardTextKeyVisualPolicy.iconPointSize(
                 imageName: "arrow.right.to.line",
                 profile: .padFull
             ),
-            27
+            16
         )
         XCTAssertEqual(
             KeyboardTextKeyVisualPolicy.iconPointSize(
                 imageName: "delete.left",
                 profile: .padFull
             ),
-            24
+            16
         )
         XCTAssertEqual(
             KeyboardTextKeyVisualPolicy.iconPointSize(
                 imageName: "delete.left",
                 profile: .padPortrait
             ),
-            21
+            16
         )
         XCTAssertEqual(
             KeyboardTextKeyVisualPolicy.iconPointSize(
@@ -112,6 +186,20 @@ final class KeyboardTextKeyVisualPolicyTests: XCTestCase {
             ),
             15
         )
+    }
+
+    func testFullPadNumberRowUsesNativeSingleLegendScale() {
+        let digit = KeyboardTextKeyVisualPolicy.typography(
+            title: "1",
+            hasImage: false,
+            role: .numberRow,
+            profile: .padFull
+        )
+
+        XCTAssertEqual(digit.pointSize, 18)
+        XCTAssertEqual(digit.weight, .regular)
+        XCTAssertEqual(digit.topInset, 3)
+        XCTAssertEqual(digit.bottomInset, 7)
     }
 
     func testActionAndUtilityKeysShareActionTypographyWithoutSharingSemantics() {
@@ -161,7 +249,7 @@ final class KeyboardTextKeyVisualPolicyTests: XCTestCase {
                 for: padDigit,
                 profile: .padFull
             ),
-            23
+            22
         )
         XCTAssertEqual(
             KeyboardTextKeyVisualPolicy.stackedSecondaryPointSize(
@@ -183,7 +271,7 @@ final class KeyboardTextKeyVisualPolicyTests: XCTestCase {
                 profile: .padFull,
                 style: .pairedSymbol
             ),
-            26
+            15
         )
         XCTAssertEqual(
             KeyboardTextKeyVisualPolicy.stackedPrimaryPointSize(
@@ -191,7 +279,7 @@ final class KeyboardTextKeyVisualPolicyTests: XCTestCase {
                 profile: .padFull,
                 style: .pairedSymbol
             ),
-            26
+            15
         )
     }
 

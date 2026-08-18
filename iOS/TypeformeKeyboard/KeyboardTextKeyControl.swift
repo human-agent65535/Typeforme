@@ -9,6 +9,7 @@ final class KeyboardTextKeyControl: UIButton {
     private var renderedRole: KeyboardTextKeyRole = .normal
     private var renderedVisualProfile: KeyboardTextKeyVisualProfile = .compact
     private var renderedStackedLegendStyle: KeyboardTextKeyStackedLegendStyle = .alternateHint
+    private var renderedContentPlacement: KeyboardTextKeyContentPlacement = .centered
     private var renderedStyle: UIUserInterfaceStyle = .light
     private var isFlickAlternateSelected = false
 
@@ -37,6 +38,7 @@ final class KeyboardTextKeyControl: UIButton {
         role: KeyboardTextKeyRole,
         visualProfile: KeyboardTextKeyVisualProfile,
         stackedLegendStyle: KeyboardTextKeyStackedLegendStyle = .alternateHint,
+        contentPlacement: KeyboardTextKeyContentPlacement? = nil,
         style: UIUserInterfaceStyle
     ) {
         isFlickAlternateSelected = false
@@ -49,6 +51,9 @@ final class KeyboardTextKeyControl: UIButton {
         renderedRole = role
         renderedVisualProfile = visualProfile
         renderedStackedLegendStyle = stackedLegendStyle
+        if let contentPlacement {
+            renderedContentPlacement = contentPlacement
+        }
         renderedStyle = style
         overrideUserInterfaceStyle = style
         accessibilityLabel = title.isEmpty ? imageName : title
@@ -128,8 +133,42 @@ final class KeyboardTextKeyControl: UIButton {
 
     private func applyCurrentConfiguration() {
         let isPressed = isHighlighted
+        applyContentAlignment()
         configuration = makeConfiguration(isPressed: isPressed, isEnabled: isEnabled)
+        applyOpticalContentScale()
         applyLayerStyle(isPressed: isPressed, isEnabled: isEnabled)
+    }
+
+    private func applyContentAlignment() {
+        switch renderedContentPlacement {
+        case .centered:
+            contentHorizontalAlignment = .center
+            contentVerticalAlignment = .center
+        case .leadingCenter:
+            contentHorizontalAlignment = .leading
+            contentVerticalAlignment = .center
+        case .trailingCenter:
+            contentHorizontalAlignment = .trailing
+            contentVerticalAlignment = .center
+        case .leadingBottom:
+            contentHorizontalAlignment = .leading
+            contentVerticalAlignment = .bottom
+        case .trailingBottom:
+            contentHorizontalAlignment = .trailing
+            contentVerticalAlignment = .bottom
+        }
+    }
+
+    private func applyOpticalContentScale() {
+        let scale = KeyboardTextKeyVisualPolicy.contentScale(
+            title: renderedTitle,
+            role: renderedRole,
+            profile: renderedVisualProfile
+        )
+        titleLabel?.transform = CGAffineTransform(
+            scaleX: CGFloat(scale.horizontal),
+            y: CGFloat(scale.vertical)
+        )
     }
 
     private func makeConfiguration(isPressed: Bool, isEnabled: Bool) -> UIButton.Configuration {
@@ -160,11 +199,12 @@ final class KeyboardTextKeyControl: UIButton {
         configuration.titleLineBreakMode = .byClipping
         configuration.cornerStyle = .fixed
         configuration.background.cornerRadius = CGFloat(KeyboardTextKeyVisualPolicy.cornerRadius)
-        configuration.contentInsets = NSDirectionalEdgeInsets(
-            top: showsSecondaryTitle ? 1 : CGFloat(typography.topInset),
-            leading: CGFloat(KeyboardTextKeyVisualPolicy.horizontalContentInset),
-            bottom: showsSecondaryTitle ? 1 : CGFloat(typography.bottomInset),
-            trailing: CGFloat(KeyboardTextKeyVisualPolicy.horizontalContentInset)
+        if showsSecondaryTitle, stackedLegendStyle == .pairedSymbol {
+            configuration.titlePadding = 11
+        }
+        configuration.contentInsets = contentInsets(
+            typography: typography,
+            showsSecondaryTitle: showsSecondaryTitle
         )
         configuration.baseForegroundColor = foregroundColor(isEnabled: isEnabled)
         configuration.baseBackgroundColor = backgroundColor(
@@ -200,7 +240,9 @@ final class KeyboardTextKeyControl: UIButton {
                     )),
                     weight: .regular
                 )
-                outgoing.foregroundColor = .secondaryLabel
+                outgoing.foregroundColor = stackedLegendStyle == .alternateHint
+                    ? .secondaryLabel
+                    : .label
                 return outgoing
             }
             let weight: UIFont.Weight = typography.weight == .medium ? .medium : .regular
@@ -224,6 +266,54 @@ final class KeyboardTextKeyControl: UIButton {
             }
         }
         return configuration
+    }
+
+    private func contentInsets(
+        typography: KeyboardTextKeyTypography,
+        showsSecondaryTitle: Bool
+    ) -> NSDirectionalEdgeInsets {
+        let centeredHorizontalInset = CGFloat(KeyboardTextKeyVisualPolicy.horizontalContentInset)
+        // SF Symbols carry their own optical side bearing. Native iPad keys
+        // compensate for it so the visible ink, not the symbol's image box,
+        // lands on the 14pt outer margin. Text legends have no such bearing.
+        let nativeOuterInset: CGFloat = renderedImageName == nil ? 15 : 12
+        switch renderedContentPlacement {
+        case .centered:
+            return NSDirectionalEdgeInsets(
+                top: showsSecondaryTitle ? 1 : CGFloat(typography.topInset),
+                leading: centeredHorizontalInset,
+                bottom: showsSecondaryTitle ? 1 : CGFloat(typography.bottomInset),
+                trailing: centeredHorizontalInset
+            )
+        case .leadingCenter:
+            return NSDirectionalEdgeInsets(
+                top: 0,
+                leading: nativeOuterInset,
+                bottom: 0,
+                trailing: centeredHorizontalInset
+            )
+        case .trailingCenter:
+            return NSDirectionalEdgeInsets(
+                top: 0,
+                leading: centeredHorizontalInset,
+                bottom: 0,
+                trailing: nativeOuterInset
+            )
+        case .leadingBottom:
+            return NSDirectionalEdgeInsets(
+                top: 0,
+                leading: nativeOuterInset,
+                bottom: renderedImageName == "arrow.right.to.line" ? 8 : 10,
+                trailing: centeredHorizontalInset
+            )
+        case .trailingBottom:
+            return NSDirectionalEdgeInsets(
+                top: 0,
+                leading: centeredHorizontalInset,
+                bottom: 10,
+                trailing: nativeOuterInset
+            )
+        }
     }
 
     private func applyLayerStyle(isPressed: Bool, isEnabled: Bool) {
