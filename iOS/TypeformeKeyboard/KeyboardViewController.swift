@@ -600,9 +600,14 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private var recentSelectionCapturedAt: TimeInterval = 0
     private var refineUndoState: RefineUndoState?
     private var styleRewriteCommandID: String?
+    private enum TextCursorOwnership {
+        case document
+        case rimeComposition
+    }
+
     private var isTextSpaceCursorTracking = false
-    private var textSpaceCursorStartX: CGFloat = 0
-    private var suppressTextSpaceTapUntil: TimeInterval = 0
+    private var textCursorOwnership: TextCursorOwnership?
+    private var textCursorMotionState = KeyboardCursorMotionPolicy.State()
     private var scheduledStopTask: Task<Void, Never>?
     private var hostWakeResetTask: Task<Void, Never>?
     private var deleteRepeatTask: Task<Void, Never>?
@@ -824,7 +829,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private var reusableCandidateTextOverlayLabels: [UILabel] = []
     private let keyPreviewBubble = UIView()
     private let keyPreviewLabel = UILabel()
-    private lazy var textTrackpadPanRecognizer = UIPanGestureRecognizer(target: self, action: #selector(handleTextTrackpadPan(_:)))
     private lazy var candidateScrollTapRecognizer: UITapGestureRecognizer = {
         let recognizer = UITapGestureRecognizer(target: self, action: #selector(handleCandidateScrollTap(_:)))
         recognizer.delaysTouchesBegan = false
@@ -887,8 +891,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private var lastShiftTapTime: TimeInterval = 0
     private var doubleQuoteOpen = true
     private var singleQuoteOpen = true
-    private weak var activeTrackpadSourceView: UIView?
-    private var textTrackpadLastStepX = 0
+    private weak var activeTextCursorSourceView: UIView?
     private let keyboardHaptics = KeyboardHaptics()
     private var keyboardFocusSwipeHandledUntil: CFTimeInterval = 0
     private var suppressTextKeyCommitUntil: CFTimeInterval = 0
@@ -4088,9 +4091,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         keyRowsStack.spacing = textKeyVerticalGap
         keyRowsStack.alignment = .fill
         keyRowsStack.distribution = .fillEqually
-        textTrackpadPanRecognizer.isEnabled = false
-        textTrackpadPanRecognizer.cancelsTouchesInView = true
-        textKeyboardContainer.addGestureRecognizer(textTrackpadPanRecognizer)
 
         configureTextControlButton(textModeButton, title: "123", image: nil)
         textModeButtonWidthConstraint = textModeButton.widthAnchor.constraint(
@@ -6348,10 +6348,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func attachSpaceCursorGesture(to control: UIControl) {
-        let recognizer = UILongPressGestureRecognizer(target: self, action: #selector(handleTextSpaceCursorGesture(_:)))
-        recognizer.minimumPressDuration = 0.32
-        recognizer.allowableMovement = 1_000
+        let recognizer = UIPanGestureRecognizer(target: self, action: #selector(handleTextSpaceCursorPan(_:)))
+        recognizer.minimumNumberOfTouches = 1
+        recognizer.maximumNumberOfTouches = 1
         recognizer.cancelsTouchesInView = true
+        recognizer.delegate = self
         control.addGestureRecognizer(recognizer)
     }
 
@@ -8505,6 +8506,15 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        if let recognizer = gestureRecognizer as? UIPanGestureRecognizer,
+           gestureRecognizer.view === textSpaceKeyButton {
+            guard resolvedTextCursorOwnership() != nil else { return false }
+            let translation = recognizer.translation(in: gestureRecognizer.view)
+            return KeyboardCursorMotionPolicy.isHorizontalIntent(
+                translationX: Double(translation.x),
+                translationY: Double(translation.y)
+            )
+        }
         return true
     }
 
@@ -12141,7 +12151,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     @objc private func textSpaceTapped() {
-        guard Date().timeIntervalSince1970 >= suppressTextSpaceTapUntil else { return }
         handleTextSpace()
     }
 
@@ -12200,27 +12209,64 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         renderRefineSuggestionsIfIdle()
     }
 
-    @objc private func handleTextSpaceCursorGesture(_ recognizer: UILongPressGestureRecognizer) {
+    private func resolvedTextCursorOwnership() -> TextCursorOwnership? {
+        guard keyboardFocus == .text,
+              currentBridgeStatus?.state != .recording,
+              currentBridgeStatus?.state != .sending,
+              !isStartRequestInFlight,
+              pendingRimeInput.isEmpty
+        else { return nil }
+
+        let composition = currentRimeComposition
+        guard composition.isComposing else { return .document }
+        guard activeMarkedTextOwner == .rimeComposition else { return nil }
+        if KeyboardRimeInlineEditPolicy.supports(
+            rawInput: composition.input,
+            preedit: composition.preedit
+        ) {
+            return .rimeComposition
+        }
+        if KeyboardRimeInlineEditPolicy.partialCompositionSplit(
+            rawInput: composition.input,
+            preedit: composition.preedit,
+            preeditSelectionStart: composition.preeditSelectionStart,
+            preeditSelectionEnd: composition.preeditSelectionEnd
+        ) != nil {
+            return .rimeComposition
+        }
+        return nil
+    }
+
+    @objc private func handleTextSpaceCursorPan(_ recognizer: UIPanGestureRecognizer) {
         guard keyboardFocus == .text,
               let keyView = recognizer.view
         else { return }
 
-        let location = recognizer.location(in: textKeyboardContainer)
         switch recognizer.state {
         case .began:
+            discardRimeInputIfDocumentChanged()
+            guard let ownership = resolvedTextCursorOwnership() else { return }
             isTextSpaceCursorTracking = true
-            suppressTextSpaceTapUntil = Date().timeIntervalSince1970 + 0.35
-            activeTrackpadSourceView = keyView
-            textSpaceCursorStartX = location.x
-            textTrackpadLastStepX = 0
-            setTextTrackpadMode(true)
+            textCursorOwnership = ownership
+            activeTextCursorSourceView = keyView
+            textCursorMotionState.reset()
+            setTextCursorMode(true)
             keyboardHaptics.playSelectionChanged()
             keyView.layer.removeAllAnimations()
             keyView.alpha = 0.72
             keyView.transform = CGAffineTransform(scaleX: 0.98, y: 0.98)
+            let translation = recognizer.translation(in: textKeyboardContainer)
+            let initialStep = textCursorMotionState.cursorStep(
+                forTranslationX: Double(translation.x)
+            )
+            updateTextCursorPosition(byCharacterOffset: initialStep)
         case .changed:
             guard isTextSpaceCursorTracking else { return }
-            updateTrackpadCursorPosition(deltaX: location.x - textSpaceCursorStartX)
+            let translation = recognizer.translation(in: textKeyboardContainer)
+            let step = textCursorMotionState.cursorStep(
+                forTranslationX: Double(translation.x)
+            )
+            updateTextCursorPosition(byCharacterOffset: step)
         case .ended, .cancelled, .failed:
             endTextSpaceCursorTracking(keyView)
         default:
@@ -12231,12 +12277,13 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private func endTextSpaceCursorTracking(_ keyView: UIView) {
         guard isTextSpaceCursorTracking else { return }
         isTextSpaceCursorTracking = false
-        suppressTextSpaceTapUntil = Date().timeIntervalSince1970 + 0.20
-        activeTrackpadSourceView = nil
+        textCursorOwnership = nil
+        activeTextCursorSourceView = nil
+        textCursorMotionState.reset()
         keyView.layer.removeAllAnimations()
         keyView.alpha = 1
         keyView.transform = .identity
-        setTextTrackpadMode(false)
+        setTextCursorMode(false)
         if currentRimeComposition.isComposing || !pendingRimeInput.isEmpty {
             renderCurrentRimeProjection()
         } else {
@@ -12244,62 +12291,36 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         }
     }
 
-    private func setTextTrackpadMode(_ enabled: Bool) {
-        textTrackpadPanRecognizer.isEnabled = enabled
-        if !enabled {
-            textTrackpadLastStepX = 0
-        }
+    private func setTextCursorMode(_ enabled: Bool) {
         for button in textKeyboardButtons {
-            button.isUserInteractionEnabled = !enabled || button === activeTrackpadSourceView
+            button.isUserInteractionEnabled = !enabled || button === activeTextCursorSourceView
         }
-        keyRowsStack.layer.removeAllAnimations()
-        candidateScrollView.layer.removeAllAnimations()
-        keyRowsStack.alpha = enabled ? 0.25 : 1
-        candidateScrollView.alpha = enabled ? 0.38 : 1
+        keyboardTouchOverlay.isUserInteractionEnabled = !enabled
+        candidateScrollView.isUserInteractionEnabled = !enabled
+        candidateGridScrollView.isUserInteractionEnabled = !enabled
     }
 
-    @objc private func handleTextTrackpadPan(_ recognizer: UIPanGestureRecognizer) {
-        guard isTextSpaceCursorTracking else { return }
-        let translation = recognizer.translation(in: textKeyboardContainer)
-        switch recognizer.state {
-        case .changed:
-            updateTrackpadCursorPosition(deltaX: translation.x)
-        case .ended, .cancelled, .failed:
-            if let source = activeTrackpadSourceView {
-                endTextSpaceCursorTracking(source)
-            } else {
-                setTextTrackpadMode(false)
-            }
-        default:
-            break
-        }
-    }
+    private func updateTextCursorPosition(byCharacterOffset offset: Int) {
+        guard offset != 0, let textCursorOwnership else { return }
 
-    private func updateTrackpadCursorPosition(deltaX: CGFloat) {
-        let stepX = Int(deltaX / 8)
-        let deltaStepX = stepX - textTrackpadLastStepX
-        if deltaStepX != 0 {
+        switch textCursorOwnership {
+        case .document:
+            textDocumentProxy.adjustTextPosition(byCharacterOffset: offset)
+        case .rimeComposition:
             let composition = currentRimeComposition
-            // A startup-pending value is already anchored as marked text but
-            // has no engine caret yet. Keep that range owned until replay;
-            // moving the host insertion point here would detach the delayed
-            // keystrokes from the text the user can see.
-            if !pendingRimeInput.isEmpty,
-               activeMarkedTextOwner == .rimeComposition {
-                textTrackpadLastStepX = stepX
-                return
-            }
-            if composition.isComposing,
-               activeMarkedTextOwner == .rimeComposition,
-               let split = KeyboardRimeInlineEditPolicy.partialCompositionSplit(
-                   rawInput: composition.input,
-                   preedit: composition.preedit,
-                   preeditSelectionStart: composition.preeditSelectionStart,
-                   preeditSelectionEnd: composition.preeditSelectionEnd
-               ) {
+            guard composition.isComposing,
+                  activeMarkedTextOwner == .rimeComposition
+            else { return }
+
+            if let split = KeyboardRimeInlineEditPolicy.partialCompositionSplit(
+                rawInput: composition.input,
+                preedit: composition.preedit,
+                preeditSelectionStart: composition.preeditSelectionStart,
+                preeditSelectionEnd: composition.preeditSelectionEnd
+            ) {
                 let endOffset = split.remainingRawInput.utf8.count
                 let targetOffset = KeyboardRimeInlineEditPolicy.clampedCaretOffset(
-                    endOffset + deltaStepX,
+                    endOffset + offset,
                     in: split.remainingRawInput
                 )
                 if targetOffset != endOffset {
@@ -12308,18 +12329,16 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                         caretOffset: targetOffset
                     )
                 }
-                textTrackpadLastStepX = stepX
                 return
             }
-            if composition.isComposing,
-               activeMarkedTextOwner == .rimeComposition,
-               KeyboardRimeInlineEditPolicy.supports(
-                   rawInput: composition.input,
-                   preedit: composition.preedit
-               ) {
+
+            if KeyboardRimeInlineEditPolicy.supports(
+                rawInput: composition.input,
+                preedit: composition.preedit
+            ) {
                 let currentOffset = rimeInlineEditCaretOffset ?? composition.input.utf8.count
                 let nextOffset = KeyboardRimeInlineEditPolicy.clampedCaretOffset(
-                    currentOffset + deltaStepX,
+                    currentOffset + offset,
                     in: composition.input
                 )
                 if nextOffset != currentOffset {
@@ -12330,10 +12349,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                         selectionLocation: nextOffset
                     )
                 }
-            } else if !composition.isComposing {
-                textDocumentProxy.adjustTextPosition(byCharacterOffset: deltaStepX)
             }
-            textTrackpadLastStepX = stepX
         }
     }
 

@@ -481,11 +481,24 @@ for forbidden in ("discardStaleRimeInput", "clearComposition", "replaceMarkedTex
     if forbidden in text_will_change:
         raise AssertionError(f"host callbacks must delegate Rime ownership resolution: {forbidden}")
 
-space_cursor = block(keyboard, "@objc private func handleTextSpaceCursorGesture(")
+space_gesture = block(keyboard, "private func attachSpaceCursorGesture(")
+for required in (
+    "UIPanGestureRecognizer",
+    "minimumNumberOfTouches = 1",
+    "maximumNumberOfTouches = 1",
+    "recognizer.delegate = self",
+):
+    if required not in space_gesture:
+        raise AssertionError(f"space cursor gesture lost single-finger pan ownership: {required}")
+for forbidden in ("UILongPressGestureRecognizer", "minimumPressDuration", "allowableMovement"):
+    if forbidden in space_gesture:
+        raise AssertionError(f"space cursor gesture restored the unstable long-press path: {forbidden}")
+
+space_cursor = block(keyboard, "@objc private func handleTextSpaceCursorPan(")
 for forbidden in ("commitComposition", "commitDisplayedRimeCompositionIfNeeded", "clearComposition"):
     if forbidden in space_cursor:
         raise AssertionError(f"space trackpad must preserve marked Rime text: {forbidden}")
-if "setTextTrackpadMode(true)" not in space_cursor:
+if "setTextCursorMode(true)" not in space_cursor:
     raise AssertionError("space trackpad no longer enters cursor mode")
 
 text_return = block(keyboard, "private func handleTextReturn(")
@@ -1029,23 +1042,24 @@ for required in (
     if required not in trackpad_end:
         raise AssertionError(f"space trackpad end lost composition-aware candidate rendering: {required}")
 
-trackpad_cursor = block(keyboard, "private func updateTrackpadCursorPosition(")
+trackpad_cursor = block(keyboard, "private func updateTextCursorPosition(")
 for required in (
+    "switch textCursorOwnership",
+    "case .document:",
+    "case .rimeComposition:",
     "activeMarkedTextOwner == .rimeComposition",
     "KeyboardRimeInlineEditPolicy.partialCompositionSplit(",
     "targetOffset != endOffset",
     "caretOffset: targetOffset",
     "rimeInlineEditCaretOffset = nextOffset",
     "replaceMarkedText(",
-    "textDocumentProxy.adjustTextPosition(byCharacterOffset: deltaStepX)",
+    "textDocumentProxy.adjustTextPosition(byCharacterOffset: offset)",
 ):
     if required not in trackpad_cursor:
         raise AssertionError(f"space trackpad lost cursor routing: {required}")
 for forbidden in ("rimeInput.moveCaret",):
     if forbidden in trackpad_cursor:
         raise AssertionError(f"moving the display caret must not change Rime candidates: {forbidden}")
-if "else if !composition.isComposing" not in trackpad_cursor:
-    raise AssertionError("active Rime composition must never fall through to the host document cursor")
 if "rimeInput." in trackpad_cursor:
     raise AssertionError("trackpad movement must read the published projection without recapturing Rime")
 

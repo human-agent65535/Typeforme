@@ -86,6 +86,7 @@
 		B1000000000000000000005B /* ../Sources/Typeforme/Models/KeyboardCandidateWindowPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000005B /* ../Sources/Typeforme/Models/KeyboardCandidateWindowPolicy.swift */; };
 		B1000000000000000000005C /* ../Sources/Typeforme/Models/KeyboardRimeActivationPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000005C /* ../Sources/Typeforme/Models/KeyboardRimeActivationPolicy.swift */; };
 		B1000000000000000000005D /* ../Sources/Typeforme/Models/KeyboardCandidateStripGeometryPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000005D /* ../Sources/Typeforme/Models/KeyboardCandidateStripGeometryPolicy.swift */; };
+		B1000000000000000000005E /* ../Sources/Typeforme/Models/KeyboardCursorMotionPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000005E /* ../Sources/Typeforme/Models/KeyboardCursorMotionPolicy.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -171,6 +172,7 @@
 		A2000000000000000000005B /* ../Sources/Typeforme/Models/KeyboardCandidateWindowPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Sources/Typeforme/Models/KeyboardCandidateWindowPolicy.swift; sourceTree = SOURCE_ROOT; };
 		A2000000000000000000005C /* ../Sources/Typeforme/Models/KeyboardRimeActivationPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Sources/Typeforme/Models/KeyboardRimeActivationPolicy.swift; sourceTree = SOURCE_ROOT; };
 		A2000000000000000000005D /* ../Sources/Typeforme/Models/KeyboardCandidateStripGeometryPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Sources/Typeforme/Models/KeyboardCandidateStripGeometryPolicy.swift; sourceTree = SOURCE_ROOT; };
+		A2000000000000000000005E /* ../Sources/Typeforme/Models/KeyboardCursorMotionPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Sources/Typeforme/Models/KeyboardCursorMotionPolicy.swift; sourceTree = SOURCE_ROOT; };
 		A20000000000000000000059 /* ../Sources/Typeforme/Bridge/BridgeRouteRefreshState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Sources/Typeforme/Bridge/BridgeRouteRefreshState.swift; sourceTree = SOURCE_ROOT; };
 		A2000000000000000000005A /* ../Sources/Typeforme/Bridge/BridgeRouteValidationPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Sources/Typeforme/Bridge/BridgeRouteValidationPolicy.swift; sourceTree = SOURCE_ROOT; };
 		A20000000000000000000051 /* BridgeLivePreviewStreamer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BridgeLivePreviewStreamer.swift; sourceTree = "<group>"; };
@@ -335,6 +337,7 @@
 				A2000000000000000000005B /* ../Sources/Typeforme/Models/KeyboardCandidateWindowPolicy.swift */,
 				A2000000000000000000005C /* ../Sources/Typeforme/Models/KeyboardRimeActivationPolicy.swift */,
 				A2000000000000000000005D /* ../Sources/Typeforme/Models/KeyboardCandidateStripGeometryPolicy.swift */,
+				A2000000000000000000005E /* ../Sources/Typeforme/Models/KeyboardCursorMotionPolicy.swift */,
 				A20000000000000000000010 /* Shared/KeyboardBridgeModels.swift */,
 				A20000000000000000000020 /* Shared/DesignTokens.swift */,
 			);
@@ -610,6 +613,7 @@
 				B1000000000000000000005B /* ../Sources/Typeforme/Models/KeyboardCandidateWindowPolicy.swift in Sources */,
 				B1000000000000000000005C /* ../Sources/Typeforme/Models/KeyboardRimeActivationPolicy.swift in Sources */,
 				B1000000000000000000005D /* ../Sources/Typeforme/Models/KeyboardCandidateStripGeometryPolicy.swift in Sources */,
+				B1000000000000000000005E /* ../Sources/Typeforme/Models/KeyboardCursorMotionPolicy.swift in Sources */,
 				B10000000000000000000003 /* Shared/KeyboardBridgeModels.swift in Sources */,
 				B10000000000000000000020 /* Shared/DesignTokens.swift in Sources */,
 			);
@@ -774,7 +778,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = TypeformeIOS/TypeformeIOS.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 642;
+				CURRENT_PROJECT_VERSION = 643;
 				DEVELOPMENT_ASSET_PATHS = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = TypeformeIOS/Info.plist;
@@ -803,7 +807,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = TypeformeIOS/TypeformeIOS.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 642;
+				CURRENT_PROJECT_VERSION = 643;
 				DEVELOPMENT_ASSET_PATHS = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = TypeformeIOS/Info.plist;
@@ -831,7 +835,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = TypeformeKeyboard/TypeformeKeyboard.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 642;
+				CURRENT_PROJECT_VERSION = 643;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = TypeformeKeyboard/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
@@ -860,7 +864,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = TypeformeKeyboard/TypeformeKeyboard.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 642;
+				CURRENT_PROJECT_VERSION = 643;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = TypeformeKeyboard/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
