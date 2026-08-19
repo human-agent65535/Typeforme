@@ -12295,6 +12295,15 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         keyboardTouchOverlay.isUserInteractionEnabled = !enabled
         candidateScrollView.isUserInteractionEnabled = !enabled
         candidateGridScrollView.isUserInteractionEnabled = !enabled
+
+        // The space key still owns one continuous long-press gesture after the
+        // finger leaves its bounds, so the usable drag range is the full key
+        // surface. Dim that surface to expose the range without installing a
+        // second whole-keyboard pan recognizer that competes with normal input.
+        keyRowsStack.layer.removeAllAnimations()
+        candidateScrollView.layer.removeAllAnimations()
+        keyRowsStack.alpha = enabled ? 0.25 : 1
+        candidateScrollView.alpha = enabled ? 0.38 : 1
     }
 
     private func updateTextCursorPosition(byCharacterOffset offset: Int) {

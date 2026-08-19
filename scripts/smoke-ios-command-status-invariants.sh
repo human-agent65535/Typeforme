@@ -508,6 +508,16 @@ for forbidden in ("commitComposition", "commitDisplayedRimeCompositionIfNeeded",
 if "setTextCursorMode(true)" not in space_cursor:
     raise AssertionError("space trackpad no longer enters cursor mode")
 
+cursor_mode = block(keyboard, "private func setTextCursorMode(")
+for required in (
+    "keyRowsStack.alpha = enabled ? 0.25 : 1",
+    "candidateScrollView.alpha = enabled ? 0.38 : 1",
+):
+    if required not in cursor_mode:
+        raise AssertionError(f"space cursor mode lost its full-keyboard visual mask: {required}")
+if "textTrackpadPanRecognizer" in keyboard or "handleTextTrackpadPan" in keyboard:
+    raise AssertionError("space cursor mask must not restore a competing whole-keyboard pan recognizer")
+
 text_return = block(keyboard, "private func handleTextReturn(")
 if "commitDisplayedRimeCompositionIfNeeded()" not in text_return:
     raise AssertionError("Return must preserve a confirmed prefix and commit only the active suffix as raw input")
