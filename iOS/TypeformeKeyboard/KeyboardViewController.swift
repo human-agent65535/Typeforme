@@ -654,7 +654,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private static let darwinStartAckTimeout: TimeInterval = 0.45
     private static let startHandshakeCommandTTL: TimeInterval = 12
     private static let processedCommandLifecycleRevisionTTL: TimeInterval = 30
-    private static let textSpaceCursorPointsPerCharacter: CGFloat = 9
     private static let containingAppBundleIdentifier = TypeformeBundleConfiguration.hostBundleIdentifier
     private let deleteRepeatInitialDelay: UInt64 = 450_000_000
     private let deleteRepeatInterval: UInt64 = 70_000_000
@@ -6348,9 +6347,15 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func attachSpaceCursorGesture(to control: UIControl) {
-        let recognizer = UIPanGestureRecognizer(target: self, action: #selector(handleTextSpaceCursorPan(_:)))
-        recognizer.minimumNumberOfTouches = 1
-        recognizer.maximumNumberOfTouches = 1
+        let recognizer = UILongPressGestureRecognizer(
+            target: self,
+            action: #selector(handleTextSpaceCursorLongPress(_:))
+        )
+        recognizer.minimumPressDuration = 0.32
+        // Before activation, allow normal finger jitter but reject an immediate
+        // swipe. Once the hold begins, UILongPressGestureRecognizer continues
+        // tracking movement beyond the space key without a second pan owner.
+        recognizer.allowableMovement = 16
         recognizer.cancelsTouchesInView = true
         recognizer.delegate = self
         control.addGestureRecognizer(recognizer)
@@ -8506,14 +8511,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-        if let recognizer = gestureRecognizer as? UIPanGestureRecognizer,
+        if gestureRecognizer is UILongPressGestureRecognizer,
            gestureRecognizer.view === textSpaceKeyButton {
-            guard resolvedTextCursorOwnership() != nil else { return false }
-            let translation = recognizer.translation(in: gestureRecognizer.view)
-            return KeyboardCursorMotionPolicy.isHorizontalIntent(
-                translationX: Double(translation.x),
-                translationY: Double(translation.y)
-            )
+            return resolvedTextCursorOwnership() != nil
         }
         return true
     }
@@ -12237,11 +12237,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         return nil
     }
 
-    @objc private func handleTextSpaceCursorPan(_ recognizer: UIPanGestureRecognizer) {
+    @objc private func handleTextSpaceCursorLongPress(_ recognizer: UILongPressGestureRecognizer) {
         guard keyboardFocus == .text,
               let keyView = recognizer.view
         else { return }
 
+        let location = recognizer.location(in: textKeyboardContainer)
         switch recognizer.state {
         case .began:
             discardRimeInputIfDocumentChanged()
@@ -12249,22 +12250,18 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             isTextSpaceCursorTracking = true
             textCursorOwnership = ownership
             activeTextCursorSourceView = keyView
-            textCursorMotionState.reset()
+            // The hold location is the zero point. Pre-activation finger jitter
+            // must never become an immediate caret jump when the timer fires.
+            textCursorMotionState.reset(at: Double(location.x))
             setTextCursorMode(true)
             keyboardHaptics.playSelectionChanged()
             keyView.layer.removeAllAnimations()
             keyView.alpha = 0.72
             keyView.transform = CGAffineTransform(scaleX: 0.98, y: 0.98)
-            let translation = recognizer.translation(in: textKeyboardContainer)
-            let initialStep = textCursorMotionState.cursorStep(
-                forTranslationX: Double(translation.x)
-            )
-            updateTextCursorPosition(byCharacterOffset: initialStep)
         case .changed:
             guard isTextSpaceCursorTracking else { return }
-            let translation = recognizer.translation(in: textKeyboardContainer)
             let step = textCursorMotionState.cursorStep(
-                forTranslationX: Double(translation.x)
+                forTranslationX: Double(location.x)
             )
             updateTextCursorPosition(byCharacterOffset: step)
         case .ended, .cancelled, .failed:

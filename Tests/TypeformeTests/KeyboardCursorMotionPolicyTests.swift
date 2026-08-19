@@ -3,14 +3,6 @@ import Testing
 
 @Suite("Keyboard cursor motion")
 struct KeyboardCursorMotionPolicyTests {
-    @Test("Only a deliberate horizontal drag starts cursor control")
-    func horizontalIntent() {
-        #expect(!KeyboardCursorMotionPolicy.isHorizontalIntent(translationX: 7.9, translationY: 0))
-        #expect(!KeyboardCursorMotionPolicy.isHorizontalIntent(translationX: 12, translationY: 10))
-        #expect(KeyboardCursorMotionPolicy.isHorizontalIntent(translationX: 14, translationY: 4))
-        #expect(KeyboardCursorMotionPolicy.isHorizontalIntent(translationX: -14, translationY: 4))
-    }
-
     @Test("Slow travel accumulates into stable character steps")
     func accumulatesTravel() {
         var state = KeyboardCursorMotionPolicy.State()
@@ -40,13 +32,13 @@ struct KeyboardCursorMotionPolicyTests {
         #expect(state.cursorStep(forTranslationX: 0) == -1)
     }
 
-    @Test("Reset discards travel from the previous gesture")
-    func resetStartsANewGesture() {
+    @Test("The hold location becomes the new movement origin")
+    func resetStartsAtHoldLocation() {
         var state = KeyboardCursorMotionPolicy.State()
 
         #expect(state.cursorStep(forTranslationX: 13) == 0)
-        state.reset()
-        #expect(state.cursorStep(forTranslationX: 1) == 0)
-        #expect(state.cursorStep(forTranslationX: 14) == 1)
+        state.reset(at: 120)
+        #expect(state.cursorStep(forTranslationX: 121) == 0)
+        #expect(state.cursorStep(forTranslationX: 134) == 1)
     }
 }

@@ -483,18 +483,25 @@ for forbidden in ("discardStaleRimeInput", "clearComposition", "replaceMarkedTex
 
 space_gesture = block(keyboard, "private func attachSpaceCursorGesture(")
 for required in (
-    "UIPanGestureRecognizer",
-    "minimumNumberOfTouches = 1",
-    "maximumNumberOfTouches = 1",
+    "UILongPressGestureRecognizer",
+    "minimumPressDuration = 0.32",
+    "allowableMovement = 16",
     "recognizer.delegate = self",
 ):
     if required not in space_gesture:
-        raise AssertionError(f"space cursor gesture lost single-finger pan ownership: {required}")
-for forbidden in ("UILongPressGestureRecognizer", "minimumPressDuration", "allowableMovement"):
+        raise AssertionError(f"space cursor gesture lost hold-then-drag activation: {required}")
+for forbidden in ("UIPanGestureRecognizer", "minimumNumberOfTouches", "maximumNumberOfTouches"):
     if forbidden in space_gesture:
-        raise AssertionError(f"space cursor gesture restored the unstable long-press path: {forbidden}")
+        raise AssertionError(f"space cursor gesture restored competing pan activation: {forbidden}")
 
-space_cursor = block(keyboard, "@objc private func handleTextSpaceCursorPan(")
+space_cursor = block(keyboard, "@objc private func handleTextSpaceCursorLongPress(")
+for required in (
+    "let location = recognizer.location(in: textKeyboardContainer)",
+    "textCursorMotionState.reset(at: Double(location.x))",
+    "forTranslationX: Double(location.x)",
+):
+    if required not in space_cursor:
+        raise AssertionError(f"space cursor movement lost the long-press origin: {required}")
 for forbidden in ("commitComposition", "commitDisplayedRimeCompositionIfNeeded", "clearComposition"):
     if forbidden in space_cursor:
         raise AssertionError(f"space trackpad must preserve marked Rime text: {forbidden}")
