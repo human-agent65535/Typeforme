@@ -7899,13 +7899,32 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     private func currentWholeInputRewriteTarget() -> TextRewriteTarget? {
         prepareWholeInputRewriteTargetCapture()
-        guard let contextTarget = currentExpandedContextRewriteTarget() else { return nil }
+        let contextBefore = textDocumentProxy.documentContextBeforeInput
+        let selectedText = textDocumentProxy.selectedText
+        let contextAfter = textDocumentProxy.documentContextAfterInput
+        let source = KeyboardWholeInputRewritePolicy.source(
+            contextBefore: contextBefore,
+            selectedText: selectedText,
+            contextAfter: contextAfter
+        )
+
+        let target: TextRewriteTarget
+        switch source {
+        case .selectedText:
+            guard let selectedText else { return nil }
+            target = captureSelectionTarget(selectedText)
+        case .surroundingContext:
+            guard let contextTarget = currentExpandedContextRewriteTarget() else { return nil }
+            target = contextTarget
+        case nil:
+            return nil
+        }
         KeyboardDiagnosticEventLog.record(
             source: "keyboard-ui",
             event: "whole_input_rewrite_target_captured",
-            fields: contextTarget.diagnosticFields
+            fields: target.diagnosticFields
         )
-        return contextTarget
+        return target
     }
 
     private func prepareWholeInputRewriteTargetCapture() {
