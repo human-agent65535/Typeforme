@@ -416,7 +416,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         async let qwenShutdown: Void = ASRFactory.shared.stopQwenLlama()
         async let nvidiaShutdown: Void = ASRFactory.shared.stopNvidiaNemotron()
         async let correctorShutdown: Void = CorrectorFactory.shared.shutdownAll()
-        _ = await (qwenShutdown, nvidiaShutdown, correctorShutdown)
+        async let aiWritingShutdown: Void = AIWritingDecoderService.shared.shutdown()
+        _ = await (qwenShutdown, nvidiaShutdown, correctorShutdown, aiWritingShutdown)
     }
 
     private func applyProcessingMode(_ mode: ProcessingMode) {

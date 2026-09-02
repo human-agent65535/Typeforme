@@ -1,0 +1,234 @@
+[
+  {
+    "id": "reported_legal_swap",
+    "input": "nishuonanshuobunanshou",
+    "expected_for_review": "你说难受不难受",
+    "group": "existing_diagnostic"
+  },
+  {
+    "id": "legal_swap_clean_control",
+    "input": "nishuonanshoubunanshou",
+    "expected_for_review": "你说难受不难受",
+    "group": "existing_diagnostic"
+  },
+  {
+    "id": "reported_clause",
+    "input": "lanya zhenggubodongshaojiushuhule",
+    "expected_for_review": "懒呀 正股波动少就疏忽了",
+    "group": "existing_diagnostic"
+  },
+  {
+    "id": "reported_mixed",
+    "input": "landuo坏了大事",
+    "expected_for_review": "懒惰坏了大事",
+    "group": "existing_diagnostic"
+  },
+  {
+    "id": "reported_uppercase",
+    "input": "Landuohuailedashi",
+    "expected_for_review": "懒惰坏了大事",
+    "group": "existing_diagnostic"
+  },
+  {
+    "id": "reported_near_key",
+    "input": "nihaima",
+    "expected_for_review": "你好吗",
+    "group": "existing_diagnostic"
+  },
+  {
+    "id": "correct_control",
+    "input": "qingba chuanghu guanshang",
+    "expected_for_review": "请把 窗户 关上",
+    "group": "existing_diagnostic"
+  },
+  {
+    "id": "substitution",
+    "input": "qingba chuanhhu guanshang",
+    "expected_for_review": "请把 窗户 关上",
+    "group": "existing_diagnostic"
+  },
+  {
+    "id": "deletion",
+    "input": "womenxiawuliangdiankaiui",
+    "expected_for_review": "我们下午两点开会",
+    "group": "existing_diagnostic",
+    "context_before": "会议室已经订好了，"
+  },
+  {
+    "id": "transposition",
+    "input": "qingba wenjina fachulai",
+    "expected_for_review": "请把 文件 发出来",
+    "group": "existing_diagnostic"
+  },
+  {
+    "id": "repetition",
+    "input": "woxiangdingmingttiandechepiao",
+    "expected_for_review": "我想订明天的车票",
+    "group": "existing_diagnostic"
+  },
+  {
+    "id": "valid_hai_control",
+    "input": "zhezhihaimazhenhaokan",
+    "expected_for_review": "这只海马真好看",
+    "group": "existing_diagnostic"
+  },
+  {
+    "id": "negation",
+    "input": "wobushibuyao shixianzaiyongbushang",
+    "expected_for_review": "我不是不要 是现在用不上",
+    "group": "existing_diagnostic"
+  },
+  {
+    "id": "draft_context",
+    "input": "手机先别关， dengwobeifenwan",
+    "expected_for_review": "手机先别关， 等我备份完",
+    "group": "existing_diagnostic"
+  },
+  {
+    "id": "where_question",
+    "input": "nibashujufangzainali?",
+    "expected_for_review": "你把数据放在哪里？",
+    "group": "existing_diagnostic"
+  },
+  {
+    "id": "there_statement",
+    "input": "wojiuzainalidengni",
+    "expected_for_review": "我就在那里等你",
+    "group": "existing_diagnostic"
+  },
+  {
+    "id": "english_only",
+    "input": "Can you review this patch?",
+    "expected_for_review": "Can you review this patch?",
+    "group": "existing_diagnostic"
+  },
+  {
+    "id": "english_mixed",
+    "input": "wo yong Python xie jiaoben",
+    "expected_for_review": "我 用 Python 写 脚本",
+    "group": "existing_diagnostic"
+  },
+  {
+    "id": "identifier_mixed",
+    "input": "zhegeAPIhai没接好",
+    "expected_for_review": "这个API还没接好",
+    "group": "existing_diagnostic"
+  },
+  {
+    "id": "code",
+    "input": "请检查 `retry_count += 1` ranhouhuifuwo",
+    "expected_for_review": "请检查 `retry_count += 1` 然后回复我",
+    "group": "existing_diagnostic"
+  },
+  {
+    "id": "url_and_time",
+    "input": "mingtian09:45ba https://example.com/a?q=2 fazaiqunli",
+    "expected_for_review": "明天09:45把 https://example.com/a?q=2 发在群里",
+    "group": "existing_diagnostic"
+  },
+  {
+    "id": "auto_capitalized",
+    "input": "Jintianwanfanwoqingke",
+    "expected_for_review": "今天晚饭我请客",
+    "group": "existing_diagnostic"
+  },
+  {
+    "id": "dictionary_hint",
+    "input": "Moningqingquerenyixia",
+    "expected_for_review": "莫宁请确认一下",
+    "group": "existing_diagnostic",
+    "vocabulary_candidates": [
+      {
+        "type": "person",
+        "surface": "莫宁",
+        "speech_hint": "mo ning",
+        "matched_span": "Moning"
+      }
+    ]
+  },
+  {
+    "id": "segmentation_ambiguity",
+    "input": "这个设计不错， fangankeyidingxia",
+    "expected_for_review": "这个设计不错， 方案可以定下",
+    "group": "existing_diagnostic"
+  },
+  {
+    "id": "numbers_auto",
+    "input": "womaile36gebenzi,  meige4.5yuan.",
+    "expected_for_review": "我买了36个本子，  每个4.5元。",
+    "group": "existing_diagnostic",
+    "numbers": "auto"
+  },
+  {
+    "id": "fresh_cafe_clean",
+    "input": "woxiangmaiyibeikafei",
+    "expected_for_review": "我想买一杯咖啡",
+    "group": "new_validation"
+  },
+  {
+    "id": "fresh_cafe_swap",
+    "input": "woxiangmaiiybeikafei",
+    "expected_for_review": "我想买一杯咖啡",
+    "group": "new_validation"
+  },
+  {
+    "id": "fresh_park_clean",
+    "input": "woxiangqugongyuan sanbu",
+    "expected_for_review": "我想去公园 散步",
+    "group": "new_validation"
+  },
+  {
+    "id": "fresh_park_swap",
+    "input": "woxiangqugognyuan sanbu",
+    "expected_for_review": "我想去公园 散步",
+    "group": "new_validation"
+  },
+  {
+    "id": "fresh_home_clean",
+    "input": "mingtianwohuizaijia bangong",
+    "expected_for_review": "明天我会在家 办公",
+    "group": "new_validation"
+  },
+  {
+    "id": "fresh_home_missing",
+    "input": "mingtianwohuizaija bangong",
+    "expected_for_review": "明天我会在家 办公",
+    "group": "new_validation"
+  },
+  {
+    "id": "fresh_negation",
+    "input": "zhejian shiqing xianbie gaosu tamen",
+    "expected_for_review": "这件 事情 先别 告诉 他们",
+    "group": "new_validation"
+  },
+  {
+    "id": "fresh_english",
+    "input": "I will review it tomorrow",
+    "expected_for_review": "I will review it tomorrow",
+    "group": "new_validation"
+  },
+  {
+    "id": "fresh_filename",
+    "input": "qingbuyao shanchu backup_2026.zip",
+    "expected_for_review": "请不要 删除 backup_2026.zip",
+    "group": "new_validation"
+  },
+  {
+    "id": "fresh_context",
+    "input": "这个模块还在测试， xianbiehebing",
+    "expected_for_review": "这个模块还在测试， 先别合并",
+    "group": "new_validation"
+  },
+  {
+    "id": "fresh_repeat",
+    "input": "qingbangwo dakai chuannghu",
+    "expected_for_review": "请帮我 打开 窗户",
+    "group": "new_validation"
+  },
+  {
+    "id": "fresh_question",
+    "input": "niweishenme haimeishuijiao",
+    "expected_for_review": "你为什么 还没睡觉",
+    "group": "new_validation"
+  }
+]

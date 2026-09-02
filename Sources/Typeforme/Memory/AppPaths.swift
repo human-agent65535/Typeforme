@@ -24,6 +24,8 @@ enum AppPaths {
     static let qwen3ASRModelsDir: URL  = modelsDir.appendingPathComponent("Qwen3ASR",              isDirectory: true)
     static let nvidiaNemotronModelsDir: URL = modelsDir.appendingPathComponent("NvidiaNemotron",    isDirectory: true)
     static let promptsDir: URL         = appSupportDir.appendingPathComponent("prompts",           isDirectory: true)
+    static let aiWritingDir: URL       = appSupportDir.appendingPathComponent("ai-writing", isDirectory: true)
+    static let aiWritingRuntimeFile: URL = aiWritingDir.appendingPathComponent("runtime.json")
     static let bridgeDir: URL          = appSupportDir.appendingPathComponent("Bridge",            isDirectory: true)
     static let asrWorkDir: URL         = appSupportDir.appendingPathComponent("ASRWork",           isDirectory: true)
     static let logsDir: URL            = appSupportDir.appendingPathComponent("Logs",              isDirectory: true)

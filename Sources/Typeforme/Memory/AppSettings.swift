@@ -62,6 +62,7 @@ enum AppSettings {
 
         // Correction
         static let correctionBackend       = "correction.backend"   // CorrectionBackendKind raw
+        static let aiWritingBackend        = "aiWriting.backend"
         static let correctionTimeoutMs     = "correction.timeoutMs"
         static let correctionColdTimeoutMs = "correction.coldTimeoutMs"
         static let correctionMaxTokens     = "correction.maxTokens"
@@ -140,6 +141,7 @@ enum AppSettings {
             Keys.asrQwenLlamaMMProjDownloadURL: "https://huggingface.co/ggml-org/Qwen3-ASR-0.6B-GGUF/resolve/main/mmproj-Qwen3-ASR-0.6B-Q8_0.gguf?download=true",
 
             Keys.correctionBackend:       CorrectionBackendKind.qwen35_4B.rawValue,
+            Keys.aiWritingBackend:        AIWritingBackend.languageModel.rawValue,
             Keys.correctionTimeoutMs:     1500,
             Keys.correctionColdTimeoutMs: 30000,
             Keys.correctionMaxTokens:     128,
@@ -255,6 +257,7 @@ enum AppSettings {
         Keys.asrQwenLlamaModelDownloadURL,
         Keys.asrQwenLlamaMMProjDownloadURL,
         Keys.correctionBackend,
+        Keys.aiWritingBackend,
         Keys.correctionTimeoutMs,
         Keys.correctionColdTimeoutMs,
         Keys.correctionMaxTokens,
@@ -446,6 +449,9 @@ enum AppSettings {
 
     static var correctionBackend: CorrectionBackendKind {
         rawSetting(forKey: Keys.correctionBackend, default: .qwen35_4B)
+    }
+    static var aiWritingBackend: AIWritingBackend {
+        rawSetting(forKey: Keys.aiWritingBackend, default: .languageModel)
     }
     static var correctionTimeoutMs: Int     { max(100, ud.integer(forKey: Keys.correctionTimeoutMs)) }
     static var correctionColdTimeoutMs: Int { max(1000, ud.integer(forKey: Keys.correctionColdTimeoutMs)) }

@@ -80,3 +80,14 @@
 "Could not save the AI Writing prompt." = "Could not save the AI Writing prompt.";
 "Could not reset the AI Writing prompt." = "Could not reset the AI Writing prompt.";
 "Correction prompt" = "Correction prompt";
+"AI Writing backend" = "AI Writing backend";
+"Language model prompt" = "Language model prompt";
+"Pinyin decoder (Rime + Qwen)" = "Pinyin decoder (Rime + Qwen)";
+"Correct spelling, generate Rime candidates, then rank with Qwen. AI Writing is enabled from the iOS keyboard." = "Correct spelling, generate Rime candidates, then rank with Qwen. AI Writing is enabled from the iOS keyboard.";
+"Decoder runtime is not installed." = "Decoder runtime is not installed.";
+"Choose decoder runtime…" = "Choose decoder runtime…";
+"This backend scores candidates locally. The AI Writing prompt is used by the language model backend." = "This backend scores candidates locally. The AI Writing prompt is used by the language model backend.";
+"The AI Writing decoder runtime is missing or incomplete. Install the decoder runtime on this Mac before converting." = "The AI Writing decoder runtime is missing or incomplete. Install the decoder runtime on this Mac before converting.";
+"AI Writing is already converting a draft. Please try again when it finishes." = "AI Writing is already converting a draft. Please try again when it finishes.";
+"AI Writing timed out. Your draft has not been replaced." = "AI Writing timed out. Your draft has not been replaced.";
+"AI Writing could not safely decode this draft. Your input has not been replaced." = "AI Writing could not safely decode this draft. Your input has not been replaced.";

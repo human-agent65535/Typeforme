@@ -57,6 +57,8 @@ fi
 . "$ROOT/scripts/lib/xcode-tools.sh"
 # shellcheck source=scripts/lib/macho-bundle.sh
 . "$ROOT/scripts/lib/macho-bundle.sh"
+# shellcheck source=scripts/lib/macos-signing.sh
+. "$ROOT/scripts/lib/macos-signing.sh"
 typeforme_configure_xcode "build Typeforme"
 
 TYPEFORME_BUNDLE_PREFIX="${TYPEFORME_BUNDLE_PREFIX:-com.example}"
@@ -204,30 +206,10 @@ for lproj in "$ROOT/Resources"/*.lproj; do
     cp -R "$lproj" "$RES_DIR/"
 done
 
-find_codesign_identity() {
-    local prefix="$1"
-    local identities preferred
-    identities="$(security find-identity -p codesigning -v 2>/dev/null \
-        | sed -n "s/.*\"\(${prefix}[^\"]*\)\".*/\1/p" \
-        || true)"
-    if [ "$prefix" = "Apple Development:" ]; then
-        # Prefer modern person-name development certificates over older
-        # email-labelled ones. The latter can linger in the keychain after
-        # revocation and still pass `security find-identity`, then helpers get
-        # killed at runtime by Gatekeeper.
-        preferred="$(printf '%s\n' "$identities" | grep -v '@' | head -n 1 || true)"
-        if [ -n "$preferred" ]; then
-            printf '%s\n' "$preferred"
-            return
-        fi
-    fi
-    printf '%s\n' "$identities" | head -n 1
-}
-
 select_default_sign_identity() {
     local identity=""
     if [ "$CONFIG" = "release" ]; then
-        identity="$(find_codesign_identity "Developer ID Application:")"
+        identity="$(typeforme_find_codesign_identity "Developer ID Application:")"
         [ -n "$identity" ] && { printf '%s\n' "$identity"; return; }
 
         cat >&2 <<EOF
@@ -245,7 +227,7 @@ EOF
         exit 2
     fi
 
-    identity="$(find_codesign_identity "Apple Development:")"
+    identity="$(typeforme_find_codesign_identity "Apple Development:")"
     [ -n "$identity" ] && { printf '%s\n' "$identity"; return; }
 
     printf '%s\n' "-"

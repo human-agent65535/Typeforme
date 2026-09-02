@@ -3,9 +3,11 @@ import Foundation
 @MainActor
 final class TextEditService {
     private let dictionary: UserDictionaryStore
+    private let aiWritingDecoder: any AIWritingDecoding
 
-    init(dictionary: UserDictionaryStore) {
+    init(dictionary: UserDictionaryStore, aiWritingDecoder: any AIWritingDecoding = AIWritingDecoderService.shared) {
         self.dictionary = dictionary
+        self.aiWritingDecoder = aiWritingDecoder
     }
 
     func edit(
@@ -159,6 +161,18 @@ final class TextEditService {
         _ request: TextEditRequest,
         configuration: CorrectionSessionConfiguration
     ) async throws -> TextEditResult {
+        if request.intent == .pinyinToChinese,
+           case .pinyinDecoder(let runtime) = configuration.aiWriting {
+            guard let runtime else { throw AIWritingDecoderError.unavailable }
+            let segments = try await aiWritingDecoder.decode(request, configuration: runtime)
+            let formatted = try segments.map {
+                try AIWritingOutputFormatter.format($0, numbers: request.numberOutputPreference, punctuation: request.punctuationPreference)
+            }
+            let data = try JSONSerialization.data(withJSONObject: [
+                "action": "replace_target", "converted_segments": formatted,
+            ])
+            return try TextEditValidator.parseAndValidate(rawOutput: String(decoding: data, as: UTF8.self), for: request)
+        }
         let (system, user) = TextEditPromptBuilder.build(for: request)
         let output = try await configuration.corrector.complete(
             system: system,

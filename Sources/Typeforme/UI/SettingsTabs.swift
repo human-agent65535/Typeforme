@@ -3894,6 +3894,9 @@ private struct ModelDownloadRow: View {
 
 /// In-app editor for the base system prompt and per-mode addendum.
 struct PromptsSettingsView: View {
+    @AppStorage(AppSettings.Keys.aiWritingBackend) private var aiWritingBackend: AIWritingBackend = .languageModel
+    @State private var decoderRuntime: AIWritingDecoderConfiguration?
+    @State private var decoderError: String?
     @State private var pinyinPromptText: String = ""
     @State private var originalPinyinPromptText: String = ""
     @State private var pinyinHasOverride = false
@@ -3913,27 +3916,56 @@ struct PromptsSettingsView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                promptHeader(
-                    title: "AI Writing prompt",
-                    hasOverride: pinyinHasOverride,
-                    isDirty: pinyinIsDirty,
-                    reset: resetPinyinOverride
-                )
-
-                promptEditor(text: $pinyinPromptText, minHeight: 160)
-
-                HStack(alignment: .top) {
-                    Text("Converts pinyin from the iOS keyboard into Chinese. Changes apply to the next AI Writing request.")
+                Picker("AI Writing backend", selection: $aiWritingBackend) {
+                    ForEach(AIWritingBackend.allCases) { backend in
+                        Text(LocalizedStringKey(backend.displayName)).tag(backend)
+                    }
+                }
+                if aiWritingBackend == .pinyinDecoder {
+                    Text("Correct spelling, generate Rime candidates, then rank with Qwen. AI Writing is enabled from the iOS keyboard.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
-                    Spacer()
-                    Button("Save") { savePinyinOverride() }
-                        .disabled(!pinyinIsDirty || trimmed(pinyinPromptText).isEmpty)
-                }
-                if let pinyinPromptError {
-                    Text(pinyinPromptError)
+                    HStack {
+                        if let decoderRuntime {
+                            Text(URL(fileURLWithPath: decoderRuntime.model).lastPathComponent)
+                                .font(.footnote)
+                                .lineLimit(2)
+                        } else {
+                            Text("Decoder runtime is not installed.")
+                                .foregroundStyle(.orange)
+                        }
+                        Spacer()
+                        Button("Choose decoder runtime…") { chooseDecoderRuntime() }
+                    }
+                    Text("This backend scores candidates locally. The AI Writing prompt is used by the language model backend.")
                         .font(.footnote)
-                        .foregroundStyle(.red)
+                        .foregroundStyle(.secondary)
+                    if let decoderError {
+                        Text(decoderError).font(.footnote).foregroundStyle(.red)
+                    }
+                } else {
+                    promptHeader(
+                        title: "AI Writing prompt",
+                        hasOverride: pinyinHasOverride,
+                        isDirty: pinyinIsDirty,
+                        reset: resetPinyinOverride
+                    )
+
+                    promptEditor(text: $pinyinPromptText, minHeight: 160)
+
+                    HStack(alignment: .top) {
+                        Text("Converts pinyin from the iOS keyboard into Chinese. Changes apply to the next AI Writing request.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Save") { savePinyinOverride() }
+                            .disabled(!pinyinIsDirty || trimmed(pinyinPromptText).isEmpty)
+                    }
+                    if let pinyinPromptError {
+                        Text(pinyinPromptError)
+                            .font(.footnote)
+                            .foregroundStyle(.red)
+                    }
                 }
 
                 Divider()
@@ -3986,6 +4018,7 @@ struct PromptsSettingsView: View {
             .padding(18)
         }
         .onAppear {
+            loadDecoderRuntime()
             loadPinyinPrompt()
             loadSystemPrompt()
             loadModePrompt()
@@ -3993,6 +4026,12 @@ struct PromptsSettingsView: View {
         .onChange(of: correctionMode) { oldMode, _ in
             stashModeDraft(for: oldMode)
             loadModePrompt()
+        }
+        .onChange(of: aiWritingBackend) { _, backend in
+            loadDecoderRuntime()
+            if backend == .languageModel {
+                Task { await AIWritingDecoderService.shared.releaseWhenIdle() }
+            }
         }
         // ⌘S saves whichever prompt editors have unsaved changes; per-editor
         // shortcuts would collide on the same key.
@@ -4011,6 +4050,32 @@ struct PromptsSettingsView: View {
 
     private var pinyinIsDirty: Bool {
         pinyinPromptText != originalPinyinPromptText
+    }
+
+    private func loadDecoderRuntime() {
+        decoderRuntime = try? AIWritingDecoderConfiguration.load()
+        if let decoderRuntime, (try? decoderRuntime.validate()) == nil {
+            self.decoderRuntime = nil
+        }
+    }
+
+    private func chooseDecoderRuntime() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.json]
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = AppPaths.aiWritingDir
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            let runtime = try AIWritingDecoderConfiguration.load(from: url)
+            try runtime.validate()
+            try FileManager.default.createDirectory(at: AppPaths.aiWritingDir, withIntermediateDirectories: true)
+            try JSONEncoder().encode(runtime).write(to: AppPaths.aiWritingRuntimeFile, options: .atomic)
+            decoderRuntime = runtime
+            decoderError = nil
+        } catch {
+            decoderError = AIWritingDecoderError.unavailable.localizedDescription
+        }
     }
 
     private var systemIsDirty: Bool {

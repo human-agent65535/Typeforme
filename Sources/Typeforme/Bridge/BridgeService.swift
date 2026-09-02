@@ -1316,10 +1316,12 @@ final class BridgeService {
         let jobID = BridgeClientJobID.normalized(request.clientJobID)
         let intent = try resolveTextEditIntent(request.intent)
         let contextBefore = request.contextBefore ?? ""
-        let targetText = request.targetText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let targetText = intent == .pinyinToChinese
+            ? (request.targetText ?? "")
+            : (request.targetText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "")
         let contextAfter = request.contextAfter ?? ""
         let spokenInstruction = request.spokenInstruction?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard !targetText.isEmpty else {
+        guard !targetText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw BridgeServiceError.invalidRequest("target_text is required")
         }
         guard intent == .pinyinToChinese || !spokenInstruction.isEmpty else {

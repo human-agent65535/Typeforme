@@ -80,6 +80,7 @@ struct CorrectionSessionConfiguration: Sendable {
     let punctuationPreference: PunctuationOutputPreference
     let timeoutMs: Int
     let userDictionary: [DictionaryEntry]
+    var aiWriting: AIWritingSessionConfiguration = .languageModel
 
     @MainActor
     static func capture(
@@ -92,7 +93,8 @@ struct CorrectionSessionConfiguration: Sendable {
             numberOutputPreference: AppSettings.numberOutputPreference,
             punctuationPreference: AppSettings.punctuationPreference,
             timeoutMs: AppSettings.correctionTimeoutMs,
-            userDictionary: userDictionary
+            userDictionary: userDictionary,
+            aiWriting: .capture()
         )
     }
 }

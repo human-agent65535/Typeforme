@@ -78,3 +78,14 @@
 "Could not save the AI Writing prompt." = "无法保存 AI 写字提示词。";
 "Could not reset the AI Writing prompt." = "无法恢复 AI 写字默认提示词。";
 "Correction prompt" = "纠错提示词";
+"AI Writing backend" = "AI 写字后端";
+"Language model prompt" = "模型提示词";
+"Pinyin decoder (Rime + Qwen)" = "拼音解码（Rime + Qwen）";
+"Correct spelling, generate Rime candidates, then rank with Qwen. AI Writing is enabled from the iOS keyboard." = "先纠正拼写、生成 Rime 候选，再由 Qwen 评分。AI 写字模式仍在 iOS 键盘上开启。";
+"Decoder runtime is not installed." = "尚未安装拼音解码运行文件。";
+"Choose decoder runtime…" = "选择解码运行文件…";
+"This backend scores candidates locally. The AI Writing prompt is used by the language model backend." = "此后端在本地对候选评分。AI 写字提示词仅在“模型提示词”后端生效。";
+"The AI Writing decoder runtime is missing or incomplete. Install the decoder runtime on this Mac before converting." = "AI 写字解码运行文件缺失或不完整，请先在这台 Mac 上安装。";
+"AI Writing is already converting a draft. Please try again when it finishes." = "AI 写字正在转换另一段输入，请完成后再试。";
+"AI Writing timed out. Your draft has not been replaced." = "AI 写字超时，原始输入已保留。";
+"AI Writing could not safely decode this draft. Your input has not been replaced." = "AI 写字无法可靠地解码这段输入，原始输入已保留。";
