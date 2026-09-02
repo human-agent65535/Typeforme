@@ -3894,7 +3894,6 @@ private struct ModelDownloadRow: View {
 
 /// In-app editor for the base system prompt and per-mode addendum.
 struct PromptsSettingsView: View {
-    @AppStorage(AppSettings.Keys.promptAdditionalSystem) private var additionalSystemPrompt: String = ""
     @State private var pinyinPromptText: String = ""
     @State private var originalPinyinPromptText: String = ""
     @State private var pinyinHasOverride = false
@@ -3983,27 +3982,6 @@ struct PromptsSettingsView: View {
                     Button("Save") { saveModeOverride() }
                         .disabled(!modeIsDirty || trimmed(modePromptText).isEmpty)
                 }
-
-                Divider()
-
-                HStack(spacing: 6) {
-                    Image(systemName: "text.badge.plus")
-                        .foregroundStyle(trimmed(additionalSystemPrompt).isEmpty ? Color.secondary : Color.accentColor)
-                    Text("User prompt")
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Button("Clear") { additionalSystemPrompt = "" }
-                        .controlSize(.small)
-                        .disabled(trimmed(additionalSystemPrompt).isEmpty)
-                }
-                .font(.callout)
-
-                promptEditor(text: $additionalSystemPrompt, minHeight: 86)
-                    .frame(maxHeight: 120)
-
-                Text("Personal preferences appended after system and mode prompts for every correction request.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
             }
             .padding(18)
         }

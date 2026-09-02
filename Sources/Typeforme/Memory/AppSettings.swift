@@ -83,7 +83,6 @@ enum AppSettings {
 
         // Prompts
         static let promptOverrideFolder = "prompts.overrideFolder"
-        static let promptAdditionalSystem = "prompts.additionalSystem"
 
         // Processing role
         static let processingMode      = "processing.mode"
@@ -163,7 +162,6 @@ enum AppSettings {
             Keys.externalLLMModel:        "",
 
             Keys.promptOverrideFolder: AppPaths.promptsDir.path,
-            Keys.promptAdditionalSystem: "",
 
             Keys.processingMode:    ProcessingMode.client.rawValue,
             Keys.clientLocalBridgeURLs: "",
@@ -275,7 +273,6 @@ enum AppSettings {
         Keys.externalLLMBaseURL,
         Keys.externalLLMModel,
         Keys.promptOverrideFolder,
-        Keys.promptAdditionalSystem,
         Keys.bridgeEnabled,
         Keys.bridgeLANEnabled,
         Keys.bridgeLANAdapter,
@@ -511,9 +508,6 @@ enum AppSettings {
 
     static var promptOverrideFolder: URL {
         URL(fileURLWithPath: ud.string(forKey: Keys.promptOverrideFolder) ?? AppPaths.promptsDir.path)
-    }
-    static var promptAdditionalSystem: String {
-        ud.string(forKey: Keys.promptAdditionalSystem) ?? ""
     }
 
     static var processingMode: ProcessingMode {

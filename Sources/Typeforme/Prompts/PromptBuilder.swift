@@ -74,7 +74,7 @@ enum PromptBuilder {
         let systemPrompt = PromptOverrideStore.readSystemPrompt() ?? BuiltInPrompts.baseSystem
         let modePrompt = PromptOverrideStore.readModePrompt(for: request.correctionMode)
             ?? BuiltInPrompts.modePrompt(request.correctionMode)
-        var parts = [
+        let parts = [
             systemPrompt,
             modePrompt,
             OutputPreferencePrompt.systemPrompt(
@@ -83,15 +83,6 @@ enum PromptBuilder {
             ),
         ]
 
-        let additional = AppSettings.promptAdditionalSystem.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !additional.isEmpty {
-            parts.append("""
-            <user_preferences>
-            Follow these preferences when they do not conflict with the core editing rules:
-            \(additional)
-            </user_preferences>
-            """)
-        }
         return parts.joined(separator: "\n\n")
     }
 
