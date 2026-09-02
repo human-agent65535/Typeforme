@@ -51,8 +51,11 @@ struct PinyinTextEditTests {
         let prompt = TextEditPromptBuilder.build(for: makeRequest("nihaoma"))
         let json = try #require(prompt.user.components(separatedBy: "<input_json>\n").last?
             .components(separatedBy: "\n</input_json>").first)
-        let object = try #require(JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: String])
-        #expect(object == ["pinyin": "nihaoma", "context_before": "他说：", "context_after": ""])
+        let object = try #require(JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
+        #expect(object["pinyin"] as? String == "nihaoma")
+        #expect(object["input_segments"] as? [String] == ["nihaoma"])
+        #expect(object["context_before"] as? String == "他说：")
+        #expect(object["context_after"] as? String == "")
         #expect(!prompt.user.contains("This is not a spoken command"))
         #expect(!prompt.system.contains("By default, the replacement must stay in the language/script of target_text"))
     }
@@ -98,7 +101,7 @@ struct PinyinTextEditTests {
     @Test func validatesSingleReplacementAndRejectsExpandedParagraph() throws {
         let request = makeRequest("nihaoma")
         let result = try TextEditValidator.parseAndValidate(
-            rawOutput: #"{"action":"replace_target","text":"你好吗？"}"#,
+            rawOutput: #"{"action":"replace_target","converted_segments":["你好吗？"]}"#,
             for: request
         )
         #expect(result.text == "你好吗？")
@@ -113,7 +116,7 @@ struct PinyinTextEditTests {
     @Test func phoneticPlanMayCorrectTypingErrorsAndIsNeverInserted() throws {
         let request = makeRequest("nihaima")
         let result = try TextEditValidator.parseAndValidate(
-            rawOutput: #"{"pinyin_syllables":"ni hao ma","action":"replace_target","text":"你好吗？"}"#,
+            rawOutput: #"{"pinyin_syllables":"ni hao ma","action":"replace_target","converted_segments":["你好吗？"]}"#,
             for: request
         )
         #expect(result.text == "你好吗？")
@@ -121,15 +124,15 @@ struct PinyinTextEditTests {
 
     @Test func phoneticPlanAllowsInputSeparatorsEnglishAndDigits() throws {
         let result = try TextEditValidator.parseAndValidate(
-            rawOutput: #"{"pinyin_syllables":"wo zai xi an yong Python 3","action":"replace_target","text":"我在西安用 Python 3"}"#,
+            rawOutput: #"{"pinyin_syllables":"wo zai xi an yong Python 3","action":"replace_target","converted_segments":["我在西安","用","Python","3"]}"#,
             for: makeRequest("wozaiXi'an yong Python 3")
         )
-        #expect(result.text == "我在西安用 Python 3")
+        #expect(result.text == "我在西安 用 Python 3")
     }
 
     @Test func numericPronunciationInPhoneticPlanDoesNotRejectAValidResult() throws {
         let result = try TextEditValidator.parseAndValidate(
-            rawOutput: #"{"pinyin_syllables":"ming tian san dian bu kai hui","action":"replace_target","text":"明天三点不开会"}"#,
+            rawOutput: #"{"pinyin_syllables":"ming tian san dian bu kai hui","action":"replace_target","converted_segments":["明天三点不开会"]}"#,
             for: makeRequest("mingtian3dianbukaihui")
         )
         #expect(result.text == "明天三点不开会")
@@ -138,13 +141,13 @@ struct PinyinTextEditTests {
     @Test func pinyinConversionCannotRewriteOrExtendProtectedURLs() throws {
         let request = makeRequest("qingdakai https://example.test/linji?x=3.5")
         let valid = try TextEditValidator.parseAndValidate(
-            rawOutput: #"{"action":"replace_target","text":"请打开 https://example.test/linji?x=3.5"}"#,
+            rawOutput: #"{"action":"replace_target","converted_segments":["请打开","https://example.test/linji?x=3.5"]}"#,
             for: request
         )
         #expect(valid.text == "请打开 https://example.test/linji?x=3.5")
         for output in [
-            #"{"action":"replace_target","text":"请打开 https://example.test/林霁?x=3.5"}"#,
-            #"{"action":"replace_target","text":"请打开 https://example.test/linji?x=3.5&extra=1"}"#,
+            #"{"action":"replace_target","converted_segments":["请打开","https://example.test/林霁?x=3.5"]}"#,
+            #"{"action":"replace_target","converted_segments":["请打开","https://example.test/linji?x=3.5&extra=1"]}"#,
         ] {
             #expect(throws: TextEditValidationError.self) {
                 try TextEditValidator.parseAndValidate(rawOutput: output, for: request)
@@ -154,10 +157,10 @@ struct PinyinTextEditTests {
 
     @Test func joinedPinyinAroundDecimalsAndVersionsCanBeConverted() throws {
         let result = try TextEditValidator.parseAndValidate(
-            rawOutput: #"{"text":"我买了十二个苹果，每个3.5元，用 Python3.12 记录"}"#,
+            rawOutput: #"{"converted_segments":["我买了十二个苹果，每个3.5元","用 Python3.12 记录"]}"#,
             for: makeRequest("womaile12gepingguomeige3.5yuan yongPython3.12jilu")
         )
-        #expect(result.text == "我买了十二个苹果，每个3.5元，用 Python3.12 记录")
+        #expect(result.text == "我买了十二个苹果每个3.5元 用 Python3.12 记录")
     }
 
     @Test func mixedDraftPromptIncludesLiteralBoundariesWithoutSwallowingPinyin() throws {
@@ -171,11 +174,54 @@ struct PinyinTextEditTests {
 
     @Test(arguments: ["2026-09-04 15:30 Python3.12", "2026-09-03 15:31 Python3.12", "2026-09-03 15:30 Python3.13"])
     func conversionRejectsChangedDatesTimesAndVersions(output: String) throws {
-        let raw = try JSONSerialization.data(withJSONObject: ["text": output])
+        let raw = try JSONSerialization.data(withJSONObject: ["converted_segments": output.components(separatedBy: " ")])
         #expect(throws: TextEditValidationError.self) {
             try TextEditValidator.parseAndValidate(
                 rawOutput: String(decoding: raw, as: UTF8.self),
                 for: makeRequest("2026-09-03 15:30 shiyongPython3.12")
+            )
+        }
+    }
+
+    @Test(arguments: [PunctuationOutputPreference.normal, .spaces, .english])
+    func userBoundariesSurviveModelSpacingAndInventedClauses(_ preference: PunctuationOutputPreference) throws {
+        var request = makeRequest("mangya  gongzuoduojiumeigushang\nxiacizhuyi")
+        request.punctuationPreference = preference
+        let result = try TextEditValidator.parseAndValidate(
+            rawOutput: #"{"converted_segments":["忙 呀，","工 作 多，\n就 没 顾 上。","下 次 注 意！"]}"#,
+            for: request
+        )
+        #expect(result.text == "忙呀  工作多就没顾上\n下次注意")
+    }
+
+    @Test func segmentsKeepCodeSpacesAndProtectedPunctuation() throws {
+        let request = makeRequest("qingba `value = 3.5`  fangzai https://example.test/a?x=3.5")
+        #expect(PinyinDraftLayout(request.targetText).segments == [
+            "qingba", "`value = 3.5`", "fangzai", "https://example.test/a?x=3.5",
+        ])
+        let result = try TextEditValidator.parseAndValidate(
+            rawOutput: #"{"converted_segments":["请 把，","`value = 3.5`","放 在，","https://example.test/a?x=3.5"]}"#,
+            for: request
+        )
+        #expect(result.text == "请把 `value = 3.5`  放在 https://example.test/a?x=3.5")
+    }
+
+    @Test(arguments: [
+        #"{"converted_segments":["你好你在吗"]}"#,
+        #"{"converted_segments":["你好","你在","吗"]}"#,
+        #"{"converted_segments":["你好",""]}"#,
+    ])
+    func changedOrEmptySegmentsAreRejected(output: String) {
+        #expect(throws: TextEditValidationError.self) {
+            try TextEditValidator.parseAndValidate(rawOutput: output, for: makeRequest("你好 nizaima"))
+        }
+    }
+
+    @Test func protectedLiteralsCannotMoveAcrossUserBoundaries() {
+        #expect(throws: TextEditValidationError.self) {
+            try TextEditValidator.parseAndValidate(
+                rawOutput: #"{"converted_segments":["请在","3.5元付好账"]}"#,
+                for: makeRequest("qingzai3.5yuan fuhaozhang")
             )
         }
     }

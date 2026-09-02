@@ -240,6 +240,7 @@ struct TextEditPromptContextPayload: Codable, Sendable, Equatable {
 
 struct PinyinTextEditPromptInputPayload: Encodable, Sendable {
     let pinyin: String
+    let inputSegments: [String]
     let contextBefore: String
     let contextAfter: String
     let vocabularyCandidates: [VocabularyCandidatePayload]
@@ -247,6 +248,7 @@ struct PinyinTextEditPromptInputPayload: Encodable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case pinyin
+        case inputSegments = "input_segments"
         case contextBefore = "context_before"
         case contextAfter = "context_after"
         case vocabularyCandidates = "vocabulary_candidates"
@@ -256,6 +258,7 @@ struct PinyinTextEditPromptInputPayload: Encodable, Sendable {
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(pinyin, forKey: .pinyin)
+        try container.encode(inputSegments, forKey: .inputSegments)
         try container.encode(contextBefore, forKey: .contextBefore)
         try container.encode(contextAfter, forKey: .contextAfter)
         if !vocabularyCandidates.isEmpty {

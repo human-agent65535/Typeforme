@@ -167,15 +167,9 @@ final class TextEditService {
         )
         var result = try TextEditValidator.parseAndValidate(rawOutput: output, for: request)
         if request.intent == .pinyinToChinese {
-            // Remove model syllable spacing before punctuation preferences can
-            // introduce intentional spaces at Chinese clause boundaries.
-            result.text = VerbatimSpanMask.transforming(result.text) {
-                $0.replacingOccurrences(
-                    of: #"(?<=\p{Han})[\p{Zs}\t]+(?=\p{Han})"#,
-                    with: "",
-                    options: .regularExpression
-                )
-            }
+            // Pinyin segments are normalized before the original separators
+            // are reassembled. Whole-text cleanup would erase those boundaries.
+            return result
         }
         result.text = LocaleTextNormalizer.normalize(result.text, languageIDs: request.languageIDs)
         result.text = TranscriptPostProcessor.clean(

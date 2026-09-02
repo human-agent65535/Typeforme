@@ -12,7 +12,7 @@ struct TextEditServiceTests {
         let configuration = CorrectionSessionConfiguration(
             corrector: TextEditCorrectorStub(
                 recorder: TextEditCorrectorRecorder(),
-                output: #"{"action":"replace_target","text":"林 霁，你 的 手 机 哪 里 买 的？\n我 用 Python 写 代 码，`保 留 空 格`"}"#
+                output: #"{"action":"replace_target","converted_segments":["林 霁，你 的 手 机 哪 里 买 的？\n我 用 Python 写 代 码，`保 留 空 格`"]}"#
             ),
             numberOutputPreference: .automatic,
             punctuationPreference: preference,

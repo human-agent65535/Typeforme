@@ -90,12 +90,9 @@ struct VerbatimSpanMask {
         let fullRange = NSRange(location: 0, length: (text as NSString).length)
         var ranges = fencedCodeRanges(in: text)
         ranges.append(contentsOf: uriRanges(in: text, fullRange: fullRange))
+        ranges.append(contentsOf: inlineCodeRanges(in: text, fullRange: fullRange))
 
         var patterns = [
-            // Inline code with matching backtick delimiter length.
-            #"(?<!`)(`+)[^\n]*?\1(?!`)"#,
-            // An unmatched inline delimiter protects through the end of line.
-            #"(?m)(?<!`)(`+)[^`\n]*$"#,
             // Quoted and unquoted POSIX paths, including escaped spaces.
             #"(?:\"(?:~/|\./|\.\./|/)[^\"\n]+\"|'(?:~/|\./|\.\./|/)[^'\n]+')"#,
             #"(?<![A-Za-z0-9_])(?:~/|\./|\.\./|/)(?:\\.|[A-Za-z0-9._~%+\-@/])+"#,
@@ -142,6 +139,19 @@ struct VerbatimSpanMask {
             ranges.append(contentsOf: regex.matches(in: text, range: fullRange).map(\.range))
         }
         return mergedOverlappingRanges(ranges)
+    }
+
+    private static func inlineCodeRanges(in text: String, fullRange: NSRange) -> [NSRange] {
+        guard let paired = try? NSRegularExpression(pattern: #"(?<!`)(`+)[^\n]*?\1(?!`)"#),
+              let unmatched = try? NSRegularExpression(pattern: #"(?m)(?<!`)(`+)[^`\n]*$"#)
+        else { return [] }
+        let pairedRanges = paired.matches(in: text, range: fullRange).map(\.range)
+        let unmatchedRanges = unmatched.matches(in: text, range: fullRange).map(\.range).filter { range in
+            // A closing delimiter is not an unmatched opener. Otherwise normal
+            // text following a code span would be protected through end of line.
+            !pairedRanges.contains { NSLocationInRange(range.location, $0) }
+        }
+        return pairedRanges + unmatchedRanges
     }
 
     private static func uriRanges(in text: String, fullRange: NSRange) -> [NSRange] {

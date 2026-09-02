@@ -7,6 +7,7 @@ enum TextEditValidationError: LocalizedError {
     case textTooLong(actual: Int, cap: Int)
     case containsMarkupOrJSON
     case changedProtectedText
+    case changedInputSegments
 
     var errorDescription: String? {
         switch self {
@@ -16,12 +17,33 @@ enum TextEditValidationError: LocalizedError {
         case .textTooLong(let actual, let cap): return "Edit result too long (\(actual) > \(cap))"
         case .containsMarkupOrJSON: return "Edit result contains markup or JSON"
         case .changedProtectedText: return "Pinyin conversion changed a protected literal"
+        case .changedInputSegments: return "Pinyin conversion changed the draft's segment boundaries"
         }
     }
 }
 
 enum TextEditValidator {
     static func parseAndValidate(rawOutput: String, for request: TextEditRequest) throws -> TextEditResult {
+        if request.intent == .pinyinToChinese {
+            let payload: PinyinTextEditPayload = try ModelJSONOutputValidator.decodePayload(
+                rawOutput: rawOutput,
+                parseError: TextEditValidationError.parseFailed
+            )
+            let action = payload.action ?? .replaceTarget
+            guard action == .replaceTarget else {
+                throw TextEditValidationError.invalidAction
+            }
+            let result = TextEditResult(
+                action: action,
+                text: try PinyinDraftLayout(request.targetText).replacement(
+                    from: payload.convertedSegments,
+                    languageIDs: request.languageIDs,
+                    punctuationPreference: request.punctuationPreference
+                )
+            )
+            try validate(result, for: request)
+            return result
+        }
         let payload: TextEditPayload = try ModelJSONOutputValidator.decodePayload(
             rawOutput: rawOutput,
             parseError: TextEditValidationError.parseFailed
@@ -32,17 +54,18 @@ enum TextEditValidator {
             throw TextEditValidationError.invalidAction
         }
         let result = TextEditResult(action: action, text: payload.text)
-        if request.intent == .pinyinToChinese {
-            var remainingLiterals = VerbatimSpanMask(result.text, inputKind: .mixedTyping).entries[...]
-            for literal in VerbatimSpanMask(request.targetText, inputKind: .mixedTyping).entries {
-                guard let match = remainingLiterals.firstIndex(where: { $0.text == literal.text }) else {
-                    throw TextEditValidationError.changedProtectedText
-                }
-                remainingLiterals = remainingLiterals.suffix(from: remainingLiterals.index(after: match))
-            }
-        }
         try validate(result, for: request)
         return result
+    }
+
+    static func validateProtectedLiterals(in text: String, source: String) throws {
+        var remainingLiterals = VerbatimSpanMask(text, inputKind: .mixedTyping).entries[...]
+        for literal in VerbatimSpanMask(source, inputKind: .mixedTyping).entries {
+            guard let match = remainingLiterals.firstIndex(where: { $0.text == literal.text }) else {
+                throw TextEditValidationError.changedProtectedText
+            }
+            remainingLiterals = remainingLiterals.suffix(from: remainingLiterals.index(after: match))
+        }
     }
 
     static func validate(_ result: TextEditResult, for request: TextEditRequest) throws {
@@ -73,5 +96,15 @@ enum TextEditValidator {
     private struct TextEditPayload: Decodable {
         var action: TextEditAction?
         var text: String
+    }
+
+    private struct PinyinTextEditPayload: Decodable {
+        var action: TextEditAction?
+        var convertedSegments: [String]
+
+        enum CodingKeys: String, CodingKey {
+            case action
+            case convertedSegments = "converted_segments"
+        }
     }
 }

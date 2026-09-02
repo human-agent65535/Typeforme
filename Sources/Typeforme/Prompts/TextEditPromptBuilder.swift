@@ -93,14 +93,13 @@ enum TextEditPromptBuilder {
         if request.intent == .pinyinToChinese {
             let input = PromptPayloadEncoder.jsonString(PinyinTextEditPromptInputPayload(
                 pinyin: request.targetText,
+                inputSegments: PinyinDraftLayout(request.targetText).segments,
                 contextBefore: request.contextBefore,
                 contextAfter: request.contextAfter,
                 vocabularyCandidates: vocabularyCandidates(for: request),
                 protectedLiterals: VerbatimSpanMask(request.targetText, inputKind: .mixedTyping).entries.map(\.text)
             ))
-            // Decode with natural punctuation first. The service applies the
-            // selected punctuation style after words and clauses are formed.
-            return """
+            let prompt = """
             <input_json>
             \(input)
             </input_json>
@@ -108,8 +107,12 @@ enum TextEditPromptBuilder {
                 numbers: request.numberOutputPreference,
                 punctuation: .normal
             ))
-            Return only the replacement JSON for pinyin.
+            Return one JSON object with action="replace_target" and converted_segments: one replacement string per input_segments entry, in the same order. Read the complete pinyin field and all segments together before choosing words. Do not merge, split, drop, or add segments. The app restores the original spaces and line breaks between segments; do not include those separators in converted_segments.
             """
+            if request.numberOutputPreference == .words {
+                return prompt + "\nFor Chinese prose in this words mode, ordinary integer quantities must use Chinese number words. Do not preserve digit spelling for ordinary counts. Decimals, dates, times, versions, identifiers, and code remain exact."
+            }
+            return prompt
         }
         let languageIDs = ASRLanguageSelection.validatedIDs(request.languageIDs)
         let outputPreferences = PromptOutputPreferencesPayload(
