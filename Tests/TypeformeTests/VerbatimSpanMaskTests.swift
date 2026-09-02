@@ -3,6 +3,15 @@ import Testing
 
 @Suite("Verbatim span mask")
 struct VerbatimSpanMaskTests {
+    @Test(arguments: ["meige", "Meige"]) func mixedTypingProtectsNumbersWithoutProtectingAdjacentPinyin(prefix: String) {
+        let input = "\(prefix)3.5yuan shiyongPython3.12 2026-09-03xiawu15:30 /tmp/output.json"
+        let mask = VerbatimSpanMask(input, inputKind: .mixedTyping)
+        #expect(mask.entries.map(\.text) == ["3.5", "3.12", "2026-09-03", "15:30", "/tmp/output.json"])
+        #expect(mask.restoring(mask.maskedText) == input)
+        #expect(mask.maskedText.contains(prefix))
+        #expect(mask.maskedText.contains("yuan"))
+    }
+
     @Test func protectsVersionsTimesGroupedNumbersAndOrderedListMarkers() {
         let input = "模型是Qwen3.6-27B 时间3:30 金额1,000.50\n1. item"
         let mask = VerbatimSpanMask(input)

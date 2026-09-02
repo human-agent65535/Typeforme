@@ -4,6 +4,11 @@ import Foundation
 /// Restoration is fail-closed: if a transform drops, duplicates, or reorders a
 /// marker, callers keep their original input instead of committing partial text.
 struct VerbatimSpanMask {
+    enum InputKind {
+        case prose
+        case mixedTyping
+    }
+
     struct Entry: Equatable {
         let token: String
         let text: String
@@ -18,7 +23,7 @@ struct VerbatimSpanMask {
         entries.contains { $0.text.contains("\n") || $0.text.contains("\r") }
     }
 
-    init(_ text: String) {
+    init(_ text: String, inputKind: InputKind = .prose) {
         originalText = text
 
         var salt = 0
@@ -29,7 +34,7 @@ struct VerbatimSpanMask {
         }
         markerPrefix = prefix
 
-        let ranges = Self.protectedRanges(in: text)
+        let ranges = Self.protectedRanges(in: text, inputKind: inputKind)
         let nsText = text as NSString
         entries = ranges.enumerated().map { index, range in
             Entry(
@@ -80,13 +85,13 @@ struct VerbatimSpanMask {
         "\u{E000}\u{E001}\(salt)\u{E002}"
     }
 
-    private static func protectedRanges(in text: String) -> [NSRange] {
+    private static func protectedRanges(in text: String, inputKind: InputKind) -> [NSRange] {
         guard !text.isEmpty else { return [] }
         let fullRange = NSRange(location: 0, length: (text as NSString).length)
         var ranges = fencedCodeRanges(in: text)
         ranges.append(contentsOf: uriRanges(in: text, fullRange: fullRange))
 
-        let patterns = [
+        var patterns = [
             // Inline code with matching backtick delimiter length.
             #"(?<!`)(`+)[^\n]*?\1(?!`)"#,
             // An unmatched inline delimiter protects through the end of line.
@@ -103,16 +108,34 @@ struct VerbatimSpanMask {
             #"\[[^\[\]\n]*[:=][^\[\]\n]*\]"#,
             #"\b[A-Za-z_][A-Za-z0-9_.]*\([^()\n]*\)"#,
             #"(?i)\b[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}\b"#,
-            #"(?<![A-Za-z0-9_])(?:[A-Za-z_][A-Za-z0-9_\-]*\.)+[A-Za-z0-9_\-]+(?![A-Za-z0-9_])"#,
-            #"(?<![A-Za-z0-9_])\d{1,3}(?:,\d{3})+(?:\.\d+)?(?![A-Za-z0-9_])"#,
-            #"(?<![A-Za-z0-9_])\d+(?:\.\d+)+(?![A-Za-z0-9_])"#,
-            #"(?<![A-Za-z0-9_])\d+:\d+(?::\d+)?(?![A-Za-z0-9_])"#,
             #"(?m)^[ \t]{0,3}\d+[.)](?=[ \t]+)"#,
             #"(?<![A-Za-z0-9_])--?[A-Za-z0-9][A-Za-z0-9_\-]*(?:=[^\s，。；！？、：]+)?"#,
             #"(?<![A-Za-z0-9_])(?:[A-Za-z_][A-Za-z0-9_.]*|\d+(?:\.\d+)?)(?:!=|==)(?:[A-Za-z_][A-Za-z0-9_.]*|\d+(?:\.\d+)?)(?![A-Za-z0-9_])"#,
             // Preserve a quoted argument following a CLI flag as one span.
             #"--?[A-Za-z0-9][A-Za-z0-9_\-]*\s+(?:\"[^\"\n]*\"|'[^'\n]*')"#,
         ]
+
+        switch inputKind {
+        case .prose:
+            patterns += [
+                #"(?<![A-Za-z0-9_])(?:[A-Za-z_][A-Za-z0-9_\-]*\.)+[A-Za-z0-9_\-]+(?![A-Za-z0-9_])"#,
+                #"(?<![A-Za-z0-9_])\d{1,3}(?:,\d{3})+(?:\.\d+)?(?![A-Za-z0-9_])"#,
+                #"(?<![A-Za-z0-9_])\d+(?:\.\d+)+(?![A-Za-z0-9_])"#,
+                #"(?<![A-Za-z0-9_])\d+:\d+(?::\d+)?(?![A-Za-z0-9_])"#,
+            ]
+        case .mixedTyping:
+            // Joined pinyin can touch a decimal on both sides. A digit after
+            // the dot is a numeric boundary, not a dotted prose identifier.
+            patterns += [
+                #"(?<![A-Za-z0-9_])(?:[A-Za-z_][A-Za-z0-9_\-]*\.)+[A-Za-z_][A-Za-z0-9_\-]*(?![A-Za-z0-9_])"#,
+                #"(?<!\d)\d{1,3}(?:,\d{3})+(?:\.\d+)?(?!\d)"#,
+                #"(?<!\d)\d+(?:\.\d+)+(?!\d)"#,
+                #"(?<!\d)\d+:\d+(?::\d+)?(?!\d)"#,
+                #"(?<!\d)\d{4}[-/]\d{1,2}[-/]\d{1,2}(?!\d)"#,
+                #"(?<!\d)\d{4}年\d{1,2}月\d{1,2}日"#,
+                #"(?<!\d)\d{1,2}点\d{1,2}分"#,
+            ]
+        }
 
         for pattern in patterns {
             guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }

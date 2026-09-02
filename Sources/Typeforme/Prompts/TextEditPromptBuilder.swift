@@ -95,7 +95,8 @@ enum TextEditPromptBuilder {
                 pinyin: request.targetText,
                 contextBefore: request.contextBefore,
                 contextAfter: request.contextAfter,
-                vocabularyCandidates: vocabularyCandidates(for: request)
+                vocabularyCandidates: vocabularyCandidates(for: request),
+                protectedLiterals: VerbatimSpanMask(request.targetText, inputKind: .mixedTyping).entries.map(\.text)
             ))
             // Decode with natural punctuation first. The service applies the
             // selected punctuation style after words and clauses are formed.

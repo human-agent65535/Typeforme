@@ -597,18 +597,30 @@ for required in (
 if "currentRimeCandidateWindow" in text_space or "candidateWindow" in literal_space_rule:
     raise AssertionError("Space must not infer English input or extra spacing from candidate text")
 
-pinyin = block(keyboard, "private func startPinyinConversionIfNeeded(")
+pinyin = block(keyboard, "private func startPinyinConversion(")
 for required in (
     "guard isAIWritingEnabled",
-    "targetText: source.pinyin",
+    "currentWholeInputRewriteTarget(requireCompleteInput: true)",
+    "text: target.text",
     "intent: .pinyinToChinese",
     "state: .sending",
     "suppressRefineResult(commandID: command.id",
 ):
     if required not in pinyin:
-        raise AssertionError(f"AI Writing lost raw-input or busy-state contract: {required}")
-if text_space.index("startPinyinConversionIfNeeded()") > text_space.index("pendingRimeInput.appendSpaceKey()"):
-    raise AssertionError("AI Writing must consume Space before Rime candidate selection")
+        raise AssertionError(f"AI Writing lost whole-input or busy-state contract: {required}")
+if "startPinyinConversion" in text_space:
+    raise AssertionError("AI Writing must not convert on Space")
+ai_space = block(text_space, "if isAIWritingEnabled")
+if 'insertDocumentText(" ")' not in ai_space or "return" not in ai_space:
+    raise AssertionError("AI Writing Space must insert a literal space before Rime routing")
+language_key = block(keyboard, "@objc private func toggleTextInputLanguage(")
+if "startPinyinConversion()" not in block(language_key, "if isAIWritingEnabled"):
+    raise AssertionError("The language key must invoke AI Writing in AI mode")
+ai_character = block(block(keyboard, "private func handleTextCharacter("), "if isAIWritingEnabled")
+if "insertDocumentText(output)" not in ai_character or "rimeInput." in ai_character:
+    raise AssertionError("AI Writing must insert raw mixed text without the Rime engine")
+if "!isAIWritingEnabled" not in block(keyboard, "private func resumeRimeIfNeeded("):
+    raise AssertionError("Rime must remain suspended in AI Writing mode")
 if "pinyinConversion.request == nil" not in block(keyboard, "private var canStopActiveRefine:"):
     raise AssertionError("AI Writing must lock Space while its result is pending")
 if "if pinyinConversion.request != nil" not in block(keyboard, "private func applyBridgeStatus("):
@@ -616,7 +628,9 @@ if "if pinyinConversion.request != nil" not in block(keyboard, "private func app
 pinyin_host = block(app, "private func convertKeyboardPinyin(")
 for required in ("client.editText(", "TextEditIntent.pinyinToChinese.rawValue", "targetText: context.targetText"):
     if required not in pinyin_host:
-        raise AssertionError(f"Host must forward raw pinyin to the text-edit backend: {required}")
+        raise AssertionError(f"Host must forward the captured draft to the text-edit backend: {required}")
+if "keyboardChineseInputEnabled" in pinyin_host:
+    raise AssertionError("AI Writing must work independently of the Rime Chinese input switch")
 
 start_dictation = block(keyboard, "private func startDictationCommand(")
 if "finishRimeTextTransaction()" not in start_dictation:
@@ -836,10 +850,13 @@ view_will_appear = block(keyboard, "override func viewWillAppear(")
 view_did_appear = block(keyboard, "override func viewDidAppear(")
 if "rimeInput.startIfNeeded()" in view_did_load:
     raise AssertionError("viewDidLoad must not open Rime for a keyboard surface that may never appear")
-if "rimeInput.resumeAfterSuspension()" in view_will_appear:
+if "rimeInput.resumeAfterSuspension()" in view_will_appear or "resumeRimeIfNeeded()" in view_will_appear:
     raise AssertionError("viewWillAppear must not open Rime before presentation is committed")
-if "rimeInput.resumeAfterSuspension()" not in view_did_appear:
-    raise AssertionError("a visible keyboard surface no longer resumes Rime")
+if "resumeRimeIfNeeded()" not in view_did_appear:
+    raise AssertionError("a visible keyboard surface no longer resumes Rime when AI Writing is off")
+rime_resume = block(keyboard, "private func resumeRimeIfNeeded(")
+if "isKeyboardPresentationVisible" not in rime_resume or "rimeInput.resumeAfterSuspension()" not in rime_resume:
+    raise AssertionError("Rime resume lost its visible presentation boundary")
 extension_host_lifecycle = block(keyboard, "private func configureExtensionHostLifecycleObservers(")
 for required in (
     ".NSExtensionHostWillResignActive",

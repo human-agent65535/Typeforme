@@ -136,6 +136,14 @@ struct VocabularyCandidateSelectorTests {
         #expect(mixed.map(\.surface) == ["林霁"])
     }
 
+    @Test func pinyinVocabularyStillMatchesNextToADecimal() {
+        let payload = VocabularyCandidateSelector.pinyinPromptPayload(
+            from: [DictionaryEntry(type: "person", surface: "林霁")],
+            pinyin: "linjimeige3.5yuan"
+        )
+        #expect(payload.map(\.surface) == ["林霁"])
+    }
+
     @Test func keepsChinesePersonHomophonesWithIndependentPersonUseEvidence() {
         let entries = [DictionaryEntry(type: "person", surface: "郭霁")]
         let transcripts = [

@@ -8,43 +8,48 @@ struct KeyboardSettingsView: View {
     var body: some View {
         List {
             Section {
-                Toggle("Enable Chinese Input", isOn: chineseInputEnabledBinding)
-            } footer: {
-                Text("Turn off to make the text keyboard English-only and hide the Chinese/English switch key.")
-            }
-            Section {
                 Toggle("AI Writing", isOn: aiWritingEnabledBinding)
+            } header: {
+                Text("Input Method")
             } footer: {
-                Text("When enabled, Space sends pinyin to your Mac's AI model and inserts Chinese. When disabled, Space selects the first candidate.")
+                Text("Type Chinese, English, and pinyin directly. Tap the AI Writing key to convert the current input and fix pinyin typos. Space inserts a space. Rime is inactive while AI Writing is on.")
             }
-            .disabled(!state.keyboardChineseInputEnabled)
+            if !state.keyboardAIWritingEnabled {
+                Section {
+                    Toggle("Enable Chinese Input", isOn: chineseInputEnabledBinding)
+                } footer: {
+                    Text("Turn off to make the text keyboard English-only and hide the Chinese/English switch key.")
+                }
+                Section {
+                    Picker("Dictionary", selection: rimeDictionaryTierBinding) {
+                        ForEach(KeyboardRimeDictionaryTier.allCases) { tier in
+                            Text(tier.title).tag(tier)
+                        }
+                    }
+                    Toggle("Pinyin Correction", isOn: rimeCorrectionBinding)
+                    Picker("Default text input", selection: defaultTextInputLanguageBinding) {
+                        ForEach(KeyboardDefaultTextInputLanguage.allCases) { language in
+                            Text(language.title).tag(language)
+                        }
+                    }
+                } header: {
+                    Text("Chinese Input")
+                } footer: {
+                    Text("Changes apply immediately after Full Access is enabled.")
+                }
+                .disabled(!state.keyboardChineseInputEnabled)
+            }
             Section {
-                Picker("Dictionary", selection: rimeDictionaryTierBinding) {
-                    ForEach(KeyboardRimeDictionaryTier.allCases) { tier in
-                        Text(tier.title).tag(tier)
-                    }
-                }
-                Toggle("Pinyin Correction", isOn: rimeCorrectionBinding)
-                Picker("Default text input", selection: defaultTextInputLanguageBinding) {
-                    ForEach(KeyboardDefaultTextInputLanguage.allCases) { language in
-                        Text(language.title).tag(language)
-                    }
-                }
+                Toggle("Character Preview", isOn: characterPreviewBinding)
                 Picker("Punctuation", selection: chinesePunctuationBinding) {
                     ForEach(KeyboardChinesePunctuationStyle.allCases) { style in
                         Text(style.title).tag(style)
                     }
                 }
             } header: {
-                Text("Chinese Input")
-            } footer: {
-                Text("Changes apply immediately after Full Access is enabled.")
-            }
-            .disabled(!state.keyboardChineseInputEnabled)
-            Section {
-                Toggle("Character Preview", isOn: characterPreviewBinding)
-            } header: {
                 Text("Typing")
+            } footer: {
+                Text("Punctuation controls typed keys. AI Writing results use the Numbers and Punctuation preferences in Mac processing settings.")
             }
             Section {
                 Toggle("Key Sound", isOn: keySoundBinding)
@@ -59,7 +64,7 @@ struct KeyboardSettingsView: View {
             } header: {
                 Text("English")
             } footer: {
-                Text("Only active when the keyboard is in English mode.")
+                Text("Active in English mode and AI Writing.")
             }
             Section {
                 NavigationLink {
@@ -129,7 +134,9 @@ struct KeyboardSettingsView: View {
         Binding {
             state.keyboardAIWritingEnabled
         } set: { enabled in
-            state.setKeyboardAIWritingEnabled(enabled)
+            withAnimation(.easeInOut(duration: 0.24)) {
+                state.setKeyboardAIWritingEnabled(enabled)
+            }
         }
     }
 
@@ -164,24 +171,26 @@ private struct KeyboardLearningSettingsView: View {
 
     var body: some View {
         List {
-            Section {
-                Toggle("Chinese self-learning", isOn: rimeLearningBinding)
+            if !state.keyboardAIWritingEnabled {
+                Section {
+                    Toggle("Chinese self-learning", isOn: rimeLearningBinding)
+                        .disabled(!state.keyboardChineseInputEnabled)
+                    NavigationLink {
+                        ChineseLearningStatsView()
+                    } label: {
+                        Text("Chinese Learning Data")
+                    }
+                    Button(role: .destructive) {
+                        state.resetKeyboardRimeLearning()
+                    } label: {
+                        Text("Reset Chinese Learning")
+                    }
                     .disabled(!state.keyboardChineseInputEnabled)
-                NavigationLink {
-                    ChineseLearningStatsView()
-                } label: {
-                    Text("Chinese Learning Data")
+                } header: {
+                    Text("Chinese")
+                } footer: {
+                    Text("Self-learning controls Rime's user dictionary.")
                 }
-                Button(role: .destructive) {
-                    state.resetKeyboardRimeLearning()
-                } label: {
-                    Text("Reset Chinese Learning")
-                }
-                .disabled(!state.keyboardChineseInputEnabled)
-            } header: {
-                Text("Chinese")
-            } footer: {
-                Text("Self-learning controls Rime's user dictionary.")
             }
 
             Section {

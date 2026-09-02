@@ -1,0 +1,11 @@
+--- a/Sources/ObjC/irime_api.m
++++ b/Sources/ObjC/irime_api.m
+@@ -1,2 +1,4 @@
++#import <TargetConditionals.h>
++#if !TARGET_OS_SIMULATOR
+ #import "irime_api.h"
+ #import "rime_api.h"
+@@ -653 +655,3 @@
+ @end
++
++#endif

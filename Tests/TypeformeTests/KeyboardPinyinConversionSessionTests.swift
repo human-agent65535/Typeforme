@@ -4,38 +4,7 @@ import Testing
 
 @Suite("KeyboardPinyinConversionSession")
 struct KeyboardPinyinConversionSessionTests {
-    @Test func sendsRawPinyinWithoutRimeDisplaySegmentation() throws {
-        let source = try #require(KeyboardPinyinConversionSession.Source.composition(
-            rawInput: "nihaoma", preedit: "ni hao ma", selectionStart: 0, selectionEnd: 9
-        ))
-        #expect(source.pinyin == "nihaoma")
-        #expect(source.confirmedPrefix.isEmpty)
-        let umlaut = try #require(KeyboardPinyinConversionSession.Source.composition(
-            rawInput: "nvhai", preedit: "nü hai", selectionStart: 0, selectionEnd: 7
-        ))
-        #expect(umlaut.pinyin == "nvhai")
-    }
-
-    @Test func preservesAlreadyConfirmedChineseOutsideAIInput() throws {
-        let preedit = "你hao ma"
-        let source = try #require(KeyboardPinyinConversionSession.Source.composition(
-            rawInput: "nihaoma", preedit: preedit, selectionStart: "你".utf8.count, selectionEnd: preedit.utf8.count
-        ))
-        #expect(source.pinyin == "haoma")
-        #expect(source.confirmedPrefix == "你")
-    }
-
-    @Test func startupInputNeedsNoEngineAndPreservesEarlierRawBoundary() throws {
-        var pending = KeyboardPendingRimeInput()
-        for character in "hello" { pending.appendEngineCharacter(String(character)) }
-        pending.appendReturnKey()
-        for character in "nihaoma" { pending.appendEngineCharacter(String(character)) }
-        let source = try #require(KeyboardPinyinConversionSession.Source.pending(pending))
-        #expect(source.pinyin == "nihaoma")
-        #expect(source.confirmedPrefix == "hello")
-    }
-
-    @Test func duplicateSpaceStartsOnlyOneRequestAndResultIsConsumedOnce() throws {
+    @Test func duplicateTapStartsOneRequestAndResultIsConsumedOnce() throws {
         var session = KeyboardPinyinConversionSession()
         let target = makeTarget()
         let started = session.begin(target: target)
@@ -44,8 +13,8 @@ struct KeyboardPinyinConversionSessionTests {
         #expect(duplicate == nil)
         let first = session.takeResult(requestID: request.id, currentTarget: target, documentIsCurrent: true, isEnabled: true, isVisible: true)
         let second = session.takeResult(requestID: request.id, currentTarget: target, documentIsCurrent: true, isEnabled: true, isVisible: true)
-        #expect(first == target.source)
-        #expect(second == nil)
+        #expect(first)
+        #expect(!second)
     }
 
     @Test func cancellationRejectsOldResultEvenAfterIdenticalInputIsRetyped() throws {
@@ -57,35 +26,53 @@ struct KeyboardPinyinConversionSessionTests {
         let second = session.begin(target: target)
         let current = try #require(second)
         let oldResult = session.takeResult(requestID: old.id, currentTarget: target, documentIsCurrent: true, isEnabled: true, isVisible: true)
-        #expect(oldResult == nil)
+        #expect(!oldResult)
         #expect(session.request?.id == current.id)
         let currentResult = session.takeResult(requestID: current.id, currentTarget: target, documentIsCurrent: true, isEnabled: true, isVisible: true)
-        #expect(currentResult == target.source)
+        #expect(currentResult)
     }
 
-    @Test(arguments: 0..<5) func losingOwnershipDiscardsResult(reason: Int) throws {
+    @Test(arguments: 0..<8) func losingInputOwnershipDiscardsResult(reason: Int) throws {
         var session = KeyboardPinyinConversionSession()
         let target = makeTarget()
         let started = session.begin(target: target)
         let request = try #require(started)
-        let changedTarget = makeTarget(documentIdentifier: reason == 0 ? UUID() : target.documentIdentifier, selectionLocation: reason == 1 ? 1 : target.selectionLocation)
+        let changedTarget = KeyboardPinyinConversionSession.Target(
+            documentIdentifier: reason == 0 ? UUID() : target.documentIdentifier,
+            contextBefore: reason == 1 ? "你好 hello niza" : target.contextBefore,
+            selectedText: reason == 2 ? "ma" : target.selectedText,
+            contextAfter: reason == 3 ? " 明天见" : target.contextAfter
+        )
         let result = session.takeResult(
             requestID: request.id,
-            currentTarget: changedTarget,
-            documentIsCurrent: reason != 2,
-            isEnabled: reason != 3,
-            isVisible: reason != 4
+            currentTarget: reason == 4 ? nil : changedTarget,
+            documentIsCurrent: reason != 5,
+            isEnabled: reason != 6,
+            isVisible: reason != 7
         )
-        #expect(result == nil)
+        #expect(!result)
         #expect(session.request == nil)
     }
 
-    private func makeTarget(documentIdentifier: UUID = UUID(), selectionLocation: Int = 9) -> KeyboardPinyinConversionSession.Target {
+    @Test func selectAllSnapshotKeepsChineseEnglishAndPinyinTogether() throws {
+        var session = KeyboardPinyinConversionSession()
+        let target = KeyboardPinyinConversionSession.Target(
+            documentIdentifier: UUID(), contextBefore: nil,
+            selectedText: "你好 hello nizaima", contextAfter: nil
+        )
+        let started = session.begin(target: target)
+        let request = try #require(started)
+        #expect(request.target.selectedText == "你好 hello nizaima")
+        let result = session.takeResult(requestID: request.id, currentTarget: target, documentIsCurrent: true, isEnabled: true, isVisible: true)
+        #expect(result)
+    }
+
+    private func makeTarget() -> KeyboardPinyinConversionSession.Target {
         .init(
-            source: .init(pinyin: "nihaoma", confirmedPrefix: ""),
-            documentIdentifier: documentIdentifier,
-            markedText: "ni hao ma",
-            selectionLocation: selectionLocation
+            documentIdentifier: UUID(),
+            contextBefore: "你好 hello nizaima",
+            selectedText: nil,
+            contextAfter: ""
         )
     }
 }

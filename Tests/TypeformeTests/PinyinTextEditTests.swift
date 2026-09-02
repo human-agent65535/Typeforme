@@ -110,19 +110,13 @@ struct PinyinTextEditTests {
         }
     }
 
-    @Test func phoneticPlanCannotChangeTypedLettersAndIsNeverInserted() throws {
-        let request = makeRequest("nideshoujinalimaide")
+    @Test func phoneticPlanMayCorrectTypingErrorsAndIsNeverInserted() throws {
+        let request = makeRequest("nihaima")
         let result = try TextEditValidator.parseAndValidate(
-            rawOutput: #"{"pinyin_syllables":"ni de shou ji na li mai de","action":"replace_target","text":"你的手机哪里买的？"}"#,
+            rawOutput: #"{"pinyin_syllables":"ni hao ma","action":"replace_target","text":"你好吗？"}"#,
             for: request
         )
-        #expect(result.text == "你的手机哪里买的？")
-        #expect(throws: TextEditValidationError.self) {
-            try TextEditValidator.parseAndValidate(
-                rawOutput: #"{"pinyin_syllables":"ni de shou ji na lai ma","action":"replace_target","text":"你的手机拿来吗？"}"#,
-                for: request
-            )
-        }
+        #expect(result.text == "你好吗？")
     }
 
     @Test func phoneticPlanAllowsInputSeparatorsEnglishAndDigits() throws {
@@ -155,6 +149,34 @@ struct PinyinTextEditTests {
             #expect(throws: TextEditValidationError.self) {
                 try TextEditValidator.parseAndValidate(rawOutput: output, for: request)
             }
+        }
+    }
+
+    @Test func joinedPinyinAroundDecimalsAndVersionsCanBeConverted() throws {
+        let result = try TextEditValidator.parseAndValidate(
+            rawOutput: #"{"text":"我买了十二个苹果，每个3.5元，用 Python3.12 记录"}"#,
+            for: makeRequest("womaile12gepingguomeige3.5yuan yongPython3.12jilu")
+        )
+        #expect(result.text == "我买了十二个苹果，每个3.5元，用 Python3.12 记录")
+    }
+
+    @Test func mixedDraftPromptIncludesLiteralBoundariesWithoutSwallowingPinyin() throws {
+        let prompt = TextEditPromptBuilder.build(for: makeRequest("你好 2026-09-03 15:30 shiyongPython3.12 meige3.5yuan"))
+        let json = try #require(prompt.user.components(separatedBy: "<input_json>\n").last?
+            .components(separatedBy: "\n</input_json>").first)
+        let object = try #require(JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
+        #expect(object["pinyin"] as? String == "你好 2026-09-03 15:30 shiyongPython3.12 meige3.5yuan")
+        #expect(object["protected_literals"] as? [String] == ["2026-09-03", "15:30", "3.12", "3.5"])
+    }
+
+    @Test(arguments: ["2026-09-04 15:30 Python3.12", "2026-09-03 15:31 Python3.12", "2026-09-03 15:30 Python3.13"])
+    func conversionRejectsChangedDatesTimesAndVersions(output: String) throws {
+        let raw = try JSONSerialization.data(withJSONObject: ["text": output])
+        #expect(throws: TextEditValidationError.self) {
+            try TextEditValidator.parseAndValidate(
+                rawOutput: String(decoding: raw, as: UTF8.self),
+                for: makeRequest("2026-09-03 15:30 shiyongPython3.12")
+            )
         }
     }
 

@@ -395,5 +395,8 @@
 
 "AI Writing" = "AI 写字";
 "AI Writing…" = "AI 写字中…";
-"When enabled, Space sends pinyin to your Mac's AI model and inserts Chinese. When disabled, Space selects the first candidate." = "开启后，空格会将拼音交给 Mac 的 AI 模型，转换为中文后上屏；关闭后，空格选择首个候选词。";
 "AI Writing is turned off" = "AI 写字已关闭";
+"Input Method" = "输入方式";
+"Type Chinese, English, and pinyin directly. Tap the AI Writing key to convert the current input and fix pinyin typos. Space inserts a space. Rime is inactive while AI Writing is on." = "直接混合输入中文、英文和拼音，点 AI 写字键转换当前输入并纠正拼音误触。空格照常输入空格。开启时停用 Rime。";
+"Punctuation controls typed keys. AI Writing results use the Numbers and Punctuation preferences in Mac processing settings." = "此处标点设置控制键盘按键。AI 写字结果遵循 Mac 处理设置中的数字和标点偏好。";
+"Active in English mode and AI Writing." = "在英文模式和 AI 写字模式下生效。";

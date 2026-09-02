@@ -243,12 +243,14 @@ struct PinyinTextEditPromptInputPayload: Encodable, Sendable {
     let contextBefore: String
     let contextAfter: String
     let vocabularyCandidates: [VocabularyCandidatePayload]
+    let protectedLiterals: [String]
 
     enum CodingKeys: String, CodingKey {
         case pinyin
         case contextBefore = "context_before"
         case contextAfter = "context_after"
         case vocabularyCandidates = "vocabulary_candidates"
+        case protectedLiterals = "protected_literals"
     }
 
     func encode(to encoder: Encoder) throws {
@@ -258,6 +260,9 @@ struct PinyinTextEditPromptInputPayload: Encodable, Sendable {
         try container.encode(contextAfter, forKey: .contextAfter)
         if !vocabularyCandidates.isEmpty {
             try container.encode(vocabularyCandidates, forKey: .vocabularyCandidates)
+        }
+        if !protectedLiterals.isEmpty {
+            try container.encode(protectedLiterals, forKey: .protectedLiterals)
         }
     }
 }

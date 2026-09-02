@@ -91,4 +91,7 @@
 
 "AI Writing" = "AI 写字";
 "AI Writing…" = "AI 写字中…";
-"AI Writing failed. Press Space to retry." = "AI 写字失败，按空格重试。";
+"Writing" = "写字";
+"AI Writing failed. Tap AI Writing to retry." = "AI 写字失败，点 AI 写字键重试。";
+"Input changed; conversion skipped." = "输入已改变，未应用转换结果。";
+"Could not read the whole input. Select all and try again." = "无法读取完整输入，请全选后重试。";

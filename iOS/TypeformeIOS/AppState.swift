@@ -4729,7 +4729,7 @@ final class AppState {
     }
 
     private func convertKeyboardPinyin(_ command: KeyboardBridgeCommand) async {
-        guard keyboardAIWritingEnabled, keyboardChineseInputEnabled else {
+        guard keyboardAIWritingEnabled else {
             failKeyboardCommand(command.id, code: .processingFailed, recovery: .none, message: NSLocalizedString("AI Writing is turned off", comment: "Pinyin conversion disabled"))
             return
         }

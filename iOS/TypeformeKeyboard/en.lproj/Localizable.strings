@@ -91,4 +91,7 @@
 
 "AI Writing" = "AI Writing";
 "AI Writing…" = "AI Writing…";
-"AI Writing failed. Press Space to retry." = "AI Writing failed. Press Space to retry.";
+"Writing" = "Writing";
+"AI Writing failed. Tap AI Writing to retry." = "AI Writing failed. Tap AI Writing to retry.";
+"Input changed; conversion skipped." = "Input changed; conversion skipped.";
+"Could not read the whole input. Select all and try again." = "Could not read the whole input. Select all and try again.";

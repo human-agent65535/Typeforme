@@ -395,5 +395,8 @@
 
 "AI Writing" = "AI Writing";
 "AI Writing…" = "AI Writing…";
-"When enabled, Space sends pinyin to your Mac's AI model and inserts Chinese. When disabled, Space selects the first candidate." = "When enabled, Space sends pinyin to your Mac's AI model and inserts Chinese. When disabled, Space selects the first candidate.";
 "AI Writing is turned off" = "AI Writing is turned off";
+"Input Method" = "Input Method";
+"Type Chinese, English, and pinyin directly. Tap the AI Writing key to convert the current input and fix pinyin typos. Space inserts a space. Rime is inactive while AI Writing is on." = "Type Chinese, English, and pinyin directly. Tap the AI Writing key to convert the current input and fix pinyin typos. Space inserts a space. Rime is inactive while AI Writing is on.";
+"Punctuation controls typed keys. AI Writing results use the Numbers and Punctuation preferences in Mac processing settings." = "Punctuation controls typed keys. AI Writing results use the Numbers and Punctuation preferences in Mac processing settings.";
+"Active in English mode and AI Writing." = "Active in English mode and AI Writing.";

@@ -271,7 +271,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let language: TextInputLanguage
     }
 
-    private enum TextRewriteTarget {
+    private enum TextRewriteTarget: Equatable {
         case selection(text: String, contextBefore: String, contextAfter: String)
         case context(before: String, after: String)
 
@@ -403,7 +403,6 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private enum MarkedTextCommitReason: String {
         case rimeCommit = "rime_commit"
         case rimeRaw = "rime_raw"
-        case pinyinConversion = "pinyin_conversion"
         case bridgeResult = "bridge_result"
         case generic
     }
@@ -2051,7 +2050,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         // An appearance that is cancelled before this callback therefore
         // cannot leave a database lock behind when the extension is suspended.
         configureRimeStateCallback()
-        _ = rimeInput.resumeAfterSuspension()
+        resumeRimeIfNeeded()
         setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
         setKeyboardContentVisible(true)
         logKeyboardPresentationGateIfUnstable()
@@ -2142,6 +2141,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     override func textDidChange(_ textInput: UITextInput?) {
         super.textDidChange(textInput)
+        cancelPinyinConversionIfInputChanged()
         resolveRimeInputForExternalHostChange(reason: "host_text_did_change")
         discardRimeInputIfDocumentChanged()
         refreshTextKeyboardLayoutForCurrentInputTraits()
@@ -2157,6 +2157,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     override func selectionDidChange(_ textInput: UITextInput?) {
         super.selectionDidChange(textInput)
+        cancelPinyinConversionIfInputChanged()
         resolveRimeInputForExternalHostChange(reason: "host_selection_did_change")
         discardRimeInputIfDocumentChanged()
         refreshReturnKeyTitle()
@@ -2264,6 +2265,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     @objc private func extensionHostDidBecomeActive(_: Notification) {
         guard isKeyboardPresentationVisible else { return }
         configureRimeStateCallback()
+        resumeRimeIfNeeded()
+    }
+
+    private func resumeRimeIfNeeded() {
+        guard isKeyboardPresentationVisible, !isAIWritingEnabled else { return }
         _ = rimeInput.resumeAfterSuspension()
     }
 
@@ -2321,6 +2327,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func applyTextInputOptionsToRime() {
+        guard !isAIWritingEnabled else { return }
         rimeInput.applyInputOptions(
             asciiPunctuation: chinesePunctuationStyle == .english,
             asciiMode: !isChineseInputEnabled || textInputLanguage == .english
@@ -2381,14 +2388,22 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let previousTextInputLanguage = textInputLanguage
         let previousTouchLearningEnabled = isTouchLearningEnabled
 
+        if previousAIWritingEnabled != payload.aiWritingEnabled {
+            finishRimeTextTransaction()
+        }
         isAutoCapitalizationEnabled = payload.autoCapitalizationEnabled
         isCharacterPreviewEnabled = payload.characterPreviewEnabled
         keyboardHaptics.clickSoundsEnabled = payload.keySoundEnabled
         keyboardHaptics.hapticsEnabled = payload.keyHapticsEnabled
         isChineseInputEnabled = payload.chineseInputEnabled
         isAIWritingEnabled = payload.aiWritingEnabled
-        if !isAIWritingEnabled || !isChineseInputEnabled {
+        if !isAIWritingEnabled {
             cancelPinyinConversion()
+        }
+        if previousAIWritingEnabled != isAIWritingEnabled, isAIWritingEnabled {
+            rimeInput.prepareForSuspension()
+            currentRimeComposition = .unavailable
+            currentRimeCandidateWindow = .unavailable
         }
         defaults.set(payload.chineseInputEnabled, forKey: hostChineseInputEnabledKey)
         chinesePunctuationStyle = payload.chinesePunctuationStyle
@@ -2434,7 +2449,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         // detail. End pending/live ownership before a schema, phrase, or reset
         // snapshot can overtake the visible composition. Punctuation is a live
         // option and intentionally preserves the current transaction.
-        if applyRimeChanges,
+        if applyRimeChanges, !isAIWritingEnabled,
            userPhrasesChanged
             || previousRimeProfile != rimeProfile
             || shouldResetRimeLearning {
@@ -2454,11 +2469,14 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             defaults.set(hostRimeUserPhrasesRevision, forKey: rimeUserPhrasesRevisionKey)
         }
 
-        if applyRimeChanges,
+        if applyRimeChanges, !isAIWritingEnabled,
            userPhrasesChanged
             || previousRimeProfile != rimeProfile
             || shouldResetRimeLearning {
             rimeInput.activateDesiredConfigurationAfterTextBoundary()
+        }
+        if previousAIWritingEnabled != isAIWritingEnabled, !isAIWritingEnabled {
+            resumeRimeIfNeeded()
         }
 
         if applyRimeChanges,
@@ -2480,6 +2498,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             updateUI(animated: false)
         }
         let changed = previousAutoCapitalization != isAutoCapitalizationEnabled
+            || previousAIWritingEnabled != isAIWritingEnabled
             || previousCharacterPreview != isCharacterPreviewEnabled
             || previousChineseInputEnabled != isChineseInputEnabled
             || previousPunctuationStyle != chinesePunctuationStyle
@@ -3040,7 +3059,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
     private func configureRimeStateCallback() {
         rimeInput.onActivation = { [weak self] update in
-            guard let self else { return }
+            guard let self, !self.isAIWritingEnabled else { return }
             self.applyReadyRimeUpdateOrRender(update)
         }
         rimeInput.onResetUserDataApplied = { [weak self] generation in
@@ -3050,7 +3069,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             self.defaults.set(generation, forKey: self.rimeLearningResetGenerationKey)
             self.chineseLearningRecorder.reset()
         }
-        rimeInput.publishCurrentActivationIfAvailable()
+        if !isAIWritingEnabled {
+            rimeInput.publishCurrentActivationIfAvailable()
+        }
     }
 
     @discardableResult
@@ -4300,7 +4321,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private func clearNumericIncompatibleCompositionState() {
         pendingRimeInput.removeAll()
         clearTextShiftState()
-        applyRimeUpdate(rimeInput.clearComposition())
+        if !isAIWritingEnabled {
+            applyRimeUpdate(rimeInput.clearComposition())
+        }
     }
 
     private func rebuildTextKeyboardRows(layoutKind explicitLayoutKind: TextKeyboardLayoutKind? = nil) {
@@ -4477,7 +4500,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                 [".", ",", "?", "!", "'"],
             ]
         }
-        if !usesEnglishTextInputForCurrentTraits,
+        if (isAIWritingEnabled || !usesEnglishTextInputForCurrentTraits),
+           isChinesePunctuationContext,
            chinesePunctuationStyle == .chinese {
             return chinesePunctuationPage
         }
@@ -4723,7 +4747,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         guard rows.count >= 3 else { return }
 
         if currentKeyboardSurfaceMetrics.usesPadNumberRow {
-            let usesChinesePunctuation = !usesEnglishTextInputForCurrentTraits
+            let usesChinesePunctuation = (isAIWritingEnabled || !usesEnglishTextInputForCurrentTraits)
+                && isChinesePunctuationContext
                 && chinesePunctuationStyle == .chinese
             let nativeRows = KeyboardTextLayoutPolicy.largePadSymbolRows(
                 alternate: isAlternateSymbolKeyboard,
@@ -4960,15 +4985,18 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func makePadLanguageKey() -> KeyboardTextKeyControl {
-        let title = textInputLanguage == .chinese ? "拼音" : "ABC"
+        let title = isAIWritingEnabled ? "AI" : (textInputLanguage == .chinese ? "拼音" : "ABC")
         let button = makeTextKeyButton(
             title: title,
+            secondaryTitle: isAIWritingEnabled ? NSLocalizedString("Writing", comment: "Second line of AI Writing key") : nil,
             weight: .utility,
             contentPlacement: .leadingBottom,
             sound: .modifier
         )
-        button.isEnabled = isChineseInputEnabled
-        button.accessibilityLabel = textInputLanguage == .chinese
+        button.isEnabled = isAIWritingEnabled || isChineseInputEnabled
+        button.accessibilityLabel = isAIWritingEnabled
+            ? NSLocalizedString("AI Writing", comment: "Convert the current input")
+            : textInputLanguage == .chinese
             ? NSLocalizedString("Chinese active, switch to English", comment: "Accessibility label for iPad language toggle")
             : NSLocalizedString("English active, switch to Chinese", comment: "Accessibility label for iPad language toggle")
         button.addTarget(self, action: #selector(toggleTextInputLanguage), for: .touchUpInside)
@@ -5328,7 +5356,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func displayTitle(forTextKey key: String, autoCap: Bool? = nil) -> String {
-        if textInputLanguage == .chinese,
+        if (isAIWritingEnabled || textInputLanguage == .chinese),
            !isAlphabeticTextKey(key),
            chinesePunctuationStyle == .chinese,
            !isSymbolKeyboard,
@@ -5345,7 +5373,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private func addTextBottomRow(layout kind: KeyboardTextBottomLayoutKind) {
         let preferredLayout = KeyboardTextLayoutPolicy.bottomRow(for: kind)
         let showsGlobe = needsInputModeSwitchKey
-        let showsLanguage = preferredLayout.showsLanguageKey && isChineseInputEnabled
+        let showsLanguage = isAIWritingEnabled || (preferredLayout.showsLanguageKey && isChineseInputEnabled)
         let availableWidth = textBottomRowAvailableWidth
         let layout = KeyboardTextLayoutPolicy.fittedBottomRow(
             preferredLayout,
@@ -5497,7 +5525,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             let kind: KeyboardTextBottomLayoutKind = isSymbolKeyboard ? .symbols : bottom
             let preferredLayout = KeyboardTextLayoutPolicy.bottomRow(for: kind)
             let showsGlobe = needsInputModeSwitchKey
-            let showsLanguage = preferredLayout.showsLanguageKey && isChineseInputEnabled
+            let showsLanguage = isAIWritingEnabled || (preferredLayout.showsLanguageKey && isChineseInputEnabled)
             let fittedLayout = KeyboardTextLayoutPolicy.fittedBottomRow(
                 preferredLayout,
                 availableWidth: Double(availableWidth),
@@ -5623,6 +5651,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     /// depending on a second notification from the host. In both paths,
     /// `UITextDocumentProxy.hasText` remains the source of truth.
     private func documentTextDidMutateLocally() {
+        cancelPinyinConversion()
         refreshReturnKeyEnabledState()
     }
 
@@ -5637,14 +5666,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private var spaceKeyTitle: String {
-        guard isAIWritingEnabled,
-              isChineseInputEnabled,
-              !usesEnglishTextInputForCurrentTraits
-        else { return "" }
-        return NSLocalizedString(
-            pinyinConversion.request == nil ? "AI Writing" : "AI Writing…",
-            comment: "Space key label when AI Writing is enabled"
-        )
+        ""
     }
 
     private var spaceKeyAccessibilityLabel: String {
@@ -7948,7 +7970,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         currentWholeInputRewriteTarget()
     }
 
-    private func currentWholeInputRewriteTarget() -> TextRewriteTarget? {
+    private func currentWholeInputRewriteTarget(requireCompleteInput: Bool = false) -> TextRewriteTarget? {
         prepareWholeInputRewriteTargetCapture()
         let contextBefore = textDocumentProxy.documentContextBeforeInput
         let selectedText = textDocumentProxy.selectedText
@@ -7965,7 +7987,11 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             guard let selectedText else { return nil }
             target = captureSelectionTarget(selectedText)
         case .surroundingContext:
-            guard let contextTarget = currentExpandedContextRewriteTarget() else { return nil }
+            // A partial selection cannot be reconstructed by cursor movement
+            // without changing that selection. Select All provides one exact
+            // replacement target when the host exposes only a text window.
+            if requireCompleteInput, let selectedText, !selectedText.isEmpty { return nil }
+            guard let contextTarget = currentExpandedContextRewriteTarget(requireCompleteInput: requireCompleteInput) else { return nil }
             target = contextTarget
         case nil:
             return nil
@@ -8042,7 +8068,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         return nil
     }
 
-    private func currentExpandedContextRewriteTarget() -> TextRewriteTarget? {
+    private func currentExpandedContextRewriteTarget(requireCompleteInput: Bool = false) -> TextRewriteTarget? {
         let initialBefore = textDocumentProxy.documentContextBeforeInput ?? ""
         let initialAfter = textDocumentProxy.documentContextAfterInput ?? ""
         guard !(initialBefore + initialAfter).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -8051,11 +8077,17 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
         let before = expandedContextBefore(startingWith: initialBefore)
         let after = expandedContextAfter(startingWith: initialAfter)
-        kbLog.debug("context rewrite target captured: initialBeforeLen=\(initialBefore.count, privacy: .public), initialAfterLen=\(initialAfter.count, privacy: .public), beforeLen=\(before.count, privacy: .public), afterLen=\(after.count, privacy: .public)")
-        return .context(before: before, after: after)
+        if requireCompleteInput {
+            guard before.isComplete, after.isComplete,
+                  before.text == (textDocumentProxy.documentContextBeforeInput ?? ""),
+                  after.text == (textDocumentProxy.documentContextAfterInput ?? "")
+            else { return nil }
+        }
+        kbLog.debug("context rewrite target captured: initialBeforeLen=\(initialBefore.count, privacy: .public), initialAfterLen=\(initialAfter.count, privacy: .public), beforeLen=\(before.text.count, privacy: .public), afterLen=\(after.text.count, privacy: .public)")
+        return .context(before: before.text, after: after.text)
     }
 
-    private func expandedContextBefore(startingWith initialBefore: String) -> String {
+    private func expandedContextBefore(startingWith initialBefore: String) -> (text: String, isComplete: Bool) {
         var before = initialBefore
         var chunk = initialBefore
         var moved = 0
@@ -8086,10 +8118,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         if moved > 0 {
             textDocumentProxy.adjustTextPosition(byCharacterOffset: moved)
         }
-        return before
+        return (before, chunk.isEmpty)
     }
 
-    private func expandedContextAfter(startingWith initialAfter: String) -> String {
+    private func expandedContextAfter(startingWith initialAfter: String) -> (text: String, isComplete: Bool) {
         var after = initialAfter
         var chunk = initialAfter
         var moved = 0
@@ -8119,7 +8151,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         if moved > 0 {
             textDocumentProxy.adjustTextPosition(byCharacterOffset: -moved)
         }
-        return after
+        return (after, chunk.isEmpty)
     }
 
     private func selectedTextRewriteTarget() -> TextRewriteTarget? {
@@ -8827,6 +8859,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     @objc private func toggleTextInputLanguage() {
+        if isAIWritingEnabled {
+            startPinyinConversion()
+            return
+        }
         guard isChineseInputEnabled else { return }
         clearTransientKeyboardErrorIfShowing()
         if textInputLanguage == .chinese {
@@ -8925,7 +8961,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private func effectiveTextShiftActive(autoCap: Bool) -> Bool {
         isTextShiftLocked
             || isTextShiftEnabled
-            || (usesEnglishTextInputForCurrentTraits && autoCap && !isTextAutoCapitalizationSuppressed)
+            || ((isAIWritingEnabled || usesEnglishTextInputForCurrentTraits) && autoCap && !isTextAutoCapitalizationSuppressed)
     }
 
     private func refreshLetterCasing() {
@@ -8991,6 +9027,22 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             style: keyboardInterfaceStyle
         )
 
+        textLanguageLabel.numberOfLines = isAIWritingEnabled ? 2 : 1
+        if isAIWritingEnabled {
+            let title = NSMutableAttributedString(
+                string: "AI\n",
+                attributes: [.font: UIFont.systemFont(ofSize: 13, weight: .semibold), .foregroundColor: UIColor.label]
+            )
+            title.append(NSAttributedString(
+                string: NSLocalizedString("Writing", comment: "Second line of AI Writing key"),
+                attributes: [.font: UIFont.systemFont(ofSize: 9, weight: .medium), .foregroundColor: UIColor.label]
+            ))
+            textLanguageLabel.attributedText = title
+            textLanguageButton.bringSubviewToFront(textLanguageLabel)
+            textLanguageButton.accessibilityLabel = NSLocalizedString("AI Writing", comment: "Convert the current input")
+            return
+        }
+
         let activeTitle = textInputLanguage == .chinese ? "中" : "英"
         let inactiveTitle = textInputLanguage == .chinese ? "英" : "中"
         let text = NSMutableAttributedString(
@@ -9042,6 +9094,22 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             return true
         }
 
+        if isAIWritingEnabled {
+            let isAlphabetic = isAlphabeticTextKey(character)
+            let output = isAlphabetic
+                ? (effectiveTextShiftActive(autoCap: shouldAutoCapitalizeNextEnglishLetter()) ? character.uppercased() : character)
+                : chineseDirectText(for: character)
+            clearRefineUndoStateForManualEdit()
+            insertDocumentText(output)
+            if isAlphabetic, isTextAutoCapitalizationSuppressed {
+                isTextAutoCapitalizationSuppressed = false
+            }
+            if !resetShiftIfSticky() {
+                refreshEnglishLetterCasingIfNeeded()
+            }
+            return true
+        }
+
         if usesEnglishTextInputForCurrentTraits {
             finishRimeTextTransaction()
             let isAlphabetic = isAlphabeticTextKey(character)
@@ -9077,6 +9145,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func processChineseRimeTextKey(_ character: String, resetShiftAfterInput: Bool = false) {
+        guard !isAIWritingEnabled else { return }
         cancelPinyinConversion()
         defer {
             if resetShiftAfterInput {
@@ -9311,7 +9380,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     /// ordered transaction was processed. A not-ready result keeps the exact
     /// operations for the next key or startup callback.
     private func replayPendingRimeInputIfReady() {
-        guard pinyinConversion.request == nil,
+        guard !isAIWritingEnabled,
+              pinyinConversion.request == nil,
               !pendingRimeInput.isEmpty,
               validateRimeDocumentForMutation()
         else { return }
@@ -9426,7 +9496,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         pendingTextTouchCorrection = nil
         acceptPendingTextTouchIfSurvived()
 
-        if startPinyinConversionIfNeeded() {
+        if isAIWritingEnabled {
+            clearRefineUndoStateForManualEdit()
+            insertDocumentText(" ")
             resetShiftIfSticky()
             return
         }
@@ -9478,71 +9550,49 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         resetShiftIfSticky()
     }
 
-    private var currentPinyinConversionSource: KeyboardPinyinConversionSession.Source? {
-        guard isChineseInputEnabled, !usesEnglishTextInputForCurrentTraits else { return nil }
-        if !pendingRimeInput.isEmpty {
-            return KeyboardPinyinConversionSession.Source.pending(pendingRimeInput)
-        }
-        guard currentRimeComposition.isComposing else { return nil }
-        return KeyboardPinyinConversionSession.Source.composition(
-            rawInput: currentRimeComposition.input,
-            preedit: currentRimeComposition.preedit,
-            selectionStart: currentRimeComposition.preeditSelectionStart,
-            selectionEnd: currentRimeComposition.preeditSelectionEnd
-        )
-    }
-
     private var currentPinyinConversionTarget: KeyboardPinyinConversionSession.Target? {
-        guard let source = currentPinyinConversionSource,
-              let documentIdentifier = currentDocumentIdentifierIfAvailable,
-              activeMarkedTextOwner == .rimeComposition,
-              !activeMarkedText.isEmpty
-        else { return nil }
+        guard let documentIdentifier = currentDocumentIdentifierIfAvailable else { return nil }
         return KeyboardPinyinConversionSession.Target(
-            source: source,
             documentIdentifier: documentIdentifier,
-            markedText: activeMarkedText,
-            selectionLocation: activeMarkedTextSelectionLocation
+            contextBefore: textDocumentProxy.documentContextBeforeInput,
+            selectedText: textDocumentProxy.selectedText,
+            contextAfter: textDocumentProxy.documentContextAfterInput
         )
     }
 
-    private func startPinyinConversionIfNeeded() -> Bool {
+    private func startPinyinConversion() {
         guard isAIWritingEnabled,
-              let source = currentPinyinConversionSource,
-              !rimeSpaceUsesRawLiteralBoundary(source.pinyin)
-        else { return false }
+              keyboardFocus == .text,
+              !isStartRequestInFlight,
+              currentBridgeStatus?.state != .recording,
+              currentBridgeStatus?.state != .sending
+        else { return }
+        lightHaptic()
         guard hasFullAccess else {
             showTextKeyboardStatus(NSLocalizedString("Enable Full Access", comment: "Keyboard network access required"))
-            return true
+            return
         }
-        guard let target = currentPinyinConversionTarget,
-              rimeCompositionSessionIsCurrent()
-        else { return true }
-        guard let request = pinyinConversion.begin(target: target) else { return true }
-
-        let marked = activeMarkedText as NSString
-        let caret = min(max(activeMarkedTextSelectionLocation, 0), marked.length)
-        let markedBefore = marked.substring(to: caret)
-        let markedAfter = marked.substring(from: caret)
-        var before = textDocumentProxy.documentContextBeforeInput ?? ""
-        var after = textDocumentProxy.documentContextAfterInput ?? ""
-        if before.hasSuffix(markedBefore) { before = String(before.dropLast(markedBefore.count)) }
-        if after.hasPrefix(markedAfter) { after = String(after.dropFirst(markedAfter.count)) }
+        guard let target = currentWholeInputRewriteTarget(requireCompleteInput: true),
+              let snapshot = currentPinyinConversionTarget
+        else {
+            if textDocumentProxy.hasText {
+                showTextKeyboardStatus(NSLocalizedString("Could not read the whole input. Select all and try again.", comment: "The host did not expose a complete AI Writing target"))
+            } else {
+                showMissingCommandTargetError()
+            }
+            return
+        }
+        guard let request = pinyinConversion.begin(target: snapshot) else { return }
         let command = KeyboardBridgeCommand(
             id: request.id,
             action: .refineText,
             correctionMode: correctionMode.rawValue,
-            text: source.pinyin,
-            textEditContext: KeyboardTextEditContext(
-                intent: .pinyinToChinese,
-                contextBefore: String((before + source.confirmedPrefix).suffix(256)),
-                targetText: source.pinyin,
-                contextAfter: String(after.prefix(256))
-            )
+            text: target.text,
+            textEditContext: keyboardTextEditContext(intent: .pinyinToChinese, target: target)
         )
-        // The command response is consumed against this exact marked range.
-        // Pushed/late statuses must never enter generic whole-input insertion.
-        suppressRefineResult(commandID: command.id, reason: "pinyin_owned_range")
+        // Only this captured draft may consume the result. Pushed or late
+        // statuses must never insert a second copy through generic dictation.
+        suppressRefineResult(commandID: command.id, reason: "ai_writing_captured_input")
         bridgeStatus = KeyboardBridgeStatus(
             commandID: command.id,
             state: .sending,
@@ -9566,16 +9616,15 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
                     timeout: KeyboardBridgeCommandAction.refineText.requestTimeout
                 )
                 guard !Task.isCancelled else { return }
-                self.finishPinyinConversion(status: status, requestID: command.id)
+                self.finishPinyinConversion(status: status, target: target, requestID: command.id)
             } catch {
                 guard !Task.isCancelled else { return }
                 self.failPinyinConversion(requestID: command.id)
             }
         }
-        return true
     }
 
-    private func finishPinyinConversion(status: KeyboardBridgeStatus, requestID: String) {
+    private func finishPinyinConversion(status: KeyboardBridgeStatus, target: TextRewriteTarget, requestID: String) {
         guard pinyinConversion.request?.id == requestID else { return }
         guard status.commandID == requestID,
               status.state == .result,
@@ -9585,22 +9634,27 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             failPinyinConversion(requestID: requestID)
             return
         }
-        let source = pinyinConversion.takeResult(
+        let canApply = pinyinConversion.takeResult(
             requestID: requestID,
             currentTarget: currentPinyinConversionTarget,
-            documentIsCurrent: rimeCompositionSessionIsCurrent(),
+            documentIsCurrent: currentDocumentIdentifierIfAvailable != nil,
             isEnabled: isAIWritingEnabled,
             isVisible: isKeyboardPresentationVisible && keyboardFocus == .text
         )
         pinyinConversionTask = nil
         restoreKeyboardAfterPinyinConversion(requestID: requestID)
-        if let source {
-            clearRefineUndoStateForManualEdit()
-            pendingRimeInput.removeAll()
-            commitTextReplacingMarkedText(source.confirmedPrefix + text, reason: .pinyinConversion)
-            resetRimeInputState()
-            beginInsertedFlash()
+        guard canApply,
+              currentWholeInputRewriteTarget(requireCompleteInput: true) == target,
+              applyRewrittenText(text, replacing: target)
+        else {
+            updateUI()
+            showTextKeyboardStatus(NSLocalizedString("Input changed; conversion skipped.", comment: "AI Writing result no longer owns the input"))
+            return
         }
+        recordRefineUndoState(originalTarget: target, rewrittenText: text)
+        defaults.set(requestID, forKey: lastInsertedCommandIDKey)
+        recentSelectionTarget = nil
+        beginInsertedFlash()
         updateUI()
     }
 
@@ -9609,9 +9663,17 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         cancelPinyinConversion()
         updateUI()
         showTextKeyboardStatus(
-            NSLocalizedString("AI Writing failed. Press Space to retry.", comment: "Pinyin remains available after conversion failure"),
+            NSLocalizedString("AI Writing failed. Tap AI Writing to retry.", comment: "The draft stays unchanged after conversion failure"),
             color: .systemOrange
         )
+    }
+
+    private func cancelPinyinConversionIfInputChanged() {
+        guard let request = pinyinConversion.request,
+              request.target != currentPinyinConversionTarget
+        else { return }
+        cancelPinyinConversion()
+        updateUI(animated: false)
     }
 
     private func cancelPinyinConversion() {
@@ -9636,8 +9698,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     /// Dedicated literal fields and explicit URL/email tokens preserve raw
-    /// input even when AI writing is enabled;
-    /// queued startup input and live composition use the same rule.
+    /// input at Rime's space boundary, including queued startup input.
     private func rimeSpaceUsesRawLiteralBoundary(_ input: String) -> Bool {
         guard textInputLanguage == .chinese,
               isRawLatinInput(input)
@@ -9704,6 +9765,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     /// composition and candidate projections. Revision ordering prevents a
     /// delayed startup callback from replaying commits or replacing newer UI.
     private func applyRimeUpdate(_ update: RimeKeyboardUpdate) {
+        guard !isAIWritingEnabled else { return }
         let composition = update.composition
         guard composition.revision > currentRimeComposition.revision else { return }
 
@@ -9901,7 +9963,8 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private var allowsRimeMarkedText: Bool {
-        !usesEnglishTextInputForCurrentTraits
+        !isAIWritingEnabled
+            && !usesEnglishTextInputForCurrentTraits
             && !isRenderedNumericTextKeyboard
     }
 
@@ -9951,6 +10014,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         composition: RimeCompositionSnapshot,
         candidateWindow: RimeCandidateWindow
     ) {
+        guard !isAIWritingEnabled else {
+            renderIdleCandidateSurface()
+            return
+        }
         if !composition.isComposing || candidateWindow.candidates.isEmpty {
             setCandidateGridExpanded(false)
         }
@@ -11100,6 +11167,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     @objc private func candidateGridButtonTapped(_ sender: UIButton) {
+        guard !isAIWritingEnabled else { return }
         guard pinyinConversion.request == nil else { return }
         pendingTextTouchCorrection = nil
         acceptPendingTextTouchIfSurvived()
@@ -11179,6 +11247,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     @objc private func candidateButtonTapped(_ sender: UIButton) {
+        guard !isAIWritingEnabled else { return }
         guard pinyinConversion.request == nil else { return }
         pendingTextTouchCorrection = nil
         acceptPendingTextTouchIfSurvived()
@@ -11944,7 +12013,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         guard isAutoCapitalizationEnabled else {
             return AutocapDecision(outcome: false, reason: "disabled")
         }
-        guard usesEnglishTextInputForCurrentTraits else {
+        guard isAIWritingEnabled || usesEnglishTextInputForCurrentTraits else {
             return AutocapDecision(outcome: false, reason: "not-english")
         }
 
@@ -12017,7 +12086,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func refreshEnglishLetterCasingIfNeeded() {
-        guard usesEnglishTextInputForCurrentTraits,
+        guard isAIWritingEnabled || usesEnglishTextInputForCurrentTraits,
               !isSymbolKeyboard,
               keyboardFocus == .text
         else { return }

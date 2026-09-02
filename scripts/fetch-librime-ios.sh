@@ -10,6 +10,7 @@ REPO_URL="${LIBRIMEKIT_REPO_URL:-https://github.com/mariorichp/LibrimeKit.git}"
 REPO_REF="${LIBRIMEKIT_REPO_REF:-583a59e82702a3a057bdcc6f65f3fcab5fae52e6}"
 BUILD_ARM64_SIMULATOR="${TYPEFORME_BUILD_RIME_ARM64_SIMULATOR:-auto}"
 SESSION_OWNERSHIP_PATCH="$ROOT/scripts/patches/librimekit-session-ownership.patch"
+SIMULATOR_WRAPPER_PATCH="$ROOT/scripts/patches/librimekit-simulator-wrapper.patch"
 
 # shellcheck source=scripts/lib/xcode-tools.sh
 . "$ROOT/scripts/lib/xcode-tools.sh"
@@ -81,14 +82,17 @@ checkout_librimekit_ref() {
 }
 
 apply_librimekit_patches() {
-  if git -C "$VENDOR_DIR" apply --check "$SESSION_OWNERSHIP_PATCH"; then
-    git -C "$VENDOR_DIR" apply "$SESSION_OWNERSHIP_PATCH"
-  elif git -C "$VENDOR_DIR" apply --reverse --check "$SESSION_OWNERSHIP_PATCH"; then
-    return
-  else
-    echo "LibrimeKit session-ownership patch does not apply cleanly at $REPO_REF." >&2
-    exit 1
-  fi
+  local patch
+  for patch in "$SESSION_OWNERSHIP_PATCH" "$SIMULATOR_WRAPPER_PATCH"; do
+    if git -C "$VENDOR_DIR" apply --check "$patch"; then
+      git -C "$VENDOR_DIR" apply "$patch"
+    elif git -C "$VENDOR_DIR" apply --reverse --check "$patch"; then
+      continue
+    else
+      echo "LibrimeKit patch $(basename "$patch") does not apply cleanly at $REPO_REF." >&2
+      exit 1
+    fi
+  done
 }
 
 mkdir -p "$ROOT/vendor"

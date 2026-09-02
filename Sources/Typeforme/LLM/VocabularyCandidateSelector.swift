@@ -222,7 +222,7 @@ enum VocabularyCandidateSelector {
         pinyin: String,
         limit: Int = defaultLimit
     ) -> [VocabularyCandidatePayload] {
-        let mask = VerbatimSpanMask(pinyin)
+        let mask = VerbatimSpanMask(pinyin, inputKind: .mixedTyping)
         var matchingText = mask.maskedText
         for entry in mask.entries {
             // Keep character offsets while excluding literal syntax from
