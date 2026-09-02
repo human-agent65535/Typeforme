@@ -4,32 +4,47 @@ import Testing
 
 @Suite("PinyinTextEdit")
 struct PinyinTextEditTests {
-    @Test @MainActor func disabledServerRejectsPinyinBeforeCallingModel() async throws {
-        let defaults = UserDefaults.standard
-        let original = defaults.volatileDomain(forName: UserDefaults.argumentDomain)
-        var overrides = original
-        overrides[AppSettings.Keys.aiWritingEnabled] = false
-        defaults.setVolatileDomain(overrides, forName: UserDefaults.argumentDomain)
-        defer { defaults.setVolatileDomain(original, forName: UserDefaults.argumentDomain) }
-        let dictionaryURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("typeforme-pinyin-test-\(UUID().uuidString).json")
-        defer { try? FileManager.default.removeItem(at: dictionaryURL) }
-        let service = BridgeService(dictionary: UserDictionaryStore(url: dictionaryURL))
-        let request = BridgeTextEditRequest(
-            intent: TextEditIntent.pinyinToChinese.rawValue,
-            targetText: "nihaoma",
-            spokenInstruction: ""
-        )
-        do {
-            _ = try await service.editText(request)
-            Issue.record("A disabled server must not perform pinyin conversion")
-        } catch let error as BridgeServiceError {
-            guard case .invalidRequest(let message) = error else {
-                Issue.record("Unexpected rejection: \(error)")
-                return
-            }
-            #expect(message.contains("disabled"))
-        }
+    @Test func savedPinyinPromptIsReadAgainOnTheNextRequestAndResetRestoresDefault() throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("typeforme-pinyin-prompts-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let file = PromptOverrideStore.pinyinPromptFile(in: folder)
+        let request = makeRequest("nihaoma")
+
+        let builtIn = TextEditPromptBuilder.build(for: request, promptOverrideFolder: folder)
+        #expect(builtIn.system == BuiltInPrompts.pinyinToChinese)
+        try "Custom pinyin instruction".write(to: file, atomically: true, encoding: .utf8)
+        let custom = TextEditPromptBuilder.build(for: request, promptOverrideFolder: folder)
+        #expect(custom.system == "Custom pinyin instruction")
+        #expect(custom.user == builtIn.user)
+
+        try "Updated pinyin instruction".write(to: file, atomically: true, encoding: .utf8)
+        #expect(TextEditPromptBuilder.build(for: request, promptOverrideFolder: folder).system == "Updated pinyin instruction")
+        try FileManager.default.removeItem(at: file)
+        #expect(TextEditPromptBuilder.build(for: request, promptOverrideFolder: folder).system == builtIn.system)
+    }
+
+    @Test func pinyinOverrideDoesNotChangeSpokenCommandPrompts() throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("typeforme-pinyin-scope-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let request = makeRequest("hello", intent: .command)
+        let original = TextEditPromptBuilder.build(for: request, promptOverrideFolder: folder)
+        try "Pinyin only".write(to: PromptOverrideStore.pinyinPromptFile(in: folder), atomically: true, encoding: .utf8)
+        let result = TextEditPromptBuilder.build(for: request, promptOverrideFolder: folder)
+        #expect(result.system == original.system)
+        #expect(result.user == original.user)
+    }
+
+    @Test func emptyPinyinOverrideUsesTheBuiltInPrompt() throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("typeforme-pinyin-empty-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        try " \n\t".write(to: PromptOverrideStore.pinyinPromptFile(in: folder), atomically: true, encoding: .utf8)
+        #expect(TextEditPromptBuilder.build(for: makeRequest("nihaoma"), promptOverrideFolder: folder).system == BuiltInPrompts.pinyinToChinese)
     }
 
     @Test func rawPinyinAndReadOnlyContextStayInSeparateJSONFields() throws {
@@ -64,9 +79,9 @@ struct PinyinTextEditTests {
         }
     }
 
-    private func makeRequest(_ pinyin: String) -> TextEditRequest {
+    private func makeRequest(_ pinyin: String, intent: TextEditIntent = .pinyinToChinese) -> TextEditRequest {
         TextEditRequest(
-            intent: .pinyinToChinese,
+            intent: intent,
             contextBefore: "他说：",
             targetText: pinyin,
             contextAfter: "",

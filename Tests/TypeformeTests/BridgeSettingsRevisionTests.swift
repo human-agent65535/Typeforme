@@ -4,17 +4,6 @@ import Testing
 
 @Suite("BridgeSettingsRevision")
 struct BridgeSettingsRevisionTests {
-    @Test func aiWritingSwitchChangesRevisionAndEditableSnapshot() {
-        var payload = BridgeSettingsPayload.current()
-        payload.aiWritingEnabled = false
-        let disabledRevision = BridgeSettingsPayload.settingsRevision(for: payload)
-        payload.aiWritingEnabled = true
-        #expect(BridgeSettingsPayload.settingsRevision(for: payload) != disabledRevision)
-        #expect(payload.editableSnapshot.aiWritingEnabled)
-        let update = BridgeSettingsUpdateRequest(editableSnapshot: payload.editableSnapshot, expectedSettingsRevision: disabledRevision)
-        #expect(update.aiWritingEnabled == true)
-    }
-
     @Test func revisionIgnoresDynamicModelStatuses() {
         var payload = BridgeSettingsPayload.current()
         let revision = BridgeSettingsPayload.settingsRevision(for: payload)

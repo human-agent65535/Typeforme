@@ -68,7 +68,6 @@ enum AppSettings {
         static let correctionContextSize   = "correction.contextSize"
         static let correctionMode   = "correction.mode"
         static let correctionAutoCommit    = "correction.autoCommit"
-        static let aiWritingEnabled        = "keyboard.aiWritingEnabled"
         static let numberOutputPreference  = "correction.numberOutputPreference"
         static let punctuationPreference   = "correction.punctuationPreference"
         static let llama2BPath             = "correction.llama2BPath"
@@ -148,7 +147,6 @@ enum AppSettings {
             Keys.correctionContextSize:   4096,
             Keys.correctionMode:   CorrectionMode.polishPlus.rawValue,
             Keys.correctionAutoCommit:    true,
-            Keys.aiWritingEnabled:        false,
             Keys.numberOutputPreference:  NumberOutputPreference.automatic.rawValue,
             Keys.punctuationPreference:   PunctuationOutputPreference.normal.rawValue,
             Keys.llama2BPath:             AppPaths.llama2BFile.path,
@@ -265,7 +263,6 @@ enum AppSettings {
         Keys.correctionContextSize,
         Keys.correctionMode,
         Keys.correctionAutoCommit,
-        Keys.aiWritingEnabled,
         Keys.numberOutputPreference,
         Keys.punctuationPreference,
         Keys.llama2BPath,
@@ -466,7 +463,6 @@ enum AppSettings {
         rawSetting(forKey: Keys.correctionMode, default: .polishPlus)
     }
     static var autoCommit: Bool         { ud.bool(forKey: Keys.correctionAutoCommit) }
-    static var aiWritingEnabled: Bool   { ud.bool(forKey: Keys.aiWritingEnabled) }
     static var numberOutputPreference: NumberOutputPreference {
         NumberOutputPreference.normalized(ud.string(forKey: Keys.numberOutputPreference))
     }

@@ -588,13 +588,6 @@ struct ClientServerSettingsView: View {
                     .pickerStyle(.menu)
                 }
 
-                Section("Chinese Keyboard") {
-                    Toggle("AI Writing", isOn: aiWritingEnabledBinding)
-                    Text("When enabled, Space converts pinyin to Chinese with the server's AI model. When disabled, Space selects the first candidate.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-
                 Section {
                     if let downloadSummary = serverDraftDownloadSummary {
                         Label(downloadSummary, systemImage: "arrow.down.circle")
@@ -757,14 +750,6 @@ struct ClientServerSettingsView: View {
         } set: { value in
             draft?.numberOutputPreference = value
             normalizeDraft()
-        }
-    }
-
-    private var aiWritingEnabledBinding: Binding<Bool> {
-        Binding {
-            draft?.aiWritingEnabled ?? false
-        } set: { value in
-            draft?.aiWritingEnabled = value
         }
     }
 
@@ -3060,7 +3045,6 @@ struct CorrectionSettingsView: View {
     @AppStorage(AppSettings.Keys.clientBridgeEnabledRecognitionSources) private var clientBridgeEnabledRecognitionSourcesRaw: String = ""
     @AppStorage(AppSettings.Keys.numberOutputPreference)  private var numberOutputPreferenceRaw: String = NumberOutputPreference.automatic.rawValue
     @AppStorage(AppSettings.Keys.punctuationPreference)   private var punctuationPreferenceRaw: String = PunctuationOutputPreference.normal.rawValue
-    @AppStorage(AppSettings.Keys.aiWritingEnabled)        private var aiWritingEnabled = false
     @AppStorage(AppSettings.Keys.externalLLMBaseURL)      private var savedExternalLLMBaseURL: String = "http://127.0.0.1:1234"
     @AppStorage(AppSettings.Keys.externalLLMModel)        private var savedExternalLLMModel: String = ""
     @State private var draftBackendRaw: String = CorrectionBackendKind.qwen35_4B.rawValue
@@ -3208,14 +3192,6 @@ struct CorrectionSettingsView: View {
                 Text(punctuationPreferenceDescription)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
-            }
-            if processingModeRaw == ProcessingMode.server.rawValue {
-                Section("Chinese Keyboard") {
-                    Toggle("AI Writing", isOn: $aiWritingEnabled)
-                    Text("When enabled, Space converts pinyin to Chinese with the server's AI model. When disabled, Space selects the first candidate.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
             }
             Section("Local LLM models (Qwen3.5 via llama.cpp)") {
                 ForEach(localLlamaModels) { spec in
@@ -3919,6 +3895,10 @@ private struct ModelDownloadRow: View {
 /// In-app editor for the base system prompt and per-mode addendum.
 struct PromptsSettingsView: View {
     @AppStorage(AppSettings.Keys.promptAdditionalSystem) private var additionalSystemPrompt: String = ""
+    @State private var pinyinPromptText: String = ""
+    @State private var originalPinyinPromptText: String = ""
+    @State private var pinyinHasOverride = false
+    @State private var pinyinPromptError: String?
     @State private var correctionMode: CorrectionMode = .polishPlus
     @State private var systemPromptText: String = ""
     @State private var originalSystemPromptText: String = ""
@@ -3935,7 +3915,32 @@ struct PromptsSettingsView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 promptHeader(
-                    title: "System prompt",
+                    title: "AI Writing prompt",
+                    hasOverride: pinyinHasOverride,
+                    isDirty: pinyinIsDirty,
+                    reset: resetPinyinOverride
+                )
+
+                promptEditor(text: $pinyinPromptText, minHeight: 160)
+
+                HStack(alignment: .top) {
+                    Text("Converts pinyin from the iOS keyboard into Chinese. Changes apply to the next AI Writing request.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Save") { savePinyinOverride() }
+                        .disabled(!pinyinIsDirty || trimmed(pinyinPromptText).isEmpty)
+                }
+                if let pinyinPromptError {
+                    Text(pinyinPromptError)
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                }
+
+                Divider()
+
+                promptHeader(
+                    title: "Correction prompt",
                     hasOverride: systemHasOverride,
                     isDirty: systemIsDirty,
                     reset: resetSystemOverride
@@ -4003,6 +4008,7 @@ struct PromptsSettingsView: View {
             .padding(18)
         }
         .onAppear {
+            loadPinyinPrompt()
             loadSystemPrompt()
             loadModePrompt()
         }
@@ -4014,6 +4020,7 @@ struct PromptsSettingsView: View {
         // shortcuts would collide on the same key.
         .background(
             Button("") {
+                if pinyinIsDirty, !trimmed(pinyinPromptText).isEmpty { savePinyinOverride() }
                 if systemIsDirty, !trimmed(systemPromptText).isEmpty { saveSystemOverride() }
                 if modeIsDirty, !trimmed(modePromptText).isEmpty { saveModeOverride() }
             }
@@ -4022,6 +4029,10 @@ struct PromptsSettingsView: View {
             .frame(width: 0, height: 0)
             .accessibilityHidden(true)
         )
+    }
+
+    private var pinyinIsDirty: Bool {
+        pinyinPromptText != originalPinyinPromptText
     }
 
     private var systemIsDirty: Bool {
@@ -4036,7 +4047,7 @@ struct PromptsSettingsView: View {
         HStack(spacing: 6) {
             Image(systemName: hasOverride ? "pencil.circle.fill" : "doc.circle")
                 .foregroundStyle(hasOverride ? Color.accentColor : Color.secondary)
-            Text(title)
+            Text(LocalizedStringKey(title))
             Text(hasOverride ? "Custom override" : "Built-in default")
                 .foregroundStyle(.secondary)
             if isDirty {
@@ -4075,6 +4086,41 @@ struct PromptsSettingsView: View {
             systemHasOverride = false
         }
         originalSystemPromptText = systemPromptText
+    }
+
+    private func loadPinyinPrompt() {
+        let override = PromptOverrideStore.readPinyinPrompt()
+        pinyinPromptText = override ?? BuiltInPrompts.pinyinToChinese
+        originalPinyinPromptText = pinyinPromptText
+        pinyinHasOverride = override != nil
+        pinyinPromptError = nil
+    }
+
+    private func savePinyinOverride() {
+        let file = PromptOverrideStore.pinyinPromptFile()
+        do {
+            try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try pinyinPromptText.write(to: file, atomically: true, encoding: .utf8)
+            pinyinHasOverride = true
+            originalPinyinPromptText = pinyinPromptText
+            pinyinPromptError = nil
+        } catch {
+            pinyinPromptError = NSLocalizedString("Could not save the AI Writing prompt.", comment: "Prompt save failure")
+            Log.store.error("pinyin prompt save failed: \(error.localizedDescription)")
+        }
+    }
+
+    private func resetPinyinOverride() {
+        do {
+            let file = PromptOverrideStore.pinyinPromptFile()
+            if FileManager.default.fileExists(atPath: file.path) {
+                try FileManager.default.removeItem(at: file)
+            }
+            loadPinyinPrompt()
+        } catch {
+            pinyinPromptError = NSLocalizedString("Could not reset the AI Writing prompt.", comment: "Prompt reset failure")
+            Log.store.error("pinyin prompt reset failed: \(error.localizedDescription)")
+        }
     }
 
     private func loadModePrompt() {

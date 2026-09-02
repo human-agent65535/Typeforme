@@ -286,14 +286,6 @@ struct MacSettingsView: View {
                     Text("Mac Refine Engine")
                 }
 
-                Section {
-                    Toggle("AI Writing", isOn: aiWritingEnabledBinding)
-                } header: {
-                    Text("Chinese Keyboard")
-                } footer: {
-                    Text("When enabled, Space converts pinyin to Chinese with the server's AI model. When disabled, Space selects the first candidate.")
-                }
-
                 Section("Vocabulary") {
                     NavigationLink {
                         ServerVocabularyView(entries: userDictionaryBinding)
@@ -563,16 +555,6 @@ struct MacSettingsView: View {
         } set: { value in
             updateDraft { draft in
                 draft.numberOutputPreference = value
-            }
-        }
-    }
-
-    private var aiWritingEnabledBinding: Binding<Bool> {
-        Binding {
-            draft?.aiWritingEnabled ?? false
-        } set: { value in
-            updateDraft { draft in
-                draft.aiWritingEnabled = value
             }
         }
     }

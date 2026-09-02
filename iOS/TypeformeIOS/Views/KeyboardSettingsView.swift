@@ -13,6 +13,12 @@ struct KeyboardSettingsView: View {
                 Text("Turn off to make the text keyboard English-only and hide the Chinese/English switch key.")
             }
             Section {
+                Toggle("AI Writing", isOn: aiWritingEnabledBinding)
+            } footer: {
+                Text("When enabled, Space sends pinyin to your Mac's AI model and inserts Chinese. When disabled, Space selects the first candidate.")
+            }
+            .disabled(!state.keyboardChineseInputEnabled)
+            Section {
                 Picker("Dictionary", selection: rimeDictionaryTierBinding) {
                     ForEach(KeyboardRimeDictionaryTier.allCases) { tier in
                         Text(tier.title).tag(tier)
@@ -116,6 +122,14 @@ struct KeyboardSettingsView: View {
             state.keyboardChineseInputEnabled
         } set: { enabled in
             state.setKeyboardChineseInputEnabled(enabled)
+        }
+    }
+
+    private var aiWritingEnabledBinding: Binding<Bool> {
+        Binding {
+            state.keyboardAIWritingEnabled
+        } set: { enabled in
+            state.setKeyboardAIWritingEnabled(enabled)
         }
     }
 

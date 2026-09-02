@@ -44,13 +44,24 @@ for forbidden in ('Picker("Default Mode"', "LivePreviewSettingsSection()"):
     if forbidden in mac_settings:
         raise AssertionError(f"Mac Processing regained an iPhone-owned setting: {forbidden}")
 
-if 'Toggle("AI Writing", isOn: aiWritingEnabledBinding)' not in mac_settings:
-    raise AssertionError("AI Writing must be a server-owned setting")
-if 'Toggle("AI Writing"' in keyboard:
-    raise AssertionError("AI Writing must not become an independent iPhone setting")
+if 'Toggle("AI Writing", isOn: aiWritingEnabledBinding)' not in keyboard:
+    raise AssertionError("AI Writing belongs in the iPhone keyboard settings")
+if 'Toggle("AI Writing"' in mac_settings:
+    raise AssertionError("Mac Processing must not own the keyboard AI Writing switch")
 app = (root / "iOS/TypeformeIOS/AppState.swift").read_text()
-if "aiWritingEnabled: macSettings?.aiWritingEnabled ?? false" not in app:
-    raise AssertionError("Keyboard AI Writing must mirror the acknowledged server setting")
+for required in (
+    'private static let keyboardAIWritingEnabledKey = "keyboard.aiWritingEnabled"',
+    "self.keyboardAIWritingEnabled = UserDefaults.standard.bool(forKey: Self.keyboardAIWritingEnabledKey)",
+    "aiWritingEnabled: keyboardAIWritingEnabled",
+):
+    if required not in app:
+        raise AssertionError(f"AI Writing lost its iPhone-owned preference: {required}")
+setter = app.split("func setKeyboardAIWritingEnabled", 1)[1].split("func setKeyboardChinesePunctuationStyle", 1)[0]
+if "updateStoredBoolPreference(" not in setter or "publishKeyboardDefaults()" not in setter:
+    raise AssertionError("AI Writing changes must persist and publish to the keyboard immediately")
+mac_app = (root / "Sources/Typeforme/UI/SettingsTabs.swift").read_text()
+if 'Toggle("AI Writing"' in mac_app:
+    raise AssertionError("The Mac app must expose the conversion prompt, not the keyboard switch")
 
 for required in (
     ".navigationBarBackButtonHidden(hasUnsavedChanges)",

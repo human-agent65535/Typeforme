@@ -423,6 +423,7 @@ final class AppState {
     var keyboardLivePreviewSource: KeyboardLivePreviewSource
     var keyboardLivePreviewRecognitionMode: KeyboardLivePreviewRecognitionMode
     var keyboardChineseInputEnabled: Bool
+    var keyboardAIWritingEnabled: Bool
     var keyboardChinesePunctuationStyle: KeyboardChinesePunctuationStyle
     var keyboardRimeDictionaryTier: KeyboardRimeDictionaryTier
     var keyboardRimeLearningEnabled: Bool
@@ -485,6 +486,7 @@ final class AppState {
     private static let keyboardLivePreviewSourceKey = "keyboard.livePreviewSource"
     private static let keyboardLivePreviewRecognitionModeKey = "keyboard.livePreviewRecognitionMode"
     private static let keyboardChineseInputEnabledKey = "keyboard.chineseInputEnabled"
+    private static let keyboardAIWritingEnabledKey = "keyboard.aiWritingEnabled"
     private static let minimumRecordingStopInterval: TimeInterval = 0.55
     private static let keyboardChinesePunctuationStyleKey = "keyboard.chinesePunctuationStyle"
     private static let keyboardRimeDictionaryTierKey = "keyboard.rimeDictionaryTier"
@@ -718,6 +720,7 @@ final class AppState {
             .flatMap(KeyboardLivePreviewRecognitionMode.init(rawValue:)) ?? .onDeviceOnly
         self.keyboardChineseInputEnabled = UserDefaults.standard.object(forKey: Self.keyboardChineseInputEnabledKey)
             .map { _ in UserDefaults.standard.bool(forKey: Self.keyboardChineseInputEnabledKey) } ?? true
+        self.keyboardAIWritingEnabled = UserDefaults.standard.bool(forKey: Self.keyboardAIWritingEnabledKey)
         self.keyboardChinesePunctuationStyle = UserDefaults.standard.string(forKey: Self.keyboardChinesePunctuationStyleKey)
             .flatMap(KeyboardChinesePunctuationStyle.init(rawValue:)) ?? .chinese
         self.keyboardRimeDictionaryTier = UserDefaults.standard.string(forKey: Self.keyboardRimeDictionaryTierKey)
@@ -1124,6 +1127,15 @@ final class AppState {
             \.keyboardChineseInputEnabled,
             to: enabled,
             key: Self.keyboardChineseInputEnabledKey
+        ) else { return }
+        publishKeyboardDefaults()
+    }
+
+    func setKeyboardAIWritingEnabled(_ enabled: Bool) {
+        guard updateStoredBoolPreference(
+            \.keyboardAIWritingEnabled,
+            to: enabled,
+            key: Self.keyboardAIWritingEnabledKey
         ) else { return }
         publishKeyboardDefaults()
     }
@@ -1696,7 +1708,7 @@ final class AppState {
             keySoundEnabled: keyboardKeySoundEnabled,
             keyHapticsEnabled: keyboardKeyHapticsEnabled,
             chineseInputEnabled: keyboardChineseInputEnabled,
-            aiWritingEnabled: macSettings?.aiWritingEnabled ?? false,
+            aiWritingEnabled: keyboardAIWritingEnabled,
             chinesePunctuationStyle: keyboardChinesePunctuationStyle,
             rimeDictionaryTier: keyboardRimeDictionaryTier,
             rimeLearningEnabled: keyboardRimeLearningEnabled,
@@ -4717,6 +4729,10 @@ final class AppState {
     }
 
     private func convertKeyboardPinyin(_ command: KeyboardBridgeCommand) async {
+        guard keyboardAIWritingEnabled, keyboardChineseInputEnabled else {
+            failKeyboardCommand(command.id, code: .processingFailed, recovery: .none, message: NSLocalizedString("AI Writing is turned off", comment: "Pinyin conversion disabled"))
+            return
+        }
         guard await prepareKeyboardRefine(command) else { return }
         guard let context = command.textEditContext,
               !context.targetText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty

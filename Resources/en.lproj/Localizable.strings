@@ -75,6 +75,8 @@
 "Medium quality / fastest" = "Medium quality / fastest";
 "Low quality / medium speed" = "Low quality / medium speed";
 
-"Chinese Keyboard" = "Chinese Keyboard";
-"AI Writing" = "AI Writing";
-"When enabled, Space converts pinyin to Chinese with the server's AI model. When disabled, Space selects the first candidate." = "When enabled, Space converts pinyin to Chinese with the server's AI model. When disabled, Space selects the first candidate.";
+"AI Writing prompt" = "AI Writing prompt";
+"Converts pinyin from the iOS keyboard into Chinese. Changes apply to the next AI Writing request." = "Converts pinyin from the iOS keyboard into Chinese. Changes apply to the next AI Writing request.";
+"Could not save the AI Writing prompt." = "Could not save the AI Writing prompt.";
+"Could not reset the AI Writing prompt." = "Could not reset the AI Writing prompt.";
+"Correction prompt" = "Correction prompt";

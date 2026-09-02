@@ -393,7 +393,7 @@
 "Key Haptics" = "Key Haptics";
 "Key sounds are controlled here and respect Silent Mode." = "Key sounds are controlled here and respect Silent Mode.";
 
-"Chinese Keyboard" = "Chinese Keyboard";
 "AI Writing" = "AI Writing";
-"When enabled, Space converts pinyin to Chinese with the server's AI model. When disabled, Space selects the first candidate." = "When enabled, Space converts pinyin to Chinese with the server's AI model. When disabled, Space selects the first candidate.";
 "AI Writing…" = "AI Writing…";
+"When enabled, Space sends pinyin to your Mac's AI model and inserts Chinese. When disabled, Space selects the first candidate." = "When enabled, Space sends pinyin to your Mac's AI model and inserts Chinese. When disabled, Space selects the first candidate.";
+"AI Writing is turned off" = "AI Writing is turned off";

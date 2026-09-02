@@ -25,6 +25,14 @@ enum PromptOverrideStore {
         readNonEmpty(modePromptFile(for: mode, in: folder))
     }
 
+    static func pinyinPromptFile(in folder: URL = AppSettings.promptOverrideFolder) -> URL {
+        folder.appendingPathComponent("pinyin-to-chinese.md")
+    }
+
+    static func readPinyinPrompt(in folder: URL = AppSettings.promptOverrideFolder) -> String? {
+        readNonEmpty(pinyinPromptFile(in: folder))
+    }
+
     private static func readNonEmpty(_ file: URL) -> String? {
         guard let text = try? String(contentsOf: file, encoding: .utf8) else { return nil }
         return text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : text

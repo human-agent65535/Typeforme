@@ -1,6 +1,6 @@
 # AI 写字
 
-AI 写字由 Mac 后端统一控制，默认关闭。可在 Mac 的 Refine 设置或 iPhone 的 Mac Processing → Chinese Keyboard 中修改并保存。
+AI 写字是 iOS 键盘设置，默认关闭。在 iPhone 的设置 → 文本键盘 → AI 写字中切换，立即保存到这台 iPhone 并同步给键盘扩展；每台设备独立控制。
 
 - 开启：中文模式下输入拼音后按空格，把原始拼音交给后端当前选择的 AI 模型，返回中文后直接上屏。这个转换请求不读取 Rime 候选词。
 - 关闭：空格继续选择 Rime 首个候选词。
@@ -10,7 +10,13 @@ AI 写字由 Mac 后端统一控制，默认关闭。可在 Mac 的 Refine 设�
 
 已经确认的中文前缀不参与转换，可作为只读上下文帮助消歧。响应必须仍属于同一个输入框、同一段标记文本和同一个请求；切换输入框、关闭开关或收起键盘后，迟到的结果不再写入。
 
-后端设置字段为 `ai_writing_enabled`，随设置 revision 同步到 iOS host，再通过键盘 defaults 传给扩展。关闭时后端也会拒绝新的拼音转换请求。请求复用 `/v1/edit-text`，使用独立的 `pinyin_to_chinese` intent，避免被当成语音润色或聊天问题。
+iOS host 使用本地 `keyboard.aiWritingEnabled` 偏好，通过键盘 defaults 的 `ai_writing_enabled` 字段通知扩展；开关不属于 Mac 的处理设置。Mac 提供转换服务，请求复用 `/v1/edit-text`，使用独立的 `pinyin_to_chinese` intent，避免被当成语音润色或聊天问题。
+
+## 修改提示词
+
+Mac 设置 → 提示词页面顶部提供“AI 写字提示词”编辑器。默认内容可直接查看；保存或按 ⌘S 写入提示词目录的 `pinyin-to-chinese.md`，下一次转换请求立即使用。恢复默认会删除该覆盖文件。空文件使用内置默认提示词。
+
+AI 写字提示词独立于语音纠错的系统、模式和用户提示词，只影响拼音转换请求。
 
 ## 提示词参考
 

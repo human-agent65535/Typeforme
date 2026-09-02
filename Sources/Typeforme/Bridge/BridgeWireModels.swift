@@ -157,7 +157,6 @@ struct BridgeSettingsEditableSnapshot: Codable, Equatable, Sendable {
     var numberOutputPreference: String
     var punctuationPreference: String
     var autoCommit: Bool
-    var aiWritingEnabled: Bool
     var userDictionary: [DictionaryEntry]
 
     enum CodingKeys: String, CodingKey {
@@ -176,7 +175,6 @@ struct BridgeSettingsEditableSnapshot: Codable, Equatable, Sendable {
         case numberOutputPreference = "number_output_preference"
         case punctuationPreference = "punctuation_preference"
         case autoCommit = "auto_commit"
-        case aiWritingEnabled = "ai_writing_enabled"
         case userDictionary = "user_dictionary"
     }
 
@@ -196,7 +194,6 @@ struct BridgeSettingsEditableSnapshot: Codable, Equatable, Sendable {
         numberOutputPreference: String,
         punctuationPreference: String,
         autoCommit: Bool,
-        aiWritingEnabled: Bool = false,
         userDictionary: [DictionaryEntry]
     ) {
         self.enabledRecognitionSources = enabledRecognitionSources
@@ -214,7 +211,6 @@ struct BridgeSettingsEditableSnapshot: Codable, Equatable, Sendable {
         self.numberOutputPreference = numberOutputPreference
         self.punctuationPreference = punctuationPreference
         self.autoCommit = autoCommit
-        self.aiWritingEnabled = aiWritingEnabled
         self.userDictionary = DictionaryEntry.normalizedEntries(userDictionary)
     }
 }
@@ -236,7 +232,6 @@ struct BridgeSettingsUpdateRequest: Codable, Sendable {
     var numberOutputPreference: String?
     var punctuationPreference: String?
     var autoCommit: Bool?
-    var aiWritingEnabled: Bool?
     var userDictionary: [DictionaryEntry]?
 
     enum CodingKeys: String, CodingKey {
@@ -256,7 +251,6 @@ struct BridgeSettingsUpdateRequest: Codable, Sendable {
         case numberOutputPreference = "number_output_preference"
         case punctuationPreference = "punctuation_preference"
         case autoCommit = "auto_commit"
-        case aiWritingEnabled = "ai_writing_enabled"
         case userDictionary = "user_dictionary"
     }
 
@@ -277,7 +271,6 @@ struct BridgeSettingsUpdateRequest: Codable, Sendable {
         numberOutputPreference: String? = nil,
         punctuationPreference: String? = nil,
         autoCommit: Bool? = nil,
-        aiWritingEnabled: Bool? = nil,
         userDictionary: [DictionaryEntry]? = nil
     ) {
         self.expectedSettingsRevision = expectedSettingsRevision
@@ -296,7 +289,6 @@ struct BridgeSettingsUpdateRequest: Codable, Sendable {
         self.numberOutputPreference = numberOutputPreference
         self.punctuationPreference = punctuationPreference
         self.autoCommit = autoCommit
-        self.aiWritingEnabled = aiWritingEnabled
         self.userDictionary = userDictionary
     }
 
@@ -321,7 +313,6 @@ struct BridgeSettingsUpdateRequest: Codable, Sendable {
             numberOutputPreference: editableSnapshot.numberOutputPreference,
             punctuationPreference: editableSnapshot.punctuationPreference,
             autoCommit: editableSnapshot.autoCommit,
-            aiWritingEnabled: editableSnapshot.aiWritingEnabled,
             userDictionary: editableSnapshot.userDictionary
         )
     }

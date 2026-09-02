@@ -393,7 +393,7 @@
 "Key Haptics" = "按键触感";
 "Key sounds are controlled here and respect Silent Mode." = "按键声音由此处的开关控制，并遵循手机静音模式。";
 
-"Chinese Keyboard" = "中文键盘";
 "AI Writing" = "AI 写字";
-"When enabled, Space converts pinyin to Chinese with the server's AI model. When disabled, Space selects the first candidate." = "开启后，按空格通过后端 AI 将拼音转换为中文；关闭后，按空格选择首个候选词。";
 "AI Writing…" = "AI 写字中…";
+"When enabled, Space sends pinyin to your Mac's AI model and inserts Chinese. When disabled, Space selects the first candidate." = "开启后，空格会将拼音交给 Mac 的 AI 模型，转换为中文后上屏；关闭后，空格选择首个候选词。";
+"AI Writing is turned off" = "AI 写字已关闭";
