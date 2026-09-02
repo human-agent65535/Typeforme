@@ -17,7 +17,21 @@ fi
 
 mkdir -p "$OUT_DIR" "$TARGET_DIR"
 
-CARGO_TARGET_DIR="$TARGET_DIR" cargo build --release --manifest-path "$HELPER_DIR/Cargo.toml"
+# Rust panic locations include dependency source paths even in release builds.
+# Remap those paths before the helper is embedded in public app bundles. Encoded
+# flags keep paths containing spaces intact and preserve supplied environment flags.
+TYPEFORME_HELPER_RUSTFLAGS="${CARGO_ENCODED_RUSTFLAGS:-}"
+if [ "${CARGO_ENCODED_RUSTFLAGS+x}" != x ] && [ -n "${RUSTFLAGS:-}" ]; then
+    TYPEFORME_HELPER_RUSTFLAGS="$(printf '%s' "$RUSTFLAGS" | awk '
+        { for (i = 1; i <= NF; i++) { printf "%s%s", separator, $i; separator = sprintf("%c", 31) } }
+    ')"
+fi
+for mapping in "$HOME=/typeforme-build" "$ROOT=/typeforme" "${CARGO_HOME:-$HOME/.cargo}=/cargo"; do
+    TYPEFORME_HELPER_RUSTFLAGS+="${TYPEFORME_HELPER_RUSTFLAGS:+$'\x1f'}--remap-path-prefix=$mapping"
+done
+
+CARGO_ENCODED_RUSTFLAGS="$TYPEFORME_HELPER_RUSTFLAGS" CARGO_TARGET_DIR="$TARGET_DIR" \
+    cargo build --release --locked --manifest-path "$HELPER_DIR/Cargo.toml"
 cp "$TARGET_DIR/release/$BIN_NAME" "$OUT_DIR/$BIN_NAME"
 chmod +x "$OUT_DIR/$BIN_NAME"
 
