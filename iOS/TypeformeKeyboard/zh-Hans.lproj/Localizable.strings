@@ -95,3 +95,12 @@
 "AI Writing failed. Tap AI Writing to retry." = "AI 写字失败，点 AI 写字键重试。";
 "Input changed; conversion skipped." = "输入已改变，未应用转换结果。";
 "Could not read the whole input. Select all and try again." = "无法读取完整输入，请全选后重试。";
+"Long-press to return to Chinese or English input." = "长按返回中英输入。";
+"Long-press to switch to AI Writing." = "长按切换到 AI 写字。";
+"Turn off AI Writing" = "关闭 AI 写字";
+"Turn on AI Writing" = "开启 AI 写字";
+"Open Typeforme once to set up the keyboard." = "请先打开 Typeforme 完成键盘设置。";
+"Could not save input method. Try again." = "无法保存输入方式，请重试。";
+"AI Writing on" = "AI 写字已开启";
+"Chinese input" = "中文输入";
+"English input" = "英文输入";

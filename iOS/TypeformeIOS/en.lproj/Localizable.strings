@@ -397,6 +397,7 @@
 "AI Writing…" = "AI Writing…";
 "AI Writing is turned off" = "AI Writing is turned off";
 "Input Method" = "Input Method";
-"Type Chinese, English, and pinyin directly. Tap the AI Writing key to convert the current input and fix pinyin typos. Space inserts a space. Rime is inactive while AI Writing is on." = "Type Chinese, English, and pinyin directly. Tap the AI Writing key to convert the current input and fix pinyin typos. Space inserts a space. Rime is inactive while AI Writing is on.";
+"Long-press the Chinese/English or AI Writing key to switch input methods. In AI Writing, mix Chinese, English, and pinyin, then tap the key to convert. Space inserts a space. Rime is inactive while AI Writing is on." = "Long-press the Chinese/English or AI Writing key to switch input methods. In AI Writing, mix Chinese, English, and pinyin, then tap the key to convert. Space inserts a space. Rime is inactive while AI Writing is on.";
 "Punctuation controls typed keys. AI Writing results use the Numbers and Punctuation preferences in Mac processing settings." = "Punctuation controls typed keys. AI Writing results use the Numbers and Punctuation preferences in Mac processing settings.";
 "Active in English mode and AI Writing." = "Active in English mode and AI Writing.";
+"Could not save input method. Try again." = "Could not save input method. Try again.";

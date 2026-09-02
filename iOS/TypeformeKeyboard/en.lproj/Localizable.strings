@@ -95,3 +95,12 @@
 "AI Writing failed. Tap AI Writing to retry." = "AI Writing failed. Tap AI Writing to retry.";
 "Input changed; conversion skipped." = "Input changed; conversion skipped.";
 "Could not read the whole input. Select all and try again." = "Could not read the whole input. Select all and try again.";
+"Long-press to return to Chinese or English input." = "Long-press to return to Chinese or English input.";
+"Long-press to switch to AI Writing." = "Long-press to switch to AI Writing.";
+"Turn off AI Writing" = "Turn off AI Writing";
+"Turn on AI Writing" = "Turn on AI Writing";
+"Open Typeforme once to set up the keyboard." = "Open Typeforme once to set up the keyboard.";
+"Could not save input method. Try again." = "Could not save input method. Try again.";
+"AI Writing on" = "AI Writing on";
+"Chinese input" = "Chinese input";
+"English input" = "English input";

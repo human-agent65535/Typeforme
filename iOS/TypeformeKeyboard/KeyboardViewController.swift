@@ -2513,8 +2513,15 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private func hostKeyboardDefaultsPayload() -> KeyboardDefaultsPayload? {
-        guard hasFullAccess else { return nil }
-        return KeyboardSharedDefaults.loadPayload()
+        guard hasFullAccess,
+              var payload = KeyboardSharedDefaults.loadPayload()
+        else { return nil }
+        let aiWriting = KeyboardAIWritingPreference(
+            enabled: payload.aiWritingEnabled,
+            appliedRequestID: payload.aiWritingRequestID
+        ).applying(KeyboardSharedDefaults.loadAIWritingRequest())
+        payload.aiWritingEnabled = aiWriting.enabled
+        return payload
     }
 
     private var hostKeyboardBridgeToken: String? {
@@ -4167,6 +4174,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         )
         textLanguageButtonWidthConstraint?.isActive = true
         textLanguageButton.addTarget(self, action: #selector(toggleTextInputLanguage), for: .touchUpInside)
+        attachAIWritingSwitchGesture(to: textLanguageButton)
         attachPressAnimation(textLanguageButton)
 
         textLanguageLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -4993,13 +5001,16 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             contentPlacement: .leadingBottom,
             sound: .modifier
         )
-        button.isEnabled = isAIWritingEnabled || isChineseInputEnabled
         button.accessibilityLabel = isAIWritingEnabled
             ? NSLocalizedString("AI Writing", comment: "Convert the current input")
+            : !isChineseInputEnabled
+            ? NSLocalizedString("English input", comment: "English keyboard mode")
             : textInputLanguage == .chinese
             ? NSLocalizedString("Chinese active, switch to English", comment: "Accessibility label for iPad language toggle")
             : NSLocalizedString("English active, switch to Chinese", comment: "Accessibility label for iPad language toggle")
         button.addTarget(self, action: #selector(toggleTextInputLanguage), for: .touchUpInside)
+        attachAIWritingSwitchGesture(to: button)
+        configureAIWritingSwitchAccessibility(button)
         return button
     }
 
@@ -5373,7 +5384,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     private func addTextBottomRow(layout kind: KeyboardTextBottomLayoutKind) {
         let preferredLayout = KeyboardTextLayoutPolicy.bottomRow(for: kind)
         let showsGlobe = needsInputModeSwitchKey
-        let showsLanguage = isAIWritingEnabled || (preferredLayout.showsLanguageKey && isChineseInputEnabled)
+        let showsLanguage = isAIWritingEnabled || preferredLayout.showsLanguageKey
         let availableWidth = textBottomRowAvailableWidth
         let layout = KeyboardTextLayoutPolicy.fittedBottomRow(
             preferredLayout,
@@ -5525,7 +5536,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             let kind: KeyboardTextBottomLayoutKind = isSymbolKeyboard ? .symbols : bottom
             let preferredLayout = KeyboardTextLayoutPolicy.bottomRow(for: kind)
             let showsGlobe = needsInputModeSwitchKey
-            let showsLanguage = isAIWritingEnabled || (preferredLayout.showsLanguageKey && isChineseInputEnabled)
+            let showsLanguage = isAIWritingEnabled || preferredLayout.showsLanguageKey
             let fittedLayout = KeyboardTextLayoutPolicy.fittedBottomRow(
                 preferredLayout,
                 availableWidth: Double(availableWidth),
@@ -6422,6 +6433,112 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         recognizer.cancelsTouchesInView = true
         recognizer.delegate = self
         control.addGestureRecognizer(recognizer)
+    }
+
+    private func attachAIWritingSwitchGesture(to control: UIControl) {
+        let recognizer = UILongPressGestureRecognizer(
+            target: self,
+            action: #selector(handleAIWritingSwitchLongPress(_:))
+        )
+        recognizer.minimumPressDuration = 0.45
+        recognizer.allowableMovement = 14
+        // Recognition cancels button tracking so releasing the hold cannot
+        // also switch languages or submit the draft for conversion.
+        recognizer.cancelsTouchesInView = true
+        control.addGestureRecognizer(recognizer)
+    }
+
+    private func configureAIWritingSwitchAccessibility(_ control: UIControl) {
+        control.accessibilityIdentifier = "typeforme.keyboard.input-method"
+        control.accessibilityHint = isAIWritingEnabled
+            ? NSLocalizedString("Long-press to return to Chinese or English input.", comment: "AI Writing key long-press hint")
+            : NSLocalizedString("Long-press to switch to AI Writing.", comment: "Language key long-press hint")
+        let actionTitle = isAIWritingEnabled
+            ? NSLocalizedString("Turn off AI Writing", comment: "Accessibility action for input method key")
+            : NSLocalizedString("Turn on AI Writing", comment: "Accessibility action for input method key")
+        control.accessibilityCustomActions = [
+            UIAccessibilityCustomAction(name: actionTitle, target: self, selector: #selector(toggleAIWritingInputMethod))
+        ]
+    }
+
+    @objc private func handleAIWritingSwitchLongPress(_ recognizer: UILongPressGestureRecognizer) {
+        guard recognizer.state == .began else { return }
+        _ = toggleAIWritingInputMethod()
+    }
+
+    @objc private func toggleAIWritingInputMethod() -> Bool {
+        guard isKeyboardPresentationVisible,
+              keyboardFocus == .text,
+              currentBridgeStatus?.state != .recording,
+              currentBridgeStatus?.state != .sending,
+              !isStartRequestInFlight,
+              !isOpeningHostApp,
+              styleRewriteCommandID == nil,
+              pinyinConversion.request == nil
+        else { return false }
+        guard hasFullAccess else {
+            openHostForFullAccessSetup()
+            return false
+        }
+        guard hostKeyboardDefaultsPayload() != nil else {
+            showTextKeyboardStatus(NSLocalizedString("Open Typeforme once to set up the keyboard.", comment: "Input method defaults unavailable"))
+            return false
+        }
+        let enabled = !isAIWritingEnabled
+        guard KeyboardSharedDefaults.saveAIWritingRequest(.init(enabled: enabled)) else {
+            showTextKeyboardStatus(NSLocalizedString("Could not save input method. Try again.", comment: "Input method preference write failed"))
+            return false
+        }
+        clearTransientKeyboardErrorIfShowing()
+        clearTextShiftState()
+        resetQuoteParity()
+        // Use the settings transition so pending Rime text is committed and
+        // its engine is suspended/resumed at the same document boundary.
+        refreshAIWritingKeyboardWithAnimation()
+        keyboardHaptics.playSelectionChanged()
+        let message = enabled
+            ? NSLocalizedString("AI Writing on", comment: "Input method switched to AI Writing")
+            : textInputLanguage == .chinese
+            ? NSLocalizedString("Chinese input", comment: "Chinese keyboard mode")
+            : NSLocalizedString("English input", comment: "English keyboard mode")
+        showTextKeyboardStatus(message)
+        KeyboardDarwinBridge.post(KeyboardDarwinNotificationName.keyboardDefaultsChanged)
+        return true
+    }
+
+    private func refreshAIWritingKeyboardWithAnimation() {
+        let keyID = "typeforme.keyboard.input-method"
+        let previousButton = textKeyboardButtons.first { $0.accessibilityIdentifier == keyID }
+        let previousFace = previousButton?.snapshotView(afterScreenUpdates: false)
+
+        refreshKeyboardPreferencesFromHost(rebuildIfNeeded: true)
+        view.layoutIfNeeded()
+        guard let button = textKeyboardButtons.first(where: { $0.accessibilityIdentifier == keyID }) else { return }
+
+        // The iPad row rebuild creates a new button. A noninteractive snapshot
+        // fades the old face above the new key while its live hit target stays
+        // enabled throughout the transition.
+        if let previousFace {
+            previousFace.frame = button.convert(button.bounds, to: view)
+            previousFace.isUserInteractionEnabled = false
+            previousFace.accessibilityElementsHidden = true
+            view.addSubview(previousFace)
+        }
+        let reducesMotion = UIAccessibility.isReduceMotionEnabled
+        button.layer.removeAllAnimations()
+        button.transform = reducesMotion ? .identity : CGAffineTransform(scaleX: 0.94, y: 0.94)
+        UIView.animate(
+            withDuration: reducesMotion ? 0.12 : 0.22,
+            delay: 0,
+            usingSpringWithDamping: 0.82,
+            initialSpringVelocity: 0,
+            options: [.beginFromCurrentState, .allowUserInteraction]
+        ) {
+            previousFace?.alpha = 0
+            button.transform = .identity
+        } completion: { _ in
+            previousFace?.removeFromSuperview()
+        }
     }
 
     @objc private func keyPreviewPressDown(_ sender: UIButton) {
@@ -9026,6 +9143,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             visualProfile: currentKeyboardSurfaceMetrics.textKeyVisualProfile,
             style: keyboardInterfaceStyle
         )
+        configureAIWritingSwitchAccessibility(textLanguageButton)
 
         textLanguageLabel.numberOfLines = isAIWritingEnabled ? 2 : 1
         if isAIWritingEnabled {
@@ -9040,6 +9158,14 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             textLanguageLabel.attributedText = title
             textLanguageButton.bringSubviewToFront(textLanguageLabel)
             textLanguageButton.accessibilityLabel = NSLocalizedString("AI Writing", comment: "Convert the current input")
+            return
+        }
+
+        if !isChineseInputEnabled {
+            textLanguageLabel.text = "英"
+            textLanguageLabel.font = .systemFont(ofSize: 17, weight: .semibold)
+            textLanguageLabel.textColor = .label
+            textLanguageButton.accessibilityLabel = NSLocalizedString("English input", comment: "English keyboard mode")
             return
         }
 

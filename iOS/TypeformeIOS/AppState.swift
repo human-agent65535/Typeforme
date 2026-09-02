@@ -1132,11 +1132,15 @@ final class AppState {
     }
 
     func setKeyboardAIWritingEnabled(_ enabled: Bool) {
-        guard updateStoredBoolPreference(
+        guard KeyboardSharedDefaults.saveAIWritingRequest(.init(enabled: enabled)) else {
+            showTransient(NSLocalizedString("Could not save input method. Try again.", comment: "Input method preference write failed"))
+            return
+        }
+        _ = updateStoredBoolPreference(
             \.keyboardAIWritingEnabled,
             to: enabled,
             key: Self.keyboardAIWritingEnabledKey
-        ) else { return }
+        )
         publishKeyboardDefaults()
     }
 
@@ -1701,6 +1705,15 @@ final class AppState {
     }
 
     private func publishKeyboardDefaults(force: Bool = false) {
+        let aiWriting = KeyboardAIWritingPreference(
+            enabled: keyboardAIWritingEnabled,
+            appliedRequestID: KeyboardSharedDefaults.loadPayload()?.aiWritingRequestID
+        ).applying(KeyboardSharedDefaults.loadAIWritingRequest())
+        _ = updateStoredBoolPreference(
+            \.keyboardAIWritingEnabled,
+            to: aiWriting.enabled,
+            key: Self.keyboardAIWritingEnabledKey
+        )
         keyboardCoordinator.publishDefaults(
             correctionMode: config.correctionMode,
             autoCapitalizationEnabled: keyboardAutoCapitalizationEnabled,
@@ -1709,6 +1722,7 @@ final class AppState {
             keyHapticsEnabled: keyboardKeyHapticsEnabled,
             chineseInputEnabled: keyboardChineseInputEnabled,
             aiWritingEnabled: keyboardAIWritingEnabled,
+            aiWritingRequestID: aiWriting.appliedRequestID,
             chinesePunctuationStyle: keyboardChinesePunctuationStyle,
             rimeDictionaryTier: keyboardRimeDictionaryTier,
             rimeLearningEnabled: keyboardRimeLearningEnabled,
@@ -4235,6 +4249,11 @@ final class AppState {
                 self?.consumeKeyboardHostIssue()
             }
         }
+        let inputMethodObserver = KeyboardDarwinBridge.observe(KeyboardDarwinNotificationName.keyboardDefaultsChanged) { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.publishKeyboardDefaults()
+            }
+        }
         guard let commandIntentName = KeyboardDarwinNotificationName.authenticatedRequest(
             KeyboardDarwinNotificationName.commandIntentChanged,
             token: keyboardBridgeToken
@@ -4244,13 +4263,14 @@ final class AppState {
                 token: keyboardBridgeToken
             )
         else {
-            keyboardDarwinObservers = [fullAccessObserver, fullAccessChangedObserver, keyboardIssueObserver]
+            keyboardDarwinObservers = [fullAccessObserver, fullAccessChangedObserver, keyboardIssueObserver, inputMethodObserver]
             return
         }
         keyboardDarwinObservers = [
             fullAccessObserver,
             fullAccessChangedObserver,
             keyboardIssueObserver,
+            inputMethodObserver,
             KeyboardDarwinBridge.observe(commandIntentName) { [weak self] in
                 Task { @MainActor [weak self] in
                     guard let self else { return }
@@ -4729,6 +4749,7 @@ final class AppState {
     }
 
     private func convertKeyboardPinyin(_ command: KeyboardBridgeCommand) async {
+        publishKeyboardDefaults()
         guard keyboardAIWritingEnabled else {
             failKeyboardCommand(command.id, code: .processingFailed, recovery: .none, message: NSLocalizedString("AI Writing is turned off", comment: "Pinyin conversion disabled"))
             return
@@ -6223,6 +6244,7 @@ final class AppState {
     }
 
     private func handleWillEnterForeground() {
+        publishKeyboardDefaults()
         if hasKeyboardOwnedRecordingCapture,
            !keyboardAudioSession.isRecording {
             Task { @MainActor [weak self] in

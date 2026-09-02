@@ -159,6 +159,7 @@ enum KeyboardSharedDefaults {
     private static let keyboardFullAccessReportKey = "keyboard.full-access-report.v1"
     private static let touchLearningStatsKey = "keyboard.touchLearningStats.v1"
     private static let chineseLearningKey = "keyboard.chineseLearning.v1"
+    private static let aiWritingRequestKey = "keyboard.ai-writing-request.v1"
 
     static func suite() -> UserDefaults? {
         UserDefaults(suiteName: appGroupIdentifier)
@@ -171,6 +172,15 @@ enum KeyboardSharedDefaults {
     @discardableResult
     static func savePayload(_ payload: KeyboardDefaultsPayload) -> Bool {
         saveCodable(payload, key: keyboardDefaultsKey)
+    }
+
+    static func loadAIWritingRequest() -> KeyboardAIWritingPreference.Request? {
+        loadCodable(KeyboardAIWritingPreference.Request.self, key: aiWritingRequestKey)
+    }
+
+    @discardableResult
+    static func saveAIWritingRequest(_ request: KeyboardAIWritingPreference.Request) -> Bool {
+        saveCodable(request, key: aiWritingRequestKey, flush: true)
     }
 
     @discardableResult
@@ -496,6 +506,7 @@ struct KeyboardDefaultsPayload: Codable, Equatable {
     var keyHapticsEnabled: Bool
     var chineseInputEnabled: Bool
     var aiWritingEnabled: Bool
+    var aiWritingRequestID: String?
     var chinesePunctuationStyle: KeyboardChinesePunctuationStyle
     var rimeDictionaryTier: KeyboardRimeDictionaryTier
     var rimeLearningEnabled: Bool
@@ -517,6 +528,7 @@ struct KeyboardDefaultsPayload: Codable, Equatable {
         keyHapticsEnabled: Bool = true,
         chineseInputEnabled: Bool,
         aiWritingEnabled: Bool = false,
+        aiWritingRequestID: String? = nil,
         chinesePunctuationStyle: KeyboardChinesePunctuationStyle,
         rimeDictionaryTier: KeyboardRimeDictionaryTier,
         rimeLearningEnabled: Bool = true,
@@ -538,6 +550,7 @@ struct KeyboardDefaultsPayload: Codable, Equatable {
         self.keyHapticsEnabled = keyHapticsEnabled
         self.chineseInputEnabled = chineseInputEnabled
         self.aiWritingEnabled = aiWritingEnabled
+        self.aiWritingRequestID = aiWritingRequestID
         self.chinesePunctuationStyle = chinesePunctuationStyle
         self.rimeDictionaryTier = rimeDictionaryTier
         self.rimeLearningEnabled = rimeLearningEnabled
@@ -563,6 +576,7 @@ struct KeyboardDefaultsPayload: Codable, Equatable {
         keyHapticsEnabled = try container.decode(Bool.self, forKey: .keyHapticsEnabled)
         chineseInputEnabled = try container.decode(Bool.self, forKey: .chineseInputEnabled)
         aiWritingEnabled = try container.decode(Bool.self, forKey: .aiWritingEnabled)
+        aiWritingRequestID = try container.decodeIfPresent(String.self, forKey: .aiWritingRequestID)
         chinesePunctuationStyle = try container.decode(
             KeyboardChinesePunctuationStyle.self,
             forKey: .chinesePunctuationStyle
@@ -594,6 +608,7 @@ struct KeyboardDefaultsPayload: Codable, Equatable {
         case keyHapticsEnabled = "key_haptics_enabled"
         case chineseInputEnabled = "chinese_input_enabled"
         case aiWritingEnabled = "ai_writing_enabled"
+        case aiWritingRequestID = "ai_writing_request_id"
         case chinesePunctuationStyle = "chinese_punctuation_style"
         case rimeDictionaryTier = "rime_dictionary_tier"
         case rimeLearningEnabled = "rime_learning_enabled"

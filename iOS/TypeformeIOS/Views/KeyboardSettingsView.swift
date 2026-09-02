@@ -12,7 +12,7 @@ struct KeyboardSettingsView: View {
             } header: {
                 Text("Input Method")
             } footer: {
-                Text("Type Chinese, English, and pinyin directly. Tap the AI Writing key to convert the current input and fix pinyin typos. Space inserts a space. Rime is inactive while AI Writing is on.")
+                Text("Long-press the Chinese/English or AI Writing key to switch input methods. In AI Writing, mix Chinese, English, and pinyin, then tap the key to convert. Space inserts a space. Rime is inactive while AI Writing is on.")
             }
             if !state.keyboardAIWritingEnabled {
                 Section {
