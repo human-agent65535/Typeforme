@@ -2374,6 +2374,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         let previousAutoCapitalization = isAutoCapitalizationEnabled
         let previousCharacterPreview = isCharacterPreviewEnabled
         let previousChineseInputEnabled = isChineseInputEnabled
+        let previousAIWritingEnabled = isAIWritingEnabled
         let previousPunctuationStyle = chinesePunctuationStyle
         let previousRimeProfile = rimeProfile
         let previousRimeUserPhrasesRevision = rimeUserPhrasesRevision
@@ -2475,6 +2476,9 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             resetTextTouchLearning()
         }
         guard rebuildIfNeeded else { return }
+        if previousAIWritingEnabled != isAIWritingEnabled {
+            updateUI(animated: false)
+        }
         let changed = previousAutoCapitalization != isAutoCapitalizationEnabled
             || previousCharacterPreview != isCharacterPreviewEnabled
             || previousChineseInputEnabled != isChineseInputEnabled
@@ -5054,7 +5058,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
         if preferredLayout.includesSpaceKey {
             let spaceKey = makeTextKeyButton(title: spaceKeyTitle, weight: .primary, sound: .modifier)
-            spaceKey.accessibilityLabel = NSLocalizedString("Space", comment: "Accessibility label for Space key")
+            spaceKey.accessibilityLabel = spaceKeyAccessibilityLabel
             spaceKey.addTarget(self, action: #selector(textSpaceTapped), for: .touchUpInside)
             attachSpaceCursorGesture(to: spaceKey)
             row.addArrangedSubview(spaceKey)
@@ -5410,7 +5414,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
 
         if layout.includesSpaceKey {
             let spaceKey = makeTextKeyButton(title: spaceKeyTitle, weight: .primary, sound: .modifier)
-            spaceKey.accessibilityLabel = NSLocalizedString("Space", comment: "Accessibility label for Space key")
+            spaceKey.accessibilityLabel = spaceKeyAccessibilityLabel
             spaceKey.addTarget(self, action: #selector(textSpaceTapped), for: .touchUpInside)
             attachSpaceCursorGesture(to: spaceKey)
             row.addArrangedSubview(spaceKey)
@@ -5633,7 +5637,21 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
     }
 
     private var spaceKeyTitle: String {
-        ""
+        guard isAIWritingEnabled,
+              isChineseInputEnabled,
+              !usesEnglishTextInputForCurrentTraits
+        else { return "" }
+        return NSLocalizedString(
+            pinyinConversion.request == nil ? "AI Writing" : "AI Writing…",
+            comment: "Space key label when AI Writing is enabled"
+        )
+    }
+
+    private var spaceKeyAccessibilityLabel: String {
+        let title = spaceKeyTitle
+        return title.isEmpty
+            ? NSLocalizedString("Space", comment: "Accessibility label for Space key")
+            : title
     }
 
     /// Swaps the space key label to the recording-stop hint and back. Driven
@@ -5658,7 +5676,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             spaceKey.accessibilityLabel = NSLocalizedString("Send", comment: "Accessibility label for accepting active refine")
         } else {
             configureTextKeyButton(spaceKey, title: spaceKeyTitle, image: nil, weight: .primary)
-            spaceKey.accessibilityLabel = NSLocalizedString("Space", comment: "Accessibility label for Space key")
+            spaceKey.accessibilityLabel = spaceKeyAccessibilityLabel
         }
     }
 
