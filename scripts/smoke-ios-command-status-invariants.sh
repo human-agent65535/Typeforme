@@ -24,8 +24,9 @@ local_server = (root / "iOS/TypeformeIOS/Bridge/KeyboardLocalServer.swift").read
 handshake = (root / "Sources/Typeforme/Models/KeyboardStartHandshakePolicy.swift").read_text()
 marked_policy = (root / "Sources/Typeforme/Models/KeyboardMarkedTextOwnershipPolicy.swift").read_text()
 rime_activation_policy = (root / "Sources/Typeforme/Models/KeyboardRimeActivationPolicy.swift").read_text()
-rime_schema = (root / "iOS/TypeformeKeyboard/RimeSharedSupport/typeforme_pinyin.schema.yaml").read_text()
+rime_support = root / "iOS/TypeformeKeyboard/RimeSharedSupport"
 rime_stage = (root / "scripts/stage-rime-ios-runtime.sh").read_text()
+rime_inputs = (root / "iOS/TypeformeKeyboard/RimeRuntimeInputs.xcfilelist").read_text()
 rime_outputs = (root / "iOS/TypeformeKeyboard/RimeRuntimeOutputs.xcfilelist").read_text()
 
 
@@ -550,6 +551,7 @@ rime_literal_boundary = block(keyboard, "private func commitDisplayedRimeComposi
 for required in (
     "appending documentSuffix: String = \"\"",
     "currentRimeComposition.committableCompositionText(",
+    "preferRawInput: shouldUseRawRimeInputAsMarkedText(currentRimeComposition.input)",
     ".commitVisibleComposition(text)",
     ".appendingDocumentText(documentSuffix)",
 ):
@@ -577,11 +579,44 @@ for required in ("if !pendingRimeInput.isEmpty", "pendingRimeInput.appendSpaceKe
 if 'commitPendingRimeInputAsLiteral(appending: " ")' in text_space:
     raise AssertionError("pending Space must not flatten pinyin into literal text")
 for required in (
-    "pendingRimeSpaceUsesRawLiteralBoundary",
+    "rimeSpaceUsesRawLiteralBoundary(input)",
+    "rimeSpaceUsesRawLiteralBoundary(currentRimeComposition.input)",
     'pendingRimeInput.appendRawLiteralBoundary(" ")',
 ):
     if required not in text_space:
         raise AssertionError(f"pending Space diverges from live literal/candidate routing: {required}")
+
+literal_space_rule = block(keyboard, "private func rimeSpaceUsesRawLiteralBoundary(")
+for required in (
+    "isDedicatedLiteralAsciiTextInputContext",
+    "isContinuingLiteralAsciiTokenContext",
+    "isRawRimeInputLiteralToken(input)",
+):
+    if required not in literal_space_rule:
+        raise AssertionError(f"Space lost explicit URL/email literal handling: {required}")
+if "currentRimeCandidateWindow" in text_space or "candidateWindow" in literal_space_rule:
+    raise AssertionError("Space must not infer English input or extra spacing from candidate text")
+
+pinyin = block(keyboard, "private func startPinyinConversionIfNeeded(")
+for required in (
+    "guard isAIWritingEnabled",
+    "targetText: source.pinyin",
+    "intent: .pinyinToChinese",
+    "state: .sending",
+    "suppressRefineResult(commandID: command.id",
+):
+    if required not in pinyin:
+        raise AssertionError(f"AI Writing lost raw-input or busy-state contract: {required}")
+if text_space.index("startPinyinConversionIfNeeded()") > text_space.index("pendingRimeInput.appendSpaceKey()"):
+    raise AssertionError("AI Writing must consume Space before Rime candidate selection")
+if "pinyinConversion.request == nil" not in block(keyboard, "private var canStopActiveRefine:"):
+    raise AssertionError("AI Writing must lock Space while its result is pending")
+if "if pinyinConversion.request != nil" not in block(keyboard, "private func applyBridgeStatus("):
+    raise AssertionError("Host standby snapshots must not unlock a pending AI conversion")
+pinyin_host = block(app, "private func convertKeyboardPinyin(")
+for required in ("client.editText(", "TextEditIntent.pinyinToChinese.rawValue", "targetText: context.targetText"):
+    if required not in pinyin_host:
+        raise AssertionError(f"Host must forward raw pinyin to the text-edit backend: {required}")
 
 start_dictation = block(keyboard, "private func startDictationCommand(")
 if "finishRimeTextTransaction()" not in start_dictation:
@@ -592,9 +627,9 @@ for required in ("commitPendingRimeInputAsLiteral()", "commitDisplayedRimeCompos
     if required not in finish_rime:
         raise AssertionError(f"Rime transaction boundary lost ordered ownership: {required}")
 
-# Mixed English belongs to Rime's translator. The keyboard frontend must not
-# parse or cache a second copy of the dictionary to guess whether raw input is
-# English; unknown Latin input remains explicitly available through Return.
+# Chinese mode uses pinyin candidates and explicit raw Return commits. Neither
+# the engine nor the frontend may introduce an English dictionary or infer
+# English boundaries from candidate spelling.
 for forbidden in (
     "englishWordCodes",
     "literalEnglishCandidatePlacement",
@@ -602,15 +637,21 @@ for forbidden in (
     "isShortLiteralLatinComposition",
     "isEnglishCompletionCandidate",
     "typeforme_english.codes.txt",
+    "exactLatinCandidateBeforeNonLatinCandidates",
+    "latinLiteralCommitTextForBoundary",
 ):
     if (forbidden in keyboard or forbidden in rime_controller
             or forbidden in rime_stage or forbidden in rime_outputs):
         raise AssertionError(f"Swift-side English dictionary ownership returned: {forbidden}")
-if "table_translator@english_word" not in rime_schema:
-    raise AssertionError("Rime schema lost its engine-owned English translator")
-english_translator = rime_schema.split("english_word:", 1)[1].split("\npunctuator:", 1)[0]
-if "enable_completion: false" not in english_translator:
-    raise AssertionError("mixed English must not flood the candidate window with completions")
+for schema_path in rime_support.glob("typeforme_pinyin*.schema.yaml"):
+    schema = schema_path.read_text()
+    if "english_word" in schema or "typeforme_english" in schema:
+        raise AssertionError(f"Chinese schema includes an English translator: {schema_path.name}")
+if (list(rime_support.glob("typeforme_english.*"))
+        or "typeforme_english" in (rime_support / "default.yaml").read_text()
+        or "typeforme_english" in rime_inputs
+        or "typeforme_english" in rime_outputs):
+    raise AssertionError("Chinese-only Rime runtime must not package an English dictionary")
 if "RimeKeyboardCandidate.literalSelectionIndex" in keyboard:
     raise AssertionError("removed synthetic English candidates regained a frontend selection branch")
 
@@ -932,8 +973,7 @@ if "KeyboardRimeCompositionPolicy.isPinyinSeparatorContinuation(" not in direct_
 literal_shortcut = block(keyboard, "private func insertLiteralTextShortcut(")
 for required in (
     "commitPendingRimeInputAsLiteral(appending: text)",
-    "latinLiteralCommitTextForBoundary(",
-    "commitRawRimeInput(literalText, appending: text)",
+    "commitDisplayedRimeCompositionIfNeeded(appending: text)",
 ):
     if required not in literal_shortcut:
         raise AssertionError(f"URL/email shortcut lost literal-text ownership: {required}")

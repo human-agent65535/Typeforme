@@ -46,7 +46,7 @@ struct KeyboardSettingsView: View {
             } header: {
                 Text("Feedback")
             } footer: {
-                Text("Key sound also follows the system keyboard click setting in Settings → Sounds & Haptics.")
+                Text("Key sounds are controlled here and respect Silent Mode.")
             }
             Section {
                 Toggle("Auto-Capitalization", isOn: autoCapitalizationBinding)

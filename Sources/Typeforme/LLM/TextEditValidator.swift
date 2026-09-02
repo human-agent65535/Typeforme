@@ -54,6 +54,8 @@ enum TextEditValidator {
             return max(80, baseline * 4)
         case .command:
             return max(160, baseline * 8)
+        case .pinyinToChinese:
+            return max(32, request.targetText.count * 2)
         }
     }
 

@@ -4,8 +4,6 @@ $(SRCROOT)/../scripts/lib/rime-ios-schemas.sh
 $(SRCROOT)/TypeformeKeyboard/RimeSharedSupport/LICENSE.rime-ice.txt
 $(SRCROOT)/TypeformeKeyboard/RimeSharedSupport/SOURCES.md
 $(SRCROOT)/TypeformeKeyboard/RimeSharedSupport/default.yaml
-$(SRCROOT)/TypeformeKeyboard/RimeSharedSupport/typeforme_english.dict.yaml
-$(SRCROOT)/TypeformeKeyboard/RimeSharedSupport/typeforme_english.schema.yaml
 $(SRCROOT)/TypeformeKeyboard/RimeSharedSupport/typeforme_overrides.dict.yaml
 $(SRCROOT)/TypeformeKeyboard/RimeSharedSupport/typeforme_pinyin.dict.yaml
 $(SRCROOT)/TypeformeKeyboard/RimeSharedSupport/typeforme_pinyin.schema.yaml
@@ -14,10 +12,6 @@ $(SRCROOT)/TypeformeKeyboard/RimeSharedSupport/typeforme_pinyin_ext.schema.yaml
 $(SRCROOT)/TypeformeKeyboard/RimeSharedSupport/typeforme_pinyin_large.dict.yaml
 $(SRCROOT)/TypeformeKeyboard/RimeSharedSupport/typeforme_pinyin_large.schema.yaml
 $(SRCROOT)/TypeformeKeyboard/RimeSharedSupport/build/default.yaml
-$(SRCROOT)/TypeformeKeyboard/RimeSharedSupport/build/typeforme_english.prism.bin
-$(SRCROOT)/TypeformeKeyboard/RimeSharedSupport/build/typeforme_english.reverse.bin
-$(SRCROOT)/TypeformeKeyboard/RimeSharedSupport/build/typeforme_english.schema.yaml
-$(SRCROOT)/TypeformeKeyboard/RimeSharedSupport/build/typeforme_english.table.bin
 $(SRCROOT)/TypeformeKeyboard/RimeSharedSupport/build/typeforme_pinyin.prism.bin
 $(SRCROOT)/TypeformeKeyboard/RimeSharedSupport/build/typeforme_pinyin.reverse.bin
 $(SRCROOT)/TypeformeKeyboard/RimeSharedSupport/build/typeforme_pinyin.schema.yaml

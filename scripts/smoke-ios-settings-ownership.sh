@@ -44,6 +44,14 @@ for forbidden in ('Picker("Default Mode"', "LivePreviewSettingsSection()"):
     if forbidden in mac_settings:
         raise AssertionError(f"Mac Processing regained an iPhone-owned setting: {forbidden}")
 
+if 'Toggle("AI Writing", isOn: aiWritingEnabledBinding)' not in mac_settings:
+    raise AssertionError("AI Writing must be a server-owned setting")
+if 'Toggle("AI Writing"' in keyboard:
+    raise AssertionError("AI Writing must not become an independent iPhone setting")
+app = (root / "iOS/TypeformeIOS/AppState.swift").read_text()
+if "aiWritingEnabled: macSettings?.aiWritingEnabled ?? false" not in app:
+    raise AssertionError("Keyboard AI Writing must mirror the acknowledged server setting")
+
 for required in (
     ".navigationBarBackButtonHidden(hasUnsavedChanges)",
     ".interactiveDismissDisabled(hasUnsavedChanges)",

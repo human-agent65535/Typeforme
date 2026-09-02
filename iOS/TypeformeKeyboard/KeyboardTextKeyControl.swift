@@ -3,6 +3,9 @@ import UIKit
 /// Presentation-only ordinary keyboard key. The controller owns actions,
 /// committed characters, layout membership, Shift/Rime state, and hit routing.
 final class KeyboardTextKeyControl: UIButton {
+    /// Assigned with the action, independently of mutable titles and colors.
+    var pressSound: KeyboardKeySound = .input
+
     private var renderedTitle = ""
     private var renderedSecondaryTitle: String?
     private var renderedImageName: String?

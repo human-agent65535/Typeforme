@@ -1,13 +1,5 @@
 import UIKit
 
-/// UIInputView subclass opting into system keyboard clicks —
-/// UIDevice.playInputClick() is a no-op unless the active input view conforms
-/// to UIInputViewAudioFeedback. The system additionally gates the sound on
-/// the user's keyboard-click setting, matching the native keyboard.
-final class ClickFeedbackInputView: UIInputView, UIInputViewAudioFeedback {
-    var enableInputClicksWhenVisible: Bool { true }
-}
-
 /// Backing surface for blank keyboard hit regions. The owning controller paints
 /// it with `keyboardTouchableBackgroundColor` (0.01 alpha) and masks it to the
 /// active touch geometry. iOS custom keyboards also consider rendered pixel

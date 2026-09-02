@@ -155,6 +155,35 @@ struct KeyboardMarkedTextOwnershipPolicyTests {
         ) == "哈哈ha")
     }
 
+    @Test("Return preserves Latin spelling and casing before and after Rime starts")
+    func returnPreservesRawLatinInput() {
+        for (input, preedit) in [
+            ("mail", "mai l"),
+            ("plan", "p lan"),
+            ("github", "github"),
+            ("OpenAI", "OpenAI"),
+            ("unknownword", "unknownword"),
+            ("test@example.test", "test@example.test"),
+            ("https://example.test/path", "https://example.test/path"),
+        ] {
+            #expect(KeyboardRimeCompositionPolicy.committableText(
+                rawInput: input,
+                preedit: preedit,
+                preeditSelectionStart: 0,
+                preeditSelectionEnd: preedit.utf8.count
+            ) == input)
+
+            var pending = KeyboardPendingRimeInput()
+            for character in input {
+                pending.appendEngineCharacter(String(character))
+            }
+            pending.appendReturnKey()
+            #expect(pending.flattenedLiteralText() == input)
+            pending.appendReturnKey()
+            #expect(pending.flattenedLiteralText() == input + "\n")
+        }
+    }
+
     @Test("Pending Rime transaction keeps engine and literal input in tap order")
     func pendingRimeInputBoundaryCommit() {
         var pending = KeyboardPendingRimeInput()

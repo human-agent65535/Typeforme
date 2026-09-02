@@ -1,13 +1,22 @@
 import UIKit
 import QuartzCore
+import AudioToolbox
+
+/// UIKit's playInputClick() cannot select a key category. These built-in
+/// keyboard sound IDs have no public symbolic constants, so keep their
+/// mapping in one place and verify the sounds on new major iOS versions.
+enum KeyboardKeySound: SystemSoundID {
+    case input = 1104
+    case delete = 1155
+    case modifier = 1156
+}
 
 @MainActor
 final class KeyboardHaptics {
     private static let textKeyCooldown: CFTimeInterval = 0.035
 
-    /// Mirrors the host's Keyboard Settings → Feedback toggles. Sound
-    /// additionally follows the system keyboard-click setting because it
-    /// goes through UIDevice.playInputClick().
+    /// Mirrors Typeforme's Keyboard Settings → Feedback toggles. System
+    /// Sound Services owns sound playback; no recording session is changed.
     var clickSoundsEnabled = true
     var hapticsEnabled = true
 
@@ -29,9 +38,9 @@ final class KeyboardHaptics {
         textKeyImpactGenerator.prepare()
     }
 
-    func playTextKeyPress() {
+    func playTextKeyPress(sound: KeyboardKeySound) {
         if clickSoundsEnabled {
-            UIDevice.current.playInputClick()
+            AudioServicesPlaySystemSoundWithCompletion(sound.rawValue, nil)
         }
         guard hapticsEnabled else { return }
         let now = CACurrentMediaTime()

@@ -293,6 +293,7 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
     var numberOutputPreference: NumberOutputPreference
     var punctuationPreference: PunctuationOutputPreference
     var autoCommit: Bool
+    var aiWritingEnabled: Bool
     var userDictionary: [DictionaryEntry]
     var modelStatuses: [BridgeModelStatus]
     var settingsRevision: String?
@@ -377,6 +378,7 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
             numberOutputPreference: numberOutputPreference.rawValue,
             punctuationPreference: punctuationPreference.rawValue,
             autoCommit: autoCommit,
+            aiWritingEnabled: aiWritingEnabled,
             userDictionary: userDictionary
         )
     }
@@ -403,6 +405,7 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
         case numberOutputPreference = "number_output_preference"
         case punctuationPreference = "punctuation_preference"
         case autoCommit = "auto_commit"
+        case aiWritingEnabled = "ai_writing_enabled"
         case userDictionary = "user_dictionary"
         case modelStatuses = "model_statuses"
         case settingsRevision = "settings_revision"
@@ -462,6 +465,7 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
         numberOutputPreference: NumberOutputPreference = .automatic,
         punctuationPreference: PunctuationOutputPreference = .normal,
         autoCommit: Bool,
+        aiWritingEnabled: Bool = false,
         userDictionary: [DictionaryEntry] = [],
         modelStatuses: [BridgeModelStatus] = [],
         settingsRevision: String? = nil
@@ -487,6 +491,7 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
         self.numberOutputPreference = numberOutputPreference
         self.punctuationPreference = punctuationPreference
         self.autoCommit = autoCommit
+        self.aiWritingEnabled = aiWritingEnabled
         self.userDictionary = DictionaryEntry.normalizedEntries(userDictionary)
         self.modelStatuses = modelStatuses
         self.settingsRevision = settingsRevision
@@ -525,6 +530,7 @@ struct BridgeMacSettingsPayload: Codable, Equatable {
         self.numberOutputPreference = try container.decode(NumberOutputPreference.self, forKey: .numberOutputPreference)
         self.punctuationPreference = try container.decode(PunctuationOutputPreference.self, forKey: .punctuationPreference)
         self.autoCommit = try container.decode(Bool.self, forKey: .autoCommit)
+        self.aiWritingEnabled = try container.decode(Bool.self, forKey: .aiWritingEnabled)
         self.userDictionary = DictionaryEntry.normalizedEntries(
             try container.decode([DictionaryEntry].self, forKey: .userDictionary)
         )

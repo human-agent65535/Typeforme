@@ -1,13 +1,12 @@
 # Rime default settings for Typeforme's keyboard extension.
 # encoding: utf-8
 
-config_version: '0.1'
+config_version: '0.2'
 
 schema_list:
   - schema: typeforme_pinyin
   - schema: typeforme_pinyin_ext
   - schema: typeforme_pinyin_large
-  - schema: typeforme_english
 
 menu:
   page_size: 8

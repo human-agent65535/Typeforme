@@ -486,7 +486,7 @@ enum KeyboardDefaultTextInputLanguage: String, CaseIterable, Identifiable, Codab
 }
 
 struct KeyboardDefaultsPayload: Codable, Equatable {
-    static let currentVersion = 3
+    static let currentVersion = 4
 
     var version: Int
     var correctionMode: CorrectionMode
@@ -495,6 +495,7 @@ struct KeyboardDefaultsPayload: Codable, Equatable {
     var keySoundEnabled: Bool
     var keyHapticsEnabled: Bool
     var chineseInputEnabled: Bool
+    var aiWritingEnabled: Bool
     var chinesePunctuationStyle: KeyboardChinesePunctuationStyle
     var rimeDictionaryTier: KeyboardRimeDictionaryTier
     var rimeLearningEnabled: Bool
@@ -515,6 +516,7 @@ struct KeyboardDefaultsPayload: Codable, Equatable {
         keySoundEnabled: Bool = true,
         keyHapticsEnabled: Bool = true,
         chineseInputEnabled: Bool,
+        aiWritingEnabled: Bool = false,
         chinesePunctuationStyle: KeyboardChinesePunctuationStyle,
         rimeDictionaryTier: KeyboardRimeDictionaryTier,
         rimeLearningEnabled: Bool = true,
@@ -535,6 +537,7 @@ struct KeyboardDefaultsPayload: Codable, Equatable {
         self.keySoundEnabled = keySoundEnabled
         self.keyHapticsEnabled = keyHapticsEnabled
         self.chineseInputEnabled = chineseInputEnabled
+        self.aiWritingEnabled = aiWritingEnabled
         self.chinesePunctuationStyle = chinesePunctuationStyle
         self.rimeDictionaryTier = rimeDictionaryTier
         self.rimeLearningEnabled = rimeLearningEnabled
@@ -559,6 +562,7 @@ struct KeyboardDefaultsPayload: Codable, Equatable {
         keySoundEnabled = try container.decode(Bool.self, forKey: .keySoundEnabled)
         keyHapticsEnabled = try container.decode(Bool.self, forKey: .keyHapticsEnabled)
         chineseInputEnabled = try container.decode(Bool.self, forKey: .chineseInputEnabled)
+        aiWritingEnabled = try container.decode(Bool.self, forKey: .aiWritingEnabled)
         chinesePunctuationStyle = try container.decode(
             KeyboardChinesePunctuationStyle.self,
             forKey: .chinesePunctuationStyle
@@ -589,6 +593,7 @@ struct KeyboardDefaultsPayload: Codable, Equatable {
         case keySoundEnabled = "key_sound_enabled"
         case keyHapticsEnabled = "key_haptics_enabled"
         case chineseInputEnabled = "chinese_input_enabled"
+        case aiWritingEnabled = "ai_writing_enabled"
         case chinesePunctuationStyle = "chinese_punctuation_style"
         case rimeDictionaryTier = "rime_dictionary_tier"
         case rimeLearningEnabled = "rime_learning_enabled"

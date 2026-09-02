@@ -588,6 +588,13 @@ struct ClientServerSettingsView: View {
                     .pickerStyle(.menu)
                 }
 
+                Section("Chinese Keyboard") {
+                    Toggle("AI Writing", isOn: aiWritingEnabledBinding)
+                    Text("When enabled, Space converts pinyin to Chinese with the server's AI model. When disabled, Space selects the first candidate.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+
                 Section {
                     if let downloadSummary = serverDraftDownloadSummary {
                         Label(downloadSummary, systemImage: "arrow.down.circle")
@@ -750,6 +757,14 @@ struct ClientServerSettingsView: View {
         } set: { value in
             draft?.numberOutputPreference = value
             normalizeDraft()
+        }
+    }
+
+    private var aiWritingEnabledBinding: Binding<Bool> {
+        Binding {
+            draft?.aiWritingEnabled ?? false
+        } set: { value in
+            draft?.aiWritingEnabled = value
         }
     }
 
@@ -3045,6 +3060,7 @@ struct CorrectionSettingsView: View {
     @AppStorage(AppSettings.Keys.clientBridgeEnabledRecognitionSources) private var clientBridgeEnabledRecognitionSourcesRaw: String = ""
     @AppStorage(AppSettings.Keys.numberOutputPreference)  private var numberOutputPreferenceRaw: String = NumberOutputPreference.automatic.rawValue
     @AppStorage(AppSettings.Keys.punctuationPreference)   private var punctuationPreferenceRaw: String = PunctuationOutputPreference.normal.rawValue
+    @AppStorage(AppSettings.Keys.aiWritingEnabled)        private var aiWritingEnabled = false
     @AppStorage(AppSettings.Keys.externalLLMBaseURL)      private var savedExternalLLMBaseURL: String = "http://127.0.0.1:1234"
     @AppStorage(AppSettings.Keys.externalLLMModel)        private var savedExternalLLMModel: String = ""
     @State private var draftBackendRaw: String = CorrectionBackendKind.qwen35_4B.rawValue
@@ -3192,6 +3208,14 @@ struct CorrectionSettingsView: View {
                 Text(punctuationPreferenceDescription)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+            }
+            if processingModeRaw == ProcessingMode.server.rawValue {
+                Section("Chinese Keyboard") {
+                    Toggle("AI Writing", isOn: $aiWritingEnabled)
+                    Text("When enabled, Space converts pinyin to Chinese with the server's AI model. When disabled, Space selects the first candidate.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
             }
             Section("Local LLM models (Qwen3.5 via llama.cpp)") {
                 ForEach(localLlamaModels) { spec in

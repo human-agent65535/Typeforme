@@ -468,6 +468,9 @@ final class BridgeService {
         if let autoCommit = request.autoCommit {
             UserDefaults.standard.set(autoCommit, forKey: AppSettings.Keys.correctionAutoCommit)
         }
+        if let aiWritingEnabled = request.aiWritingEnabled {
+            UserDefaults.standard.set(aiWritingEnabled, forKey: AppSettings.Keys.aiWritingEnabled)
+        }
         if let normalizedDictionary {
             dictionary.replaceEntries(normalizedDictionary)
         }
@@ -1315,6 +1318,9 @@ final class BridgeService {
         let start = Date()
         let jobID = BridgeClientJobID.normalized(request.clientJobID)
         let intent = try resolveTextEditIntent(request.intent)
+        if intent == .pinyinToChinese, !AppSettings.aiWritingEnabled {
+            throw BridgeServiceError.invalidRequest("AI Writing is disabled on the server")
+        }
         let contextBefore = request.contextBefore ?? ""
         let targetText = request.targetText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let contextAfter = request.contextAfter ?? ""
@@ -1322,7 +1328,7 @@ final class BridgeService {
         guard !targetText.isEmpty else {
             throw BridgeServiceError.invalidRequest("target_text is required")
         }
-        guard !spokenInstruction.isEmpty else {
+        guard intent == .pinyinToChinese || !spokenInstruction.isEmpty else {
             throw BridgeServiceError.invalidRequest("spoken_instruction is required")
         }
 
@@ -1351,7 +1357,7 @@ final class BridgeService {
         await publishJobStatus(
             jobID: jobID,
             stage: .refining,
-            message: "Editing text",
+            message: intent == .pinyinToChinese ? "Converting pinyin" : "Editing text",
             rawTranscriptLength: targetText.count
         )
         let editStarted = Date()

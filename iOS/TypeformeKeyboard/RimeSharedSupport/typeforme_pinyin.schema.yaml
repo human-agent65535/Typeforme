@@ -4,7 +4,7 @@
 schema:
   schema_id: typeforme_pinyin
   name: Typeforme 拼音
-  version: '0.4'
+  version: '0.5'
   author:
     - Typeforme
   description: |
@@ -41,7 +41,6 @@ engine:
   translators:
     - punct_translator
     - table_translator@custom_phrase
-    - table_translator@english_word
     - script_translator
   filters:
     - uniquifier
@@ -81,13 +80,6 @@ custom_phrase:
   enable_completion: false
   enable_sentence: false
   initial_quality: 99
-
-english_word:
-  dictionary: typeforme_english
-  enable_completion: false
-  enable_sentence: false
-  enable_user_dict: false
-  initial_quality: 0.4
 
 punctuator:
   half_shape:

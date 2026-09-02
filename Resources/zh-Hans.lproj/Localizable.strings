@@ -72,3 +72,7 @@
 "High quality / slower" = "高质量 / 较慢";
 "Medium quality / fastest" = "中等质量 / 最快";
 "Low quality / medium speed" = "低质量 / 中速";
+
+"Chinese Keyboard" = "中文键盘";
+"AI Writing" = "AI 写字";
+"When enabled, Space converts pinyin to Chinese with the server's AI model. When disabled, Space selects the first candidate." = "开启后，按空格通过后端 AI 将拼音转换为中文；关闭后，按空格选择首个候选词。";

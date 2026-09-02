@@ -75,6 +75,7 @@ struct BridgeSettingsPayload: Codable, Sendable {
     var numberOutputPreference: String
     var punctuationPreference: String
     var autoCommit: Bool
+    var aiWritingEnabled: Bool = false
     var debugMode: Bool
     var userDictionary: [DictionaryEntry]
     var rimeUserPhrases: [String]?
@@ -103,6 +104,7 @@ struct BridgeSettingsPayload: Codable, Sendable {
         case numberOutputPreference = "number_output_preference"
         case punctuationPreference = "punctuation_preference"
         case autoCommit = "auto_commit"
+        case aiWritingEnabled = "ai_writing_enabled"
         case debugMode = "debug_mode"
         case userDictionary = "user_dictionary"
         case rimeUserPhrases = "rime_user_phrases"
@@ -248,6 +250,7 @@ struct BridgeSettingsPayload: Codable, Sendable {
             numberOutputPreference: AppSettings.numberOutputPreference.rawValue,
             punctuationPreference: AppSettings.punctuationPreference.rawValue,
             autoCommit: AppSettings.autoCommit,
+            aiWritingEnabled: AppSettings.aiWritingEnabled,
             debugMode: AppSettings.diagnosticsDebugMode,
             userDictionary: sortedUserDictionary,
             rimeUserPhrases: rimeUserPhrases,
@@ -281,6 +284,7 @@ struct BridgeSettingsPayload: Codable, Sendable {
             numberOutputPreference: numberOutputPreference,
             punctuationPreference: punctuationPreference,
             autoCommit: autoCommit,
+            aiWritingEnabled: aiWritingEnabled,
             userDictionary: userDictionary
         )
     }
@@ -714,6 +718,7 @@ private struct BridgeResolvedSettings {
             numberOutputPreference: AppSettings.numberOutputPreference.rawValue,
             punctuationPreference: AppSettings.punctuationPreference.rawValue,
             autoCommit: AppSettings.autoCommit,
+            aiWritingEnabled: AppSettings.aiWritingEnabled,
             userDictionary: userDictionary
         )
         return BridgeSettingsRevisionPayload(
@@ -763,6 +768,7 @@ private struct BridgeSettingsRevisionPayload: Encodable {
         case numberOutputPreference = "number_output_preference"
         case punctuationPreference = "punctuation_preference"
         case autoCommit = "auto_commit"
+        case aiWritingEnabled = "ai_writing_enabled"
         case userDictionary = "user_dictionary"
     }
 
@@ -819,6 +825,7 @@ private struct BridgeSettingsRevisionPayload: Encodable {
         try container.encode(editableSnapshot.numberOutputPreference, forKey: .numberOutputPreference)
         try container.encode(editableSnapshot.punctuationPreference, forKey: .punctuationPreference)
         try container.encode(editableSnapshot.autoCommit, forKey: .autoCommit)
+        try container.encode(editableSnapshot.aiWritingEnabled, forKey: .aiWritingEnabled)
         try container.encode(editableSnapshot.userDictionary, forKey: .userDictionary)
     }
 }

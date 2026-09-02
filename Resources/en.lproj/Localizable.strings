@@ -74,3 +74,7 @@
 "High quality / slower" = "High quality / slower";
 "Medium quality / fastest" = "Medium quality / fastest";
 "Low quality / medium speed" = "Low quality / medium speed";
+
+"Chinese Keyboard" = "Chinese Keyboard";
+"AI Writing" = "AI Writing";
+"When enabled, Space converts pinyin to Chinese with the server's AI model. When disabled, Space selects the first candidate." = "When enabled, Space converts pinyin to Chinese with the server's AI model. When disabled, Space selects the first candidate.";

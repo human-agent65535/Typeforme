@@ -1696,6 +1696,7 @@ final class AppState {
             keySoundEnabled: keyboardKeySoundEnabled,
             keyHapticsEnabled: keyboardKeyHapticsEnabled,
             chineseInputEnabled: keyboardChineseInputEnabled,
+            aiWritingEnabled: macSettings?.aiWritingEnabled ?? false,
             chinesePunctuationStyle: keyboardChinesePunctuationStyle,
             rimeDictionaryTier: keyboardRimeDictionaryTier,
             rimeLearningEnabled: keyboardRimeLearningEnabled,
@@ -4597,6 +4598,10 @@ final class AppState {
     }
 
     private func refineKeyboardText(_ command: KeyboardBridgeCommand) async {
+        if command.textEditContext?.intent == .pinyinToChinese {
+            await convertKeyboardPinyin(command)
+            return
+        }
         guard await prepareKeyboardRefine(command) else { return }
         let requestedCorrectionMode = CorrectionMode(rawValue: command.correctionMode) ?? config.correctionMode
         guard let source = command.text?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -4708,6 +4713,62 @@ final class AppState {
             }
             setFailure(error.localizedDescription)
             publishKeyboardStatus(.error, commandID: command.id, message: error.localizedDescription)
+        }
+    }
+
+    private func convertKeyboardPinyin(_ command: KeyboardBridgeCommand) async {
+        guard await prepareKeyboardRefine(command) else { return }
+        guard let context = command.textEditContext,
+              !context.targetText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else {
+            failKeyboardCommand(command.id, code: .processingFailed, recovery: .none, message: "No pinyin to convert")
+            return
+        }
+        publishKeyboardStatus(
+            .sending,
+            commandID: command.id,
+            message: NSLocalizedString("AI Writing…", comment: "Pinyin conversion progress"),
+            processingStage: .refining
+        )
+        do {
+            await refreshRoute(
+                force: false,
+                probeAllEndpoints: false,
+                showIndicator: false,
+                reason: "keyboard_pinyin_route"
+            )
+            guard shouldContinueKeyboardOperation(command.id) else { return }
+            let client = try await activeBridgeClient()
+            guard shouldContinueKeyboardOperation(command.id) else { return }
+            setPhase(.refining)
+            let response = try await client.editText(
+                intent: TextEditIntent.pinyinToChinese.rawValue,
+                contextBefore: context.contextBefore,
+                targetText: context.targetText,
+                contextAfter: context.contextAfter,
+                spokenInstruction: "",
+                languageIDs: ["zh-CN"],
+                clientJobID: "ios_pinyin_\(command.id.replacingOccurrences(of: "-", with: "_"))"
+            )
+            guard shouldContinueKeyboardOperation(command.id) else { return }
+            let text = response.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard response.action == TextEditAction.replaceTarget.rawValue, !text.isEmpty else {
+                throw BridgeClientError.invalidResponse
+            }
+            setPhase(.idle)
+            publishKeyboardStatus(.result, commandID: command.id, message: "Converted", resultText: text)
+        } catch {
+            guard shouldContinueKeyboardOperation(command.id) else { return }
+            if shouldRetryBridgeRequest(after: error) {
+                routeFetchedAt = nil
+            }
+            setPhase(.idle)
+            failKeyboardCommand(
+                command.id,
+                code: .processingFailed,
+                recovery: .retry,
+                message: error.localizedDescription
+            )
         }
     }
 

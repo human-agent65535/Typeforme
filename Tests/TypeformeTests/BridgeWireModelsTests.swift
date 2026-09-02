@@ -267,6 +267,7 @@ struct BridgeWireModelsTests {
             numberOutputPreference: NumberOutputPreference.automatic.rawValue,
             punctuationPreference: PunctuationOutputPreference.normal.rawValue,
             autoCommit: true,
+            aiWritingEnabled: true,
             userDictionary: [
                 DictionaryEntry(id: entryID, type: "person", surface: " Alice "),
             ]
@@ -293,6 +294,7 @@ struct BridgeWireModelsTests {
         #expect(object["number_output_preference"] as? String == NumberOutputPreference.automatic.rawValue)
         #expect(object["punctuation_preference"] as? String == PunctuationOutputPreference.normal.rawValue)
         #expect(object["auto_commit"] as? Bool == true)
+        #expect(object["ai_writing_enabled"] as? Bool == true)
         #expect(object["debug_mode"] == nil)
         let entries = try #require(object["user_dictionary"] as? [[String: Any]])
         #expect(entries.first?["surface"] as? String == "Alice")
