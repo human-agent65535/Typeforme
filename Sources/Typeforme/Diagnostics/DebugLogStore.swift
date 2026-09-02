@@ -604,20 +604,7 @@ enum DebugLogStore {
     }
 
     private static func textEditVocabularyCandidates(for request: TextEditRequest) -> [VocabularyCandidatePayload] {
-        VocabularyCandidateSelector.promptPayload(
-            from: request.userDictionary,
-            rawText: [
-                request.contextBefore,
-                request.targetText,
-                request.contextAfter,
-                request.spokenInstruction,
-            ].joined(separator: " "),
-            extraContext: [
-                request.frontmostAppName ?? "",
-                request.frontmostBundleID ?? "",
-                request.appCategory.rawValue,
-            ]
-        )
+        TextEditPromptBuilder.vocabularyCandidates(for: request)
     }
 
     private static func normalizedTranscripts(_ values: [String]) -> [String] {

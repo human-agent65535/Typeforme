@@ -91,18 +91,21 @@ enum TextEditPromptBuilder {
 
     private static func userPrompt(for request: TextEditRequest) -> String {
         if request.intent == .pinyinToChinese {
-            let input = PromptPayloadEncoder.jsonString([
-                "pinyin": request.targetText,
-                "context_before": request.contextBefore,
-                "context_after": request.contextAfter,
-            ])
+            let input = PromptPayloadEncoder.jsonString(PinyinTextEditPromptInputPayload(
+                pinyin: request.targetText,
+                contextBefore: request.contextBefore,
+                contextAfter: request.contextAfter,
+                vocabularyCandidates: vocabularyCandidates(for: request)
+            ))
+            // Decode with natural punctuation first. The service applies the
+            // selected punctuation style after words and clauses are formed.
             return """
             <input_json>
             \(input)
             </input_json>
             \(OutputPreferencePrompt.finalReminder(
                 numbers: request.numberOutputPreference,
-                punctuation: request.punctuationPreference
+                punctuation: .normal
             ))
             Return only the replacement JSON for pinyin.
             """
@@ -122,20 +125,7 @@ enum TextEditPromptBuilder {
             targetLanguageHint: targetLanguageHint(for: request),
             outputPreferences: outputPreferences
         )
-        let vocabularyCandidates = VocabularyCandidateSelector.promptPayload(
-            from: request.userDictionary,
-            rawText: [
-                request.contextBefore,
-                request.targetText,
-                request.contextAfter,
-                request.spokenInstruction,
-            ].joined(separator: " "),
-            extraContext: [
-                request.frontmostAppName ?? "",
-                request.frontmostBundleID ?? "",
-                request.appCategory.rawValue,
-            ]
-        )
+        let vocabularyCandidates = vocabularyCandidates(for: request)
         let input = TextEditPromptInputPayload(
             task: "edit_target_text_with_spoken_input",
             intent: request.intent.rawValue,
@@ -171,6 +161,29 @@ enum TextEditPromptBuilder {
         ))
         parts.append("Return only the replacement JSON object described above.")
         return parts.joined(separator: "\n")
+    }
+
+    static func vocabularyCandidates(for request: TextEditRequest) -> [VocabularyCandidatePayload] {
+        if request.intent == .pinyinToChinese {
+            return VocabularyCandidateSelector.pinyinPromptPayload(
+                from: request.userDictionary,
+                pinyin: request.targetText
+            )
+        }
+        return VocabularyCandidateSelector.promptPayload(
+            from: request.userDictionary,
+            rawText: [
+                request.contextBefore,
+                request.targetText,
+                request.contextAfter,
+                request.spokenInstruction,
+            ].joined(separator: " "),
+            extraContext: [
+                request.frontmostAppName ?? "",
+                request.frontmostBundleID ?? "",
+                request.appCategory.rawValue,
+            ]
+        )
     }
 
     private static func examples(for request: TextEditRequest) -> String {

@@ -33,12 +33,18 @@ struct VocabularyCandidatePayload: Codable, Sendable, Equatable {
 enum VocabularyCandidateSelector {
     static let defaultLimit = 40
 
+    private enum InputKind: Hashable {
+        case transcript
+        case pinyin
+    }
+
     private struct CacheKey: Hashable {
         let entriesHash: Int
         let rawText: String
         let alternateTranscripts: String
         let extraContext: String
         let limit: Int
+        let inputKind: InputKind
     }
 
     private struct ContextSignals {
@@ -208,21 +214,51 @@ enum VocabularyCandidateSelector {
             alternateTranscripts: alternateTranscripts,
             extraContext: extraContext,
             limit: limit
-        ).map { candidate in
-            VocabularyCandidatePayload(
-                type: candidate.entry.type,
-                surface: candidate.entry.surface,
-                speechHint: phoneticKey(candidate.entry.surface),
-                pronunciations: pronunciationHints(for: candidate.entry.surface),
-                matchedSpan: candidate.evidence.matchedSpan,
-                matchSource: candidate.evidence.matchSource,
-                matchedStart: candidate.evidence.matchedStart,
-                matchedEnd: candidate.evidence.matchedEnd,
-                matchKind: candidate.evidence.matchKind,
-                confidence: candidate.evidence.confidence,
-                evidenceSource: candidate.evidence.evidenceSource
+        ).map { payload(for: $0) }
+    }
+
+    static func pinyinPromptPayload(
+        from entries: [DictionaryEntry],
+        pinyin: String,
+        limit: Int = defaultLimit
+    ) -> [VocabularyCandidatePayload] {
+        let mask = VerbatimSpanMask(pinyin)
+        var matchingText = mask.maskedText
+        for entry in mask.entries {
+            // Keep character offsets while excluding literal syntax from
+            // vocabulary matching, including names inside URL paths.
+            matchingText = matchingText.replacingOccurrences(
+                of: entry.token,
+                with: String(repeating: "\u{FFFC}", count: entry.text.count)
             )
         }
+        return rankedCandidates(
+            from: entries,
+            rawText: matchingText,
+            alternateTranscripts: [],
+            extraContext: [],
+            limit: limit,
+            inputKind: .pinyin
+        ).map { payload(for: $0, inputKind: .pinyin) }
+    }
+
+    private static func payload(
+        for candidate: ScoredCandidate,
+        inputKind: InputKind = .transcript
+    ) -> VocabularyCandidatePayload {
+        VocabularyCandidatePayload(
+            type: candidate.entry.type,
+            surface: candidate.entry.surface,
+            speechHint: phoneticKey(candidate.entry.surface),
+            pronunciations: pronunciationHints(for: candidate.entry.surface),
+            matchedSpan: candidate.evidence.matchedSpan,
+            matchSource: inputKind == .pinyin ? "pinyin" : candidate.evidence.matchSource,
+            matchedStart: candidate.evidence.matchedStart,
+            matchedEnd: candidate.evidence.matchedEnd,
+            matchKind: candidate.evidence.matchKind,
+            confidence: candidate.evidence.confidence,
+            evidenceSource: inputKind == .pinyin ? "typed_pinyin" : candidate.evidence.evidenceSource
+        )
     }
 
     private static func rankedCandidates(
@@ -230,7 +266,8 @@ enum VocabularyCandidateSelector {
         rawText: String,
         alternateTranscripts: [String],
         extraContext: [String],
-        limit: Int
+        limit: Int,
+        inputKind: InputKind = .transcript
     ) -> [ScoredCandidate] {
         let cleanedAlternates = CorrectionRequest.normalizedAlternateTranscripts(
             primaryTranscript: rawText,
@@ -242,7 +279,8 @@ enum VocabularyCandidateSelector {
             rawText: rawText,
             alternateTranscripts: cleanedAlternates.joined(separator: "\u{1f}"),
             extraContext: extraContextText,
-            limit: limit
+            limit: limit,
+            inputKind: inputKind
         )
         if let cached = selectionCache.withLock({ cache in cache[cacheKey] }) {
             return cached
@@ -260,7 +298,7 @@ enum VocabularyCandidateSelector {
         )
 
         let selected = entries.compactMap { entry in
-            score(entry, evidenceTexts: evidenceTexts, signals: signals)
+            score(entry, evidenceTexts: evidenceTexts, signals: signals, inputKind: inputKind)
         }
         .sorted {
             if $0.score != $1.score { return $0.score > $1.score }
@@ -285,7 +323,8 @@ enum VocabularyCandidateSelector {
     private static func score(
         _ entry: DictionaryEntry,
         evidenceTexts: [EvidenceText],
-        signals: ContextSignals
+        signals: ContextSignals,
+        inputKind: InputKind
     ) -> ScoredCandidate? {
         var best: CandidateEvidence?
 
@@ -301,7 +340,9 @@ enum VocabularyCandidateSelector {
         // Chinese homophones are common enough that pronunciation alone does
         // not establish person-name usage. Keep the candidate only when the
         // transcript also anchors its spelling or uses the span as a person.
-        if !isPlausibleChinesePersonCandidate(
+        // Unconverted pinyin has no Chinese spelling or grammar anchors yet.
+        // Its matching names stay as hints for the model to disambiguate.
+        if inputKind == .transcript && !isPlausibleChinesePersonCandidate(
             entry,
             evidence: evidence
         ) {

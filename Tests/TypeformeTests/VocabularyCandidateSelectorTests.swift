@@ -81,6 +81,22 @@ struct VocabularyCandidateSelectorTests {
         #expect(payload.isEmpty)
     }
 
+    @Test func typedPinyinNamesDoNotUseTranscriptPersonFilteringOrItsCache() {
+        let entries = [
+            DictionaryEntry(type: "person", surface: "林霁"),
+            DictionaryEntry(type: "product", surface: "Typeforme"),
+        ]
+        for pinyin in ["linjinideshoujinalimaide", "lin ji ni de shou ji na li mai de", "lin'ji nideshoujinalimaide"] {
+            #expect(VocabularyCandidateSelector.promptPayload(from: entries, rawText: pinyin).isEmpty)
+            let payload = VocabularyCandidateSelector.pinyinPromptPayload(from: entries, pinyin: pinyin)
+            #expect(payload.map(\.surface) == ["林霁"])
+            #expect(payload.first?.speechHint == "linji")
+            #expect(payload.first?.matchSource == "pinyin")
+            #expect(payload.first?.evidenceSource == "typed_pinyin")
+            #expect(VocabularyCandidateSelector.promptPayload(from: entries, rawText: pinyin).isEmpty)
+        }
+    }
+
     @Test func rejectsChinesePersonHomophonesWithoutPersonUseContext() {
         let entries = [DictionaryEntry(type: "person", surface: "郭霁")]
         let transcripts = [
@@ -102,6 +118,22 @@ struct VocabularyCandidateSelectorTests {
             )
             #expect(payload.isEmpty, "Unexpected person candidate for: \(transcript)")
         }
+    }
+
+    @Test func pinyinVocabularyDoesNotMatchInsideProtectedLiterals() {
+        let entries = [DictionaryEntry(type: "person", surface: "林霁")]
+        for pinyin in [
+            "dakai https://example.test/linji?x=3.5",
+            "fa you jian gei linji@example.test",
+            "shuru `linji`",
+        ] {
+            #expect(VocabularyCandidateSelector.pinyinPromptPayload(from: entries, pinyin: pinyin).isEmpty)
+        }
+        let mixed = VocabularyCandidateSelector.pinyinPromptPayload(
+            from: entries,
+            pinyin: "dakai https://example.test/linji ranhougaosulinji"
+        )
+        #expect(mixed.map(\.surface) == ["林霁"])
     }
 
     @Test func keepsChinesePersonHomophonesWithIndependentPersonUseEvidence() {
