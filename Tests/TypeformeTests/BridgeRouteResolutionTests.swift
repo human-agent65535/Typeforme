@@ -4,6 +4,60 @@ import Testing
 
 @Suite("BridgeRouteResolution")
 struct BridgeRouteResolutionTests {
+    @Test func iOSTailscaleOutageFallsBackToConfiguredCloud() async {
+        let log = ProbeLog()
+        let resolver = BridgeRouteResolutionCore(policy: .iOSClient) { url, token, timeout in
+            await log.record(url: url.absoluteString, token: token, timeout: timeout)
+            return BridgeRouteProbeResult(ok: url.host == "bridge.example.com", latencyMs: 24)
+        }
+        let status = await resolver.resolve(
+            localBridgeURLs: ["http://100.101.102.103:18081", "http://192.168.1.8:18081"],
+            cloudBridgeURL: "https://bridge.example.com",
+            token: "token",
+            probeAllEndpoints: true
+        )
+
+        #expect(status.activeKind == .cloud)
+        #expect(status.activeURL?.host == "bridge.example.com")
+        #expect(status.localChecked && status.cloudChecked)
+        #expect(!status.localOK && status.cloudOK)
+        let records = await log.records
+        #expect(Set(records.map(\.url)) == [
+            "http://100.101.102.103:18081", "http://192.168.1.8:18081", "https://bridge.example.com",
+        ])
+    }
+
+    @Test func iOSFullProbeDoesNotInferCloudHealthFromWorkingVPN() async {
+        let resolver = BridgeRouteResolutionCore(policy: .iOSClient) { url, _, _ in
+            BridgeRouteProbeResult(ok: url.host == "100.101.102.103", latencyMs: 12)
+        }
+        let status = await resolver.resolve(
+            localBridgeURLs: ["http://100.101.102.103:18081"],
+            cloudBridgeURL: "https://bridge.example.com",
+            token: "token",
+            probeAllEndpoints: true
+        )
+
+        #expect(status.activeKind == .local)
+        #expect(status.localOK && !status.cloudOK)
+        #expect(status.localChecked && status.cloudChecked)
+    }
+
+    @Test func iOSAllRoutesDownClearsTheSelectedEndpoint() async {
+        let resolver = BridgeRouteResolutionCore(policy: .iOSClient) { _, _, _ in
+            BridgeRouteProbeResult(ok: false, latencyMs: nil)
+        }
+        let status = await resolver.resolve(
+            localBridgeURLs: ["http://100.101.102.103:18081"],
+            cloudBridgeURL: "https://bridge.example.com",
+            token: "token"
+        )
+
+        #expect(status.activeKind == .unavailable)
+        #expect(status.activeURL == nil)
+        #expect(status.localChecked && status.cloudChecked)
+    }
+
     @Test func fullProbeMarksBothEndpointsAndPrefersLocalWhenBothPass() async {
         let resolver = BridgeRouteResolutionCore(policy: .macClient) { url, _, _ in
             BridgeRouteProbeResult(ok: url.host != nil, latencyMs: url.host == "192.168.1.8" ? 12 : 30)

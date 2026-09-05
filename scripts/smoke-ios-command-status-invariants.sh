@@ -1292,6 +1292,19 @@ if "refreshRoute(" in dictate_once or "shouldRetryBridgeRequest" in dictate_once
     raise AssertionError("resolved dictation transport regained hidden route retry behavior")
 if "requiresCurrentRouteEvidence: isKeyboardPath" not in stop_pipeline:
     raise AssertionError("keyboard audio must validate its route before the one upload attempt")
+if stop_pipeline.index("async let routePreflight") > stop_pipeline.index("await endLivePartialPreviewAudio()"):
+    raise AssertionError("dictation route validation must overlap preview finalization")
+if stop_pipeline.index("await routePreflight") > stop_pipeline.index("dictateUsingResolvedRoute("):
+    raise AssertionError("dictation upload must await route validation")
+dictation_failure = block(app, "private func failDictation(")
+for required in ("preservingLivePartial: true", "if publishToHostResult", "publishKeyboardStatus(.error"):
+    if required not in dictation_failure:
+        raise AssertionError(f"dictation failure lost draft recovery: {required}")
+if "isBenignEmptyTranscript(error), livePartialTranscript.isEmpty" not in stop_pipeline:
+    raise AssertionError("Mac empty speech must not discard a nonempty local draft")
+preserve_failed_draft = block(keyboard, "private func shouldPreserveLivePartialPreviewAfterHostFailure(")
+if "processingStage == .refining" in preserve_failed_draft or "preview.commandID == commandID" not in preserve_failed_draft:
+    raise AssertionError("draft recovery must cover transcribing failures and check command ownership")
 
 release_audio = block(audio, "static func releaseCaptureRouteAndNotifyOthers(")
 for required in (

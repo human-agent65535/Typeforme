@@ -13705,7 +13705,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         // the user's in-progress Pinyin preedit.
         let partial = status.livePartialTranscript?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let suppressesPartialPreview = suppressesLivePartialPreview(for: status)
-        let preservesLivePartialAfterHostRefineFailure = shouldPreserveLivePartialPreviewAfterHostRefineFailure(for: status)
+        let preservesLivePartialAfterHostFailure = shouldPreserveLivePartialPreviewAfterHostFailure(for: status)
         let showsPartial = !suppressesPartialPreview
             && (status.state == .recording || status.state == .sending)
             && !partial.isEmpty
@@ -13721,8 +13721,12 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
             // .result is handled below — don't clear here or the commit step
             // would have no marked text to replace.
             if status.state != .sending {
-                if preservesLivePartialAfterHostRefineFailure {
-                    _ = commitLivePartialBeforeHostReturnIfNeeded(commandID: status.commandID)
+                if preservesLivePartialAfterHostFailure {
+                    if commitLivePartialBeforeHostReturnIfNeeded(commandID: status.commandID) {
+                        // Failure keeps the draft as ordinary text. A delayed
+                        // result must not overwrite it after the user resumes typing.
+                        _ = markLivePartialPreviewConsumed(commandID: status.commandID)
+                    }
                 } else {
                     clearLivePartialMarkedTextIfStillOwned(commandID: status.commandID, reason: "status_terminal")
                 }
@@ -13801,7 +13805,7 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         if status.state == .error || status.state == .idle {
             activeRecordingTextTarget = nil
             activeRecordingTextEditIntent = nil
-            if !preservesLivePartialAfterHostRefineFailure {
+            if !preservesLivePartialAfterHostFailure {
                 livePartialPreviewState = nil
             }
             recentSelectionTarget = nil
@@ -13904,16 +13908,10 @@ final class KeyboardViewController: UIInputViewController, UIGestureRecognizerDe
         return true
     }
 
-    private func shouldPreserveLivePartialPreviewAfterHostRefineFailure(for status: KeyboardBridgeStatus) -> Bool {
+    private func shouldPreserveLivePartialPreviewAfterHostFailure(for status: KeyboardBridgeStatus) -> Bool {
         guard status.state == .error,
-              status.processingStage == .refining,
-              let commandID = status.commandID
-        else { return false }
-        if activeMarkedTextOwner == .livePartial,
-           !activeMarkedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return true
-        }
-        guard let preview = livePartialPreviewState,
+              let commandID = status.commandID,
+              let preview = livePartialPreviewState,
               preview.commandID == commandID
         else { return false }
         return !preview.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty

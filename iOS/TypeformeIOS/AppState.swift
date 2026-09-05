@@ -515,6 +515,7 @@ final class AppState {
     private var queuedKeyboardStopCommandID: String?
     @ObservationIgnored private var hostAudioSessionExpiryTask: Task<Void, Never>?
     @ObservationIgnored private var keyboardStandbyRefreshTask: Task<Void, Never>?
+    @ObservationIgnored private var recordingRouteProbeTask: Task<Void, Never>?
     private var routeFetchedAt: Date?
     private var routeRefreshState = BridgeRouteRefreshState()
     private var pairingRevision: UInt64 {
@@ -1272,6 +1273,7 @@ final class AppState {
         }
 
         let resolved = await routeResolver.resolve(config: configSnapshot, probeAllEndpoints: probeAllEndpoints)
+        guard !Task.isCancelled else { return }
         guard commitRouteRefreshResult(
             resolved,
             generation: generation,
@@ -1306,6 +1308,7 @@ final class AppState {
         }
         let refreshedConfig = config
         let rerouted = await routeResolver.resolve(config: refreshedConfig, probeAllEndpoints: probeAllEndpoints)
+        guard !Task.isCancelled else { return }
         _ = commitRouteRefreshResult(
             rerouted,
             generation: generation,
@@ -1318,6 +1321,7 @@ final class AppState {
 
     private func preflightActiveBridgeRoute() async {
         guard !Task.isCancelled else { return }
+        let expectedPairingRevision = pairingRevision
         guard let baseURL = routeStatus.activeURL else {
             await refreshRoute(
                 force: true,
@@ -1330,7 +1334,10 @@ final class AppState {
 
         let timeout = routeStatus.activeKind == .cloud ? 3.0 : 1.5
         let isHealthy = await BridgeClient(baseURL: baseURL, token: config.token).health(timeout: timeout)
-        guard !Task.isCancelled else { return }
+        guard !Task.isCancelled,
+              pairingRevision == expectedPairingRevision,
+              routeStatus.activeURL == baseURL
+        else { return }
         guard isHealthy else {
             routeFetchedAt = nil
             await refreshRoute(
@@ -1342,6 +1349,16 @@ final class AppState {
             return
         }
         routeFetchedAt = Date()
+    }
+
+    private func preflightDictationBridgeRoute(requiresCurrentRouteEvidence: Bool) async {
+        let routeIsFresh = currentBridgeRouteIsFresh(activeURL: routeStatus.activeURL)
+        if shouldPreflightBridgeRouteBeforeRequest(
+            routeIsFresh: routeIsFresh,
+            requiresCurrentRouteEvidence: requiresCurrentRouteEvidence
+        ) {
+            await preflightActiveBridgeRoute()
+        }
     }
 
     private func routeStatusSatisfiesProbeMode(_ probeAllEndpoints: Bool) -> Bool {
@@ -2083,6 +2100,12 @@ final class AppState {
         // to avoid clipping the final syllable; the UI and keyboard should
         // already behave as stopped/sending.
         setPhase(.sending)
+        // Validate the route while the tail buffer and live preview finish.
+        // The audio is still submitted once, after the file has closed.
+        let isKeyboardPath = shouldPublishKeyboardProgress || isKeyboardCapture
+        async let routePreflight: Void = preflightDictationBridgeRoute(
+            requiresCurrentRouteEvidence: isKeyboardPath
+        )
         if shouldPublishKeyboardProgress {
             publishKeyboardStatus(
                 .sending,
@@ -2122,9 +2145,17 @@ final class AppState {
         activeKeyboardDictationContext = nil
         releaseIdleTimer()
         guard let fileURL else {
-            setPhase(.idle)
-            if let effectiveKeyboardCommandID {
-                publishKeyboardStatus(.standby, commandID: effectiveKeyboardCommandID, message: "Nothing recorded")
+            if !livePartialTranscript.isEmpty {
+                failDictation(
+                    "Nothing recorded",
+                    keyboardCommandID: effectiveKeyboardCommandID,
+                    publishToHostResult: !shouldPublishKeyboardProgress
+                )
+            } else {
+                setPhase(.idle)
+                if let effectiveKeyboardCommandID {
+                    publishKeyboardStatus(.standby, commandID: effectiveKeyboardCommandID, message: "Nothing recorded")
+                }
             }
             await resumeKeyboardStandbyAfterCommand()
             return
@@ -2134,15 +2165,23 @@ final class AppState {
         let recordingInfo = RecordingFileInfo(url: fileURL)
         lastRecordingSummary = recordingInfo.summary
         if recordingInfo.isTooShort {
-            setPhase(.idle)
-            if let effectiveKeyboardCommandID {
-                publishKeyboardStatus(
-                    .standby,
-                    commandID: effectiveKeyboardCommandID,
-                    message: "Too short; hold while speaking",
-                    audioDurationSeconds: recordingInfo.durationSeconds,
-                    audioByteCount: recordingInfo.byteCount
+            if !livePartialTranscript.isEmpty {
+                failDictation(
+                    "Too short; hold while speaking",
+                    keyboardCommandID: effectiveKeyboardCommandID,
+                    publishToHostResult: !shouldPublishKeyboardProgress
                 )
+            } else {
+                setPhase(.idle)
+                if let effectiveKeyboardCommandID {
+                    publishKeyboardStatus(
+                        .standby,
+                        commandID: effectiveKeyboardCommandID,
+                        message: "Too short; hold while speaking",
+                        audioDurationSeconds: recordingInfo.durationSeconds,
+                        audioByteCount: recordingInfo.byteCount
+                    )
+                }
             }
             await resumeKeyboardStandbyAfterCommand()
             return
@@ -2151,36 +2190,21 @@ final class AppState {
         acquireIdleTimer()
         defer { releaseIdleTimer() }
 
-        var baseURL = routeStatus.activeURL
-        let isKeyboardPath = shouldPublishKeyboardProgress || isKeyboardCapture
-        // A keyboard recording validates the selected endpoint immediately
-        // before its single upload. Route changes therefore cost the short
-        // health probe instead of a full dictate POST timeout, and the same
-        // audio job is never submitted to a second endpoint.
-        let routeIsFresh = currentBridgeRouteIsFresh(activeURL: baseURL)
-        if isKeyboardPath {
-            if let effectiveKeyboardCommandID {
-                publishKeyboardStatus(
-                    .sending,
-                    commandID: effectiveKeyboardCommandID,
-                    message: recognitionStageLabels.transcribing,
-                    processingStage: .transcribing
-                )
-            }
-        }
-        if shouldPreflightBridgeRouteBeforeRequest(
-            routeIsFresh: routeIsFresh,
-            requiresCurrentRouteEvidence: isKeyboardPath
-        ) {
+        await routePreflight
+        guard shouldContinueKeyboardOperation(effectiveKeyboardCommandID) else { return }
+        // A server preview can take longer than the route cache lifetime to
+        // finalize. Do not upload using evidence gathered before that wait.
+        if routeStatus.activeURL != nil,
+           !currentBridgeRouteIsFresh(activeURL: routeStatus.activeURL) {
             await preflightActiveBridgeRoute()
             guard shouldContinueKeyboardOperation(effectiveKeyboardCommandID) else { return }
-            baseURL = routeStatus.activeURL
         }
-        guard let baseURL else {
-            setFailure("Bridge unavailable. Check pairing, Local URL, or Cloud URL.")
-            if let effectiveKeyboardCommandID {
-                publishKeyboardStatus(.error, commandID: effectiveKeyboardCommandID, message: errorMessage ?? "Bridge unavailable")
-            }
+        guard let baseURL = routeStatus.activeURL else {
+            failDictation(
+                "Bridge unavailable. Check pairing, Local URL, or Cloud URL.",
+                keyboardCommandID: effectiveKeyboardCommandID,
+                publishToHostResult: !shouldPublishKeyboardProgress
+            )
             await resumeKeyboardStandbyAfterCommand()
             return
         }
@@ -2230,10 +2254,11 @@ final class AppState {
             if let editContext = keyboardTextEditContext {
                 let editingStageLabels = Self.editingStageLabels(for: editContext)
                 guard !spokenTranscript.isEmpty else {
-                    setFailure("Mac returned an empty transcript.")
-                    if let effectiveKeyboardCommandID {
-                        publishKeyboardStatus(.error, commandID: effectiveKeyboardCommandID, message: errorMessage ?? "Empty transcript")
-                    }
+                    failDictation(
+                        "Mac returned an empty transcript.",
+                        keyboardCommandID: effectiveKeyboardCommandID,
+                        publishToHostResult: !shouldPublishKeyboardProgress
+                    )
                     await resumeKeyboardStandbyAfterCommand()
                     return
                 }
@@ -2282,10 +2307,11 @@ final class AppState {
                 resultMessage = editContext.intent == .command ? "Edited selection" : "Repaired selection"
             }
             guard !text.isEmpty else {
-                setFailure("Mac returned an empty result.")
-                if let effectiveKeyboardCommandID {
-                    publishKeyboardStatus(.error, commandID: effectiveKeyboardCommandID, message: errorMessage ?? "Empty result")
-                }
+                failDictation(
+                    "Mac returned an empty result.",
+                    keyboardCommandID: effectiveKeyboardCommandID,
+                    publishToHostResult: !shouldPublishKeyboardProgress
+                )
                 await resumeKeyboardStandbyAfterCommand()
                 return
             }
@@ -2347,7 +2373,7 @@ final class AppState {
             }
         } catch {
             guard shouldContinueKeyboardOperation(effectiveKeyboardCommandID) else { return }
-            if isBenignEmptyTranscript(error) {
+            if isBenignEmptyTranscript(error), livePartialTranscript.isEmpty {
                 setPhase(.idle)
                 if let effectiveKeyboardCommandID {
                     publishKeyboardStatus(.standby, commandID: effectiveKeyboardCommandID, message: "Nothing recorded")
@@ -2355,21 +2381,48 @@ final class AppState {
                 await resumeKeyboardStandbyAfterCommand()
                 return
             }
-            // Stale routes are the most common cause of bridge failures —
-            // auth errors *and* network errors (timeout, cannotConnectToHost,
-            // networkConnectionLost, etc.) both indicate the cached route may
-            // be bad. Invalidate so the next press re-probes naturally.
-            if shouldRetryBridgeRequest(after: error) {
+            let needsRouteRefresh = shouldRetryBridgeRequest(after: error)
+            if needsRouteRefresh {
                 routeFetchedAt = nil
             }
-            // Bridge failed — drop any in-flight live-preview state.
-            teardownLivePartialPreview(clearText: true)
-            setFailure(error.localizedDescription)
-            if let effectiveKeyboardCommandID {
-                publishKeyboardStatus(.error, commandID: effectiveKeyboardCommandID, message: error.localizedDescription)
+            failDictation(
+                error.localizedDescription,
+                keyboardCommandID: effectiveKeyboardCommandID,
+                publishToHostResult: !shouldPublishKeyboardProgress
+            )
+            if needsRouteRefresh {
+                // A failed POST may already have reached the Mac. Refresh
+                // reachability for recovery without submitting the audio again.
+                await refreshRoute(
+                    force: true,
+                    probeAllEndpoints: true,
+                    showIndicator: false,
+                    reason: "dictation_failed"
+                )
             }
         }
         await resumeKeyboardStandbyAfterCommand()
+    }
+
+    private func failDictation(
+        _ message: String,
+        keyboardCommandID: String?,
+        publishToHostResult: Bool
+    ) {
+        let draft = livePartialTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !draft.isEmpty {
+            rawTranscript = draft
+            sessionID = nil
+            // A keyboard command may be typing into the host's TextEditor.
+            // Its marked-text owner alone commits that draft to avoid two writes.
+            if publishToHostResult {
+                resultText = draft
+            }
+        }
+        setFailure(message, preservingLivePartial: true)
+        if let keyboardCommandID {
+            publishKeyboardStatus(.error, commandID: keyboardCommandID, message: message)
+        }
     }
 
     private func waitForMinimumRecordingDurationIfNeeded() async {
@@ -5583,11 +5636,10 @@ final class AppState {
             keyboardState = .sending
             keyboardProcessingStage = .refining
         case .failed:
-            let trimmedError = event.error?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            let failureMessage = trimmedError.isEmpty ? event.message : trimmedError
-            stageMessage = Self.isBenignASREmptyMessage(failureMessage) ? nil : failureMessage
-            keyboardState = stageMessage == nil ? .standby : .error
-            keyboardProcessingStage = nil
+            // The HTTP response owns terminal failure and draft recovery. A
+            // progress event must not retire the command first: doing so makes
+            // the response handler lose ownership and skip its cleanup.
+            return
         }
 
         guard let stageMessage else { return }
@@ -5811,8 +5863,21 @@ final class AppState {
 
     private func setPhase(_ next: AppPhase) {
         phase = next
+        recordingRouteProbeTask?.cancel()
+        recordingRouteProbeTask = nil
         if next == .recording {
             recordingStartedAt = Date()
+            // Probe configured LAN (including VPN addresses) and Cloud while
+            // the user speaks. Stop still validates the selected route again.
+            recordingRouteProbeTask = Task { @MainActor [weak self] in
+                guard !Task.isCancelled, let self else { return }
+                await self.refreshRoute(
+                    force: true,
+                    probeAllEndpoints: true,
+                    showIndicator: false,
+                    reason: "dictation_recording"
+                )
+            }
         } else if !next.isBusy {
             recordingStartedAt = nil
         }
@@ -5845,8 +5910,8 @@ final class AppState {
         syncPiPDictationPresentation()
     }
 
-    private func setFailure(_ message: String) {
-        teardownLivePartialPreview(clearText: true)
+    private func setFailure(_ message: String, preservingLivePartial: Bool = false) {
+        teardownLivePartialPreview(clearText: !preservingLivePartial)
         errorMessage = message
         setPhase(.failure(message))
     }
